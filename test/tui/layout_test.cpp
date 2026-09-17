@@ -71,6 +71,30 @@ BOOST_AUTO_TEST_CASE(chat_layout_distribution) {
                                                    {0, 21, 80, 0}, {0, 21, 80, 3}}));
 }
 
+BOOST_AUTO_TEST_CASE(screen_origin_accumulates_nested_local_offsets) {
+    // 子区域是父容器局部坐标；屏幕原点必须沿父链逐层累加。
+    Container root{Container::Direction::vertical};
+    root.add(flex(), std::make_unique<Probe>(U's'));
+    auto bar = std::make_unique<Container>(Container::Direction::horizontal);
+    Container* bar_p = bar.get();
+    bar->add(fixed(4), std::make_unique<Probe>(U'>'));
+    auto inner = std::make_unique<Container>(Container::Direction::vertical);
+    Container* inner_p = inner.get();
+    inner->add(fixed(1), std::make_unique<Probe>(U't'));
+    auto leaf = std::make_unique<Probe>(U'i');
+    Probe* leaf_p = leaf.get();
+    inner->add(flex(), std::move(leaf));
+    bar->add(flex(), std::move(inner));
+    root.add(fixed(3), std::move(bar));
+    root.layout({0, 0, 80, 24});
+
+    BOOST_TEST(leaf_p->rect() == (Rect{0, 1, 76, 2})); // 局部：inner 内第 2 行
+    BOOST_TEST(inner_p->screen_origin() == (Point{4, 21}));
+    BOOST_TEST(leaf_p->screen_origin() == (Point{4, 22}));
+    BOOST_TEST(bar_p->screen_origin() == (Point{0, 21}));
+    BOOST_TEST(root.screen_origin() == (Point{0, 0}));
+}
+
 BOOST_AUTO_TEST_CASE(content_is_clamped_to_min_and_max) {
     Tree t;
     t.add(content(2, 4), U'a', {0, 9});

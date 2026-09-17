@@ -69,10 +69,26 @@ public:
         layout_dirty_ = false;
     }
 
+    // 父容器坐标系下的区域。容器给子项分配的是局部坐标，
+    // 需要屏幕位置（光标定位）时用 screen_origin()。
     Rect rect() const noexcept { return rect_; }
 
+    // 左上角的屏幕坐标：沿父链累加各层局部偏移。O(嵌套深度)。
+    Point screen_origin() const noexcept {
+        Point p{rect_.x, rect_.y};
+        for (const Widget* w = parent_; w != nullptr; w = w->parent_) {
+            p.x += w->rect_.x;
+            p.y += w->rect_.y;
+        }
+        return p;
+    }
+
 protected:
+    // 容器接收子项时登记父子关系（子项由容器拥有，生命周期被父覆盖）。
+    static void adopt(Widget& parent, Widget& child) noexcept { child.parent_ = &parent; }
+
     Rect rect_{};
+    Widget* parent_ = nullptr; // 非拥有；根控件为空
     bool dirty_ = true;        // 首帧全量绘制
     bool layout_dirty_ = true;
 };

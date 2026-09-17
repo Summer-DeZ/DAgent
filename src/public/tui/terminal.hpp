@@ -44,8 +44,9 @@ public:
 
     const Caps& caps() const noexcept { return caps_; }
 
-    // 每帧查询一次（ioctl TIOCGWINSZ 约 1µs），尺寸变化时由上层提升布局纪元。
-    // 不用 SIGWINCH：避免异步信号上下文的复杂度。非 tty 时回退 80×24。
+    // 渲染线程查询（ioctl TIOCGWINSZ 约 1µs），尺寸变化时由上层提升布局纪元。
+    // 尺寸只在这里读；SIGWINCH 处理器只往 self-pipe 写一个字节唤醒空闲的
+    // 渲染线程，不在信号上下文里做任何别的事。非 tty 时回退 80×24。
     Size size() const noexcept;
 
     // 唯一输出出口。由渲染线程调用；渲染前已组装完整差分帧。
@@ -63,11 +64,18 @@ public:
     void restore() noexcept;
 
     // self-pipe 读端：信号处理器只写一个字节唤醒，主循环 poll 此 fd。
+    // 接管 SIGINT/SIGTERM/SIGHUP（退出类）与 SIGWINCH（尺寸变化）。
     // O_NONBLOCK | O_CLOEXEC。
     int signal_fd() const noexcept { return signal_pipe_[0]; }
 
-    // 主循环被唤醒后清空管道中的信号字节。
-    void drain_signal() noexcept;
+    // 自上次清空以来收到过的信号类别。
+    struct Signals {
+        bool quit   = false; // SIGINT / SIGTERM / SIGHUP：走正常退出路径
+        bool resize = false; // SIGWINCH：重新查询 size()
+    };
+
+    // 主循环被唤醒后清空管道中的信号字节，报告收到了哪几类信号。
+    Signals drain_signal() noexcept;
 
 private:
     void enter();

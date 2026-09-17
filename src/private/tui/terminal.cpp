@@ -28,17 +28,26 @@ std::once_flag g_atexit_once;
 
 // 被接管的信号与其原有处理器：卸载时还原调用方自己装的处理器，
 // 而不是粗暴地重置为 SIG_DFL。
-constexpr int kSignals[] = {SIGINT, SIGTERM, SIGHUP};
+// SIGWINCH 同样只写管道：尺寸仍由渲染线程 ioctl 读取，信号只负责
+// 在空闲时唤醒（渲染按需驱动，没有信号就没有下一帧去探测尺寸）。
+constexpr int kSignals[] = {SIGINT, SIGTERM, SIGHUP, SIGWINCH};
+
+// 管道字节区分信号类别：'q' = 退出类，'w' = 尺寸变化。
+constexpr char kQuitByte   = 'q';
+constexpr char kResizeByte = 'w';
 struct sigaction g_saved_handlers[std::size(kSignals)] = {};
 
 // 异步信号处理器：只允许调用 async-signal-safe 的 write()。
 // 惯例是 self-pipe —— 真正的还原与退出逻辑全部留在主循环的正常路径上做。
-void terminal_on_signal(int) noexcept {
+void terminal_on_signal(int sig) noexcept {
+    const int saved_errno = errno; // 处理器不得改动被打断代码看到的 errno
     const int fd = g_signal_write_fd.load(std::memory_order_relaxed);
     if (fd >= 0) {
-        ssize_t n = ::write(fd, "s", 1);
+        const char b = sig == SIGWINCH ? kResizeByte : kQuitByte;
+        ssize_t n = ::write(fd, &b, 1); // 管道满（EAGAIN）= 唤醒已挂起
         (void)n;
     }
+    errno = saved_errno;
 }
 
 // 兜底路径 3：无论 main 如何返回（含遗漏 delete 的异常路径），退出前还原。
@@ -216,13 +225,23 @@ void Terminal::restore() noexcept {
 }
 
 // 管道 O_NONBLOCK：读尽即止（EAGAIN 使循环退出）。
-void Terminal::drain_signal() noexcept {
+Terminal::Signals Terminal::drain_signal() noexcept {
+    Signals got;
     if (signal_pipe_[0] < 0) {
-        return;
+        return got;
     }
     char buf[64];
-    while (::read(signal_pipe_[0], buf, sizeof buf) > 0) {
+    ssize_t n;
+    while ((n = ::read(signal_pipe_[0], buf, sizeof buf)) > 0) {
+        for (ssize_t i = 0; i < n; ++i) {
+            if (buf[i] == kResizeByte) {
+                got.resize = true;
+            } else {
+                got.quit = true;
+            }
+        }
     }
+    return got;
 }
 
 void Terminal::install_signal_handlers() noexcept {

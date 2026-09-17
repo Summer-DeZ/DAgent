@@ -17,6 +17,7 @@ int clampv(int v, int lo, int hi) noexcept {
 Container::Container(Direction dir) noexcept : dir_(dir) {}
 
 void Container::add(Constraint c, std::unique_ptr<Widget> w) {
+    adopt(*this, *w);
     items_.push_back({c, std::move(w)});
     invalidate_layout();
 }

@@ -186,8 +186,21 @@ BOOST_AUTO_TEST_CASE(signal_wakes_self_pipe_and_previous_handler_is_restored) {
             if (::poll(&p, 1, 0) != 0) ::_exit(10);  // 无信号时不可读
             ::raise(SIGTERM);                          // 处理器只写管道，进程不退出
             if (::poll(&p, 1, 1000) != 1) ::_exit(11);
-            t.drain_signal();
+            const Terminal::Signals quit = t.drain_signal();
+            if (!quit.quit || quit.resize) ::_exit(14); // 退出类信号如实分类
             if (::poll(&p, 1, 0) != 0) ::_exit(12);  // 读尽后不再可读
+
+            // SIGWINCH：同样只唤醒，分类为尺寸变化而不是退出。
+            ::raise(SIGWINCH);
+            if (::poll(&p, 1, 1000) != 1) ::_exit(15);
+            const Terminal::Signals winch = t.drain_signal();
+            if (winch.quit || !winch.resize) ::_exit(16);
+
+            // 两类信号挤在同一次清空里：两个标志都要报告。
+            ::raise(SIGWINCH);
+            ::raise(SIGHUP);
+            const Terminal::Signals both = t.drain_signal();
+            if (!both.quit || !both.resize) ::_exit(17);
         }
         struct sigaction now{};
         ::sigaction(SIGTERM, nullptr, &now);
