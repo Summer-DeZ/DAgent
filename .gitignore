@@ -1,0 +1,9 @@
+/build/
+/.dagent/
+/.env
+/.env.*
+!/.env.example
+/compile_commands.json
+/temp/
+/.claude
+/.opencode

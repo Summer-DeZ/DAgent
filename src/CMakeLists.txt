@@ -1,0 +1,12 @@
+add_library(dagent_tui STATIC
+    private/tui/terminal.cpp
+    private/tui/grapheme.cpp
+    private/tui/surface.cpp
+    private/tui/present.cpp
+    private/tui/layout.cpp
+)
+
+target_include_directories(dagent_tui PUBLIC ${CMAKE_SOURCE_DIR}/src/public)
+target_compile_features(dagent_tui PUBLIC cxx_std_23)
+target_compile_options(dagent_tui PRIVATE -Wall -Wextra)
+target_link_libraries(dagent_tui PUBLIC Threads::Threads)

@@ -1,0 +1,31 @@
+{
+  "version": "2.0.0",
+  "tasks": [
+    {
+      "label": "CMake: configure (dev)",
+      "type": "cmake",
+      "command": "configure",
+      "preset": "dev",
+      "options": {
+        "cwd": "${workspaceFolder}"
+      },
+      "problemMatcher": []
+    },
+    {
+      "label": "CMake: build dagent (dev)",
+      "type": "cmake",
+      "command": "build",
+      "preset": "dev",
+      "targets": ["dagent"],
+      "dependsOn": "CMake: configure (dev)",
+      "options": {
+        "cwd": "${workspaceFolder}"
+      },
+      "group": {
+        "kind": "build",
+        "isDefault": true
+      },
+      "problemMatcher": ["$gcc"]
+    }
+  ]
+}
