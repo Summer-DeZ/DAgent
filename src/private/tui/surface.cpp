@@ -181,14 +181,17 @@ int Surface::text(int col, int row, std::string_view s, const Style& st,
     if (row < 0 || row >= rows_ || tab_stop <= 0) {
         return col;
     }
+    const int origin = col;
     unicode::Grapheme g;
     while (col < cols_ && unicode::next_grapheme(s, g)) {
         if (g.bytes.size() == 1) {
             const unsigned char b = static_cast<unsigned char>(g.bytes[0]);
             if (b == '\t') {
                 // 制表符在写入时就展开成空格；网格里不存 \t，
-                // 否则每次列计算都要回溯。负列同样只推进不写入。
-                int stop = (col / tab_stop + 1) * tab_stop;
+                // 否则每次列计算都要回溯。tab stop 相对文本起点计算，
+                // 与从 0 起算的宽度测量一致，负起点也不受整除截断影响。
+                // 负列同样只推进不写入。
+                int stop = origin + ((col - origin) / tab_stop + 1) * tab_stop;
                 if (stop > cols_) stop = cols_;
                 while (col < stop) {
                     if (col >= 0) {

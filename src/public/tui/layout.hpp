@@ -1,6 +1,6 @@
 // L3 布局 + 视图基类。
-// 文档§三把 Container(L3) 放在 Widget(L4) 之下继承，与"依赖只向下"矛盾
-// （known-bugs 决议）：Widget 基类并入本层，L4 的具体控件从本头派生。
+// Container(L3) 继承 Widget，为保持"依赖只向下"，Widget 基类并入本层，
+// L4 的具体控件从本头派生。
 // 焦点链与事件路由是 L6 的职责，本层不预留任何事件/焦点 API。
 //
 // 重画粒度由两个独立脏标记驱动：
@@ -18,7 +18,11 @@ namespace dagent::tui {
 
 class Widget {
 public:
+    Widget() = default;
     virtual ~Widget() = default;
+    // 控件以身份挂在树上，且实现可能持有指向自身成员的视图：禁止拷贝与移动。
+    Widget(const Widget&) = delete;
+    Widget& operator=(const Widget&) = delete;
 
     // 在给定可用尺寸下自己想要多大（Sizing::content 时被布局调用）。
     virtual Size measure(Size available) const {

@@ -112,6 +112,12 @@ class Surface {
 public:
     Surface() = default;
     Surface(int cols, int rows) { resize(cols, rows); }
+    // cells_ 指向自身 storage_：拷贝会指回源缓冲区，禁止；移动时 vector
+    // 缓冲区地址不变，指针仍然有效。
+    Surface(const Surface&) = delete;
+    Surface& operator=(const Surface&) = delete;
+    Surface(Surface&&) noexcept = default;
+    Surface& operator=(Surface&&) noexcept = default;
 
     void resize(int cols, int rows); // 仅 owner；尺寸不变时不做任何事
     void clear() noexcept;           // 全部填空格 + 默认样式，并整体置脏
@@ -127,8 +133,9 @@ public:
 
     // 绘制原语：坐标越界自动裁剪，不 UB、不抛异常（仅 OOM 可终止）。
     void put(int col, int row, std::string_view grapheme, const Style& s) noexcept;
-    // 写一段文本，按字素推进列，返回写到的列；制表符就地展开到 tab stop，
-    // 控制符跳过，\n/\r 终止写入，宽字符放不下时整簇停止。
+    // 写一段文本，按字素推进列，返回写到的列；制表符就地展开到 tab stop
+    // （相对起点 col），控制符跳过，\n/\r 终止写入，宽字符放不下时整簇停止。
+    // col 可为负：左侧被裁掉的部分只推进不写入（用于水平滚动）。
     int text(int col, int row, std::string_view utf8, const Style& s,
              int tab_stop = 8) noexcept;
     void fill(Rect r, char32_t ch, const Style& s) noexcept;

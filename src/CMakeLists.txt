@@ -4,6 +4,7 @@ add_library(dagent_tui STATIC
     private/tui/surface.cpp
     private/tui/present.cpp
     private/tui/layout.cpp
+    private/tui/widget.cpp
 )
 
 target_include_directories(dagent_tui PUBLIC ${CMAKE_SOURCE_DIR}/src/public)

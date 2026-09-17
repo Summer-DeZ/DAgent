@@ -145,11 +145,13 @@ char32_t decode_utf8(std::string_view& s) noexcept {
         s.remove_prefix(1);
         return 0xFFFD;
     }
-    if (s.size() < len) {
-        s.remove_prefix(s.size());
-        return 0xFFFD;
-    }
     for (std::size_t i = 1; i < len; ++i) {
+        // 末尾截断：已有的续字节整体作废；遇到非续字节：只丢首字节，
+        // 其后的合法内容保留。
+        if (i >= s.size()) {
+            s.remove_prefix(s.size());
+            return 0xFFFD;
+        }
         const unsigned char b = static_cast<unsigned char>(s[i]);
         if ((b & 0xC0) != 0x80) {
             s.remove_prefix(1);
