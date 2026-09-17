@@ -29,7 +29,20 @@ struct RowEnd {
     size_t end = 0;  // 本行内容为 [begin, end)
     size_t next = 0; // 下一行起始字节（换行结束则跨过换行符）
     int width = 0;   // 本行显示宽度
+    size_t cut = 0;  // 超宽断行时：触发断行的字素起点
 };
+
+// 去掉末尾不完整 UTF-8 序列后的长度。流式分块可能从多字节字符中间切开。
+size_t complete_prefix(std::string_view s) noexcept {
+    const size_t n = s.size();
+    for (size_t k = 1; k <= 3 && k <= n; ++k) {
+        const unsigned char b = static_cast<unsigned char>(s[n - k]);
+        if ((b & 0xC0) == 0x80) continue;
+        const size_t len = b >= 0xF0 ? 4 : b >= 0xE0 ? 3 : b >= 0xC0 ? 2 : 1;
+        return len > k ? n - k : n;
+    }
+    return n;
+}
 
 // 扫一行：宽度到顶就回退到最后一个空格断点（没有则按字素硬断，
 // 长单词/URL 不丢内容），换行符结束本行。
@@ -51,8 +64,8 @@ RowEnd wrap_row(std::string_view s, size_t from, int width) noexcept {
         }
         const int nc = advance(col, g);
         if (nc > width && col > 0) {
-            if (brk > from) return {brk, brk, brk_col};
-            return {pos, pos, col};
+            if (brk > from) return {brk, brk, brk_col, pos};
+            return {pos, pos, col, pos};
         }
         // col == 0 时即便单簇超宽也整簇消费，保证扫描必然前进
         // （宽字符比视图还宽是病态输入，计数与物化保持一致即可）。
@@ -69,16 +82,23 @@ RowEnd wrap_row(std::string_view s, size_t from, int width) noexcept {
 WrapResult measure_from(std::string_view s, size_t from, int width) noexcept {
     WrapResult r{};
     r.stable_bytes = from; // 不稳定尾行的起始位置；包装层转成相对偏移
+    const size_t complete = complete_prefix(s);
     size_t pos = from;
     while (pos < s.size()) {
         const RowEnd row = wrap_row(s, pos, width);
         ++r.rows;
         pos = row.next;
-        if (row.next > row.end) {
+        const bool newline = row.next > row.end;
+        // 以 '\r' 结束且恰在输入末尾：后续追加的 '\n' 会与它合成一个换行符，
+        // 从 '\r' 之后续扫会多出一个空行，因此不算已定。
+        const bool cr_at_end = newline && s[row.end] == '\r' && row.next == s.size();
+        if (newline && !cr_at_end) {
             ++r.stable_rows; // 换行结束：断点由已有字符唯一决定
             r.stable_bytes = row.next;
-        } else if (row.next < s.size()) {
-            ++r.stable_rows; // 超宽硬断：同上
+        } else if (!newline && row.next < s.size() && row.cut < complete) {
+            // 超宽断行：触发字素完整时断点已定。末尾不完整的序列补齐后
+            // 可能是组合记号，会并入前一簇而不再触发断行，因此不算已定。
+            ++r.stable_rows;
             r.stable_bytes = row.end;
         }
         // 其余情况：输入末尾的不完整行，追加内容可能改变它，不稳定
@@ -123,6 +143,7 @@ void put_row(std::vector<Line>& out, size_t i, std::string_view src, size_t begi
     append_row_text(ln.spans[0].text, src, begin, end);
     ln.spans[0].style = st;
     ln.width = width;
+    ln.offset = begin;
 }
 
 // 通用物化：逐逻辑行折行，样式由 style_of(逻辑行) 决定。
@@ -159,19 +180,11 @@ WrapResult wrap_measure_from(std::string_view source, size_t from,
     return r;
 }
 
-WrapResult wrap_measure(std::string_view source, int width) noexcept {
-    return wrap_measure_from(source, 0, width);
-}
-
 size_t count_rows(std::string_view source, int width) noexcept {
-    return wrap_measure(source, width).rows;
+    return wrap_measure_from(source, 0, width).rows;
 }
 
 // ---- 默认渲染器 ----
-
-size_t TextRenderer::count(std::string_view source, int width) const {
-    return wrap_measure(source, width).rows;
-}
 
 size_t TextRenderer::render(const Block& block, int width, const Theme& theme,
                             size_t from, size_t valid,
@@ -180,10 +193,6 @@ size_t TextRenderer::render(const Block& block, int width, const Theme& theme,
                             [this, &theme](std::string_view, size_t) {
                                 return theme.*slot_;
                             });
-}
-
-size_t DiffRenderer::count(std::string_view source, int width) const {
-    return wrap_measure(source, width).rows;
 }
 
 size_t DiffRenderer::render(const Block& block, int width, const Theme& theme,

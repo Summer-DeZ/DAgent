@@ -277,6 +277,26 @@ inline std::string screen_mismatch(const VtScreen& vt, const Surface& s) {
     return {};
 }
 
+// 差分输出中每个 CUP（\e[行;列H）定位到的行号（1 基），用来断言"只碰了哪些行"。
+inline std::vector<int> cup_rows(std::string_view out) {
+    auto digits = [&](std::size_t& j) {
+        int v = 0;
+        const std::size_t start = j;
+        while (j < out.size() && out[j] >= '0' && out[j] <= '9') v = v * 10 + (out[j++] - '0');
+        return j > start ? v : -1;
+    };
+    std::vector<int> rows;
+    for (std::size_t i = out.find("\x1b["); i != std::string_view::npos; i = out.find("\x1b[", i + 2)) {
+        std::size_t j = i + 2;
+        const int row = digits(j);
+        if (row < 0 || j >= out.size() || out[j] != ';') continue;
+        ++j;
+        if (digits(j) < 0 || j >= out.size() || out[j] != 'H') continue;
+        rows.push_back(row);
+    }
+    return rows;
+}
+
 // 一行的可见文本（跳过宽字符右半占位格）。
 inline std::string row_text(const Surface& s, int row) {
     std::string out;

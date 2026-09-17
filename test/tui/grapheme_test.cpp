@@ -101,4 +101,11 @@ BOOST_AUTO_TEST_CASE(clusters) {
                (std::vector<Split>{{"a", 1}, {"\U0000200B", 0}, {"b", 1}}));
 }
 
+BOOST_AUTO_TEST_CASE(control_characters_never_absorb_extenders) {
+    // GB4/GB5：换行符、制表符后面的组合记号不并入它们
+    BOOST_TEST(split("\n\U00000301") == (std::vector<Split>{{"\n", 0}, {"\U00000301", 0}}));
+    BOOST_TEST(split("\t\U0000FE0Fx") ==
+               (std::vector<Split>{{"\t", 0}, {"\U0000FE0F", 0}, {"x", 1}}));
+}
+
 BOOST_AUTO_TEST_SUITE_END()

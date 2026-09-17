@@ -47,25 +47,7 @@ public:
         vt.feed(out);
     }
 
-    // 本帧输出中 CUP 定位到的行号（1 基），用来断言"只碰了哪些行"。
-    std::vector<int> touched_rows() const {
-        auto digits = [&](std::size_t& j) {
-            int v = 0;
-            const std::size_t start = j;
-            while (j < out.size() && out[j] >= '0' && out[j] <= '9') v = v * 10 + (out[j++] - '0');
-            return j > start ? v : -1;
-        };
-        std::vector<int> rows;
-        for (std::size_t i = out.find("\x1b["); i != std::string::npos; i = out.find("\x1b[", i + 2)) {
-            std::size_t j = i + 2;
-            const int row = digits(j);
-            if (row < 0 || j >= out.size() || out[j] != ';') continue;
-            ++j;
-            if (digits(j) < 0 || j >= out.size() || out[j] != 'H') continue;
-            rows.push_back(row);
-        }
-        return rows;
-    }
+    std::vector<int> touched_rows() const { return test_support::cup_rows(out); }
 
     const Surface& screen() const { return front_; }
 

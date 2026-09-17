@@ -49,7 +49,8 @@ struct Span {
 // 对象（覆盖写入保留 string 容量），流式帧路径因此不产生新分配。
 struct Line {
     std::vector<Span> spans;
-    int width = 0; // 显示宽度（列）
+    int width = 0;     // 显示宽度（列）
+    size_t offset = 0; // 行首在 source 中的字节偏移（锚点解析用）
 };
 
 // 逻辑块（§8.1）。source 是逻辑原文，未折行、未上色。
@@ -87,17 +88,18 @@ struct Theme {
 };
 
 // 滚动锚点（§8.4）。贴底是独立状态而不是「偏移量为 0」：新内容到达时
-// 贴底则跟随，不贴底则保持锚点不动。
+// 贴底则跟随，不贴底则保持锚点不动。位置用块内字节偏移而不是块内行号：
+// 行号随宽度重折而变，字节偏移不变，改变宽度后视口仍停在同一段内容上。
 struct Anchor {
     uint64_t block_id = 0;
-    uint32_t row_in_block = 0;
+    size_t byte_in_block = 0;
     bool pinned_to_bottom = true;
 };
 
-// 块内定位结果（绝对行号由 Document::row_of 换算）。
+// 行的内容位置：所在块 + 行首字节偏移（行号由 Document::row_of 换算）。
 struct Location {
     uint64_t block_id = 0;
-    size_t row_in_block = 0;
+    size_t byte_in_block = 0;
 };
 
 // 折行计数结果（§8.2/§8.5）。除最后一行外，每一行的断点都由已有字符
@@ -109,22 +111,25 @@ struct WrapResult {
     size_t stable_bytes = 0; // 相对计数起点的偏移：stable_rows 的下一行起点
 };
 
-// 只数行、零分配（§8.2 的计数级接口）。
-WrapResult wrap_measure(std::string_view source, int width) noexcept;
-// 从 source[from] 起继续计数；from 必须是行边界（前一行的起始字节），
-// 返回值里的 stable_bytes 相对 from。Document 的增量折行锚点即由此推进。
+// 从 source[from] 起只数行、零分配（§8.2 的计数级接口）；from 必须是行边界，
+// 返回值里的 stable_bytes 相对 from。
 WrapResult wrap_measure_from(std::string_view source, size_t from,
                              int width) noexcept;
 size_t count_rows(std::string_view source, int width) noexcept;
 
 // 块渲染器：把 source 变成带样式的行（§8.6）。实现必须满足
-// count(s, w) == render(block(s), w, ...) 产出的行数（§十三.1 的等价性）。
+// measure(s, 0, w).rows == render 产出的行数（§十三.1 的等价性）。
 class BlockRenderer {
 public:
     virtual ~BlockRenderer() = default;
 
-    // 只数行、不分配任何字符串。
-    virtual size_t count(std::string_view source, int width) const = 0;
+    // 只数行、不分配任何字符串；Document 的全量与增量计数都经由它。
+    // [0, stable_rows) 行在追加内容后必须保持不变；做不到的实现返回
+    // stable_rows = stable_bytes = 0，退化为每次从头计数与物化。
+    // 默认实现即标准折行（wrap_measure_from）。
+    virtual WrapResult measure(std::string_view source, size_t from, int width) const {
+        return wrap_measure_from(source, from, width);
+    }
 
     // 从 source[from] 起折行/上色，覆盖写入 out[valid...]；out 的
     // [0, valid) 前缀由调用方保证仍然有效。返回写入后的有效行数。
@@ -140,7 +145,6 @@ public:
     explicit TextRenderer(Style Theme::*slot = &Theme::text) noexcept
         : slot_(slot) {}
 
-    size_t count(std::string_view source, int width) const override;
     size_t render(const Block& block, int width, const Theme& theme, size_t from,
                   size_t valid, std::vector<Line>& out) const override;
 
@@ -151,7 +155,6 @@ private:
 // 差异渲染器：'+' / '-' / '@' 开头的行分别用 add/del/dim 槽位，其余正文。
 class DiffRenderer final : public BlockRenderer {
 public:
-    size_t count(std::string_view source, int width) const override;
     size_t render(const Block& block, int width, const Theme& theme, size_t from,
                   size_t valid, std::vector<Line>& out) const override;
 };
@@ -196,11 +199,12 @@ public:
     size_t total_rows() const noexcept {
         return prefix_.back() - base_rows_;
     }
-    // 锚点解析：块被头部裁剪后返回 nullopt。
-    std::optional<size_t> row_of(uint64_t block_id,
-                                 size_t row_in_block) const noexcept;
+    // 锚点解析：包含该字节的行（块被头部裁剪后返回 nullopt）。
+    // 两者都会物化所在块 —— 锚点所在块就是可见块，本来就要物化。
+    std::optional<size_t> row_of(uint64_t block_id, size_t byte_in_block,
+                                 const Theme& theme);
     // 调用者保证 row < total_rows()。
-    Location location_of(size_t row) const noexcept;
+    Location location_of(size_t row, const Theme& theme);
     // 物化与 [first, first+count) 相交的块。
     void materialize_range(size_t first, size_t count, const Theme& theme);
     const Line* line_at(size_t row) const noexcept; // 未物化返回 nullptr

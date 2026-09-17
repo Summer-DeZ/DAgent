@@ -185,7 +185,7 @@ void Document::begin_frame(int width, uint32_t theme_epoch) {
 
 // 整块重数：折行全量扫一遍（零分配），物化缓存全部作废。
 void Document::count_full(Block& b) {
-    const WrapResult r = wrap_measure(b.source, width_);
+    const WrapResult r = renderer(b.kind).measure(b.source, 0, width_);
     b.row_count = r.rows;
     b.stable_rows = r.stable_rows;
     b.stable_bytes = r.stable_bytes;
@@ -207,7 +207,7 @@ void Document::count_incremental(Block& b) {
         b.rows_valid = b.stable_rows;
         b.rows_bytes = b.stable_bytes;
     }
-    const WrapResult r = wrap_measure_from(b.source, b.stable_bytes, width_);
+    const WrapResult r = renderer(b.kind).measure(b.source, b.stable_bytes, width_);
     b.row_count = b.stable_rows + r.rows;
     b.stable_rows += r.stable_rows;
     b.stable_bytes += r.stable_bytes;
@@ -224,24 +224,32 @@ void Document::rebuild_prefix(size_t from) {
     }
 }
 
-std::optional<size_t> Document::row_of(uint64_t block_id,
-                                       size_t row_in_block) const noexcept {
+// 行首偏移随行号单调递增：二分找最后一个行首 <= byte 的行。
+// 折叠块只物化了前 collapsed_rows 行，更靠后的字节夹到末行。
+std::optional<size_t> Document::row_of(uint64_t block_id, size_t byte_in_block,
+                                       const Theme& theme) {
     const auto idx = index_of(block_id);
     if (!idx) return std::nullopt; // 块已被头部裁剪
-    const Block& b = blocks_[*idx];
-    const size_t n = display_rows(b);
-    if (n == 0) return prefix_[*idx] - base_rows_;
-    return prefix_[*idx] - base_rows_ +
-           std::min(row_in_block, n - 1);
+    Block& b = blocks_[*idx];
+    ensure_rows(b, theme);
+    const size_t base = prefix_[*idx] - base_rows_;
+    const auto first = b.rows.begin();
+    const auto last = first + static_cast<std::ptrdiff_t>(b.rows_valid);
+    const auto it = std::upper_bound(
+        first, last, byte_in_block,
+        [](size_t v, const Line& ln) { return v < ln.offset; });
+    return base + (it == first ? 0 : static_cast<size_t>(it - first) - 1);
 }
 
-Location Document::location_of(size_t row) const noexcept {
+Location Document::location_of(size_t row, const Theme& theme) {
     const size_t abs = row + base_rows_;
     size_t i = static_cast<size_t>(
         std::upper_bound(prefix_.begin(), prefix_.end(), abs) -
         prefix_.begin());
     --i; // 调用者保证 abs < prefix_.back()，因此 i >= 1
-    return {blocks_[i].id, abs - prefix_[i]};
+    Block& b = blocks_[i];
+    ensure_rows(b, theme);
+    return {b.id, b.rows[abs - prefix_[i]].offset};
 }
 
 void Document::materialize_range(size_t first, size_t count,
@@ -341,10 +349,8 @@ void Scrollback::anchor_to(size_t row) {
         anchor_.pinned_to_bottom = true;
         return;
     }
-    const Location loc = doc_.location_of(row);
-    anchor_.block_id = loc.block_id;
-    anchor_.row_in_block = static_cast<uint32_t>(loc.row_in_block);
-    anchor_.pinned_to_bottom = false;
+    const Location loc = doc_.location_of(row, theme_);
+    anchor_ = Anchor{loc.block_id, loc.byte_in_block, false};
 }
 
 void Scrollback::scroll_lines(int lines) {
@@ -381,9 +387,15 @@ void Scrollback::render(Surface& s) {
     const size_t max = total > view ? total - view : 0;
     size_t top = max;
     if (!anchor_.pinned_to_bottom) {
-        // 锚点解析用块 id，不受重折与裁剪影响（§8.4）。
-        const auto r = doc_.row_of(anchor_.block_id, anchor_.row_in_block);
+        // 锚点是 (块 id, 字节偏移)：不受重折与裁剪影响（§8.4）。
+        const auto r = doc_.row_of(anchor_.block_id, anchor_.byte_in_block, theme_);
         top = std::min(r.value_or(0), max);
+        // 块被裁剪或内容缩水导致夹取时，锚点跟随实际视口顶行；未夹取时
+        // 保留原字节偏移，来回改变宽度不会逐次漂到行首。
+        if ((!r || top != *r) && total > 0) {
+            const Location loc = doc_.location_of(top, theme_);
+            anchor_ = Anchor{loc.block_id, loc.byte_in_block, false};
+        }
     }
 
     doc_.materialize_range(top, view, theme_);
@@ -399,13 +411,6 @@ void Scrollback::render(Surface& s) {
         if (col < w) s.fill({col, y, w - col, 1}, U' ', Style{});
     }
     doc_.evict_outside(top, view);
-
-    // 夹取发生时（历史被裁剪、内容缩水）锚点跟随实际视口顶行。
-    if (!anchor_.pinned_to_bottom && total > 0) {
-        const Location loc = doc_.location_of(top);
-        anchor_.block_id = loc.block_id;
-        anchor_.row_in_block = static_cast<uint32_t>(loc.row_in_block);
-    }
 
     total_ = total;
     top_ = top;

@@ -204,6 +204,13 @@ bool next_grapheme(std::string_view& s, Grapheme& out) noexcept {
     std::string_view rest = s;
     const char32_t base = decode_utf8(rest);
     int width = char_width(base);
+    // GB4/GB5：控制符（含 CR/LF、制表符）自成一簇，不吸收其后的组合记号。
+    if (base < 0x20 || (base >= 0x7F && base < 0xA0)) {
+        out.bytes = s.substr(0, s.size() - rest.size());
+        out.width = width;
+        s = rest;
+        return true;
+    }
     bool vs16 = false;
     bool ri_pending = is_regional_indicator(base);
 
