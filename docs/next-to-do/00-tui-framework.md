@@ -315,8 +315,6 @@ public:
     virtual Size measure(Size available) const { return {}; }
     // 画到自己的 Surface 视图里。坐标系从 (0,0) 开始，越界自动裁剪。
     virtual void render(Surface&) = 0;
-    // 返回 true 表示已消费，事件不再下沉
-    virtual bool on_event(const Event&) { return false; }
 
     // 内容变了但尺寸没变 → 只需重画
     void invalidate();
@@ -328,6 +326,10 @@ public:
     virtual std::optional<Point> cursor() const { return std::nullopt; }
 };
 ```
+
+Widget 不感知事件：`Widget::on_event` 这类接口不存在（保持 L3/L4
+对事件零依赖）。事件由 L6 的 `EventHandler` 接口承接，"按键 →
+widget 模型调用"的翻译层（如 InputBoxHandler）也在 L6。
 
 **重画粒度**：`invalidate()` 只标记该 widget。渲染时，未失效且 `Rect` 未变的
 widget 可以跳过 `render()` —— 因为 `front_` 里它那片区域的内容还是对的。
@@ -473,6 +475,8 @@ struct Event {
     Key  key;                  // enter/tab/backspace/方向/功能键/page_up/…
     Mods mods;                 // ctrl/alt/shift
     struct { int button, col, row; bool press, motion; } mouse;
+    Size size;                 // resize 的新尺寸（L7 合成事件时填入）
+    bool focus_gained;         // focus：\e[I / \e[O
 };
 ```
 
@@ -486,23 +490,40 @@ struct Event {
 - **SGR 鼠标**：`\e[<Cb;Cx;Cy(M|m)`。滚轮是 `Cb` 的 64/65。
 - **括号粘贴**：`\e[200~ … \e[201~` 之间的内容整体作为一个 `paste` 事件，
   与逐字输入区分（粘贴的换行不应触发提交）。
-- **Esc 的歧义**：单独的 `Esc` 与转义序列前缀无法从字节上区分。
-  用短超时（约 40ms）判定：超时内没有后续字节就是单独的 `Esc`。
+- **序列内的异常字节**（CSI 与 SS3 同规则）：C0 照常产出按键（ECMA-48），DEL 忽略，
+  ≥0x80 中止序列并按普通输入重新解析；序列未收完时已产出的 C0 随等待撤回，
+  保证分块不变性。
+- **旧式 X10 鼠标**：终端不支持 1006 时发 `\e[M` + 3 个原始字节，负载必须一起吞掉。
+- **Esc 的歧义**：单独的 `Esc`、Alt 组合键与转义序列前缀无法从字节上区分。
+  用短超时（约 40ms）判定，**覆盖所有以 ESC 开头的不完整单元**：
+  孤立 ESC 串 → 每个一个 `Esc`；`\e[` / `\eO` 后无参数 → Alt-[ / Alt-O；
+  已带参数的残缺序列 → 丢弃。ESC 串的规则：后随 `[`/`O` 时最后一个 ESC 是
+  序列引导符、倒数第二个是 Alt 前缀（rxvt 的 `\e\e[A` = Alt-Up），其余各是一个 `Esc`；
+  后随其他字节时最后一个 ESC 是 Alt 前缀。
 
 ### 9.2 路由：焦点链 + 处理器栈
 
 事件从**栈顶**开始下沉，第一个返回 `true` 的消费它：
 
 ```
-[ 模态处理器 ]   ← 搜索框、确认对话等，临时压栈
-[ 滚动处理器 ]   ← 仅在非贴底时存在，消费翻页/滚轮
+[ 模态处理器 ]   ← 搜索框、确认对话、滚动处理器（仅非贴底时压栈）等
 [ 焦点 widget ]  ← 当前有焦点的
 [ 全局处理器 ]   ← Ctrl-C、Ctrl-D、全局快捷键
 ```
 
-"某个键在某种状态下归谁"不再需要任何条件判断 —— **栈的顺序就是答案**。
-例如 `Home` 键：滚动处理器存在时它跳到顶部，不存在时下沉给输入框跳到行首。
+"滚动处理器"不是一个独立的层，就是模态栈的一个普通条目：
+滚动状态激活时压栈、贴底后弹出。"某个键在某种状态下归谁"不再需要
+任何条件判断 —— **栈的顺序就是答案**。例如 `Home` 键：滚动处理器
+在栈里时它跳到顶部，弹出后下沉给输入框跳到行首。
 不需要在任何地方写 `if (scroll_offset > 0)`。
+
+处理器在 `on_event` 里 push/pop 栈是合法操作（确认框消费 Esc 后
+弹出自己，或连同下层模态一起关闭并销毁）。路由按下标自顶向下遍历，
+下发期间的 `pop` 只把槽位置空、最外层下发结束时统一压实：
+
+- 期间压栈的处理器不参与本次下发；
+- 期间弹出的处理器立即不再被调用（包括本次还没轮到的），弹出后马上销毁是安全的；
+- 不复制栈，路由零分配；嵌套下发（处理器里再次 `route`）时只在最外层压实。
 
 ---
 
@@ -564,10 +585,10 @@ cv.notify_one()                        取光标位置
 public/
   tui/terminal.hpp     L1  Terminal, Caps, Size
   tui/surface.hpp      L2  Cell, Style, Color, Surface, Rect
-  tui/layout.hpp       L3  Sizing, Constraint, Container
-  tui/widget.hpp       L4  Widget, Event
+  tui/layout.hpp       L3  Sizing, Constraint, Container, Widget
+  tui/widget.hpp       L4  具体视图（Text/Activity/Notice/InputBox）
   tui/document.hpp     L5  Block, Document, Anchor, BlockRenderer
-  tui/input.hpp        L6  Decoder, Key, Mods
+  tui/input.hpp        L6  Decoder, Key, Mods, Event, EventHandler
   tui/app.hpp          L7  Runtime
 private/
   tui/terminal.cpp  surface.cpp  present.cpp  grapheme.cpp
