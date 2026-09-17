@@ -1,16 +1,25 @@
 // L7 运行时：调度 —— 置脏 → 合帧 → 单线程渲染（文档§十）。
 //
-// 线程模型：
-//   * 业务线程（任意多个）：post() 在 state_mutex 内改 widget 状态 ——
-//     只做纯内存操作（零 I/O、O(变化量)），随后置脏并唤醒渲染。
-//   * 渲染线程 = 调用 run() 的线程，全框架唯一的终端 I/O 者：
-//     poll stdin / 信号 self-pipe / 唤醒管道 → 解码输入 → 按焦点链
-//     路由（锁内纯内存）→ 探测尺寸、必要时提升布局纪元 → 把失效控件
-//     光栅化到 back_ → 解锁后才差分写出。state_mutex 内绝不做 I/O
-//     （终端写入慢时持锁会把延迟回压到业务线程）。
-//   * 渲染线程在锁内调用应用代码（事件处理器、tick 回调、widget 的
-//     render）。这些代码里调用 post() 是合法的：识别出渲染线程后直接
-//     执行，不重复加锁。
+// 线程模型（02-tui-final-update §3.1：业务线程零阻塞）：
+//   * 控件树与 Document 只属于渲染线程，框架里没有保护它们的锁。
+//     渲染线程 = 调用 run() 的线程，全框架唯一的终端 I/O 者：
+//     poll stdin / 信号 self-pipe / 唤醒管道 → 交换更新队列并依序
+//     执行 → 解码输入、按焦点链路由 → 探测尺寸、必要时提升布局纪元
+//     → 把失效控件光栅化到 back_ → 差分写出。
+//   * 业务线程（任意多个）与渲染线程之间只有一个更新队列：post() 的
+//     临界区只有一次尾插，最坏情况 O(1)，与渲染耗时和队列长度都无关
+//     —— 大文档重排期间业务线程也不会被等锁。fn 入队即返回，稍后在渲染线程上执行
+//     （不是在调用线程上）；需要完成通知的调用方在 fn 内 set_value
+//     一个 promise，自己 get() 等待。渲染线程上的应用代码（事件
+//     处理器、tick 回调、widget 的 render）调用 post() 时直接执行，
+//     保持重入语义。
+//   * set_focus / on_tick 等配置接口的线程约束：run() 之前或渲染线程。
+//
+// 关键纪律：队列锁 queue_mutex_ 内只有指针改写。
+// 业务线程入队：锁外分配节点 → 锁 queue_mutex_ → 尾插（改两个指针）→
+// 解锁 → 唤醒。渲染线程每次被唤醒：锁 queue_mutex_ → 摘走整条链
+// （置空头尾）→ 解锁 → 依序执行并释放节点 → 检查控件树是否失效。
+// 入队先于唤醒、清标志先于摘链，两者配对保证不丢唤醒。
 //
 // 帧节奏是被唤醒驱动而不是固定频率轮询：按键与业务变更立即出帧；
 // 最小帧间隔（默认 16ms）只用来合并突发（一千 token/秒 ≈ 60 帧）。
@@ -21,7 +30,7 @@
 // 零唤醒 —— poll 无限期阻塞，直到真的有事发生。
 //
 // 等待点用唤醒管道而不是条件变量：渲染线程要同时等文件描述符
-// （stdin / self-pipe）与业务线程的置脏通知，单线程里 poll 与
+// （stdin / self-pipe）与业务线程的更新通知，单线程里 poll 与
 // cv 不能同时等待，管道把两者统一进 poll。突发的 post 只写一个字节。
 //
 // 尺寸：SIGWINCH 经 L1 的 self-pipe 唤醒（信号上下文只写一个字节），
@@ -54,7 +63,7 @@ public:
         std::chrono::milliseconds tick{100};     // 动画 tick 周期
     };
 
-    // root 是整棵控件树的根（非拥有）。run() 期间它只在 state_mutex 内被触碰。
+    // root 是整棵控件树的根（非拥有）。run() 期间它只被渲染线程触碰。
     Runtime(Terminal& term, Widget& root, Options opt);
     Runtime(Terminal& term, Widget& root);
     ~Runtime();
@@ -62,7 +71,7 @@ public:
     Runtime(const Runtime&) = delete;
     Runtime& operator=(const Runtime&) = delete;
 
-    // ---- 配置（run() 之前，或在渲染线程的应用代码内调用）----
+    // ---- 配置（run() 之前，或渲染线程的应用代码内调用）----
     // 焦点有两副面孔：路由目标（L6 处理器）与光标来源（widget 的
     // cursor() 加上 screen_origin() 成屏幕坐标，帧末定位）。
     void set_focus(EventHandler* routing, Widget* cursor_source = nullptr) noexcept {
@@ -74,13 +83,14 @@ public:
     void push_modal(EventHandler& h) { router_.push(h); }
     void pop_modal(EventHandler& h) { router_.pop(h); }
 
-    // 动画 tick 回调，在 state_mutex 内调用：推进动画帧并 invalidate。
+    // 动画 tick 回调，在渲染线程上调用：推进动画帧并 invalidate。
     // 返回 true = 动画仍在进行，继续下一个 tick；返回 false = 暂停，
     // 直到下一次 post() 或输入事件重新挂上。
     void on_tick(std::function<bool()> fn);
 
-    // ---- 业务线程（任意线程，含渲染线程上的应用代码）----
-    // fn 在 state_mutex 内执行，禁 I/O。
+    // ---- 更新通道（任意线程）----
+    // 把 fn 交给渲染线程执行，入队即返回。fn 里改的是控件树/Document
+    // （业务代码不持有它们的锁，也拿不到别的方式），禁 I/O。
     void post(std::function<void()> fn);
 
     // 请求退出（任意线程；只置原子标志并唤醒等待点）。
@@ -95,13 +105,14 @@ public:
 private:
     using Clock = std::chrono::steady_clock;
 
-    // 以下 *_locked 都必须在 state_mutex 内（或渲染线程已持锁时）调用。
-    void route_locked();                         // 路由 events_ 并清空
-    void check_size_locked();                    // ioctl 尺寸；变了则纪元 + resize 事件
-    void frame_locked();                         // 尺寸 → 布局 → 光栅化 → 光标
-    void note_changes_locked() noexcept;         // 控件树失效 → 需要出帧
-    void arm_tick_locked() noexcept;             // 可能启动了动画：挂上 tick
-    int poll_timeout_locked(Clock::time_point now) const noexcept; // -1 = 无限期
+    // 以下都只在渲染线程上调用（控件树与此处状态零锁）。
+    void apply_inbox();                     // 摘走更新队列并依序执行
+    void route_events();                    // 路由 events_ 并清空
+    void check_size();                      // ioctl 尺寸；变了则纪元 + resize 事件
+    void frame();                           // 尺寸 → 布局 → 光栅化 → 光标
+    void note_changes() noexcept;           // 控件树失效 → 需要出帧
+    void arm_tick() noexcept;               // 可能启动了动画：挂上 tick
+    int poll_timeout(Clock::time_point now) const noexcept; // -1 = 无限期
     bool on_render_thread() const noexcept;
     void wake() noexcept;
     void drain_wake() noexcept;
@@ -113,9 +124,22 @@ private:
     EventRouter router_;
     Decoder decoder_;
 
-    // ---- state_mutex 保护（含控件树与下列状态）----
-    std::mutex state_;
-    bool dirty_ = true;   // 需要出帧（首帧）
+    // ---- 更新队列：业务线程与渲染线程之间唯一的共享状态 ----
+    // 侵入式单链表而不是 vector：vector 的 push_back 只是「摊还」O(1)，
+    // 一次慢帧（大文档 resize 的整树重折）期间队列能涨到十万级，那一次
+    // 扩容要搬走全部已排队的 std::function —— 实测单次 post 因此突破
+    // 1.5ms，违反 02 §3.1「post 单次耗时 < 1ms」。链表尾插只改两个指针，
+    // 最坏情况也与队列长度无关；节点的 new/delete 都在锁外。
+    struct Task {
+        std::function<void()> fn;
+        Task* next;
+    };
+    std::mutex queue_mutex_;     // 只保护 inbox_head_ / inbox_tail_
+    Task* inbox_head_ = nullptr; // 业务线程尾插，渲染线程整条摘走
+    Task* inbox_tail_ = nullptr;
+
+    // ---- 仅渲染线程触碰（控件树与下列状态，零锁）----
+    bool dirty_ = true;    // 需要出帧（首帧）
     bool ticking_ = false; // tick 是否挂着
     std::optional<Clock::time_point> esc_due_; // Esc 歧义超时的截止时刻
     Clock::time_point next_tick_{};
@@ -130,7 +154,7 @@ private:
     std::atomic<uint64_t> frames_{0};
     std::atomic<std::thread::id> render_thread_{};
 
-    // ---- 仅渲染线程触碰（锁外）----
+    // ---- 仅渲染线程触碰（帧缓冲与输出）----
     Clock::time_point last_frame_{};
     Surface back_;
     Surface front_;

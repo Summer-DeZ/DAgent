@@ -23,37 +23,68 @@ Runtime::Runtime(Terminal& term, Widget& root, Options opt)
 Runtime::Runtime(Terminal& term, Widget& root) : Runtime(term, root, Options{}) {}
 
 Runtime::~Runtime() {
+    // run() 退出后队列里可能还剩没跑的更新（业务线程在 quit 之后仍 post）。
+    for (Task* node = inbox_head_; node != nullptr;) {
+        Task* const next = node->next;
+        delete node;
+        node = next;
+    }
     if (wake_pipe_[0] >= 0) ::close(wake_pipe_[0]);
     if (wake_pipe_[1] >= 0) ::close(wake_pipe_[1]);
 }
 
-// ---- 业务线程接口 ----
+// ---- 配置 ----
 
 void Runtime::on_tick(std::function<bool()> fn) {
     tick_fn_ = std::move(fn);
     ticking_ = false;
-    arm_tick_locked();
+    arm_tick();
 }
 
-// 关键纪律（§十）：state_mutex 内只做纯计算，绝不做 I/O —— fn 的
-// 契约就是如此；锁内做完置脏，唤醒在锁外发。
+// ---- 更新通道 ----
+
+// 渲染线程上的应用代码（事件处理器 / tick 回调 / render）调用 post()
+// 时直接执行 —— 此时控件树已归渲染线程所有，入队反而是绕路；主循环
+// 会在调用返回后检查 dirty_，不需要唤醒。
+// 其余线程：节点在锁外分配，临界区只有一次尾插（两个指针写），最坏
+// 情况 O(1) —— 与渲染耗时、与已积压的队列长度都无关（§3.1）。
 void Runtime::post(std::function<void()> fn) {
     if (on_render_thread()) {
-        // 渲染线程上的应用代码（事件处理器 / tick 回调 / render）已在锁内：
-        // 再加一次同一把 std::mutex 是死锁。直接执行；主循环在调用返回后
-        // 会检查 dirty_，不需要唤醒。
         fn();
-        note_changes_locked();
-        arm_tick_locked();
+        note_changes();
+        arm_tick();
         return;
     }
+    Task* const node = new Task{std::move(fn), nullptr};
     {
-        std::lock_guard<std::mutex> lk(state_);
-        fn();
-        note_changes_locked();
-        arm_tick_locked();
+        std::lock_guard<std::mutex> lk(queue_mutex_);
+        // 空链表接头，否则接在尾节点后面。
+        (inbox_tail_ != nullptr ? inbox_tail_->next : inbox_head_) = node;
+        inbox_tail_ = node;
     }
     wake();
+}
+
+// 渲染线程每次被唤醒的固定动作：锁内只把整条链摘下来（头尾置空）；
+// 解锁后依序执行并释放节点，最后检查控件树是否失效。执行期间新到的
+// post 接在已空的链上并重新唤醒，不丢。
+void Runtime::apply_inbox() {
+    Task* node;
+    {
+        std::lock_guard<std::mutex> lk(queue_mutex_);
+        node = inbox_head_;
+        inbox_head_ = nullptr;
+        inbox_tail_ = nullptr;
+    }
+    if (node == nullptr) return;
+    while (node != nullptr) {
+        Task* const next = node->next;
+        node->fn();
+        delete node;
+        node = next;
+    }
+    note_changes();
+    arm_tick();
 }
 
 void Runtime::quit() noexcept {
@@ -67,27 +98,27 @@ bool Runtime::on_render_thread() const noexcept {
     return render_thread_.load(std::memory_order_acquire) == std::this_thread::get_id();
 }
 
-void Runtime::note_changes_locked() noexcept {
+void Runtime::note_changes() noexcept {
     if (root_.dirty_tree() || root_.needs_layout()) dirty_ = true;
 }
 
-void Runtime::arm_tick_locked() noexcept {
+void Runtime::arm_tick() noexcept {
     if (ticking_ || !tick_fn_) return;
     ticking_ = true;
     next_tick_ = Clock::now() + opt_.tick;
 }
 
-void Runtime::route_locked() {
+void Runtime::route_events() {
     if (events_.empty()) return;
     for (const Event& e : events_) {
         router_.route(e);
     }
     events_.clear();
-    note_changes_locked();
-    arm_tick_locked(); // 输入可能启动了动画（例如提交后开始转圈）
+    note_changes();
+    arm_tick(); // 输入可能启动了动画（例如提交后开始转圈）
 }
 
-void Runtime::check_size_locked() {
+void Runtime::check_size() {
     // ioctl 约 1µs（§四）。SIGWINCH 唤醒时与每帧开头各查一次。
     const Size now = term_.size();
     if (now == size_) return;
@@ -102,8 +133,8 @@ void Runtime::check_size_locked() {
     router_.route(e); // 处理器的 invalidate 会在本帧的布局/光栅化里生效
 }
 
-void Runtime::frame_locked() {
-    check_size_locked();
+void Runtime::frame() {
+    check_size();
     const Rect area{0, 0, size_.cols, size_.rows};
     if (root_.needs_layout() || !(root_.rect() == area)) {
         root_.layout(area);
@@ -124,7 +155,7 @@ void Runtime::frame_locked() {
     dirty_ = false;
 }
 
-int Runtime::poll_timeout_locked(Clock::time_point now) const noexcept {
+int Runtime::poll_timeout(Clock::time_point now) const noexcept {
     std::optional<Clock::time_point> due;
     const auto consider = [&](Clock::time_point t) {
         if (!due || t < *due) due = t;
@@ -140,8 +171,9 @@ int Runtime::poll_timeout_locked(Clock::time_point now) const noexcept {
 }
 
 // 突发合并：管道里已有未消费的唤醒字节时不再写（一千次 post 一次 write）。
-// 渲染线程先清标志再读管道：清标志后到达的 post 必然重新写入，不会丢唤醒；
-// 而 post 总是先在锁内置脏再唤醒，主循环读完管道后会在锁内看到 dirty_。
+// post 先入队再唤醒；渲染线程先清标志、读管道，再交换队列 —— 清标志后
+// 到达的 post 必然重新写入唤醒字节，且其 fn 必然还在 inbox_ 里等着被
+// 交换，唤醒与数据都不会丢。
 void Runtime::wake() noexcept {
     if (wake_pending_.exchange(true, std::memory_order_acq_rel)) return;
     const char b = 0;
@@ -171,13 +203,10 @@ void Runtime::run() {
         }
     } scope{*this};
 
-    {
-        std::lock_guard<std::mutex> lk(state_);
-        last_frame_ = Clock::now() - opt_.min_frame; // 首帧立即可出
-        dirty_ = true;
-        ticking_ = false;
-        arm_tick_locked();
-    }
+    last_frame_ = Clock::now() - opt_.min_frame; // 首帧立即可出
+    dirty_ = true;
+    ticking_ = false;
+    arm_tick();
 
     while (!quit_.load(std::memory_order_acquire)) {
         pollfd fds[3] = {
@@ -185,11 +214,7 @@ void Runtime::run() {
             {term_.signal_fd(), POLLIN, 0},
             {wake_pipe_[0], POLLIN, 0},
         };
-        int timeout = 0;
-        {
-            std::lock_guard<std::mutex> lk(state_);
-            timeout = poll_timeout_locked(Clock::now());
-        }
+        const int timeout = poll_timeout(Clock::now());
         const int rc = ::poll(fds, 3, timeout);
         if (rc < 0) {
             if (errno == EINTR) continue;
@@ -217,10 +242,9 @@ void Runtime::run() {
                 // stdin 关闭/失效：无可交互，正常退出。
                 quit_.store(true, std::memory_order_release);
             } else if (nread > 0) {
-                std::lock_guard<std::mutex> lk(state_);
                 decoder_.feed(std::string_view{buf, static_cast<std::size_t>(nread)},
                               events_);
-                route_locked();
+                route_events();
                 esc_due_ = decoder_.pending_escape()
                                ? std::optional(Clock::now() +
                                                std::chrono::milliseconds(
@@ -229,27 +253,28 @@ void Runtime::run() {
             }
         }
 
-        std::unique_lock<std::mutex> lk(state_);
+        apply_inbox(); // 业务线程的领域更新在出帧前落到控件树上
+
         const auto now = Clock::now();
-        if (resized) check_size_locked();
+        if (resized) check_size();
         if (ticking_ && now >= next_tick_) {
             next_tick_ = now + opt_.tick;
             ticking_ = tick_fn_ && tick_fn_(); // false：动画结束，暂停 tick
-            note_changes_locked();             // 没动画就不出帧
+            note_changes();                    // 没动画就不出帧
         }
         if (esc_due_ && now >= *esc_due_) {
             esc_due_.reset();
             decoder_.flush_escape(events_);
-            route_locked();
+            route_events();
         }
         if (quit_.load(std::memory_order_acquire)) break;
         if (!dirty_) continue;
         if (now < last_frame_ + opt_.min_frame) continue; // 合帧余量已交给 poll
 
-        frame_locked();
-        lk.unlock();
+        frame();
 
-        // 锁外差分 + 写终端（§十：持锁写入会把延迟回压到业务线程）。
+        // 差分 + 写终端：渲染线程是唯一的终端 I/O 者，业务线程在队列
+        // 另一侧，终端写入慢时只会让队列积压，不会阻塞业务线程。
         present(term_, back_, front_, out_, cursor_);
         frames_.fetch_add(1, std::memory_order_relaxed);
         last_frame_ = Clock::now();

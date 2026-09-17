@@ -14,9 +14,9 @@
 // 本层唯一的扩展点是 BlockRenderer 注册表：新增内容形态（富文本、表格、
 // 语法高亮…）只需实现渲染器并注册，不触碰框架其他部分（§8.6）。
 //
-// 线程纪律：可变状态（块的派生缓存、rows）不加锁。L7 用同一个 state
-// mutex 串行化「业务线程修改内容 + 渲染线程折行/物化」（§十），
-// 因此这里只做纯内存操作：变更侧置脏，渲染侧推导。
+// 线程纪律：Document 与控件树只属于渲染线程（02 §3.1），本层零锁。
+// 业务线程经 Runtime::post 提交变更，fn 在渲染线程上执行；这里只做
+// 纯内存操作：变更侧置脏，渲染侧推导。
 #pragma once
 
 #include <array>
@@ -170,7 +170,8 @@ class Document {
 public:
     Document();
 
-    // ---- 内容变更（业务线程）：只改内存并置脏，绝不 I/O ----
+    // ---- 内容变更（渲染线程上执行，业务线程经 Runtime::post 提交）----
+    // 只改内存并置脏，绝不 I/O。
     uint64_t append_block(BlockKind kind, std::string source = {});
     uint64_t append_block(Block block); // 完整控制 meta/group/depth/open/collapsed
     // 建一个可增长的尾部块（流式输出的入口，配合 append/close_block）。
@@ -190,7 +191,7 @@ public:
     const Block* find(uint64_t id) const noexcept; // O(log n)
     uint64_t revision() const noexcept { return revision_; }
 
-    // ---- 帧路径（渲染线程，须在 state mutex 内） ----
+    // ---- 帧路径（渲染线程）----
     // 宽度或主题纪元变化 → 全部块 O(文本) 一次无分配重数；
     // 否则只对置脏块做增量的尾部重扫。
     void begin_frame(int width, uint32_t theme_epoch);

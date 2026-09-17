@@ -7,11 +7,15 @@
 
 #include <boost/test/unit_test.hpp>
 
+#include <algorithm>
 #include <atomic>
 #include <chrono>
+#include <cstdint>
+#include <future>
 #include <memory>
 #include <string>
 #include <thread>
+#include <type_traits>
 #include <vector>
 
 #include <fcntl.h>
@@ -22,6 +26,7 @@
 #include <unistd.h>
 
 #include "tui/app.hpp"
+#include "tui/document.hpp"
 #include "tui/widget.hpp"
 
 using namespace dagent::tui;
@@ -33,6 +38,10 @@ struct Child {
     pid_t pid = -1;
     int fd = -1; // 管道用例：写入即子进程的键盘输入；pty 用例：主端
 };
+
+// 子进程的 alarm 兜底：用例只等调度与几个慢帧（毫秒级），10 秒足够把
+// 死锁/空转判成失败。
+constexpr unsigned k_alarm_s = 10;
 
 // 子进程里：stdin 接管道读端、stdout/stderr → /dev/null、alarm 兜底。
 // body 不返回（内部必须 _exit）。
@@ -49,7 +58,7 @@ Child spawn_child(const Body& body) {
         const int null_fd = ::open("/dev/null", O_WRONLY);
         ::dup2(null_fd, STDOUT_FILENO);
         ::dup2(null_fd, STDERR_FILENO);
-        ::alarm(10); // 卡死的用例直接判失败
+        ::alarm(k_alarm_s); // 卡死的用例直接判失败
         body();
         ::_exit(99);
     }
@@ -67,7 +76,7 @@ Child spawn_pty_child(const Body& body, int cols, int rows) {
     const pid_t pid = ::forkpty(&master, nullptr, nullptr, &ws);
     BOOST_REQUIRE(pid >= 0);
     if (pid == 0) {
-        ::alarm(10);
+        ::alarm(k_alarm_s);
         body();
         ::_exit(99);
     }
@@ -111,6 +120,35 @@ bool wait_until(const Pred& pred, std::chrono::milliseconds limit = 2000ms) {
     }
     return true;
 }
+
+// 02 §3.1：post 入队即返回，fn 稍后在渲染线程上执行。需要同步读取
+// 渲染线程状态的用例用 promise 在 fn 内 set_value，调用方 get() 等待。
+template <class Fn>
+auto post_sync(Runtime& rt, Fn&& fn) -> std::invoke_result_t<Fn&> {
+    std::promise<std::invoke_result_t<Fn&>> p;
+    auto fut = p.get_future();
+    rt.post([&] { p.set_value(fn()); });
+    return fut.get();
+}
+
+// render() 里忙等固定时长的控件：用它制造「渲染线程忙着」的慢帧。
+// 为什么不用大文档的整树重折 —— 那要灌 64 MiB（-O0 下一帧 12 秒、RSS
+// 300 MB），慢在制造条件而不是断言本身；而且大块 mmap/mremap 会持有
+// 内核的地址空间写锁，业务线程只要有一次 malloc 需要扩堆就被挡住，
+// 实测尖峰 10ms —— 那测的是内存子系统，不是框架的锁设计。忙等不分配，
+// 慢帧时长可控，测出来的就是 post 自己的成本。
+constexpr auto k_slow_frame = 300ms;
+constexpr int64_t k_post_max_ns = 1'000'000; // 1ms
+
+class SlowWidget : public Widget {
+public:
+    void render(Surface&) override {
+        const auto until = std::chrono::steady_clock::now() + k_slow_frame;
+        while (std::chrono::steady_clock::now() < until) {
+            // 忙等：不分配、不进内核，纯粹占住渲染线程。
+        }
+    }
+};
 
 // 某个命名键触发退出并记录次数。
 struct QuitOnKey : EventHandler {
@@ -186,7 +224,9 @@ BOOST_AUTO_TEST_CASE(lone_escape_times_out_into_escape_event) {
     ::close(c.fd);
 }
 
-BOOST_AUTO_TEST_CASE(burst_of_posts_is_coalesced_to_frame_rate) {
+BOOST_AUTO_TEST_CASE(thousand_posts_per_second_are_coalesced_into_frames) {
+    // 验收（02 §3.1）：1000 次/秒 post 持续 1 秒 —— 帧数 ≤ 1000/16 + 余量，
+    // 且最终内容正确（合帧不丢最后一次更新）。
     Child c = spawn_child([] {
         Container root{Container::Direction::vertical};
         auto log = std::make_unique<Text>();
@@ -199,9 +239,8 @@ BOOST_AUTO_TEST_CASE(burst_of_posts_is_coalesced_to_frame_rate) {
         int code = 0;
         std::thread business([&] {
             if (!wait_until([&] { return rt.frames() >= 1; })) code = 2;
-            // 约 1000 token/秒持续 320ms：最小帧间隔 16ms 下至多约 20 帧。
             const uint64_t before = rt.frames();
-            const auto end = std::chrono::steady_clock::now() + 320ms;
+            const auto end = std::chrono::steady_clock::now() + 1s;
             int i = 0;
             while (std::chrono::steady_clock::now() < end) {
                 ++i;
@@ -210,11 +249,10 @@ BOOST_AUTO_TEST_CASE(burst_of_posts_is_coalesced_to_frame_rate) {
             }
             std::this_thread::sleep_for(60ms); // 最后一批变更出帧
             const uint64_t produced = rt.frames() - before;
-            if (produced < 4) code = 3;       // 突发期间持续出帧，没有被饿死
-            if (produced > 320 / 16 + 4) code = 4; // 被合帧：远少于 post 次数
-            if (i < 100) code = 5;            // 确实是突发
-            std::string last;
-            rt.post([&] { last = log_p->text(); });
+            if (produced < 15) code = 3;             // 突发期间持续出帧，没有被饿死
+            if (produced > 1000 / 16 + 16) code = 4; // 被合帧：远少于 post 次数
+            if (i < 900) code = 5;                   // 确实是 1000 次/秒
+            const std::string last = post_sync(rt, [&] { return log_p->text(); });
             if (last != "内容 " + std::to_string(i)) code = 6;
             rt.quit();
         });
@@ -266,8 +304,8 @@ BOOST_AUTO_TEST_CASE(idle_ui_neither_ticks_nor_renders) {
 }
 
 BOOST_AUTO_TEST_CASE(post_from_render_thread_code_does_not_deadlock) {
-    // 事件处理器与 tick 回调都在渲染线程的锁内运行，里面调 post()
-    // 必须直接执行而不是重复加锁（死锁会被 alarm 杀掉，退出码 -1）。
+    // 事件处理器与 tick 回调都在渲染线程上运行，里面调 post() 必须
+    // 直接执行而不是入队等自己（死锁会被 alarm 杀掉，退出码 -1）。
     Child c = spawn_child([] {
         Container root{Container::Direction::vertical};
         auto log = std::make_unique<Text>();
@@ -341,8 +379,8 @@ BOOST_AUTO_TEST_CASE(idle_resize_repaints_and_routes_resize_events) {
                 ::ioctl(STDOUT_FILENO, TIOCSWINSZ, &ws);
                 if (!wait_until([&] { return rt.frames() > f0; }, 1000ms)) code = 3;
 
-                std::vector<Size> seen;
-                rt.post([&] { seen = sizes.seen; });
+                const std::vector<Size> seen =
+                    post_sync(rt, [&] { return sizes.seen; });
                 const std::vector<Size> expected{{80, 24}, {100, 30}};
                 if (code == 0 && seen != expected) code = 4;
                 rt.quit();
@@ -395,6 +433,66 @@ BOOST_AUTO_TEST_CASE(nested_focus_cursor_is_placed_in_screen_coordinates) {
     const std::size_t cup = out.rfind("\x1b[", show - 1);
     BOOST_REQUIRE(cup != std::string::npos);
     BOOST_TEST(out.substr(cup, show - cup) == "\x1b[23;6H");
+}
+
+BOOST_AUTO_TEST_CASE(post_stays_sub_millisecond_while_render_thread_is_busy) {
+    // 验收（02 §3.1）：渲染线程被一个慢帧占住期间，业务线程连续 post 的
+    // 单次耗时 < 1ms —— post 的临界区只有一次尾插（最坏 O(1)，与已积压的
+    // 队列长度无关），与渲染耗时无关。旧设计里 post 与渲染共用 state_ 锁，
+    // 这里的 max 会等于整个慢帧时长。
+    Child c = spawn_child([] {
+        Container root{Container::Direction::vertical};
+        auto slow = std::make_unique<SlowWidget>();
+        SlowWidget* slow_p = slow.get();
+        root.add({Sizing::flex, 1}, std::move(slow));
+
+        Terminal term;
+        Runtime rt{term, root, Runtime::Options{16ms, 100ms}};
+
+        int code = 0;
+        std::thread business([&] {
+            if (!wait_until([&] { return rt.frames() >= 1; })) {
+                code = 2;
+                rt.quit();
+                return;
+            }
+            const uint64_t f0 = rt.frames();
+            rt.post([slow_p] { slow_p->invalidate(); }); // 触发下一个慢帧
+
+            // 样本容量一次配够：记录本身（vector 扩容）不能干扰测量。
+            std::vector<int64_t> lat_ns;
+            lat_ns.reserve(1u << 16);
+            const auto start = std::chrono::steady_clock::now();
+            while (rt.frames() == f0) {
+                if (std::chrono::steady_clock::now() - start > 10s) {
+                    code = 3; // 慢帧没有出现
+                    break;
+                }
+                const auto a = std::chrono::steady_clock::now();
+                rt.post([] {});
+                const auto b = std::chrono::steady_clock::now();
+                if (lat_ns.size() < lat_ns.capacity()) {
+                    lat_ns.push_back(
+                        std::chrono::duration_cast<std::chrono::nanoseconds>(b - a)
+                            .count());
+                }
+                std::this_thread::sleep_for(100us);
+            }
+            const auto frame_at = std::chrono::steady_clock::now();
+            if (code == 0 && frame_at - start < 50ms) code = 4; // 慢帧确实发生
+            if (code == 0 && lat_ns.size() < 100) code = 5;     // 窗口覆盖足够密
+            if (code == 0 &&
+                *std::max_element(lat_ns.begin(), lat_ns.end()) >= k_post_max_ns) {
+                code = 6; // 验收核心断言
+            }
+            rt.quit();
+        });
+        rt.run();
+        business.join();
+        ::_exit(code);
+    });
+    BOOST_TEST(wait_exit_code(c.pid) == 0);
+    ::close(c.fd);
 }
 
 BOOST_AUTO_TEST_CASE(sigterm_exits_gracefully) {

@@ -160,7 +160,7 @@ Size Terminal::size() const noexcept {
 }
 
 // 阻塞式写满：渲染线程是唯一写者，不存在交错；pty 写出慢时被阻塞
-// 属设计内行为（生产端持 state_mutex 期间绝不调用到这里）。
+// 属设计内行为（业务线程的更新在 post 队列里积压，不会被等锁）。
 void Terminal::write(std::string_view bytes) noexcept {
     while (!bytes.empty()) {
         ssize_t n = ::write(STDOUT_FILENO, bytes.data(), bytes.size());
