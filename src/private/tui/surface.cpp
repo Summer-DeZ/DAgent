@@ -85,7 +85,7 @@ void Surface::copy_from(const Surface& src) noexcept {
         return;
     }
     if (src.cols_ != cols_ || src.rows_ != rows_) {
-        return; // 尺寸错位：present() 会把 front 重置为空白再全量重绘
+        return; // 尺寸错位：present() 会走全量重绘路径
     }
     std::memcpy(cells_, src.cells_,
                 static_cast<std::size_t>(cols_) * rows_ * sizeof(Cell));
@@ -99,12 +99,6 @@ void Surface::clear() noexcept {
 void Surface::clear_dirty() noexcept {
     if (row_dirty_ != nullptr) {
         std::memset(row_dirty_, 0, static_cast<std::size_t>(rows_));
-    }
-}
-
-void Surface::repaint_all() noexcept {
-    if (row_dirty_ != nullptr) {
-        std::memset(row_dirty_, 1, static_cast<std::size_t>(rows_));
     }
 }
 
@@ -126,6 +120,7 @@ const Cell& Surface::at(int col, int row) const noexcept {
 // 修复性空格允许恰好越过视图边界一个单元格：那是在清除已被破坏的
 // 半个宽字符，属于网格一致性修复，不是内容绘制 —— widget 仍然
 // 无法把有效内容画进别的区域（所有原语都在视图内裁剪）。
+// 调用方保证 col/row 在界内且宽字放得下。
 void Surface::write_cell(int col, int row, std::string_view g, int w,
                          const Style& s) noexcept {
     Cell& c = cells_[static_cast<std::size_t>(row) * stride_ + col];
@@ -178,6 +173,9 @@ void Surface::put(int col, int row, std::string_view g, const Style& s) noexcept
     write_cell(col, row, g, w, s);
 }
 
+// 文本写入：字素的切分与宽度在这里已经算出，直接走 write_cell，
+// 不再经 put() 重复解码一遍。write_cell 不做边界裁剪，负起始列
+// 必须在此挡住 —— 负下标会写进上一行末尾甚至缓冲区之前。
 int Surface::text(int col, int row, std::string_view s, const Style& st,
                   int tab_stop) noexcept {
     if (row < 0 || row >= rows_ || tab_stop <= 0) {
@@ -189,11 +187,14 @@ int Surface::text(int col, int row, std::string_view s, const Style& st,
             const unsigned char b = static_cast<unsigned char>(g.bytes[0]);
             if (b == '\t') {
                 // 制表符在写入时就展开成空格；网格里不存 \t，
-                // 否则每次列计算都要回溯。
+                // 否则每次列计算都要回溯。负列同样只推进不写入。
                 int stop = (col / tab_stop + 1) * tab_stop;
                 if (stop > cols_) stop = cols_;
                 while (col < stop) {
-                    put(col++, row, " ", st);
+                    if (col >= 0) {
+                        write_cell(col, row, " ", 1, st);
+                    }
+                    ++col;
                 }
                 continue;
             }
@@ -210,13 +211,29 @@ int Surface::text(int col, int row, std::string_view s, const Style& st,
         if (g.width == 2 && col + 1 >= cols_) {
             break; // 宽字放不下：整簇停止，不做半格
         }
-        put(col, row, g.bytes, st);
+        if (col < 0) {
+            // 负列：只推进、不写入。宽字跨过第 0 列时，
+            // 可见的半格补一个空格，不留半个字符。
+            if (g.width == 2 && col + 1 == 0) {
+                write_cell(0, row, " ", 1, st);
+            }
+            col += g.width;
+            continue;
+        }
+        write_cell(col, row, g.bytes, g.width, st);
         col += g.width;
     }
     return col;
 }
 
+// 区域填充：按字素宽度步进 —— 宽字符占两格一步跨过，不能按 1 列步进，
+// 否则每次写入都会把上一个宽字符的右半"修复"成空格（宽字填充全毁）。
+// 宽字在区域右缘放不下时降级为空格。零宽字符（组合记号/控制符）
+// 不是合法的填充内容，整体空操作。
 void Surface::fill(Rect r, char32_t ch, const Style& st) noexcept {
+    if (unicode::char_width(ch) == 0) {
+        return;
+    }
     r = r.intersect({0, 0, cols_, rows_});
     if (r.empty()) {
         return;
@@ -224,23 +241,23 @@ void Surface::fill(Rect r, char32_t ch, const Style& st) noexcept {
     char enc[4];
     const std::size_t n = unicode::encode_utf8(ch, enc);
     const std::string_view g(enc, n);
-    const int w = unicode::char_width(ch);
+    const int w = unicode::char_width(ch) == 2 ? 2 : 1;
     for (int row = r.y; row < r.bottom(); ++row) {
-        for (int col = r.x; col < r.right(); ++col) {
+        int col = r.x;
+        while (col < r.right()) {
             if (w == 2 && col + 1 >= r.right()) {
-                put(col, row, " ", st); // 宽字右缘放不下 → 空格
+                write_cell(col, row, " ", 1, st);
+                ++col;
             } else {
-                put(col, row, g, st);
+                write_cell(col, row, g, w, st);
+                col += w;
             }
         }
     }
 }
 
 void Surface::hline(int row, int col0, int col1, const Style& s) noexcept {
-    if (row < 0 || row >= rows_) {
-        return;
-    }
-    fill({col0, row, col1 - col0 + 1, 1}, U'─', s);
+    fill({col0, row, col1 - col0 + 1, 1}, U'─', s); // 越界由 fill 求交裁剪
 }
 
 Surface Surface::view(Rect r) noexcept {
@@ -250,8 +267,7 @@ Surface Surface::view(Rect r) noexcept {
     v.cols_ = r.w;
     v.rows_ = r.h;
     v.stride_ = stride_;
-    v.x0_ = x0_ + r.x; // 宿主坐标系原点，跨边界半格修复时使用
-    v.y0_ = y0_ + r.y;
+    v.x0_ = x0_ + r.x; // 宿主坐标系列原点，跨边界半格修复时使用
     if (cells_ != nullptr && v.cols_ > 0 && v.rows_ > 0) {
         v.cells_ = cells_ + static_cast<std::size_t>(r.y) * stride_ + r.x;
         v.row_dirty_ = row_dirty_ + r.y; // 脏标记写穿到宿主对应行

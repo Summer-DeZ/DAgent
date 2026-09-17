@@ -8,6 +8,7 @@
 #include <cerrno>
 #include <cstdlib>
 #include <cstring>
+#include <iterator>
 #include <mutex>
 #include <string>
 
@@ -24,6 +25,11 @@ namespace {
 std::atomic<Terminal*> g_instance{nullptr};
 std::atomic<int> g_signal_write_fd{-1};
 std::once_flag g_atexit_once;
+
+// 被接管的信号与其原有处理器：卸载时还原调用方自己装的处理器，
+// 而不是粗暴地重置为 SIG_DFL。
+constexpr int kSignals[] = {SIGINT, SIGTERM, SIGHUP};
+struct sigaction g_saved_handlers[std::size(kSignals)] = {};
 
 // 异步信号处理器：只允许调用 async-signal-safe 的 write()。
 // 惯例是 self-pipe —— 真正的还原与退出逻辑全部留在主循环的正常路径上做。
@@ -86,7 +92,8 @@ Terminal::~Terminal() {
     }
 }
 
-// 进入界面模式。stdout 非 tty 时不发任何序列，避免污染管道输出。
+// 进入界面模式。stdout 非 tty 时不发任何序列（screen_active_ 保持
+// false，restore/set_* 据此门控，避免把转义写进管道）。
 // 顺序即文档约定的栈序：还原时严格逆序弹出。
 void Terminal::enter() {
     if (!::isatty(STDOUT_FILENO)) {
@@ -104,6 +111,7 @@ void Terminal::enter() {
         paste_.store(true, std::memory_order_release);
     }
     write(seq);
+    screen_active_.store(true, std::memory_order_release);
 }
 
 // 能力探测：不查 terminfo，只用环境变量启发式 + 合理降级。
@@ -158,50 +166,48 @@ void Terminal::write(std::string_view bytes) noexcept {
 }
 
 // exchange 去重：重复 set 不重复发序列。开与关的序列各自内部逆序配对。
+// 未进入界面模式（stdout 非 tty）时是空操作，避免把转义写进管道。
 void Terminal::set_mouse(bool on) {
-    if (!caps_.sgr_mouse || mouse_.exchange(on, std::memory_order_acq_rel) == on) {
+    if (!screen_active_.load(std::memory_order_acquire) || !caps_.sgr_mouse ||
+        mouse_.exchange(on, std::memory_order_acq_rel) == on) {
         return;
     }
     write(on ? "\x1b[?1000h\x1b[?1006h" : "\x1b[?1006l\x1b[?1000l");
 }
 
 void Terminal::set_focus_events(bool on) {
-    if (!caps_.focus_events ||
+    if (!screen_active_.load(std::memory_order_acquire) || !caps_.focus_events ||
         focus_.exchange(on, std::memory_order_acq_rel) == on) {
         return;
     }
     write(on ? "\x1b[?1004h" : "\x1b[?1004l");
 }
 
-void Terminal::set_bracketed_paste(bool on) {
-    if (!caps_.bracketed_paste ||
-        paste_.exchange(on, std::memory_order_acq_rel) == on) {
-        return;
-    }
-    write(on ? "\x1b[?2004h" : "\x1b[?2004l");
-}
-
 // 还原 = 进入序列的严格逆序，只关自己开过的模式。
 // restored_ 先行置位保证：析构 / atexit / 信号路径并发叠加时只执行一次。
+// screen_active_ 门控：stdout 是管道时从未进入过界面模式，不得写出转义。
 void Terminal::restore() noexcept {
     if (restored_.exchange(true, std::memory_order_acq_rel)) {
         return;
     }
 
-    std::string seq;
-    if (mouse_.exchange(false, std::memory_order_acq_rel)) {
-        seq += "\x1b[?1006l\x1b[?1000l";
+    if (screen_active_.load(std::memory_order_acquire)) {
+        std::string seq;
+        if (mouse_.exchange(false, std::memory_order_acq_rel)) {
+            seq += "\x1b[?1006l\x1b[?1000l";
+        }
+        if (focus_.exchange(false, std::memory_order_acq_rel)) {
+            seq += "\x1b[?1004l";
+        }
+        if (paste_.exchange(false, std::memory_order_acq_rel)) {
+            seq += "\x1b[?2004l";
+        }
+        seq += "\x1b[?25h";  // 显示光标
+        seq += "\x1b[?7h";   // 恢复自动换行
+        seq += "\x1b[?1049l"; // 离开备用屏，还原用户原有终端内容
+        write(seq);
+        screen_active_.store(false, std::memory_order_release);
     }
-    if (focus_.exchange(false, std::memory_order_acq_rel)) {
-        seq += "\x1b[?1004l";
-    }
-    if (paste_.exchange(false, std::memory_order_acq_rel)) {
-        seq += "\x1b[?2004l";
-    }
-    seq += "\x1b[?25h";  // 显示光标
-    seq += "\x1b[?7h";   // 恢复自动换行
-    seq += "\x1b[?1049l"; // 离开备用屏，还原用户原有终端内容
-    write(seq);
 
     if (raw_saved_) {
         ::tcsetattr(STDIN_FILENO, TCSANOW, &saved_);
@@ -224,20 +230,23 @@ void Terminal::install_signal_handlers() noexcept {
     sa.sa_handler = &terminal_on_signal;
     sa.sa_flags   = SA_RESTART; // 渲染线程的 write 不被信号打断
     ::sigemptyset(&sa.sa_mask);
-    ::sigaction(SIGINT, &sa, nullptr);
-    ::sigaction(SIGTERM, &sa, nullptr);
-    ::sigaction(SIGHUP, &sa, nullptr);
+    // 保存原有处理器：卸载时还原调用方自己装的，而不是重置 SIG_DFL。
+    for (std::size_t i = 0; i < std::size(kSignals); ++i) {
+        ::sigaction(kSignals[i], &sa, &g_saved_handlers[i]);
+    }
+    handlers_installed_ = true;
 }
 
 void Terminal::uninstall_signal_handlers() noexcept {
+    if (!handlers_installed_) {
+        return;
+    }
     // 先摘写端再撤处理器，避免竞态窗口内写已关闭的 fd。
     g_signal_write_fd.store(-1, std::memory_order_release);
-    struct sigaction sa {};
-    sa.sa_handler = SIG_DFL;
-    ::sigemptyset(&sa.sa_mask);
-    ::sigaction(SIGINT, &sa, nullptr);
-    ::sigaction(SIGTERM, &sa, nullptr);
-    ::sigaction(SIGHUP, &sa, nullptr);
+    for (std::size_t i = 0; i < std::size(kSignals); ++i) {
+        ::sigaction(kSignals[i], &g_saved_handlers[i], nullptr);
+    }
+    handlers_installed_ = false;
 }
 
 } // namespace dagent::tui

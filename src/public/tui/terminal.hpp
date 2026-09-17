@@ -52,11 +52,11 @@ public:
     // 阻塞式写满全部字节（EINTR 重试），不做用户态缓冲。
     void write(std::string_view bytes) noexcept;
 
-    // 可选上报模式的开关。能力缺失时是空操作；
+    // 可选上报模式的开关。能力缺失或未进入界面模式时是空操作；
     // 鼠标开启会牺牲文本选择（多数终端需按住 Shift），故默认关闭。
+    // 括号粘贴由构造按能力开启，不提供运行时开关。
     void set_mouse(bool on);
     void set_focus_events(bool on);
-    void set_bracketed_paste(bool on);
 
     // 还原进入前的终端状态（转义逆序 + termios）。幂等，可重复调用，
     // 也是 atexit 兜底路径的入口。
@@ -78,7 +78,10 @@ private:
     Caps caps_;
 
     termios saved_{};
-    bool raw_saved_ = false; // 仅当 stdin 是 tty 且 tcgetattr 成功时为 true
+    bool raw_saved_ = false;        // 仅当 stdin 是 tty 且 tcgetattr 成功时为 true
+    std::atomic<bool> screen_active_{false}; // 仅当 stdout 是 tty 且已发出进入序列时为 true；
+                                            // 与 mouse_/focus_/paste_ 同为跨线程（atexit 还原路径）访问
+    bool handlers_installed_ = false;
 
     int signal_pipe_[2] = {-1, -1};
 

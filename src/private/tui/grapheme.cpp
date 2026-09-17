@@ -89,24 +89,22 @@ constexpr bool is_regional_indicator(char32_t cp) noexcept {
     return cp >= 0x1F1E6 && cp <= 0x1F1FF;
 }
 
+void mark_range(std::array<uint8_t, 0x10000>& t, const Range& r,
+                uint8_t value) noexcept {
+    const auto lo = static_cast<std::size_t>(r.lo);
+    const auto hi = static_cast<std::size_t>(std::min<char32_t>(r.hi, 0xFFFF));
+    for (std::size_t cp = lo; cp <= hi; ++cp) {
+        t[cp] = value;
+    }
+}
+
 std::array<uint8_t, 0x10000> build_bmp_table() noexcept {
     std::array<uint8_t, 0x10000> t{};
     t.fill(1);
-    for (const Range& r : kZero) {
-        const auto lo = static_cast<std::size_t>(r.lo);
-        const auto hi = static_cast<std::size_t>(std::min<char32_t>(r.hi, 0xFFFF));
-        for (std::size_t cp = lo; cp <= hi; ++cp) t[cp] = 0;
-    }
-    for (const Range& r : kJoiner) {
-        const auto lo = static_cast<std::size_t>(r.lo);
-        const auto hi = static_cast<std::size_t>(std::min<char32_t>(r.hi, 0xFFFF));
-        for (std::size_t cp = lo; cp <= hi; ++cp) t[cp] = 0;
-    }
-    for (const Range& r : kWide) {
-        const auto lo = static_cast<std::size_t>(r.lo);
-        const auto hi = static_cast<std::size_t>(std::min<char32_t>(r.hi, 0xFFFF));
-        for (std::size_t cp = lo; cp <= hi; ++cp) t[cp] = 2;
-    }
+    // wide 最后写：与 joiner/zero 的区间重叠处以宽为准
+    for (const Range& r : kZero) mark_range(t, r, 0);
+    for (const Range& r : kJoiner) mark_range(t, r, 0);
+    for (const Range& r : kWide) mark_range(t, r, 2);
     return t;
 }
 

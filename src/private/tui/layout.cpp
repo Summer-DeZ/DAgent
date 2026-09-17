@@ -41,118 +41,164 @@ bool Container::needs_layout() const noexcept {
     return false;
 }
 
-void Container::layout(Rect area) {
-    rect_ = area;
-    distribute(area);
-    layout_dirty_ = false;
+// 子树重画判定的递归聚合：孙控件 invalidate 时本容器返回 true，
+// 否则父容器会把整个子树跳过（深层失效无人重画）。gap_ 待清时
+// 同样必须经过一次 render。
+bool Container::dirty_tree() const noexcept {
+    if (dirty_ || !gap_.empty()) {
+        return true;
+    }
     for (auto& it : items_) {
-        it.widget->layout_dirty_ = false; // 嵌套容器的子树由其 layout() 自清
+        if (it.widget->dirty_tree()) {
+            return true;
+        }
+    }
+    return false;
+}
+
+void Container::layout(Rect area) {
+    // 子区域是局部坐标：容器移动或变形时子项 Rect 可能不变，
+    // 但屏幕位置已变，整棵子树都得重画。
+    const bool changed = !(rect_ == area);
+    Widget::layout(area);
+    distribute(area);
+    if (changed) {
+        invalidate_tree();
     }
 }
 
-// 区域分配。只在布局纪元触发时运行：终端尺寸变化或某 widget
-// invalidate_layout()；其余帧沿用上一帧的 Rect 直接渲染。
+// 区域分配。五个步骤见类注释。子区域用本容器局部坐标（原点为容器
+// 矩形左上角），render 的视图裁剪与之自然对齐；Rect 变化的失效统一
+// 由 Widget::layout 检测。
 void Container::distribute(Rect area) {
-    const int n = static_cast<int>(items_.size());
-    if (n == 0) {
-        return;
-    }
     const bool vert = dir_ == Direction::vertical;
     const int major = vert ? area.h : area.w;
     const int minor = vert ? area.w : area.h;
 
-    std::vector<int> sz(static_cast<size_t>(n), 0);
+    if (items_.empty()) {
+        gap_ = vert ? Rect{0, 0, minor, major} : Rect{0, 0, major, minor};
+        return;
+    }
+    const int n = static_cast<int>(items_.size());
+
+    std::vector<int> sz(static_cast<std::size_t>(n), 0);
     std::vector<int> flex_idx;
     int used = 0;
     int weight_sum = 0;
 
     // 1. fixed 直接占用
     for (int i = 0; i < n; ++i) {
-        const Constraint& c = items_[static_cast<size_t>(i)].constraint;
+        const Constraint& c = items_[static_cast<std::size_t>(i)].constraint;
         if (c.sizing == Sizing::fixed) {
-            sz[static_cast<size_t>(i)] = clampv(c.value, c.min, c.max);
-            used += sz[static_cast<size_t>(i)];
+            sz[static_cast<std::size_t>(i)] = clampv(c.value, c.min, c.max);
+            used += sz[static_cast<std::size_t>(i)];
         } else if (c.sizing == Sizing::flex) {
             flex_idx.push_back(i);
             weight_sum += c.value > 0 ? c.value : 1;
         }
     }
 
-    // 2. content 按声明顺序测量，夹取到 [min, max] 与剩余空间
+    // 2. content 按声明顺序测量，夹到 [min, max]。不做剩余空间截断：
+    //    超订阅统一交给第 4 步的收缩步，否则 min 会被剩余空间压穿。
     for (int i = 0; i < n; ++i) {
-        const Constraint& c = items_[static_cast<size_t>(i)].constraint;
+        const Constraint& c = items_[static_cast<std::size_t>(i)].constraint;
         if (c.sizing != Sizing::content) {
             continue;
         }
         const int avail = major - used > 0 ? major - used : 0;
-        const Size m = items_[static_cast<size_t>(i)].widget->measure(
+        const Size m = items_[static_cast<std::size_t>(i)].widget->measure(
             vert ? Size{minor, avail} : Size{avail, minor});
-        int v = vert ? m.rows : m.cols;
-        v = clampv(v, c.min, c.max);
-        if (v > major - used) {
-            v = major - used > 0 ? major - used : 0;
-        }
-        sz[static_cast<size_t>(i)] = v;
+        const int v = clampv(vert ? m.rows : m.cols, c.min, c.max);
+        sz[static_cast<std::size_t>(i)] = v;
         used += v;
     }
 
-    // 3. 剩余空间按权重分给 flex
+    // 3. 剩余空间分给 flex
     const int rem = major - used;
-    if (rem > 0 && weight_sum > 0) {
-        int allocated = 0;
-        for (int i : flex_idx) {
-            const Constraint& c = items_[static_cast<size_t>(i)].constraint;
-            const long long w = c.value > 0 ? c.value : 1;
-            int v = static_cast<int>(rem * w / weight_sum); // floor
-            v = clampv(v, c.min, c.max);
-            sz[static_cast<size_t>(i)] = v;
-            allocated += v;
-        }
-        // floor 损失的余量按声明顺序补 1；被 max 截住就留给能长的
-        int leftover = rem - allocated;
-        while (leftover > 0) {
-            bool progressed = false;
+    if (weight_sum > 0) {
+        if (rem > 0) {
+            int allocated = 0;
             for (int i : flex_idx) {
-                if (leftover == 0) break;
-                const Constraint& c = items_[static_cast<size_t>(i)].constraint;
-                if (sz[static_cast<size_t>(i)] < c.max) {
-                    ++sz[static_cast<size_t>(i)];
-                    --leftover;
-                    progressed = true;
-                }
+                const Constraint& c =
+                    items_[static_cast<std::size_t>(i)].constraint;
+                const long long w = c.value > 0 ? c.value : 1;
+                int v = static_cast<int>(rem * w / weight_sum); // floor
+                v = clampv(v, c.min, c.max); // min 可能把总和顶出剩余空间
+                sz[static_cast<std::size_t>(i)] = v;
+                allocated += v;
             }
-            if (!progressed) break;
+            // floor 损失的余量按声明顺序补 1；被 max 截住就留给能长的
+            int leftover = rem - allocated;
+            while (leftover > 0) {
+                bool progressed = false;
+                for (int i : flex_idx) {
+                    if (leftover == 0) break;
+                    const Constraint& c =
+                        items_[static_cast<std::size_t>(i)].constraint;
+                    if (sz[static_cast<std::size_t>(i)] < c.max) {
+                        ++sz[static_cast<std::size_t>(i)];
+                        --leftover;
+                        progressed = true;
+                    }
+                }
+                if (!progressed) break;
+            }
+        } else {
+            // 剩余空间 ≤ 0：flex 先按 min 占位，交给第 4 步统一收缩；
+            // 否则此情形下 min 永不生效（flex 直接得 0）。
+            for (int i : flex_idx) {
+                const Constraint& c =
+                    items_[static_cast<std::size_t>(i)].constraint;
+                sz[static_cast<std::size_t>(i)] = clampv(0, c.min, c.max);
+            }
         }
-    } else if (rem < 0) {
-        // 4. 超订阅：按声明顺序逆序压缩，直到 min
-        int deficit = -rem;
+    }
+
+    // 4. 收缩步：总需求超出 major 时按声明顺序逆序压缩，直到 min。
+    //    覆盖三类情形：fixed/content 超订阅（rem < 0）、flex 的 min
+    //    夹取把总和顶出剩余空间、剩余空间 ≤ 0 时 flex 按 min 占位。
+    int total = 0;
+    for (int s : sz) total += s;
+    if (total > major) {
+        int deficit = total - major;
         for (int i = n - 1; i >= 0 && deficit > 0; --i) {
-            const Constraint& c = items_[static_cast<size_t>(i)].constraint;
-            const int room = sz[static_cast<size_t>(i)] - c.min;
+            const Constraint& c = items_[static_cast<std::size_t>(i)].constraint;
+            const int room = sz[static_cast<std::size_t>(i)] - c.min;
             if (room <= 0) {
                 continue;
             }
             const int take = room < deficit ? room : deficit;
-            sz[static_cast<size_t>(i)] -= take;
+            sz[static_cast<std::size_t>(i)] -= take;
             deficit -= take;
         }
     }
 
-    // 赋区域：Rect 变化的子项失效（旧位置内容作废，必须重画）；
-    // 未变化的子项沿用渲染跳过路径。嵌套容器经虚 layout() 递归。
+    // 5. 兜底：Σmin 本身超出 major 的病态情形，按父边界硬截断，
+    //    子区域绝不越出父区域。
+    {
+        int off = 0;
+        for (int i = 0; i < n; ++i) {
+            const int room = major - off;
+            if (sz[static_cast<std::size_t>(i)] > room) {
+                sz[static_cast<std::size_t>(i)] = room > 0 ? room : 0;
+            }
+            off += sz[static_cast<std::size_t>(i)];
+        }
+    }
+
+    // 赋区域：局部坐标。Rect 变化由 Widget::layout 自己检测并失效。
     int off = 0;
     for (int i = 0; i < n; ++i) {
-        const int s = sz[static_cast<size_t>(i)];
-        const Rect r = vert ? Rect{area.x, area.y + off, minor, s}
-                            : Rect{area.x + off, area.y, s, minor};
-        Widget& w = *items_[static_cast<size_t>(i)].widget;
-        if (!(w.rect_ == r)) {
-            w.rect_ = r;
-            w.invalidate();
-        }
-        w.layout(r);
+        const int s = sz[static_cast<std::size_t>(i)];
+        const Rect r = vert ? Rect{0, off, minor, s} : Rect{off, 0, s, minor};
+        items_[static_cast<std::size_t>(i)].widget->layout(r);
         off += s;
     }
+    // 尾部空隙 [off, major)：子项连续排满 [0, off)，这一段无人认领。
+    // render 首次经过时清空一次即 disarm；未变化的纪元重复清空只是
+    // 空白覆空白，差分输出零字节，可接受。
+    const int slack = major - off > 0 ? major - off : 0;
+    gap_ = vert ? Rect{0, off, minor, slack} : Rect{off, 0, slack, minor};
 }
 
 // 容器自身的自然尺寸（作为父容器的 content 子项被测量时使用）。
@@ -185,65 +231,29 @@ Size Container::measure(Size available) const {
     return vert ? Size{minor, major} : Size{major, minor};
 }
 
-// 只重画失效子项：未失效且 Rect 未变的子项在 front 里内容仍正确，
-// back 起点又是 front 的拷贝 —— "只有转圈符号在动"时每帧只碰一行。
+// 两条职责：
+//   1. 一次性清空布局收缩后尾部腾出的空隙（gap_）：子项沿主轴连续
+//      排布、副轴占满，未被覆盖的只可能是这一段。位置/尺寸变化的
+//      子项已由 Widget::layout 标记失效、走增量路径自行重画；resize
+//      纪元的全量补画由 L7 的 invalidate_tree() 负责，不在此重复。
+//   2. 增量重画子树失效的子项：未失效且 Rect 未变的子项在 front 里
+//      内容仍正确，back 起点又是 front 的拷贝 —— "只有转圈符号在动"
+//      时每帧只碰一行。
 void Container::render(Surface& s) {
+    if (!gap_.empty()) {
+        s.fill(gap_, U' ', Style{});
+        gap_ = Rect{};
+    }
     for (auto& it : items_) {
         Widget& w = *it.widget;
-        if (!w.dirty_ || w.rect_.empty()) {
+        if (!w.dirty_tree() || w.rect().empty()) {
             continue;
         }
-        Surface v = s.view(w.rect_); // 结构性裁剪：子项画不进别人的区域
+        Surface v = s.view(w.rect());
         w.render(v);
-        w.dirty_ = false;
+        w.clear_dirty();
     }
-    dirty_ = false;
-}
-
-bool Container::on_event(const Event& e) {
-    if (focus_ >= 0 && focus_ < static_cast<int>(items_.size())) {
-        return items_[static_cast<size_t>(focus_)].widget->on_event(e);
-    }
-    return false;
-}
-
-std::optional<Point> Container::cursor() const {
-    if (focus_ < 0 || focus_ >= static_cast<int>(items_.size())) {
-        return std::nullopt;
-    }
-    const Widget& w = *items_[static_cast<size_t>(focus_)].widget;
-    const std::optional<Point> c = w.cursor();
-    if (!c) {
-        return std::nullopt;
-    }
-    const Rect r = w.rect_;
-    return Point{r.x + c->x, r.y + c->y}; // 子坐标 → 树坐标
-}
-
-bool Container::focus_next() noexcept {
-    return move_focus(1);
-}
-
-bool Container::focus_prev() noexcept {
-    return move_focus(-1);
-}
-bool Container::move_focus(int step) noexcept {
-    const int n = static_cast<int>(items_.size());
-    if (n == 0) {
-        return false;
-    }
-    for (int k = 1; k <= n; ++k) {
-        const int i = ((focus_ + step * k) % n + n) % n;
-        if (items_[static_cast<size_t>(i)].widget->focusable()) {
-            if (focus_ >= 0 && focus_ < n) {
-                items_[static_cast<size_t>(focus_)].widget->invalidate();
-            }
-            focus_ = i;
-            items_[static_cast<size_t>(i)].widget->invalidate();
-            return true;
-        }
-    }
-    return false;
+    clear_dirty();
 }
 
 } // namespace dagent::tui

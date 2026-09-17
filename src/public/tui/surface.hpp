@@ -32,9 +32,6 @@ struct Rect {
     constexpr int right() const noexcept { return x + w; }
     constexpr int bottom() const noexcept { return y + h; }
     constexpr bool empty() const noexcept { return w <= 0 || h <= 0; }
-    constexpr bool contains(Point p) const noexcept {
-        return p.x >= x && p.x < right() && p.y >= y && p.y < bottom();
-    }
     constexpr Rect intersect(Rect o) const noexcept {
         const int x0 = x > o.x ? x : o.x;
         const int y0 = y > o.y ? y : o.y;
@@ -61,8 +58,8 @@ struct Color {
     }
 };
 
-// 文本属性位。invalid 是哨兵位（占 bit15），永不与真实样式相等，
-// 用于强制差分器在帧首发出第一段 SGR。
+// 文本属性位。帧末统一 \e[0m 归零，帧首终端恒处于默认态，
+// 差分器用 Style{} 即可表达起点，无需哨兵。
 enum class Attr : uint16_t {
     none      = 0,
     bold      = 1 << 0,
@@ -72,7 +69,6 @@ enum class Attr : uint16_t {
     blink     = 1 << 4,
     reverse   = 1 << 5,
     strike    = 1 << 6,
-    invalid   = 1 << 15,
 };
 
 constexpr Attr operator|(Attr a, Attr b) noexcept {
@@ -91,16 +87,13 @@ struct Style {
     Color bg{};
     Attr attrs = Attr::none;
     bool operator==(const Style&) const noexcept = default;
-
-    static constexpr Style invalid() noexcept {
-        return {Color{}, Color{}, Attr::invalid};
-    }
 };
 
 // 单个单元格：绝大多数字素是单码点、≤4 字节 UTF-8，直接内联在 text 里；
 // 超长簇（emoji ZWJ 序列等）text[0] = 0xFF（UTF-8 首字节不可能的值），
 // 其余 3 字节是 intern 表索引。width: 0 = 宽字符右半占位 / 1 = 半角 / 2 = 全角。
-// 全部字段确定初始化 → 可以整格 memcmp 比较。约 15 字节，300×100 双缓冲 <1MB。
+// 16 字节（含 1 字节对齐填充）；用默认 operator== 逐成员比较，填充不参与。
+// 300×100 双缓冲约 1MB。
 struct Cell {
     char text[4]{' ', 0, 0, 0};
     uint8_t width = 1;
@@ -126,7 +119,6 @@ public:
     // 失效 widget 只需重画自己的矩形。尺寸错位时为空操作（由 present 处理）。
     void copy_from(const Surface& src) noexcept;
     void clear_dirty() noexcept;
-    void repaint_all() noexcept; // 全部行置脏（强制整屏重绘）
 
     int cols() const noexcept { return cols_; }
     int rows() const noexcept { return rows_; }
@@ -155,26 +147,32 @@ private:
     int cols_ = 0;
     int rows_ = 0;
     int stride_ = 0;                 // 宿主宽度；owner 时 == cols_
-    int x0_ = 0;                     // 视图在宿主中的原点；owner 时为 0
-    int y0_ = 0;
+    int x0_ = 0;                     // 视图在宿主中的列原点；owner 时为 0
     bool owner_ = true;
 };
 
-// 帧选项：能力降级开关 + 光标落点（无焦点时保持隐藏）。
+// 帧选项：能力降级开关 + 光标落点（无焦点时保持隐藏）+ 全量重绘开关。
 struct FrameOptions {
     bool synchronized = false;
     bool truecolor = true;
     std::optional<Point> cursor;
+    // 强制逐行整行写出、忽略行脏标记。用于 resize：终端真实状态还是
+    // 旧尺寸的旧内容，若按差分走，back 中的空格会被判成"没变化"，
+    // 旧字符就此残留。调用方（L7）在 resize 纪元还需 invalidate_tree()
+    // 保证 back 内容完整。
+    bool full_repaint = false;
 };
 
 // 渲染是纯函数：(back, front, 选项) → 差分字节。无副作用、可重放、可断言。
-// 四个关键优化都在这里：行级脏标记跳过、行内差分区间、SGR 游程增量合并、
-// DEC 2026 同步帧。稳态路径 out 复用容量，零分配。
+// 正常路径四个关键优化：行级脏标记跳过、行内差分区间、SGR 游程增量合并、
+// DEC 2026 同步帧。front 尺寸错位或 full_repaint 时走全量路径（逐行整行）。
+// 稳态路径 out 复用容量，零分配。
 void render_frame(std::string& out, const Surface& back, const Surface& front,
                   const FrameOptions& opt);
 
 // 组装 + 写出 + 双缓冲交换 + 清脏。全框架唯一写终端的路径，渲染线程调用。
-// front/back 尺寸不一致时视为 front 全空白 → 自然产生整屏重绘。
+// 尺寸错位时把 front 重置为空白并强制全量重绘 —— 终端上仍是旧尺寸的旧
+// 内容，只有逐行整行写出才能保证写出后终端 == back。
 void present(Terminal& term, Surface& back, Surface& front, std::string& out,
              std::optional<Point> cursor = std::nullopt);
 

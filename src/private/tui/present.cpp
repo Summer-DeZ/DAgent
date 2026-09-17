@@ -58,23 +58,28 @@ void append_color(std::string& out, const Color& c, bool foreground,
 }
 
 // SGR 增量：只发真正变化的属性，不每次 \e[0m + 全套重设。
-// 撤销按属性各自的关闭码发（22 同时清 bold+dim，只发一次）。
+// bold 与 dim 共用关闭码 22：撤掉其中任一个，终端会把两个都清掉，
+// 幸存者必须紧接着重发，否则会丢失。
 void append_sgr(std::string& out, const Style& from, const Style& to,
                 bool truecolor) {
-    const Attr real_from = from.attrs & ~Attr::invalid; // 帧首哨兵 → 视为默认
-    const Attr real_to = to.attrs & ~Attr::invalid;
-    const Attr dropped = real_from & ~real_to;
-    const Attr added = real_to & ~real_from;
+    const Attr dropped = from.attrs & ~to.attrs;
+    const Attr added = to.attrs & ~from.attrs;
 
-    if (any(dropped & (Attr::bold | Attr::dim))) out += "\x1b[22m";
+    if (any(dropped & (Attr::bold | Attr::dim))) {
+        out += "\x1b[22m";
+        if (any(to.attrs & Attr::bold)) out += "\x1b[1m";
+        if (any(to.attrs & Attr::dim)) out += "\x1b[2m";
+    } else {
+        if (any(added & Attr::bold)) out += "\x1b[1m";
+        if (any(added & Attr::dim)) out += "\x1b[2m";
+    }
+
     if (any(dropped & Attr::italic)) out += "\x1b[23m";
     if (any(dropped & Attr::underline)) out += "\x1b[24m";
     if (any(dropped & Attr::blink)) out += "\x1b[25m";
     if (any(dropped & Attr::reverse)) out += "\x1b[27m";
     if (any(dropped & Attr::strike)) out += "\x1b[29m";
 
-    if (any(added & Attr::bold)) out += "\x1b[1m";
-    if (any(added & Attr::dim)) out += "\x1b[2m";
     if (any(added & Attr::italic)) out += "\x1b[3m";
     if (any(added & Attr::underline)) out += "\x1b[4m";
     if (any(added & Attr::blink)) out += "\x1b[5m";
@@ -93,29 +98,35 @@ void render_frame(std::string& out, const Surface& back, const Surface& front,
     if (opt.synchronized) out += "\x1b[?2026h"; // 开始同步帧（不支持的终端忽略）
     out += "\x1b[?25l";                         // 绘制期间隐藏光标
 
-    Style current = Style::invalid(); // 强制第一次发 SGR
-    bool styled = false;
+    // 帧首终端处于默认态（上一帧末已 \e[0m 归零），Style{} 即准确起点。
+    Style current{};
     const int cols = back.cols();
     const int rows = back.rows();
-    const bool foreign =
-        front.cols() != cols || front.rows() != rows; // 尺寸错位 → 全量写
+    // 全量路径：front 尺寸错位（终端上还是旧尺寸的旧内容）或调用方强制。
+    // 此时行脏标记不可信（back 重建后未必有人重画过），逐行整行写出。
+    const bool full =
+        opt.full_repaint || front.cols() != cols || front.rows() != rows;
 
     for (int row = 0; row < rows; ++row) {
-        if (!back.row_dirty(row)) {
-            continue; // 整行未动，连比较都不做
-        }
-        int first = -1;
-        int last = -1;
-        for (int col = 0; col < cols; ++col) {
-            const bool same =
-                !foreign && back.at(col, row) == front.at(col, row);
-            if (!same) {
-                if (first < 0) first = col;
-                last = col;
+        int first = 0;
+        int last = cols - 1;
+        if (!full) {
+            if (!back.row_dirty(row)) {
+                continue; // 整行未动，连比较都不做
             }
-        }
-        if (first < 0) {
-            continue; // 行被重画成与上一帧相同 → 零输出
+            first = -1;
+            last = -1;
+            for (int col = 0; col < cols; ++col) {
+                const bool same =
+                    back.at(col, row) == front.at(col, row);
+                if (!same) {
+                    if (first < 0) first = col;
+                    last = col;
+                }
+            }
+            if (first < 0) {
+                continue; // 行被重画成与上一帧相同 → 零输出
+            }
         }
         append_cup(out, row + 1, first + 1);
         for (int col = first; col <= last; ++col) {
@@ -126,14 +137,13 @@ void render_frame(std::string& out, const Surface& back, const Surface& front,
             if (!(c.style == current)) {
                 append_sgr(out, current, c.style, opt.truecolor);
                 current = c.style;
-                styled = true;
             }
             out += c.grapheme();
         }
     }
 
-    // 帧末归零样式：保证下一帧的"终端处于默认态"假设成立。
-    if (styled) out += "\x1b[0m";
+    // 帧末归零样式：保证下一帧"终端处于默认态"的假设成立。
+    if (!(current == Style{})) out += "\x1b[0m";
     if (opt.cursor) {
         append_cup(out, opt.cursor->y + 1, opt.cursor->x + 1);
         out += "\x1b[?25h"; // 帧末定位并显示光标
@@ -143,12 +153,14 @@ void render_frame(std::string& out, const Surface& back, const Surface& front,
 
 void present(Terminal& term, Surface& back, Surface& front, std::string& out,
              std::optional<Point> cursor) {
+    FrameOptions opt{term.caps().synchronized, term.caps().truecolor, cursor,
+                     false};
     if (back.cols() != front.cols() || back.rows() != front.rows()) {
-        // 尺寸错位：front 重置为空白网格，差分自然产生整屏重绘。
+        // 尺寸错位：front 重置为空白网格；终端真实状态是旧尺寸的旧内容，
+        // 必须强制全量重写，否则 back 里的空格会被判成"没变化"、旧字符残留。
         front.resize(back.cols(), back.rows());
+        opt.full_repaint = true;
     }
-    const FrameOptions opt{term.caps().synchronized, term.caps().truecolor,
-                           cursor};
     render_frame(out, back, front, opt);
     term.write(out);
     std::swap(front, back);
