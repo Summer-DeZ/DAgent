@@ -34,11 +34,15 @@ Document::Document() {
     renderers_[static_cast<size_t>(BlockKind::text)] =
         std::make_unique<TextRenderer>(&Theme::text);
     renderers_[static_cast<size_t>(BlockKind::code)] =
-        std::make_unique<TextRenderer>(&Theme::code);
+        std::make_unique<SyntaxRenderer>();
     renderers_[static_cast<size_t>(BlockKind::diff)] =
         std::make_unique<DiffRenderer>();
     renderers_[static_cast<size_t>(BlockKind::output)] =
         std::make_unique<TextRenderer>(&Theme::dim);
+    renderers_[static_cast<size_t>(BlockKind::markdown)] =
+        std::make_unique<MarkdownRenderer>();
+    renderers_[static_cast<size_t>(BlockKind::table)] =
+        std::make_unique<TableRenderer>();
     prefix_.push_back(0);
 }
 

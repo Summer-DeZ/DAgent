@@ -7,6 +7,8 @@ add_library(dagent_tui STATIC
     private/tui/widget.cpp
     private/tui/document.cpp
     private/tui/wrap.cpp
+    private/tui/markdown.cpp
+    private/tui/syntax.cpp
     private/tui/input.cpp
     private/tui/app.cpp
 )

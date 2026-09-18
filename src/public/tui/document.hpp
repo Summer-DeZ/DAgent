@@ -33,10 +33,11 @@
 
 namespace dagent::tui {
 
-// 块的内容形态。默认注册表：text/code/output → 文本渲染（主题槽位不同），
-// diff → 差异渲染。
-enum class BlockKind : uint8_t { text, code, diff, output };
-inline constexpr std::size_t k_block_kind_count = 4;
+// 块的内容形态。默认注册表：text/output → 文本渲染（主题槽位不同），
+// code → 语法高亮（meta 是语言），diff → 差异渲染，markdown → 行内样式，
+// table → 表格（§3.7）。
+enum class BlockKind : uint8_t { text, code, diff, output, markdown, table };
+inline constexpr std::size_t k_block_kind_count = 6;
 
 // 物化行的一段连续同样式文本。制表符已展开为空格（§5.4：网格里不存 '\t'，
 // 否则每次列计算都要回溯），可直接交给 Surface::text。
@@ -51,6 +52,10 @@ struct Line {
     std::vector<Span> spans;
     int width = 0;     // 显示宽度（列）
     size_t offset = 0; // 行首在 source 中的字节偏移（锚点解析用）
+    // 所在逻辑行末尾的跨行词法状态（低 4 位模式、高 4 位参数），语法渲染器
+    // 写入：增量重扫回退到最后一条逻辑行的行首，从上一逻辑行的状态继续，
+    // 块注释/三引号/原始字符串跨行不重扫全文（§3.7.2）。其他渲染器不解释。
+    uint8_t lex = 0;
 };
 
 // 逻辑块（§8.1）。source 是逻辑原文，未折行、未上色。
@@ -117,6 +122,22 @@ WrapResult wrap_measure_from(std::string_view source, size_t from,
                              int width) noexcept;
 size_t count_rows(std::string_view source, int width) noexcept;
 
+// 单行折行结果。与 wrap_measure_from 使用同一套断行决策，供自定义
+// BlockRenderer 的物化循环复用（§8.6）：按行推进的渲染器必须与计数走
+// 同一套边界，否则 measure 与 render 的行数不再相等。
+struct RowEdge {
+    size_t end = 0;   // 本行内容为 [from, end)
+    size_t next = 0;  // 下一行起始字节（换行结束则跨过换行符）
+    int width = 0;    // 本行显示宽度
+    size_t cut = 0;   // 超宽断行时触发断行的字素起点（无断行时无意义）
+};
+RowEdge wrap_next_row(std::string_view source, size_t from, int width) noexcept;
+
+// 把 source[begin, end) 展开为可绘制文本写入 dst（清空、保留容量）：
+// 制表符按 wrap_next_row 的同一套列推进展开为空格，其余字节原样。
+void expand_row(std::string& dst, std::string_view source, size_t begin,
+                size_t end);
+
 // 块渲染器：把 source 变成带样式的行（§8.6）。实现必须满足
 // measure(s, 0, w).rows == render 产出的行数（§十三.1 的等价性）。
 class BlockRenderer {
@@ -154,6 +175,40 @@ private:
 
 // 差异渲染器：'+' / '-' / '@' 开头的行分别用 add/del/dim 槽位，其余正文。
 class DiffRenderer final : public BlockRenderer {
+public:
+    size_t render(const Block& block, int width, const Theme& theme, size_t from,
+                  size_t valid, std::vector<Line>& out) const override;
+};
+
+// Markdown 渲染器（§3.7.2）：块级前缀（标题 #、列表 •、引用 │、分隔线）
+// 用 dim 显示，行内标记（粗体/斜体/行内代码/链接/转义）隐藏，只显示带样式
+// 的正文（链接地址不显示）。按段（起始行 + 续行）解析，强调可跨软换行，
+// 折行按隐藏标记后的显示文本进行，计数与物化共用同一排版函数。整块每次
+// 重排（stable_rows = 0，代价受段落长度约束）。
+class MarkdownRenderer final : public BlockRenderer {
+public:
+    WrapResult measure(std::string_view source, size_t from,
+                       int width) const override;
+    size_t render(const Block& block, int width, const Theme& theme, size_t from,
+                  size_t valid, std::vector<Line>& out) const override;
+};
+
+// 表格渲染器（§3.7.2）：列宽依赖全部行，每次变化整块重排。列宽超出可用
+// 宽度时按比例收缩，单元格超宽截断并以 '…' 结束。行数 = 逻辑行数（不折行）。
+class TableRenderer final : public BlockRenderer {
+public:
+    WrapResult measure(std::string_view source, size_t from,
+                       int width) const override;
+    size_t render(const Block& block, int width, const Theme& theme, size_t from,
+                  size_t valid, std::vector<Line>& out) const override;
+};
+
+// 轻量语法高亮渲染器（§3.7.3）：语言取自 Block::meta 的首个词，覆盖
+// C/C++、Python、JavaScript/TypeScript、JSON、Bash、Go、Rust，未识别按
+// 主题 code 槽纯文本。按整条逻辑行做词法分析、再按折行切片（行注释与
+// 字符串不会被折行打断），跨行词法状态写进 Line::lex，已定行保持增量：
+// 流式追加后只重扫最后一条逻辑行（§3.7.2）。不引入 tree-sitter。
+class SyntaxRenderer final : public BlockRenderer {
 public:
     size_t render(const Block& block, int width, const Theme& theme, size_t from,
                   size_t valid, std::vector<Line>& out) const override;
@@ -247,6 +302,63 @@ private:
     size_t base_rows_ = 0;    // 已裁剪掉的行数：绝对行号 = 可见行号 + 它
     int width_ = 0;
     uint32_t theme_epoch_ = 0;
+};
+
+// 流式 Markdown 切分器（§3.7.2，L5，渲染线程使用）。把一条持续增长的
+// Markdown 消息切成多个 Document 块，只有最后一个块在增长：
+//   * 段落/标题/列表/引用 → markdown（空行或下一行开启其他块级结构时关闭）；
+//   * 围栏代码（``` / ~~~）→ code，info 串存入 meta（围栏行不属于 source）；
+//   * 表格（表头 + 分隔行）→ table（空行或不再以 '|' 开头的行结束）；
+//   * 分隔线 → markdown，立即关闭。
+//
+// 未完成的行先追加到当前块立即显示；整行到达后若判定它开启了新结构，则用
+// replace 把它从当前块移除（整块替换，O(当前块)）。列表项与引用的续行
+// 留在当前块。切分结果与喂入分块
+// 无关：所有结构判定都发生在完整行上。切分器只改自己记下的当前块，
+// 多条流或普通追加交错写入互不影响。
+//
+// finish() 之后状态复位，同一实例可以开始下一条消息。
+class MarkdownStream {
+public:
+    explicit MarkdownStream(Document& doc) noexcept : doc_(&doc) {}
+    MarkdownStream(const MarkdownStream&) = delete;
+    MarkdownStream& operator=(const MarkdownStream&) = delete;
+
+    // 追加任意分块的原文。
+    void feed(std::string_view chunk);
+    // 消息结束：未完成的行按现状保留在块内，关闭最后一个块。
+    void finish();
+
+private:
+    enum class Mode : uint8_t { none, markdown, code, table };
+    enum class Family : uint8_t { text, heading, list, quote };
+
+    void on_partial();                     // pending_ 增长（尚无换行）
+    void on_line(bool has_newline);        // pending_ 是一整行
+    void handle_markdown_line(std::string_view line, bool has_newline);
+    void handle_detached_line(std::string_view line, bool has_newline,
+                              bool allow_table);
+    void open_markdown(std::string source, bool pipe);
+    void open_table(std::string source);
+    void start_code(char fence, size_t len, std::string info);
+    void close_current();
+    void remove_last(size_t bytes);
+
+    Document* doc_;
+    Mode mode_ = Mode::none;
+    Family family_ = Family::text;
+    uint64_t cur_ = 0;             // 当前 open 块
+    char fence_ch_ = 0;            // 代码围栏字符（` 或 ~）
+    size_t fence_len_ = 0;         // 围栏长度（闭合需 >=）
+    bool code_candidate_ = false;  // 代码块中当前未完成行可能是闭合围栏
+    bool line_in_block_ = false;   // 当前行已（部分）写入当前块
+    bool line_new_ = false;        // 当前行的块是行中途新建的（分类时不回退）
+    bool last_line_pipe_ = false;  // 当前 markdown 块最后一行以 '|' 开头
+    size_t last_line_len_ = 0;     // 该行字节数（含换行）
+    size_t sent_ = 0;              // pending_ 中已追加到当前块的字节数
+    std::string pending_;          // 未完成行（原始字节，不含换行）
+    std::string staged_;           // 模式 none 下暂存的表格候选表头（含换行）
+    bool staging_ = false;
 };
 
 // 大内容滚动区（§八）：Document 的门面 widget。
