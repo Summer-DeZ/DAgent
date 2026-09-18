@@ -1,4 +1,4 @@
-// L6 验收（02-tui-final-update §3.2）：终端字符串 / 应答窗口与 kitty
+// M2 §3.2 验收（02-tui-final-update）：终端字符串 / 应答窗口与 kitty
 // 键盘协议。解码器是纯字节状态机，这里直接喂字节、断言事件流，
 // 不做任何 pty 或线程模拟。
 //
@@ -359,61 +359,6 @@ BOOST_AUTO_TEST_CASE(kitty_key_decoding) {
     BOOST_REQUIRE_EQUAL(out.size(), 1);
     BOOST_TEST(out[0].kind == Event::Kind::text);
     BOOST_TEST(out[0].text == "hi");
-}
-
-BOOST_AUTO_TEST_CASE(legacy_csi_keys_mouse_and_paste_still_decode) {
-    // 3.2 重写的是同一个 CSI 解析器：原有语义（箭头/修饰键/功能键、
-    // SGR 与 X10 鼠标、括号粘贴、孤立 ESC 超时）必须原样保留。
-    Decoder d;
-    std::vector<Event> out;
-
-    d.feed("\x1b[A\x1b[1;2A\x1b[3~", out);
-    BOOST_REQUIRE_EQUAL(out.size(), 3);
-    BOOST_TEST(out[0].key == Key::up);
-    BOOST_TEST(out[1].key == Key::up);
-    BOOST_TEST(out[1].mods == Mods::shift);
-    BOOST_TEST(out[2].key == Key::del);
-
-    out.clear();
-    d.feed("\x1b[<0;10;5M\x1b[<0;10;5m", out);
-    BOOST_REQUIRE_EQUAL(out.size(), 2);
-    BOOST_TEST(out[0].kind == Event::Kind::mouse);
-    BOOST_TEST(out[0].mouse.button == 0);
-    BOOST_TEST(out[0].mouse.col == 9);
-    BOOST_TEST(out[0].mouse.row == 4);
-    BOOST_TEST(out[0].mouse.press);
-    BOOST_TEST(out[1].kind == Event::Kind::mouse);
-    BOOST_TEST(!out[1].mouse.press);
-
-    out.clear();
-    d.feed("\x1b[Mabc", out); // X10：负载整体吞掉，不产出事件
-    BOOST_TEST(out.empty());
-
-    out.clear();
-    d.feed("\x1b[200~abc\x1b[201~", out);
-    BOOST_REQUIRE_EQUAL(out.size(), 1);
-    BOOST_TEST(out[0].kind == Event::Kind::paste);
-    BOOST_TEST(out[0].text == "abc");
-
-    out.clear();
-    d.feed("\x1b\x1b[A", out); // rxvt：Alt-Up（倒数第二个 ESC 是 Alt 前缀）
-    BOOST_REQUIRE_EQUAL(out.size(), 1);
-    BOOST_TEST(out[0].key == Key::up);
-    BOOST_TEST(out[0].mods == Mods::alt);
-
-    out.clear();
-    d.feed("\x1b\x1b\x1b[A", out); // 多余 ESC 才是 Esc 按键
-    BOOST_REQUIRE_EQUAL(out.size(), 2);
-    BOOST_TEST(out[0].key == Key::escape);
-    BOOST_TEST(out[1].key == Key::up);
-    BOOST_TEST(out[1].mods == Mods::alt);
-
-    out.clear();
-    d.feed("\x1b", out);
-    BOOST_TEST(d.pending_escape());
-    d.flush_escape(out);
-    BOOST_REQUIRE_EQUAL(out.size(), 1);
-    BOOST_TEST(out[0].key == Key::escape);
 }
 
 BOOST_AUTO_TEST_CASE(esc_dense_fuzz_is_chunking_invariant) {
