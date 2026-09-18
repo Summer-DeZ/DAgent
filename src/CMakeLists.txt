@@ -85,3 +85,29 @@ target_link_libraries(dagent_workspace
     PUBLIC dagent_base
     PRIVATE dagent_exec pantor::inja
 )
+
+# 会话存储：JSONL 追加写入、blob 外置、脱敏、列目录与回放。
+add_library(dagent_session STATIC
+    private/session/session.cpp
+)
+
+target_include_directories(dagent_session PUBLIC ${CMAKE_SOURCE_DIR}/src/public)
+target_compile_features(dagent_session PUBLIC cxx_std_23)
+target_compile_options(dagent_session PRIVATE -Wall -Wextra)
+target_compile_definitions(dagent_session PRIVATE DAGENT_VERSION="${PROJECT_VERSION}")
+target_link_libraries(dagent_session
+    PUBLIC dagent_base
+)
+
+# 核心 agent：中立消息模型与各厂商协议的 LLM 编解码。
+add_library(dagent_agent STATIC
+    private/agent/llm.cpp
+    private/agent/openai_chat.cpp
+)
+
+target_include_directories(dagent_agent PUBLIC ${CMAKE_SOURCE_DIR}/src/public)
+target_compile_features(dagent_agent PUBLIC cxx_std_23)
+target_compile_options(dagent_agent PRIVATE -Wall -Wextra)
+target_link_libraries(dagent_agent
+    PUBLIC dagent_base dagent_net
+)
