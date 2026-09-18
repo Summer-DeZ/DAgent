@@ -18,7 +18,7 @@
 
 | 传输 | 依赖 |
 | --- | --- |
-| stdio：启动子进程，每行一条 JSON 消息 | `exec::Child`（见 [02-exec](02-exec.md) 第 2 节，M4 和本模块一起做） |
+| stdio：启动子进程，每行一条 JSON 消息 | `exec::Child`（已完成，见 [exec 设计文档](../design/exec.md) 第 3 节） |
 | Streamable HTTP：POST 请求，响应可能是 JSON，也可能是 SSE | `net::HttpClient` + `net::SseParser` 直接复用 |
 
 目前没有成熟的官方 C++ SDK，协议本身又不大，所以自己实现。**协议版本以 modelcontextprotocol.io 上最新

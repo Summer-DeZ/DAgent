@@ -1,5 +1,5 @@
 cmake_minimum_required(VERSION 3.25)
-project(DAgent VERSION 0.1.0 LANGUAGES CXX)
+project(DAgent VERSION 0.1.0 LANGUAGES C CXX)
 
 if(NOT CMAKE_SYSTEM_NAME STREQUAL "Linux")
     message(FATAL_ERROR "The current file-tool backend requires Linux.")

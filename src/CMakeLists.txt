@@ -50,3 +50,22 @@ target_include_directories(dagent_net PUBLIC ${CMAKE_SOURCE_DIR}/src/public)
 target_compile_features(dagent_net PUBLIC cxx_std_23)
 target_compile_options(dagent_net PRIVATE -Wall -Wextra)
 target_link_libraries(dagent_net PRIVATE CURL::libcurl)
+
+# 子进程与沙箱：一次性命令、长期子进程、bash 命令分析、Landlock + seccomp。
+add_library(dagent_exec STATIC
+    private/exec/detail.cpp
+    private/exec/process.cpp
+    private/exec/child.cpp
+    private/exec/shell.cpp
+    private/exec/sandbox.cpp
+)
+
+target_include_directories(dagent_exec PUBLIC ${CMAKE_SOURCE_DIR}/src/public)
+target_compile_features(dagent_exec PUBLIC cxx_std_23)
+target_compile_options(dagent_exec PRIVATE -Wall -Wextra)
+# Boost.Process v2 内部用 std::filesystem（本机没有编译好的 Boost.Filesystem）。
+target_compile_definitions(dagent_exec PRIVATE BOOST_PROCESS_USE_STD_FS=1)
+target_link_libraries(dagent_exec
+    PUBLIC dagent_base
+    PRIVATE Boost::headers PkgConfig::SECCOMP tree-sitter tree-sitter-bash Threads::Threads
+)

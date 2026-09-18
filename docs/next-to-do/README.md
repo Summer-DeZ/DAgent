@@ -34,7 +34,7 @@
 | # | 模块 | 包含 | 外部依赖 | 状态 |
 | --- | --- | --- | --- | --- |
 | 01 | base（[设计文档](../design/base.md)） | 日志 · dotenv 与密钥 · 文本工具（UTF-8/截断/ANSI/base64）· JSON 脱敏 | spdlog | **已完成** |
-| 02 | [exec](02-exec.md) | 一次性命令 · 长期存活子进程 · 命令分析 · 沙箱 | Boost.Process v2 + Asio、libseccomp、tree-sitter-bash；内核 Landlock | 未开始 |
+| 02 | exec（[设计文档](../design/exec.md)） | 一次性命令 · 长期存活子进程 · 命令分析 · 沙箱 | Boost.Process v2 + Asio、libseccomp、tree-sitter-bash；内核 Landlock | **已完成** |
 | 03 | [workspace](03-workspace.md) | 文件原语 · 代码搜索 · diff · 项目上下文 | dtl、inja；运行时依赖 ripgrep、git | 未开始 |
 | 04 | [net](04-net.md) | HTTP · SSE · LLM 编解码（边界） | libcurl | **HTTP/SSE 已完成** |
 | 05 | [session](05-session.md) | 会话存储（JSONL） | 暂时没有 | 未开始 |
@@ -59,12 +59,12 @@ exec, workspace, net, session, mcp ──► base
 | 里程碑 | 内容 | 做完之后能做什么 |
 | --- | --- | --- |
 | **M1 基础设施** | base 全部（已完成）· app（config、cli） | 你可以开始写 agent 循环：读配置、打日志、解析参数、用 net 调模型 |
-| **M2 工具底座** | exec 的 process · workspace 的 files、search、diff | 能实现 bash/read/write/edit/grep/glob 工具，跑通第一个真正的编码任务 |
+| **M2 工具底座** | exec 的 process（已完成）· workspace 的 files、search、diff | 能实现 bash/read/write/edit/grep/glob 工具，跑通第一个真正的编码任务 |
 | **M3 持久化与上下文** | session · workspace 的 context · net 的 LLM 编解码 | 会话可以恢复；system prompt 带上项目信息 |
-| **M4 扩展** | mcp · exec 的 Child | 接入外部 MCP 工具 |
-| **M5 安全** | exec 的命令分析和沙箱 | bash 命令在受限环境里执行，只读命令自动放行 |
+| **M4 扩展** | mcp · exec 的 Child（已完成） | 接入外部 MCP 工具 |
+| **M5 安全** | exec 的命令分析和沙箱（已完成） | bash 命令在受限环境里执行，只读命令自动放行 |
 
-M2 建议**先做 exec 的 process**，因为 workspace 的 search 和 context 都要靠它调用 rg 和 git。
+exec 已经整体完成（包括原计划放在 M4、M5 的 Child 和沙箱），workspace 的 search 和 context 可以直接用它调用 rg 和 git。
 
 ---
 
@@ -116,12 +116,12 @@ Result do_something(const Input&, const Options&,
 | 小型、长期不更新的 header-only 库 | 放进 `src/public/lib/<库名>/`，保留 LICENSE | nlohmann/json（已有）、dtl |
 | 运行时程序 | 启动时用 `exec::which` 检查，缺失时报错并给出安装提示 | ripgrep、git |
 
-所有 `FetchContent_Declare` 集中写在 [cmake/deps.cmake](../../cmake/deps.cmake)（已由根 `CMakeLists.txt` include，目前有 spdlog）。
+所有 `FetchContent_Declare` 集中写在 [cmake/deps.cmake](../../cmake/deps.cmake)（已由根 `CMakeLists.txt` include，目前有 spdlog、tree-sitter、tree-sitter-bash 与 libseccomp 的查找）。
 
 需要你安装的系统包（Ubuntu 24.04）：
 
 ```bash
-sudo apt install libseccomp-dev    # M5 才用到
+sudo apt install libseccomp-dev    # exec 的沙箱需要，已安装
 # Boost 1.83、libcurl、ripgrep、git 本机已经有了
 ```
 
