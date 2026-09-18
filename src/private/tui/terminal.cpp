@@ -24,7 +24,7 @@ namespace {
 // 单实例约定下的全局锚点：atexit 兜底与信号处理器（无 this 可用）都需要它。
 std::atomic<Terminal*> g_instance{nullptr};
 std::atomic<int> g_signal_write_fd{-1};
-// 挂起中（§3.10）：外部程序占用前台，终端的 Ctrl+C 是发给它的 —— 规范模式
+// 挂起中（§6.3）：外部程序占用前台，终端的 Ctrl+C 是发给它的 —— 规范模式
 // 下 SIGINT 会送达整个前台进程组，本进程不能据此退出。只在处理器里忽略，
 // 不改成 SIG_IGN：被忽略的信号跨 exec 继承，外部程序会收不到 Ctrl+C。
 std::atomic<bool> g_interrupt_ignored{false};
@@ -206,7 +206,7 @@ void Terminal::set_mouse(bool on) {
         return;
     }
     // 1002 = 按键事件跟踪：按下/释放 + 按住按键时的移动（拖拽选择必需，
-    // §3.8）；1000 不报移动，1003 连悬停也报、事件量大且无用。
+    // §10.10）；1000 不报移动，1003 连悬停也报、事件量大且无用。
     write(on ? "\x1b[?1002h\x1b[?1006h" : "\x1b[?1006l\x1b[?1002l");
 }
 
@@ -218,7 +218,7 @@ void Terminal::set_focus_events(bool on) {
     write(on ? "\x1b[?1004h" : "\x1b[?1004l");
 }
 
-// 握手结果以应答为准（§3.3）：Runtime 传入的副本已把「有应答」的项
+// 握手结果以应答为准（§6.2）：Runtime 传入的副本已把「有应答」的项
 // 覆盖为应答值、未应答的项保持初始值，这里直接落盘即可。
 void Terminal::apply_caps(const Caps& caps) noexcept { caps_ = caps; }
 

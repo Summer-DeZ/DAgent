@@ -1,5 +1,5 @@
 // L5 文档实现：前缀和定位、锚点、增量物化与驱逐、Scrollback widget。
-// 全部操作都是纯内存操作；跨线程顺序由 L7 的 state mutex 保证（§十），
+// 全部操作都是纯内存操作；控件树与 Document 只属于渲染线程（设计文档 §4），
 // 本文件不加锁、不做 I/O。
 #include "tui/document.hpp"
 
@@ -45,7 +45,7 @@ const Line k_margin_line{}; // 边距行：无 span 的空行
 
 constexpr int k_tab_stop = 8; // 与 wrap.cpp 的制表符展开一致
 
-// 物化行与源文本的逐字素对应（§3.8）：对每个显示字素回调
+// 物化行与源文本的逐字素对应（§10.10）：对每个显示字素回调
 // f(col, width, byte, content, grapheme, span)。byte 是该字素的源字节偏移；
 // 无源装饰取其后第一段内容的起点（没有则取当前位置，行首为 Line::offset），
 // content = false。显示与源逐字素对应，制表符例外：源里一个 '\t' 对应
@@ -153,7 +153,7 @@ uint64_t Document::open_block(BlockKind kind, std::string source) {
     return append_block(std::move(b));
 }
 
-// 新区块立即计数（O(该块文本)），但不到可见之前不物化（§8.2）。
+// 新区块立即计数（O(该块文本)），但不到可见之前不物化（§10.2）。
 uint64_t Document::append_block(Block block) {
     block.id = next_id_++;
     block.cache_key = -1;
@@ -168,7 +168,7 @@ uint64_t Document::append_block(Block block) {
     return b.id;
 }
 
-// §8.5：追加只改 source 并置脏，不折行、不分配、零 I/O。
+// §10.3：追加只改 source 并置脏，不折行、不分配、零 I/O。
 bool Document::append(uint64_t id, std::string_view chunk) {
     const auto idx = index_of(id);
     if (!idx || !blocks_[*idx].open) return false;
@@ -194,7 +194,7 @@ bool Document::replace(uint64_t id, std::string source) {
     b.rows_valid = 0;
     b.rows_bytes = 0;
     if (*idx < first_dirty_) first_dirty_ = *idx;
-    // 锚点在该块：字节偏移夹到新长度（§3.6）。
+    // 锚点在该块：字节偏移夹到新长度（§10.6）。
     if (!anchor_.pinned_to_bottom && anchor_.block_id == id) {
         anchor_.byte_in_block = std::min(anchor_.byte_in_block, b.source.size());
     }
@@ -216,7 +216,7 @@ bool Document::set_meta(uint64_t id, std::string meta) {
 }
 
 // 删除 id 及其后所有块（/undo）。前缀和只需截断；锚点块被删除时
-// 移到删除点之前最后一块的末尾，文档已空则贴底（§3.6）。
+// 移到删除点之前最后一块的末尾，文档已空则贴底（§10.6）。
 size_t Document::erase_from(uint64_t id) {
     const auto idx = index_of(id);
     if (!idx) return 0;
@@ -274,7 +274,7 @@ void Document::clear() {
     ++revision_; // id 序列保持单调，不复用
 }
 
-// 头部裁剪 O(1)/块：只弹出并抬高全局行偏移，不平移前缀和（§8.3）。
+// 头部裁剪 O(1)/块：只弹出并抬高全局行偏移，不平移前缀和（§10.4）。
 void Document::trim_blocks(size_t keep) {
     if (blocks_.size() <= keep) return;
     while (blocks_.size() > keep) {
@@ -302,7 +302,7 @@ const Block* Document::find(uint64_t id) const noexcept {
     return idx ? &blocks_[*idx] : nullptr;
 }
 
-// id 单调递增 → blocks_ 按 id 有序，二分定位（§8.3）。
+// id 单调递增 → blocks_ 按 id 有序，二分定位（§10.4）。
 std::optional<size_t> Document::index_of(uint64_t id) const noexcept {
     const auto it = std::lower_bound(
         blocks_.begin(), blocks_.end(), id,
@@ -316,7 +316,7 @@ std::optional<size_t> Document::index_of(uint64_t id) const noexcept {
 void Document::begin_frame(int width, uint32_t theme_epoch) {
     if (width != width_ || theme_epoch != theme_epoch_) {
         // 宽度/主题纪元变化：折行与物化缓存整体作废，O(全部块文本)
-        // 一次无分配重数；物化仍只发生在可见窗口（§十一）。
+        // 一次无分配重数；物化仍只发生在可见窗口（§10.2）。
         width_ = width;
         theme_epoch_ = theme_epoch;
         for (Block& b : blocks_) count_full(b);
@@ -455,7 +455,7 @@ const Line* Document::line_at(size_t row) const noexcept {
     return &b.rows[r];
 }
 
-// 只保留可见窗口 ± 一屏范围内块的物化结果（§8.2 的驱逐）。
+// 只保留可见窗口 ± 一屏范围内块的物化结果（§10.2 的驱逐）。
 // open 块不驱逐：它的 rows 就是增量折行的锚点，丢掉会把
 // 「每帧 O(最后一行)」退化成「每帧 O(全文)」。
 void Document::evict_outside(size_t first, size_t count) noexcept {
@@ -474,7 +474,7 @@ void Document::evict_outside(size_t first, size_t count) noexcept {
     }
 }
 
-// ---- 选择（§3.8） ----
+// ---- 选择（§10.10） ----
 
 Location Document::location_at(size_t row, int col, const ThemeTokens& theme) {
     const size_t abs = row + base_rows_;
@@ -638,7 +638,7 @@ void Scrollback::render(Surface& s) {
     size_t top = max;
     const Anchor anchor = doc_.anchor();
     if (!anchor.pinned_to_bottom) {
-        // 锚点是 (块 id, 字节偏移)：不受重折与裁剪影响（§8.4）。
+        // 锚点是 (块 id, 字节偏移)：不受重折与裁剪影响（§10.5）。
         const auto r = doc_.row_of(anchor.block_id, anchor.byte_in_block, theme_);
         top = std::min(r.value_or(0), max);
         // 块被裁剪或内容缩水导致夹取时，锚点跟随实际视口顶行；未夹取时
@@ -687,7 +687,7 @@ void Scrollback::draw_row(Surface& s, int y, size_t row, const Line& ln) {
                       const Location at{blk->id, byte};
                       Style st = sp.style;
                       if (!(at < lo) && !(hi < at)) {
-                          // 选区令牌（§3.12）：设了 fg/bg 就覆盖，反色翻转，
+                          // 选区令牌（§9.2）：设了 fg/bg 就覆盖，反色翻转，
                           // 其余属性取并集。只叠加在绘制上，不进缓存。
                           if (theme_.selection.fg.kind != Color::Kind::default_) {
                               st.fg = theme_.selection.fg;

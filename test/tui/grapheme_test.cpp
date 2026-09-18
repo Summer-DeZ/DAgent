@@ -1,4 +1,4 @@
-// M6 §3.13 验收：生成表对 Unicode 官方 GraphemeBreakTest.txt 的切分结果
+// M6 §7 验收：生成表对 Unicode 官方 GraphemeBreakTest.txt 的切分结果
 // 一致（按清单排除 GB9b/GB9c 用例），emoji/VS16 宽度为 2，intern 表超过
 // 上限后清表并整屏重画、内容与全量渲染一致。
 //
@@ -178,7 +178,7 @@ BOOST_AUTO_TEST_CASE(grapheme_break_test_conformance) {
     BOOST_TEST(failed == 0);
 }
 
-// emoji 宽度（§3.13）：Emoji_Presentation=Yes 或后随 VS16 的簇为 2 列。
+// emoji 宽度（§7）：Emoji_Presentation=Yes 或后随 VS16 的簇为 2 列。
 BOOST_AUTO_TEST_CASE(emoji_presentation_and_vs16_widths) {
     BOOST_TEST(unicode::char_width(U'a') == 1);
     BOOST_TEST(unicode::char_width(0x4E2D) == 2);   // 中
@@ -200,7 +200,7 @@ BOOST_AUTO_TEST_CASE(emoji_presentation_and_vs16_widths) {
                       "\xE2\x80\x8D\xF0\x9F\x91\xA7") == 2); // 👨‍👩‍👧
 }
 
-// intern 表上限（§3.13）：连续写入 5000 个不同的 ZWJ 序列；溢出时清表并
+// intern 表上限（§7）：连续写入 5000 个不同的 ZWJ 序列；溢出时清表并
 // 整屏重画，表项数始终有界，且重画后每格仍还原出正确的字素。
 BOOST_AUTO_TEST_CASE(intern_table_is_capped_and_repaint_stays_consistent) {
     constexpr int k_cols = 40; // 每两个列放一个宽字素

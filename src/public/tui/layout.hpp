@@ -74,7 +74,7 @@ public:
     // 需要屏幕位置（光标定位）时用 screen_origin()。
     Rect rect() const noexcept { return rect_; }
 
-    // 沿父链上溯（L7 鼠标命中链用，§3.5）。根控件为 nullptr。
+    // 沿父链上溯（L7 鼠标命中链用，§12.3）。根控件为 nullptr。
     Widget* parent() const noexcept { return parent_; }
 
     // 左上角的屏幕坐标：沿父链累加各层局部偏移。O(嵌套深度)。
@@ -93,12 +93,12 @@ public:
         return {o.x, o.y, rect_.w, rect_.h};
     }
 
-    // 损伤补画（§3.4.2）：让屏幕矩形与 r 相交的控件失效。默认只看
+    // 损伤补画（§8.3）：让屏幕矩形与 r 相交的控件失效。默认只看
     // 自己的 screen_rect()；Container/LayerStack 覆写为沿子项递归，
     // 保证被浮层盖过的深层控件也会补画。
     virtual void invalidate_rect(Rect r);
 
-    // 屏幕坐标命中测试：返回包含该点的最深控件（§3.5 的命中链起点）。
+    // 屏幕坐标命中测试：返回包含该点的最深控件（§12.3 的命中链起点）。
     // 默认自身；容器覆写为子项逆序递归（后声明的画在上面）。
     virtual Widget* hit_test(Point screen) const noexcept;
 
@@ -131,7 +131,7 @@ struct Constraint {
     int max = 0x7FFFFFFF;
 };
 
-// 容器：vertical / horizontal 两个方向。布局算法（文档§六）：
+// 容器：vertical / horizontal 两个方向。布局算法（设计文档 §8.1）：
 //   1. fixed 直接占用；
 //   2. content 调 measure(剩余空间)，夹到 [min, max]；
 //   3. 剩余空间按权重分给 flex（floor + 余量按声明顺序补 1）；
@@ -180,7 +180,7 @@ private:
     Rect gap_{};
 };
 
-// 浮层相对屏幕的摆放方式（§3.4.1）。
+// 浮层相对屏幕的摆放方式（§8.2）。
 enum class Placement : uint8_t {
     center,      // 居中：对话框、命令面板
     top_right,   // 右上角：toast
@@ -188,7 +188,7 @@ enum class Placement : uint8_t {
     at_point,    // 点处
 };
 
-// 层栈：一个基础层 + 按 z 序排列的浮层（§3.4）。作为根控件使用 ——
+// 层栈：一个基础层 + 按 z 序排列的浮层（§8.2）。作为根控件使用 ——
 // 它的 rect 就是屏幕，因此浮层的矩形（及其子孙的 screen_origin()）
 // 直接是屏幕坐标。
 //
@@ -211,7 +211,7 @@ public:
     void move(uint32_t id, Placement p, Point point = {});
     // 摘除浮层并归还所有权（不存在返回 nullptr）；旧矩形进入损伤。
     std::unique_ptr<Widget> remove(uint32_t id);
-    // 最上层包含该点的最深控件（§3.5 命中入口）；无命中返回 nullptr。
+    // 最上层包含该点的最深控件（§12.3 命中入口）；无命中返回 nullptr。
     Widget* hit(Point screen) const noexcept;
 
     void layout(Rect area) override;

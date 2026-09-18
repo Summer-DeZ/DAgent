@@ -1,6 +1,6 @@
-// L7 运行时：调度 —— 置脏 → 合帧 → 单线程渲染（文档§十）。
+// L7 运行时：调度 —— 置脏 → 合帧 → 单线程渲染（设计文档 docs/design/tui-framework.md §5、§12）。
 //
-// 线程模型（02-tui-final-update §3.1：业务线程零阻塞）：
+// 线程模型（§4：业务线程零阻塞）：
 //   * 控件树与 Document 只属于渲染线程，框架里没有保护它们的锁。
 //     渲染线程 = 调用 run() 的线程，全框架唯一的终端 I/O 者：
 //     poll stdin / 信号 self-pipe / 唤醒管道 → 交换更新队列并依序
@@ -26,7 +26,7 @@
 // 最小帧间隔（默认 16ms）只用来合并突发（一千 token/秒 ≈ 60 帧）。
 // 只有控件树真的失效（或尺寸/焦点变化）才出帧。
 //
-// 定时器（§3.9）：after / every 的到期时刻存最小堆，poll 超时取堆顶、
+// 定时器（§12.4）：after / every 的到期时刻存最小堆，poll 超时取堆顶、
 // Esc 超时、握手超时、合帧余量的最小值。动画用 every，回调返回 false
 // 即停止；启动动画的代码显式调用 every。堆空且无其他等待时 poll 无限期
 // 阻塞：静止界面零输出、零唤醒。
@@ -41,7 +41,7 @@
 // 未知尺寸到实际尺寸也算一次）。SIGINT/SIGTERM/SIGHUP 转成正常退出路径；
 // SIGKILL/SIGSEGV 无法覆盖。
 //
-// 能力握手（§3.3）：run() 开始时发出查询（DECRQM 2026/2027、kitty
+// 能力握手（§6.2）：run() 开始时发出查询（DECRQM 2026/2027、kitty
 // flags、OSC 11 背景、DA1 哨兵）并打开 L6 的应答窗口，不阻塞首帧。
 // 终端按顺序应答；DA1 到达前收到的应答累积为能力升级，DA1 到达时
 // 一次性提交（含推入 kitty flag 1），1 秒无 DA1 则关闭窗口保持初始值。
@@ -99,7 +99,7 @@ public:
     void push_modal(EventHandler& h) { router_.push(h); }
     void pop_modal(EventHandler& h) { router_.pop(h); }
 
-    // ---- 鼠标命中（§3.5；run() 之前或渲染线程）----
+    // ---- 鼠标命中（§12.3；run() 之前或渲染线程）----
     // 键盘路由不变；鼠标事件按坐标分发：L3/L4 不感知事件，控件与处理器的
     // 对应关系登记在这里。绑定以控件身份为准，重复绑定覆盖。控件销毁前
     // 必须 unbind_mouse（同时解除其捕获）；浮层内的控件由 close_overlay
@@ -107,7 +107,7 @@ public:
     void bind_mouse(Widget& w, EventHandler& h);
     void unbind_mouse(Widget& w) noexcept;
 
-    // ---- 浮层（§3.4.3；run() 之前或渲染线程）----
+    // ---- 浮层（§12.2；run() 之前或渲染线程）----
     // root 必须是 LayerStack。打开并可选接管输入（modal 压入模态栈）
     // 与光标来源；point 供 above_point / at_point 使用。关闭时弹出模态、
     // 恢复打开前的光标来源。关闭顺序不是后进先出时，模态栈按 L6 的
@@ -118,14 +118,14 @@ public:
                           Widget* cursor_source = nullptr);
     void close_overlay(uint32_t id);
 
-    // 终端能力确定时回调（§3.3/§3.12；run() 之前或渲染线程注册，回调在
+    // 终端能力确定时回调（§6.2/§9.2；run() 之前或渲染线程注册，回调在
     // 渲染线程执行）：握手收到 DA1 提交能力、1 秒超时保持初始值、或不握手
     // （非交互终端）时各回调一次。应用据此选主题，例如
     // set_theme(default_theme(caps.background))。能力已确定后才注册的，
     // 注册时立即回调。
     void on_caps(std::function<void(const Terminal::Caps&)> fn);
 
-    // ---- 定时器（§3.9；run() 之前或渲染线程，回调在渲染线程执行）----
+    // ---- 定时器（§12.4；run() 之前或渲染线程，回调在渲染线程执行）----
     // after：delay 后执行一次。every：每 period 执行一次，回调返回 false
     // 即取消（动画）。cancel 对已执行/已取消的 id 是空操作；回调里可以
     // 取消自己或新建定时器。
@@ -133,7 +133,7 @@ public:
     TimerId every(std::chrono::milliseconds period, std::function<bool()> fn);
     void cancel(TimerId id);
 
-    // ---- 挂起/恢复（§3.10；渲染线程，事件处理器/定时器回调内调用）----
+    // ---- 挂起/恢复（§6.3；渲染线程，事件处理器/定时器回调内调用）----
     // run_external：suspend → fn（例如 fork/exec $EDITOR 并等待）→ resume
     // → front 作废 → 查尺寸 → 整屏重画。fn 期间 post 在队列中累积，恢复
     // 后由主循环统一执行；fn 里不要调用本 Runtime 的渲染线程接口。
@@ -144,7 +144,7 @@ public:
     // 立即恢复，与真实交互终端不同。
     void suspend_process();
 
-    // 写系统剪贴板（OSC 52，§3.8；渲染线程）。渲染线程是唯一的终端写者，
+    // 写系统剪贴板（OSC 52，§10.10；渲染线程）。渲染线程是唯一的终端写者，
     // 事件处理器与定时器回调就在渲染线程上，调用即写出，不等下一帧。
     // 返回是否完整写出（见 Terminal::set_clipboard）。
     bool set_clipboard(std::string_view text) { return term_.set_clipboard(text); }
@@ -179,21 +179,21 @@ private:
     void wake() noexcept;
     void drain_wake() noexcept;
 
-    // ---- 定时器（§3.9）：只在渲染线程上 ----
+    // ---- 定时器（§12.4）：只在渲染线程上 ----
     void schedule(TimerId id, Clock::time_point due);
     void prune_timers();                    // 堆顶已取消的条目出堆
     void run_timers(Clock::time_point now); // 执行已到期的定时器
 
-    // ---- 能力握手（§3.3）：只在渲染线程上 ----
+    // ---- 能力握手（§6.2）：只在渲染线程上 ----
     void start_handshake();                 // 发查询 + 打开应答窗口 + 起 1s 超时
     bool handle_handshake_reply(const Event& e); // 返回 true = 已消费
     void finish_handshake(bool commit);     // DA1 提交能力；超时不提交
     void report_caps();                     // 能力确定：回调 on_caps
 
-    // ---- 挂起/恢复（§3.10）：只在渲染线程上 ----
+    // ---- 挂起/恢复（§6.3）：只在渲染线程上 ----
     void resume_after_suspend();            // resume + 作废 front + 整屏重画
 
-    // ---- 鼠标命中（§3.5）：只在渲染线程上 ----
+    // ---- 鼠标命中（§12.3）：只在渲染线程上 ----
     void dispatch_mouse(const Event& e);    // 捕获 → 模态 → 命中链 → 全局
     bool deliver_mouse(EventHandler& h, const Widget* w, Event e);
     EventHandler* mouse_handler(Widget& w) const noexcept;
@@ -209,7 +209,7 @@ private:
     // 侵入式单链表而不是 vector：vector 的 push_back 只是「摊还」O(1)，
     // 一次慢帧（大文档 resize 的整树重折）期间队列能涨到十万级，那一次
     // 扩容要搬走全部已排队的 std::function —— 实测单次 post 因此突破
-    // 1.5ms，违反 02 §3.1「post 单次耗时 < 1ms」。链表尾插只改两个指针，
+    // 1.5ms，违反 02 §4「post 单次耗时 < 1ms」。链表尾插只改两个指针，
     // 最坏情况也与队列长度无关；节点的 new/delete 都在锁外。
     struct Task {
         std::function<void()> fn;
@@ -226,14 +226,14 @@ private:
     std::vector<Event> events_; // 复用：解码事件的缓冲
     Size size_{};               // 已知终端尺寸（{0,0} = 未知）
 
-    // 握手（§3.3）：窗口期间累积 pending_caps_，DA1 到达才提交。
+    // 握手（§6.2）：窗口期间累积 pending_caps_，DA1 到达才提交。
     bool handshake_active_ = false;
     bool caps_final_ = false; // 本次 run() 的能力已确定（on_caps 已回调）
     std::function<void(const Terminal::Caps&)> caps_fn_;
     Terminal::Caps pending_caps_{};
     std::optional<Clock::time_point> reply_due_; // 1 秒未收到 DA1 的截止时刻
 
-    // 定时器（§3.9）：登记表 + 到期时刻最小堆（惰性删除）。
+    // 定时器（§12.4）：登记表 + 到期时刻最小堆（惰性删除）。
     struct TimerEntry {
         std::function<void()> once;   // after
         std::function<bool()> repeat; // every
@@ -253,7 +253,7 @@ private:
     std::vector<TimerSlot> fired_; // 复用：本轮到期的条目
     TimerId next_timer_ = 1;
 
-    // 浮层（§3.4）：记录每个打开浮层的模态处理器与光标恢复点。
+    // 浮层（§8.2）：记录每个打开浮层的模态处理器与光标恢复点。
     // stack_ 在构造时取得；root 不是 LayerStack 时浮层 API 不可用。
     struct OverlayState {
         uint32_t id = 0;
@@ -265,7 +265,7 @@ private:
     LayerStack* stack_ = nullptr;
     std::vector<OverlayState> overlays_;
 
-    // 鼠标（§3.5）：控件 → 处理器登记表；捕获记录按下时消费的处理器，
+    // 鼠标（§12.3）：控件 → 处理器登记表；捕获记录按下时消费的处理器，
     // 直到释放前移动/释放都直接交给它。
     struct MouseCapture {
         Widget* widget = nullptr; // 相对坐标的参照；全局处理器为 nullptr
@@ -292,9 +292,9 @@ private:
     int wake_pipe_[2] = {-1, -1}; // post()/quit() 唤醒 poll 的管道
 };
 
-// 滚动区的鼠标翻译（§3.8）：rt.bind_mouse(scrollback, handler)。
-//   * 左键拖拽选择（依赖 §3.5 的捕获：拖出控件也归它）；单击不拖拽清除选区；
-//   * 双击选词、三击选逻辑行（400ms 内同一格连击，由 §3.9 定时器判定）；
+// 滚动区的鼠标翻译（§10.10）：rt.bind_mouse(scrollback, handler)。
+//   * 左键拖拽选择（依赖 §12.3 的捕获：拖出控件也归它）；单击不拖拽清除选区；
+//   * 双击选词、三击选逻辑行（400ms 内同一格连击，由 §12.4 定时器判定）；
 //   * 释放时把选区源文本写入剪贴板（OSC 52），copy_on_release = false 关闭；
 //   * 滚轮滚动 3 行。
 // 需要应用开启鼠标上报（Terminal::set_mouse(true)，1002 模式才上报拖拽）。
@@ -322,7 +322,7 @@ private:
     bool dragging_ = false;   // 单击按下后，拖动即选择
 };
 
-// 命令（§3.11）：id 供绑定引用，title/category 供命令面板显示。
+// 命令（§12.6）：id 供绑定引用，title/category 供命令面板显示。
 struct Command {
     std::string id;       // "session.new"
     std::string title;    // 命令面板显示
@@ -331,7 +331,7 @@ struct Command {
     std::function<bool()> enabled; // 空 = 始终可用
 };
 
-// 快捷键与命令层（§3.11）。绑定串是以空格分隔的按键序列，例：
+// 快捷键与命令层（§12.6）。绑定串是以空格分隔的按键序列，例：
 // "ctrl+p"、"<leader> n"、"shift+enter"、"escape"；"<leader>" 展开为
 // set_leader 配置的按键。Keymap 作为全局处理器安装（set_global）：
 //   * 单键绑定在事件到达它时直接匹配执行；

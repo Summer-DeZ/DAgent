@@ -1,8 +1,8 @@
-// L2 内部依赖：UTF-8 解码、字素簇聚合、码点显示宽度（§3.13）。
+// L2 内部依赖：UTF-8 解码、字素簇聚合、码点显示宽度（§7）。
 // 宽度与字素属性表由 Unicode 数据文件生成（见下方生成区段），不再手工
 // 维护；独立成编译单元是因为它是每帧热路径，且区间表体量大。
 //
-// 字素簇按 UAX #29 实现，按文档 §0.1 的口径有意不实现两条规则：
+// 字素簇按 UAX #29 实现，按文档 §7.1 的口径有意不实现两条规则：
 //   * GB9b（Prepend ×）：前置字符不强制粘连；
 //   * GB9c（Indic 辅音连缀）：不识别 InCB Consonant/Linker/Extend 序列。
 // 一致性测试按这两条规则涉及的码点清单排除对应用例。
@@ -1768,7 +1768,7 @@ bool is_extpict(char32_t cp) noexcept {
 } // namespace
 
 // 码点显示宽度：0（组合记号/格式/控制）、1（半角）、2（全角/emoji）。
-// Emoji_Presentation=Yes 与 EAW W/F 同为 2 列（§3.13）。
+// Emoji_Presentation=Yes 与 EAW W/F 同为 2 列（§7）。
 int char_width(char32_t cp) noexcept {
     if (cp < 0x10000) return bmp_width()[cp];
     if (in_sorted(kZero, cp) || in_sorted(kJoiner, cp)) return 0;
@@ -1853,7 +1853,7 @@ std::size_t encode_utf8(char32_t cp, char (&out)[4]) noexcept {
 // → GB9/GB9a（Extend/ZWJ/SpacingMark）→ GB11（emoji ZWJ 序列）
 // → GB12/GB13（区域指示符成对）→ GB999。GB9b/GB9c 有意不实现。
 //
-// 簇宽度：取簇内码点最大宽度；VS16 或成对区域指示符强制 2 列（§3.13）。
+// 簇宽度：取簇内码点最大宽度；VS16 或成对区域指示符强制 2 列（§7）。
 bool next_grapheme(std::string_view& s, Grapheme& out) noexcept {
     if (s.empty()) {
         return false;
@@ -1917,7 +1917,7 @@ bool next_grapheme(std::string_view& s, Grapheme& out) noexcept {
         prev = nclass;
     }
 
-    if (vs16) width = std::max(width, 2);      // §3.13：后随 VS16 的簇 2 列
+    if (vs16) width = std::max(width, 2);      // §7：后随 VS16 的簇 2 列
     if (ri_count >= 2) width = std::max(width, 2); // 国旗成对占 2 列
     out.bytes = s.substr(0, s.size() - cursor.size());
     out.width = width;

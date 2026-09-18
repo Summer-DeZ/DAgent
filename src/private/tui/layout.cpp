@@ -13,7 +13,7 @@ int clampv(int v, int lo, int hi) noexcept {
     return v;
 }
 
-// 浮层矩形：已按屏幕夹过尺寸，这里再保证位置不越界（§3.4.1）。
+// 浮层矩形：已按屏幕夹过尺寸，这里再保证位置不越界（§8.2）。
 Rect placement_rect(Placement p, Size size, Point point, Size avail) noexcept {
     const int w = size.cols;
     const int h = size.rows;
@@ -113,7 +113,7 @@ void Container::layout(Rect area) {
 }
 
 // 损伤补画：任何子项与损伤相交都要失效 —— 只让子树根容器失效不够，
-// 容器 render 会跳过干净子项，深层内容就补不回来（§3.4.2 规则 2）。
+// 容器 render 会跳过干净子项，深层内容就补不回来（§8.3 规则 2）。
 void Container::invalidate_rect(Rect r) {
     for (auto& it : items_) {
         it.widget->invalidate_rect(r);
@@ -419,7 +419,7 @@ Widget* LayerStack::hit_test(Point screen) const noexcept {
     return base_->hit_test(screen);
 }
 
-// 损伤传播的四步（§3.4.2）。关键点：
+// 损伤传播的四步（§8.3）。关键点：
 //   * 损伤矩形直接擦空白：基础层未必有控件覆盖那里（尾部 gap），
 //     只让相交控件失效会留下旧浮层像素；
 //   * 与 painted/damage 相交的浮层整层 invalidate_tree()：基础层新画的

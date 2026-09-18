@@ -18,7 +18,7 @@ struct Size {
 };
 
 // 颜色：1 字节 tag + 3 字节值，恰好 4 字节；indexed 时 r 即调色板索引。
-// 定义在 L1 是因为 Terminal::Caps 需要携带握手取得的背景色（§3.3）。
+// 定义在 L1 是因为 Terminal::Caps 需要携带握手取得的背景色（§6.2）。
 struct Color {
     enum class Kind : uint8_t { default_, indexed, rgb };
     Kind kind = Kind::default_;
@@ -44,12 +44,12 @@ struct Color {
 //   3. atexit 兜底（restore() 幂等，多路径可安全叠加）。
 // SIGKILL/SIGSEGV 无法覆盖，是终端程序的共同边界。
 //
-// 挂起/恢复（§3.10）与还原共用同一套转义栈，但不是终态：suspend() 逆序
+// 挂起/恢复（§6.3）与还原共用同一套转义栈，但不是终态：suspend() 逆序
 // 退出界面模式并还原 termios（信号处理器保留），resume() 重新进入并恢复
 // 挂起前开着的模式；restore() 之后 suspend()/resume() 均为空操作。
 class Terminal {
 public:
-    // 终端能力。进入时按环境变量取初始值，Runtime 握手（§3.3）确认后
+    // 终端能力。进入时按环境变量取初始值，Runtime 握手（§6.2）确认后
     // 由渲染线程升级；不支持的做合理降级。
     struct Caps {
         bool truecolor       = false; // COLORTERM=truecolor / 24bit
@@ -58,7 +58,7 @@ public:
         bool bracketed_paste = false; // 2004 括号粘贴
         bool focus_events    = false; // 1004 焦点事件
         bool kitty_keyboard  = false; // kitty 键盘协议（确认后推入 flag 1）
-        bool grapheme_width  = false; // mode 2027 字素簇宽度（§3.13）
+        bool grapheme_width  = false; // mode 2027 字素簇宽度（§7）
         std::optional<Color> background; // OSC 11 背景色；未取得时为空
     };
 
@@ -72,26 +72,26 @@ public:
 
     const Caps& caps() const noexcept { return caps_; }
 
-    // 握手应答结果（§3.3，渲染线程调用）：以应答为准写入能力记录。
+    // 握手应答结果（§6.2，渲染线程调用）：以应答为准写入能力记录。
     // 调用方传入「初始值 + 已收到的应答覆盖」后的副本，未应答的查询
     // 保持环境变量初始值（包括显式应答“不支持”时覆盖猜测的降级）。
     void apply_caps(const Caps& caps) noexcept;
 
-    // 剪贴板（§3.8）：写 OSC 52 \e]52;c;<base64>\a，由渲染线程调用。
+    // 剪贴板（§10.10）：写 OSC 52 \e]52;c;<base64>\a，由渲染线程调用。
     // 上限 1 MiB 原文，超出按 UTF-8 边界截断。返回是否完整写出（false =
     // 已截断或未进入界面模式），截断提示归应用层。tmux 需要
     // set-clipboard on，属使用方配置。
     bool set_clipboard(std::string_view text);
 
-    // kitty 键盘协议（§3.2.2）：握手确认支持后由渲染线程推入 flag 1，
+    // kitty 键盘协议（§11.2）：握手确认支持后由渲染线程推入 flag 1，
     // restore 逆序弹出 \e[<u。能力缺失或未进入界面模式时空操作。
     void set_kitty_keyboard(bool on);
 
-    // 字素簇宽度模式（§3.13，mode 2027）：握手确认支持后由渲染线程开启
+    // 字素簇宽度模式（§7，mode 2027）：握手确认支持后由渲染线程开启
     // \e[?2027h，终端与框架使用同一套字素簇规则。挂起/还原时逆序关闭。
     void set_grapheme_width(bool on);
 
-    // 能否发出终端查询（§3.3 握手）：stdout 已进入界面模式、stdin 是
+    // 能否发出终端查询（§6.2 握手）：stdout 已进入界面模式、stdin 是
     // raw 模式的 tty，两者缺一不可 —— 否则查询会写进管道，或应答落进
     // 无人读取的 tty 输入队列，程序退出后作为杂字出现在 shell 里。
     bool can_query() const noexcept {
@@ -109,7 +109,7 @@ public:
 
     // 可选上报模式的开关。能力缺失或未进入界面模式时是空操作。
     // 鼠标上报（1002 + 1006 SGR：按下/释放/拖拽/滚轮）开启后终端不再做
-    // 原生选择（多数终端按住 Shift 仍可原生选择），应用内选择由 §3.8 的
+    // 原生选择（多数终端按住 Shift 仍可原生选择），应用内选择由 §10.10 的
     // ScrollbackMouse 接管；是否开启由应用决定，故默认关闭。
     // 括号粘贴由构造按能力开启，不提供运行时开关。
     void set_mouse(bool on);
@@ -119,7 +119,7 @@ public:
     // 也是 atexit 兜底路径的入口。
     void restore() noexcept;
 
-    // 挂起/恢复（§3.10，渲染线程执行，与 restore 共用逆序栈）：
+    // 挂起/恢复（§6.3，渲染线程执行，与 restore 共用逆序栈）：
     // suspend() 逆序退出界面模式、还原 termios 并记住挂起前的鼠标/焦点/
     // 粘贴/kitty 模式；resume() 逆序重新进入（含备用屏与 raw）。挂起期间
     // SIGINT 不触发退出（Ctrl+C 属于占用前台的外部程序），SIGTERM/SIGHUP

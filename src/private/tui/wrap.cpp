@@ -1,5 +1,5 @@
-// L5 折行核心与默认块渲染器（文档§8.2/§8.5/§8.6）。
-// 计数与物化走同一条扫描路径，从根本上保证 §十三.1 的等价性：
+// L5 折行核心与默认块渲染器（设计文档 §10.2/§10.3/§10.7）。
+// 计数与物化走同一条扫描路径，从根本上保证 §10.2 的等价性：
 //   count_rows(s, w) == 物化出的行数（同一字素切分、同一 tab 展开、
 //   同一断点决策）。
 #include "tui/document.hpp"
@@ -142,7 +142,7 @@ bool no_line_end(std::string_view g) noexcept {
 //   * 宽字符（CJK）的前后 —— 中文句子没有空格，只认空格会退回到很靠前
 //     的英文空格，或在行宽处把标点硬断到行首；
 // 两者都受禁则约束：候选位置之后的字素不能是闭合标点，之前的不能是开启
-// 标点。断点只由已扫过的字素决定，流式追加不改变已定行（§8.5）。
+// 标点。断点只由已扫过的字素决定，流式追加不改变已定行（§10.3）。
 RowEdge wrap_next_row(std::string_view s, size_t from, int width) noexcept {
     int col = 0;
     int brk_col = 0;
@@ -187,7 +187,7 @@ RowEdge wrap_next_row(std::string_view s, size_t from, int width) noexcept {
 }
 
 // 把 [begin, end) 拷成可绘制文本：制表符展开为到下一 stop 的空格
-// （§5.4），其余字节原样。控制符保留但宽度贡献 0，Surface::text 会跳过。
+// （§5.2），其余字节原样。控制符保留但宽度贡献 0，Surface::text 会跳过。
 void expand_row(std::string& dst, std::string_view src, size_t begin,
                 size_t end) {
     dst.clear(); // 保留容量：增量物化原地复用行对象，稳态零分配

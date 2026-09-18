@@ -1,4 +1,4 @@
-// L5 流式 Markdown 切分与块渲染（§3.7.2）。
+// L5 流式 Markdown 切分与块渲染（§10.8）。
 //
 // 切分器把一条持续增长的 Markdown 消息切成多个 Document 块，只有最后一个
 // 块在增长：段落/标题/列表/引用进 markdown 块，围栏代码进 code 块（info
@@ -339,7 +339,7 @@ std::string_view take_cols(std::string_view s, int cols) noexcept {
     return s.substr(0, i);
 }
 
-// ---- Markdown 排版（§3.7.2）----
+// ---- Markdown 排版（§10.8）----
 //
 // 行内标记（** * _ ` [文本](地址) 与反斜杠转义）显示时隐藏，显示文本因此
 // 比原文短：计数与物化必须走同一个排版函数 layout_markdown，按显示文本
@@ -1118,7 +1118,7 @@ void emit_cell(SpanBuilder& w, const CellView& v, int cols, const Style& base) {
 // ---- MarkdownRenderer ----
 
 // 行内标记隐藏后行数取决于整段解析，而强调可跨软换行：stable_rows = 0，
-// 每帧从块首整块排版（代价受段落长度约束，§3.7.1）。计数与物化共用
+// 每帧从块首整块排版（代价受段落长度约束，§10.8）。计数与物化共用
 // layout_markdown，行数必然一致。封闭块（stable_bytes = 末尾）重数时增量为零。
 WrapResult MarkdownRenderer::measure(std::string_view source, size_t from,
                                      int width) const {

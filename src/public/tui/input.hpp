@@ -1,9 +1,9 @@
-// L6 输入层：字节解码 → 事件 → 焦点链路由（文档§九）。
+// L6 输入层：字节解码 → 事件 → 焦点链路由（设计文档 §11）。
 //
 // 解码与语义严格分离，这是避免"按键归谁管"这类冲突的结构性办法：
 //   * Decoder 是纯字节状态机：不知道任何控件，不持有时钟（Esc 歧义的
 //     超时判定权交给调用方的 poll 循环，见 k_escape_timeout_ms）；
-//     终端字符串与 kitty 键盘协议（§3.2）也在这一层解析：应答窗口打开
+//     终端字符串与 kitty 键盘协议（§11.2）也在这一层解析：应答窗口打开
 //     期间 OSC/DCS 等查询应答产出 Kind::reply，见 set_reply_window()；
 //   * EventRouter 是固定的下沉顺序：处理器栈 → 焦点 → 全局兜底，
 //     "某个键在某种状态下归谁"由栈的顺序回答，不需要任何条件判断；
@@ -33,8 +33,8 @@ enum class Key : uint8_t {
     f1, f2, f3, f4, f5, f6, f7, f8, f9, f10, f11, f12,
 };
 
-// 修饰键位。组合规则与 xterm 的 modifier 参数一致（§9.1），
-// super 来自 kitty 键盘协议（§3.2.2）；hyper/meta/caps/num 不表达。
+// 修饰键位。组合规则与 xterm 的 modifier 参数一致（§11.1），
+// super 来自 kitty 键盘协议（§11.2）；hyper/meta/caps/num 不表达。
 enum class Mods : uint8_t {
     none = 0,
     shift = 1 << 0,
@@ -54,7 +54,7 @@ constexpr bool any(Mods m) noexcept { return static_cast<uint8_t>(m) != 0; }
 
 struct Event {
     enum class Kind { text, key, mouse, paste, resize, focus, reply };
-    // Kind::reply：终端对查询的应答（§3.2.1）。text = 序列体：
+    // Kind::reply：终端对查询的应答（§11.2）。text = 序列体：
     //   * csi：\e[ 之后到最终字节为止的全部内容（含私有标记与最终字节，
     //     应用靠最终字节区分 DA1 的 c、DECRQM 的 $y、kitty 的 u）；
     //   * osc/dcs/apc：引导符之后、ST（OSC 还可用 BEL）之前的负载。
@@ -70,7 +70,7 @@ struct Event {
         int button = -1; // 0/1/2 = 左/中/右；4/5/6/7 = 滚轮上/下/左/右；-1 = 无键
         int col = 0;     // 屏幕 0 基列（1006 编码是 1 基，解码时已减一）
         int row = 0;     // 屏幕 0 基行
-        // 相对命中控件左上角（L7 分发时改写，§3.5）；捕获期间相对捕获控件。
+        // 相对命中控件左上角（L7 分发时改写，§12.3）；捕获期间相对捕获控件。
         int x = 0;
         int y = 0;
         bool press = false;  // 按下/拖拽 true，释放 false
@@ -82,7 +82,7 @@ struct Event {
     bool focus_gained = false; // Kind::focus：true 获得焦点（\e[I），false 失去
 };
 
-// 增量解码器：喂进任意分块的字节流，吐出事件（§9.1）。
+// 增量解码器：喂进任意分块的字节流，吐出事件（§11.1）。
 // 内部缓冲把跨读取边界的多字节 UTF-8 与截断的转义序列拼回来；
 // 无法识别的序列完整读到终止符再整体丢弃 —— 残留字节混进输入框
 // 是终端程序最常见的 bug，这里在结构上排除。
@@ -96,7 +96,7 @@ public:
     // 毫秒的超时；超时仍无后续字节即调 flush_escape() 判为单独 Esc。
     static constexpr int k_escape_timeout_ms = 40;
 
-    // 应答窗口（§3.2.1）：L7 发出终端查询时打开，收到哨兵应答（DA1）
+    // 应答窗口（§11.2）：L7 发出终端查询时打开，收到哨兵应答（DA1）
     // 或超时后关闭。窗口内 \e]/\eP/\e_/\e^/\eX 按终端字符串解析、带
     // 私有标记的 CSI 产出 Kind::reply；窗口外保持原有按键语义
     // （\e] = Alt-]）。关闭时仍未终止的应答整体丢弃。
@@ -137,7 +137,7 @@ public:
     virtual bool on_event(const Event& e) = 0;
 };
 
-// 焦点链 + 处理器栈路由（§9.2）。下沉顺序固定：
+// 焦点链 + 处理器栈路由（§11.3）。下沉顺序固定：
 //   [ 栈顶模态处理器 ]（搜索框、确认对话、滚动处理器…临时压栈）
 //   [ 焦点处理器 ]（当前聚焦控件的翻译层，可空）
 //   [ 全局处理器 ]（Ctrl-C / Ctrl-D / 全局快捷键，可空）

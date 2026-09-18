@@ -1,4 +1,4 @@
-// L7 运行时验收：§3.9 定时器与 §3.8 选择复制的全链路。真实线程 + 真实
+// L7 运行时验收：§12.4 定时器与 §10.10 选择复制的全链路。真实线程 + 真实
 // 管道 / pty，不做模拟。
 //   * 管道用例：子进程 stdin 接管道、stdout/stderr → /dev/null（Terminal 在
 //     非 tty 下自动降级，不握手），驱动线程观察 Runtime 的诊断计数；
@@ -445,7 +445,7 @@ BOOST_AUTO_TEST_CASE(keymap_leader_executes_and_timeout_falls_through) {
     ::close(c.fd);
 }
 
-// §3.13：握手确认支持 mode 2027 后开启 \e[?2027h，环境变量猜测不开启。
+// §7：握手确认支持 mode 2027 后开启 \e[?2027h，环境变量猜测不开启。
 BOOST_AUTO_TEST_CASE(handshake_enables_grapheme_width_mode_2027) {
     Child c = spawn_pty_child(
         [] {
@@ -520,7 +520,7 @@ BOOST_AUTO_TEST_CASE(run_external_suspends_and_resumes_with_full_repaint) {
     BOOST_TEST(drain_pty_until_exit(c, out) == 0);
 }
 
-// §3.3/§3.12：握手确定能力后回调 on_caps 恰好一次，应用据背景色选主题；
+// §6.2/§9.2：握手确定能力后回调 on_caps 恰好一次，应用据背景色选主题；
 // 能力确定后才注册的立即回调。
 BOOST_AUTO_TEST_CASE(on_caps_reports_handshake_result_for_theme_choice) {
     Child c = spawn_pty_child(

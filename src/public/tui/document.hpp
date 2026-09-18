@@ -1,4 +1,4 @@
-// L5 文档层：大内容滚动区（文档§八）。
+// L5 文档层：大内容滚动区（设计文档 §10）。
 //
 // 内容模型是「块」而不是屏幕行：source 是唯一真相，rows 只是按当前宽度
 // 推导出的派生缓存。由此得到三项结构保证：
@@ -12,9 +12,9 @@
 // 重折、裁剪、追加都不会让用户正在看的内容跳走。
 //
 // 本层唯一的扩展点是 BlockRenderer 注册表：新增内容形态（富文本、表格、
-// 语法高亮…）只需实现渲染器并注册，不触碰框架其他部分（§8.6）。
+// 语法高亮…）只需实现渲染器并注册，不触碰框架其他部分（§10.7）。
 //
-// 线程纪律：Document 与控件树只属于渲染线程（02 §3.1），本层零锁。
+// 线程纪律：Document 与控件树只属于渲染线程（02 §4），本层零锁。
 // 业务线程经 Runtime::post 提交变更，fn 在渲染线程上执行；这里只做
 // 纯内存操作：变更侧置脏，渲染侧推导。
 #pragma once
@@ -35,18 +35,18 @@ namespace dagent::tui {
 
 // 块的内容形态。默认注册表：text/output → 文本渲染（主题槽位不同），
 // code → 语法高亮（meta 是语言），diff → 差异渲染，markdown → 行内样式，
-// table → 表格（§3.7）。
+// table → 表格（§10.8）。
 enum class BlockKind : uint8_t { text, code, diff, output, markdown, table };
 inline constexpr std::size_t k_block_kind_count = 6;
 
-// 物化行的一段连续同样式文本。制表符已展开为空格（§5.4：网格里不存 '\t'，
+// 物化行的一段连续同样式文本。制表符已展开为空格（§5.2：网格里不存 '\t'，
 // 否则每次列计算都要回溯），可直接交给 Surface::text。
 inline constexpr size_t k_no_src = static_cast<size_t>(-1);
 
 struct Span {
     std::string text;
     Style style{};
-    // 首字节在 source 中的偏移（§3.8 选择）：显示文本与源文本从这里起逐字素
+    // 首字节在 source 中的偏移（§10.10 选择）：显示文本与源文本从这里起逐字素
     // 对应（制表符展开为空格除外）。k_no_src = 无源的装饰（列表符号、引用
     // 竖线、表格边框），选择时归属于其后的内容。
     size_t src = k_no_src;
@@ -60,11 +60,11 @@ struct Line {
     size_t offset = 0; // 行首在 source 中的字节偏移（锚点解析用）
     // 所在逻辑行末尾的跨行词法状态（低 4 位模式、高 4 位参数），语法渲染器
     // 写入：增量重扫回退到最后一条逻辑行的行首，从上一逻辑行的状态继续，
-    // 块注释/三引号/原始字符串跨行不重扫全文（§3.7.2）。其他渲染器不解释。
+    // 块注释/三引号/原始字符串跨行不重扫全文（§10.8）。其他渲染器不解释。
     uint8_t lex = 0;
 };
 
-// 逻辑块（§8.1）。source 是逻辑原文，未折行、未上色。
+// 逻辑块（§10.1）。source 是逻辑原文，未折行、未上色。
 struct Block {
     // ---- 逻辑内容 ----
     uint64_t id = 0;          // 单调递增，永不复用；锚点引用它
@@ -85,18 +85,18 @@ struct Block {
     // ---- 派生缓存（Document 维护，调用方只读） ----
     int64_t cache_key = -1;   // 宽度 + 折叠状态 + 主题纪元 的打包键
     size_t row_count = 0;     // 全程行数（未折叠时的计数级结果）
-    size_t stable_rows = 0;   // [0, stable_rows) 行的断点已定（§8.5）
+    size_t stable_rows = 0;   // [0, stable_rows) 行的断点已定（§10.3）
     size_t stable_bytes = 0;  // stable_rows 行的起始字节，即计数级折行锚点
     size_t rows_valid = 0;    // rows 中与当前 source 一致的前缀行数
     size_t rows_bytes = 0;    // rows_valid 前缀覆盖到的 source 字节数（物化锚点）
     std::vector<Line> rows;   // 物化结果；被驱逐/失效时 rows_valid 归零
 };
 
-// 语义主题令牌（§3.12）定义在 L4 的 widget.hpp：控件与渲染器共用同一套
+// 语义主题令牌（§9.2）定义在 L4 的 widget.hpp：控件与渲染器共用同一套
 // 令牌，任何样式字段变更后必须递增 epoch，否则块的物化缓存（cache_key
 // 含 epoch）不会失效。
 
-// 滚动锚点（§8.4）。贴底是独立状态而不是「偏移量为 0」：新内容到达时
+// 滚动锚点（§10.5）。贴底是独立状态而不是「偏移量为 0」：新内容到达时
 // 贴底则跟随，不贴底则保持锚点不动。位置用块内字节偏移而不是块内行号：
 // 行号随宽度重折而变，字节偏移不变，改变宽度后视口仍停在同一段内容上。
 struct Anchor {
@@ -113,14 +113,14 @@ struct Location {
     auto operator<=>(const Location&) const = default;
 };
 
-// 选区（§3.8）：两个逻辑位置，都指向字素起点，闭区间（含两端的字素）。
+// 选区（§10.10）：两个逻辑位置，都指向字素起点，闭区间（含两端的字素）。
 // 用块 id + 字节偏移表示，改变宽度后仍覆盖同一段内容。
 struct Selection {
     Location anchor;
     Location head;
 };
 
-// 折行计数结果（§8.2/§8.5）。除最后一行外，每一行的断点都由已有字符
+// 折行计数结果（§10.2/§10.3）。除最后一行外，每一行的断点都由已有字符
 // 唯一决定：stable_rows/stable_bytes 就是「已定」前缀的边界，
 // 追加内容只需从 stable_bytes 重扫最后一行。
 struct WrapResult {
@@ -129,14 +129,14 @@ struct WrapResult {
     size_t stable_bytes = 0; // 相对计数起点的偏移：stable_rows 的下一行起点
 };
 
-// 从 source[from] 起只数行、零分配（§8.2 的计数级接口）；from 必须是行边界，
+// 从 source[from] 起只数行、零分配（§10.2 的计数级接口）；from 必须是行边界，
 // 返回值里的 stable_bytes 相对 from。
 WrapResult wrap_measure_from(std::string_view source, size_t from,
                              int width) noexcept;
 size_t count_rows(std::string_view source, int width) noexcept;
 
 // 单行折行结果。与 wrap_measure_from 使用同一套断行决策，供自定义
-// BlockRenderer 的物化循环复用（§8.6）：按行推进的渲染器必须与计数走
+// BlockRenderer 的物化循环复用（§10.7）：按行推进的渲染器必须与计数走
 // 同一套边界，否则 measure 与 render 的行数不再相等。
 struct RowEdge {
     size_t end = 0;   // 本行内容为 [from, end)
@@ -151,8 +151,8 @@ RowEdge wrap_next_row(std::string_view source, size_t from, int width) noexcept;
 void expand_row(std::string& dst, std::string_view source, size_t begin,
                 size_t end);
 
-// 块渲染器：把 source 变成带样式的行（§8.6）。实现必须满足
-// measure(s, 0, w).rows == render 产出的行数（§十三.1 的等价性）。
+// 块渲染器：把 source 变成带样式的行（§10.7）。实现必须满足
+// measure(s, 0, w).rows == render 产出的行数（§10.2 的等价性）。
 class BlockRenderer {
 public:
     virtual ~BlockRenderer() = default;
@@ -194,7 +194,7 @@ public:
                   size_t valid, std::vector<Line>& out) const override;
 };
 
-// Markdown 渲染器（§3.7.2）：块级前缀（标题 #、列表 •、引用 │、分隔线）
+// Markdown 渲染器（§10.8）：块级前缀（标题 #、列表 •、引用 │、分隔线）
 // 用 dim 显示，行内标记（粗体/斜体/行内代码/链接/转义）隐藏，只显示带样式
 // 的正文（链接地址不显示）。按段（起始行 + 续行）解析，强调可跨软换行，
 // 折行按隐藏标记后的显示文本进行，计数与物化共用同一排版函数。整块每次
@@ -207,7 +207,7 @@ public:
                   size_t valid, std::vector<Line>& out) const override;
 };
 
-// 表格渲染器（§3.7.2）：列宽依赖全部行，每次变化整块重排。列宽超出可用
+// 表格渲染器（§10.8）：列宽依赖全部行，每次变化整块重排。列宽超出可用
 // 宽度时按比例收缩，单元格超宽截断并以 '…' 结束。行数 = 逻辑行数（不折行）。
 class TableRenderer final : public BlockRenderer {
 public:
@@ -217,11 +217,11 @@ public:
                   size_t valid, std::vector<Line>& out) const override;
 };
 
-// 轻量语法高亮渲染器（§3.7.3）：语言取自 Block::meta 的首个词，覆盖
+// 轻量语法高亮渲染器（§10.9）：语言取自 Block::meta 的首个词，覆盖
 // C/C++、Python、JavaScript/TypeScript、JSON、Bash、Go、Rust，未识别按
 // 主题 code 槽纯文本。按整条逻辑行做词法分析、再按折行切片（行注释与
 // 字符串不会被折行打断），跨行词法状态写进 Line::lex，已定行保持增量：
-// 流式追加后只重扫最后一条逻辑行（§3.7.2）。不引入 tree-sitter。
+// 流式追加后只重扫最后一条逻辑行（§10.8）。不引入 tree-sitter。
 // 视觉区分：每行左侧一道竖条（border_active）+ 整行铺 background_element
 // 底色；竖条占 2 列，计数与物化都按「宽度 − 2」折行。
 class SyntaxRenderer final : public BlockRenderer {
@@ -249,18 +249,18 @@ public:
     uint64_t append_block(BlockKind kind, std::string source = {});
     uint64_t append_block(Block block); // 完整控制 meta/group/depth/open/collapsed
     // 建一个可增长的块（流式输出的入口，配合 append/close_block）。
-    // 多个块可以同时 open，尾部之外的中部块也一样（§3.6）。
+    // 多个块可以同时 open，尾部之外的中部块也一样（§10.6）。
     uint64_t open_block(BlockKind kind, std::string source = {});
     // 追加到 open 块；只 source += chunk（O(chunk)，不折行、零分配）。
     // id 不存在或块已关闭时返回 false。
     bool append(uint64_t id, std::string_view chunk);
     // 任意块整体替换 source（工具状态回写、重试输出）。重置该块缓存，
-    // 折行在渲染时进行；锚点在该块时字节偏移夹到新长度（§3.6）。
+    // 折行在渲染时进行；锚点在该块时字节偏移夹到新长度（§10.6）。
     bool replace(uint64_t id, std::string source);
     // 只改 meta 并失效该块物化缓存（计数不受影响）。
     bool set_meta(uint64_t id, std::string meta);
     // 删除 id 及其后所有块（/undo），返回删除数。锚点块被删除时移到
-    // 删除点之前最后一块的末尾；文档已空则贴底（§3.6）。
+    // 删除点之前最后一块的末尾；文档已空则贴底（§10.6）。
     size_t erase_from(uint64_t id);
     bool close_block(uint64_t id); // 终结增长：行数从此不再变
     bool set_collapsed(uint64_t id, bool collapsed, uint32_t rows);
@@ -269,7 +269,7 @@ public:
     void trim_blocks(size_t keep); // 头部裁剪到至多 keep 块，O(1)/块
     void trim_rows(size_t keep);   // 头部裁剪到至多 keep 行，O(1)/块
 
-    // 滚动锚点（§8.4）由文档持有：replace/erase_from 自动维护其有效性，
+    // 滚动锚点（§10.5）由文档持有：replace/erase_from 自动维护其有效性，
     // Scrollback 只读取与重定位。
     const Anchor& anchor() const noexcept { return anchor_; }
     void set_anchor(Anchor anchor) noexcept { anchor_ = anchor; }
@@ -284,7 +284,7 @@ public:
     // 否则只对置脏块做增量的尾部重扫。
     void begin_frame(int width, uint32_t theme_epoch);
     // 对外行号是「可见行号」：0 = 现存最旧一行。头部裁剪只更新全局
-    // 偏移量 base_rows_，前缀和里的绝对行号不平移（§8.3）。
+    // 偏移量 base_rows_，前缀和里的绝对行号不平移（§10.4）。
     size_t total_rows() const noexcept {
         return prefix_.back() - base_rows_;
     }
@@ -302,7 +302,7 @@ public:
     // 释放可见窗口 ± count 行以外块的 rows（open 块除外，见 .cpp）。
     void evict_outside(size_t first, size_t count) noexcept;
 
-    // ---- 选择（§3.8） ----
+    // ---- 选择（§10.10） ----
     // 屏幕位置 → 逻辑位置：第 row 行第 col 列处字素的源字节。装饰（列表
     // 符号等）归属于其后的内容；行尾之后在硬换行/块尾处取行尾（含换行），
     // 在软折行处取行内最后一个字素。边距行取块首。调用者保证 row < total_rows()。
@@ -339,7 +339,7 @@ private:
     uint32_t theme_epoch_ = 0;
 };
 
-// 流式 Markdown 切分器（§3.7.2，L5，渲染线程使用）。把一条持续增长的
+// 流式 Markdown 切分器（§10.8，L5，渲染线程使用）。把一条持续增长的
 // Markdown 消息切成多个 Document 块，只有最后一个块在增长：
 //   * 段落/标题/列表/引用 → markdown（空行或下一行开启其他块级结构时关闭）；
 //   * 围栏代码（``` / ~~~）→ code，info 串存入 meta（围栏行不属于 source）；
@@ -403,7 +403,7 @@ private:
     uint8_t first_margin_ = 0;
 };
 
-// 大内容滚动区（§八）：Document 的门面 widget。
+// 大内容滚动区（§10）：Document 的门面 widget。
 // 渲染时按视口宽度折行、只物化可见窗口；内容变更由 revision 驱动重画，
 // 不需要调用方手动 invalidate（invalidate 仍然有效，用于主题等纯视图变化）。
 class Scrollback : public Widget {
@@ -430,7 +430,7 @@ public:
     // 上次渲染时视口下方的行数（不贴底时 > 0，可用于「有 N 行新内容」提示）。
     [[nodiscard]] size_t unseen_rows() const noexcept { return unseen_; }
 
-    // ---- 选择（§3.8）：选区只影响本视图的绘制（叠加反色），不写进
+    // ---- 选择（§10.10）：选区只影响本视图的绘制（叠加反色），不写进
     // Document 的物化缓存；变化时只失效本 widget。 ----
     // 视图内坐标 → 逻辑位置（按上次渲染的视口；越界夹到视口内，拖出
     // 视口时选区延伸到可见的首/末行）。文档为空时返回 nullopt。

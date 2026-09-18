@@ -44,7 +44,7 @@ struct Rect {
     }
 };
 
-// 颜色定义在 terminal.hpp（L1 的 Caps 需要携带背景色，§3.3）。
+// 颜色定义在 terminal.hpp（L1 的 Caps 需要携带背景色，§6.2）。
 
 // 文本属性位。帧末统一 \e[0m 归零，帧首终端恒处于默认态，
 // 差分器用 Style{} 即可表达起点，无需哨兵。
@@ -171,7 +171,7 @@ void render_frame(std::string& out, const Surface& back, const Surface& front,
 void present(Terminal& term, Surface& back, Surface& front, std::string& out,
              std::optional<Point> cursor = std::nullopt);
 
-// 超长字素 intern 表（§3.13）：表项数超过 k_intern_max 时置位溢出标志。
+// 超长字素 intern 表（§7）：表项数超过 k_intern_max 时置位溢出标志。
 // 清表只能在帧间做 —— 缓冲区里已有的单元格持有旧索引；L7 在写出一帧后
 // 调用 intern_reset()，作废双缓冲并整树补画，下一帧全量重写后旧索引
 // 自然消失。渲染线程专用。

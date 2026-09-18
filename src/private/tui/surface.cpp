@@ -16,7 +16,7 @@ constexpr Cell k_blank_cell{};
 // 超长字素 intern 表：进程级、渲染线程专用（单写者架构，无锁）。
 // deque 保证元素地址稳定，string_view 作 key 不会因扩容失效。
 // 稳态下所有用到的簇早已入库：查找命中，零分配。
-// 表超过上限时置位 g_intern_overflow，由 L7 在帧间清空（§3.13）。
+// 表超过上限时置位 g_intern_overflow，由 L7 在帧间清空（§7）。
 std::deque<std::string> g_interned;
 std::unordered_map<std::string_view, uint32_t> g_intern_lookup;
 std::atomic<bool> g_intern_overflow{false};

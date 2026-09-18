@@ -1,4 +1,4 @@
-// §3.8 选择与复制验收（文档层）：选区用逻辑位置（块 id + 字节偏移）
+// §10.10 选择与复制验收（文档层）：选区用逻辑位置（块 id + 字节偏移）
 // 表示，复制的是源文本而不是屏幕字符；改变宽度后选区覆盖同一段字节，
 // 反色落在同一段内容上。直接驱动真实的 Scrollback + Document，不做模拟。
 
@@ -138,7 +138,7 @@ BOOST_AUTO_TEST_CASE(selection_survives_width_change) {
     BOOST_TEST(highlighted(s).empty());
 }
 
-// §3.12 验收：修改令牌并递增 epoch 后，所有块的物化缓存失效、整块重排
+// §9.2 验收：修改令牌并递增 epoch 后，所有块的物化缓存失效、整块重排
 // 使用新样式；只改令牌不递增 epoch 则缓存不失效（epoch 是唯一契约）。
 BOOST_AUTO_TEST_CASE(theme_epoch_invalidates_all_block_materialization) {
     Scrollback sb;

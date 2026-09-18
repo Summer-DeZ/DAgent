@@ -10,12 +10,12 @@ namespace {
 constexpr std::string_view k_paste_end = "\x1b[201~";
 
 // 参数个数与取值上限：键序列至多两三个参数，SGR 鼠标三个；
-// 上限之外仍完整消费到终止符，只是不再记录（§9.1：必须读完再丢）。
+// 上限之外仍完整消费到终止符，只是不再记录（§11.1：必须读完再丢）。
 constexpr int k_max_params = 8;
 constexpr int k_param_cap = 0xFFFF;
 
 // 终端字符串（OSC/DCS/APC/PM/SOS）的应答上限：超出部分丢弃，但仍
-// 读到终止符；异常输入不能把应答事件撑爆（§3.2.1）。
+// 读到终止符；异常输入不能把应答事件撑爆（§11.2）。
 constexpr std::size_t k_max_reply = 1u << 20;
 
 // pos 处 UTF-8 序列的完整长度；缓冲不足且前缀合法 → 0（等更多字节）；
@@ -58,7 +58,7 @@ int utf8_length(std::string_view s) noexcept {
 
 // xterm / kitty 共用的 modifier 参数：值 = 1 + 位集
 // （bit0 shift / bit1 alt / bit2 ctrl / bit3 super）。缺省参数（0 或 1）
-// = 无修饰；kitty 的 hyper/meta/caps/num 位忽略（§3.2.2）。
+// = 无修饰；kitty 的 hyper/meta/caps/num 位忽略（§11.2）。
 Mods mods_from_param(int p) noexcept {
     if (p < 1) return Mods::none;
     const int bits = p - 1;
@@ -140,7 +140,7 @@ Event control_event(unsigned char b, bool alt) {
     }
 }
 
-// \e[n~ 的功能键表（§9.1）。
+// \e[n~ 的功能键表（§11.1）。
 Key key_from_tilde(int p) noexcept {
     switch (p) {
     case 1:
@@ -198,7 +198,7 @@ void decode_mouse(const int* params, int np, char final_, bool alt,
     out.push_back(std::move(e));
 }
 
-// CSI 参数：支持 ':' 子参数（kitty 的 shifted key 与事件类型，§3.2.2）
+// CSI 参数：支持 ':' 子参数（kitty 的 shifted key 与事件类型，§11.2）
 // 与私有标记（'?' '>' '=' 的应答，'<' 的 SGR 鼠标）。
 struct CsiParams {
     int v[k_max_params] = {};         // 各 ';' 段的主值
@@ -211,7 +211,7 @@ struct CsiParams {
     bool junk = false;       // 其余不可识别的私有标记/中间字节
 };
 
-// kitty 键盘协议（flag 1，§3.2.2）：\e[code[:alternate];mods[:event]u。
+// kitty 键盘协议（flag 1，§11.2）：\e[code[:alternate];mods[:event]u。
 // 13/9/127/27 映射命名键；其余为可打印码点：有修饰走 Kind::key + text，
 // 无修饰走 Kind::text（文本路径与 legacy 一致）。事件类型子参数只用于
 // 判断（release 丢弃）；本框架只推 flag 1，正常情况下不会出现。
@@ -312,7 +312,7 @@ SeqResult wait_from(std::size_t start, std::vector<Event>& out, std::size_t base
     return {start, false, true};
 }
 
-// 终端字符串（§3.2.1）：OSC 由 BEL 或 ST 终止，DCS/APC/PM/SOS 仅 ST。
+// 终端字符串（§11.2）：OSC 由 BEL 或 ST 终止，DCS/APC/PM/SOS 仅 ST。
 // 只在应答窗口打开时被调用。字符串体超过 k_max_reply 的部分丢弃，但
 // 仍消费到终止符；不完整时留在缓冲（不产出事件、不参与 Esc 超时）。
 SeqResult decode_string(std::string_view s, std::size_t start, char intro,
@@ -356,7 +356,7 @@ SeqResult decode_string(std::string_view s, std::size_t start, char intro,
 
 // 从 start（\e[ 之后）扫描 CSI 序列到终止符。参数含 ';'、数字与 ':'
 // 子参数（kitty）；'<' 引导 SGR 鼠标；应答窗口内带私有标记 '?' '>' '='
-// 的序列产出 Kind::reply（§3.2.1），窗口外整体丢弃。不可识别的序列仍
+// 的序列产出 Kind::reply（§11.2），窗口外整体丢弃。不可识别的序列仍
 // 完整读到终止符再丢弃；序列中途出现 ESC 时丢弃已收前缀并从新 ESC
 // 重新解析。
 SeqResult decode_csi(std::string_view s, std::size_t start, bool alt,
@@ -607,7 +607,7 @@ void Decoder::feed(std::string_view bytes, std::vector<Event>& out) {
                     }
                     continue;
                 }
-                // 终端字符串（§3.2.1）：只有应答窗口打开时按应答解析；
+                // 终端字符串（§11.2）：只有应答窗口打开时按应答解析；
                 // ESC 串里多出的 ESC 说明是用户的 Alt 组合键（\e\e] =
                 // Esc、Alt-]），不是终端应答。
                 if (reply_window_ && !has_alt &&

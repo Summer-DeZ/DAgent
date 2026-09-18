@@ -1,13 +1,13 @@
-// L4 视图层：从 L3 的 Widget 基类派生的具体视图（文档§六/§七）。
+// L4 视图层：从 L3 的 Widget 基类派生的具体视图（设计文档 §9）。
 // 层边界：
 //   * Widget 基类已并入 layout.hpp（L3），本头只放具体视图；
 //   * 事件解码与焦点路由是 L6 的职责 —— 本层只提供程序化的内容与
 //     编辑模型，"按键 → 模型调用"的翻译由上层完成；
-//   * 不做控件库（按钮/表格/下拉/滚动条皮肤，文档§十四）；
+//   * 不做控件库（按钮/表格/下拉/滚动条皮肤，§15）；
 //   * 大内容滚动区（Scrollback）是 L5，不在本层。
 //
 // 渲染契约：render() 必须自绘整个视图 —— 先清底再画内容。back_ 每帧
-// 从 front_ 复制而来（§七），失效控件的那片区域可能留着上一帧的内容。
+// 从 front_ 复制而来（§5.3），失效控件的那片区域可能留着上一帧的内容。
 // 视图坐标系从 (0,0) 开始，越界由 Surface 视图自动裁剪。
 #pragma once
 
@@ -21,7 +21,7 @@
 
 namespace dagent::tui {
 
-// 语义主题令牌（§3.12）：渲染器与控件只引用令牌，不写死颜色。令牌放在
+// 语义主题令牌（§9.2）：渲染器与控件只引用令牌，不写死颜色。令牌放在
 // L4 是因为控件与 L5 渲染器都要用；任何样式字段变更后必须递增 epoch，
 // Document 的物化缓存（cache_key 含 epoch）据此失效并整块重排。
 struct ThemeTokens {
@@ -38,7 +38,7 @@ struct ThemeTokens {
 };
 
 // 内置 dark / light 两套令牌（256 色，present 负责按能力量化到真彩/256）。
-// §3.3 取得终端背景色后按相对亮度（阈值 0.5）选择；取不到时默认 dark。
+// §6.2 取得终端背景色后按相对亮度（阈值 0.5）选择；取不到时默认 dark。
 // 主题文件的格式与加载属于应用层，框架只提供令牌与选择规则。
 const ThemeTokens& dark_theme() noexcept;
 const ThemeTokens& light_theme() noexcept;
@@ -60,7 +60,7 @@ public:
         style_ = s;
         invalidate();
     }
-    // 底纹取自语义令牌 background（§3.12）；内容样式仍由 set_style 指定。
+    // 底纹取自语义令牌 background（§9.2）；内容样式仍由 set_style 指定。
     void set_theme(const ThemeTokens& t) noexcept {
         theme_ = &t;
         invalidate();
@@ -79,15 +79,15 @@ private:
     const ThemeTokens* theme_ = &dark_theme();
 };
 
-// 动作行：转圈符号 + 当前动作（文档§六 Activity，content(0..1)）。
+// 动作行：转圈符号 + 当前动作（§9.1 Activity，content(0..1)）。
 // 空闲（动作为空）时自然高度 0、不占布局。tick() 只推进动画帧并置脏，
-// 帧节奏由 L7 的周期 tick 驱动（§十），本层不做任何计时。
+// 帧节奏由应用用 L7 的 every 定时器驱动（§12.4），本层不做任何计时。
 class Activity : public Widget {
 public:
     void set_action(std::string text); // 空文本 = 空闲（0 行）
     void tick() noexcept;              // 推进转圈帧
 
-    // 语义令牌（§3.12）：只保存引用，主题对象必须比控件活得久
+    // 语义令牌（§9.2）：只保存引用，主题对象必须比控件活得久
     // （内置 dark/light 是进程级静态，可安全引用）。
     void set_theme(const ThemeTokens& t) noexcept {
         theme_ = &t;
@@ -104,7 +104,7 @@ private:
     const ThemeTokens* theme_ = &dark_theme();
 };
 
-// 提示条：单行通知（文档§六 Notice，content(0..1)）。文本为空时
+// 提示条：单行通知（§9.1 Notice，content(0..1)）。文本为空时
 // 自然高度 0。严重级别映射语义令牌 info / warning / error。
 class Notice : public Widget {
 public:
@@ -128,7 +128,7 @@ private:
     const ThemeTokens* theme_ = &dark_theme();
 };
 
-// 多行输入框：边框 + 逻辑多行文本 + 光标（文档§六 InputBox，
+// 多行输入框：边框 + 逻辑多行文本 + 光标（§9.1 InputBox，
 // content(3..N)）。编辑模型是纯内存操作（O(编辑量)，零 I/O），
 // L6 的按键路由只负责把事件翻译成这些调用。
 //
@@ -136,7 +136,7 @@ private:
 // 不撕裂 UTF-8 序列。垂直移动保持显示列（目标列语义：跨行移动时
 // 停在目标显示列，水平移动后重置）；超出行/列时垂直、水平双向滚动，
 // 滚动只发生在 render（渲染线程）里，模型与滚动解耦。
-// 光标落点由 cursor() 给出，帧末由渲染器定位（§七）。
+// 光标落点由 cursor() 给出，帧末由渲染器定位（§5.3）。
 class InputBox : public Widget {
 public:
     InputBox() {
@@ -155,7 +155,7 @@ public:
     void line_home();                    // 移到本行行首
     void line_end();                     // 移到本行行尾
 
-    // 边框取自语义令牌 border（§3.12）。
+    // 边框取自语义令牌 border（§9.2）。
     void set_theme(const ThemeTokens& t) noexcept {
         theme_ = &t;
         invalidate();

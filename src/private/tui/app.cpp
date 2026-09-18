@@ -14,7 +14,7 @@ namespace dagent::tui {
 
 namespace {
 
-// 握手查询组（§3.3）：DA1 必须最后发 —— 终端按顺序应答（DA1 之前没
+// 握手查询组（§6.2）：DA1 必须最后发 —— 终端按顺序应答（DA1 之前没
 // 收到的查询视为不支持），它同时是应答窗口的哨兵。
 //   * DECRQM 2026 / 2027：同步输出、字素簇宽度；
 //   * \e[?u：kitty 键盘协议当前 flags；
@@ -63,7 +63,7 @@ int hex_digit(char c) noexcept {
 }
 
 // OSC 11 应答文本：11;rgb:RR/GG/BB（每段 1..4 位十六进制，可同用 rgba:）。
-// 每段按位数线性放大到 8 位，够 §3.12 判亮度。
+// 每段按位数线性放大到 8 位，够 §9.2 判亮度。
 bool parse_osc11_background(std::string_view body, Color& out) {
     if (!body.starts_with("11;")) return false;
     body.remove_prefix(3);
@@ -130,7 +130,7 @@ Runtime::~Runtime() {
     if (wake_pipe_[1] >= 0) ::close(wake_pipe_[1]);
 }
 
-// ---- 定时器（§3.9）----
+// ---- 定时器（§12.4）----
 
 // 到期时刻存最小堆；取消只从登记表删除，堆里的旧条目弹出时丢弃
 // （惰性删除）。取消积压过多时整堆重建，堆大小与存活定时器同阶。
@@ -207,12 +207,12 @@ void Runtime::run_timers(Clock::time_point now) {
     if (!fired_.empty()) note_changes();
 }
 
-// ---- 浮层（§3.4.3）----
+// ---- 浮层（§12.2）----
 
 uint32_t Runtime::open_overlay(std::unique_ptr<Widget> w, Placement p,
                                Point point, EventHandler* modal,
                                Widget* cursor_source) {
-    if (stack_ == nullptr) std::terminate(); // root 必须是 LayerStack（§3.4）
+    if (stack_ == nullptr) std::terminate(); // root 必须是 LayerStack（§8.2）
     Widget* const widget = w.get();
     const uint32_t id = stack_->push(std::move(w), p, point);
     overlays_.push_back({id, widget, modal, cursor_source, cursor_source_});
@@ -245,7 +245,7 @@ void Runtime::close_overlay(uint32_t id) {
                 }
             }
         }
-        // 浮层子树随即销毁：解除其中控件的鼠标绑定与捕获（§3.5），否则
+        // 浮层子树随即销毁：解除其中控件的鼠标绑定与捕获（§12.3），否则
         // 拖拽中途关闭时后续移动/释放会交给已销毁的控件，旧绑定也会被
         // 复用同一地址的新控件继承。
         const Widget* const root = it->widget;
@@ -266,7 +266,7 @@ void Runtime::close_overlay(uint32_t id) {
 // 时直接执行 —— 此时控件树已归渲染线程所有，入队反而是绕路；主循环
 // 会在调用返回后检查 dirty_，不需要唤醒。
 // 其余线程：节点在锁外分配，临界区只有一次尾插（两个指针写），最坏
-// 情况 O(1) —— 与渲染耗时、与已积压的队列长度都无关（§3.1）。
+// 情况 O(1) —— 与渲染耗时、与已积压的队列长度都无关（§4）。
 void Runtime::post(std::function<void()> fn) {
     if (on_render_thread()) {
         fn();
@@ -324,7 +324,7 @@ void Runtime::route_events() {
     for (const Event& e : events_) {
         if (handle_handshake_reply(e)) continue;
         if (e.kind == Event::Kind::mouse) {
-            dispatch_mouse(e); // 键盘走路由链，鼠标按坐标分发（§3.5）
+            dispatch_mouse(e); // 键盘走路由链，鼠标按坐标分发（§12.3）
         } else {
             router_.route(e);
         }
@@ -333,7 +333,7 @@ void Runtime::route_events() {
     note_changes();
 }
 
-// ---- 鼠标命中（§3.5）----
+// ---- 鼠标命中（§12.3）----
 
 void Runtime::bind_mouse(Widget& w, EventHandler& h) {
     for (auto& [widget, handler] : mouse_bindings_) {
@@ -423,7 +423,7 @@ void Runtime::dispatch_mouse(const Event& event) {
     }
 }
 
-// ---- 能力握手（§3.3）----
+// ---- 能力握手（§6.2）----
 
 // run() 开始时调用：发出查询、打开应答窗口、起 1 秒超时。查询只是
 // 写出，不等待 —— 首帧照常调度，应答在 poll 循环里以事件到达。
@@ -485,7 +485,7 @@ void Runtime::finish_handshake(bool commit) {
     if (commit) {
         term_.apply_caps(pending_caps_);
         if (pending_caps_.kitty_keyboard) term_.set_kitty_keyboard(true);
-        // §3.13：mode 2027 确认后开启；此后终端与框架使用同一套字素簇规则。
+        // §7：mode 2027 确认后开启；此后终端与框架使用同一套字素簇规则。
         if (pending_caps_.grapheme_width) term_.set_grapheme_width(true);
     }
     pending_caps_ = Terminal::Caps{};
@@ -507,7 +507,7 @@ void Runtime::report_caps() {
 }
 
 void Runtime::check_size() {
-    // ioctl 约 1µs（§四）。SIGWINCH 唤醒时与每帧开头各查一次。
+    // ioctl 约 1µs（§5.1）。SIGWINCH 唤醒时与每帧开头各查一次。
     const Size now = term_.size();
     if (now == size_) return;
     size_ = now;
@@ -529,7 +529,7 @@ void Runtime::frame() {
     }
 
     back_.copy_from(front_); // back 起点 = front：未失效区域即终端真相
-    root_.render(back_);     // Container 跳过干净子树（§七）
+    root_.render(back_);     // Container 跳过干净子树（§5.3）
 
     cursor_.reset();
     if (cursor_source_ != nullptr) {
@@ -617,7 +617,7 @@ void Runtime::run() {
         bool resized = false;
         if ((fds[1].revents & POLLIN) != 0) {
             const Terminal::Signals sig = term_.drain_signal();
-            // SIGINT/SIGTERM/SIGHUP → 正常退出路径（§四）；SIGWINCH → 查尺寸。
+            // SIGINT/SIGTERM/SIGHUP → 正常退出路径（§6.1）；SIGWINCH → 查尺寸。
             if (sig.quit) quit_.store(true, std::memory_order_release);
             resized = sig.resize;
         }
@@ -671,7 +671,7 @@ void Runtime::run() {
         frames_.fetch_add(1, std::memory_order_relaxed);
         last_frame_ = Clock::now();
 
-        // §3.13：超长字素 intern 表在帧间清空。缓冲区里的旧索引已经写出，
+        // §7：超长字素 intern 表在帧间清空。缓冲区里的旧索引已经写出，
         // 作废双缓冲并整树补画，下一帧全量重写后消失。
         if (intern_overflowed()) {
             intern_reset();
@@ -683,7 +683,7 @@ void Runtime::run() {
     }
 }
 
-// ---- 挂起/恢复（§3.10）----
+// ---- 挂起/恢复（§6.3）----
 
 // 外部程序（$EDITOR 等）独占终端的窗口：挂起框架的界面模式，跑完再恢复。
 // 本函数阻塞渲染线程，期间 post 在更新队列里累积，恢复后由主循环统一
@@ -714,7 +714,7 @@ void Runtime::resume_after_suspend() {
     dirty_ = true;
 }
 
-// ---- ScrollbackMouse（§3.8）----
+// ---- ScrollbackMouse（§10.10）----
 
 ScrollbackMouse::~ScrollbackMouse() {
     if (click_timer_ != 0) rt_.cancel(click_timer_);
