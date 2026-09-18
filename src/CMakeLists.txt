@@ -69,3 +69,19 @@ target_link_libraries(dagent_exec
     PUBLIC dagent_base
     PRIVATE Boost::headers PkgConfig::SECCOMP tree-sitter tree-sitter-bash Threads::Threads
 )
+
+# 工作区：文件原语、ripgrep 搜索、unified diff、项目上下文（git/AGENTS.md/模板）。
+add_library(dagent_workspace STATIC
+    private/workspace/files.cpp
+    private/workspace/search.cpp
+    private/workspace/diff.cpp
+    private/workspace/context.cpp
+)
+
+target_include_directories(dagent_workspace PUBLIC ${CMAKE_SOURCE_DIR}/src/public)
+target_compile_features(dagent_workspace PUBLIC cxx_std_23)
+target_compile_options(dagent_workspace PRIVATE -Wall -Wextra)
+target_link_libraries(dagent_workspace
+    PUBLIC dagent_base
+    PRIVATE dagent_exec pantor::inja
+)

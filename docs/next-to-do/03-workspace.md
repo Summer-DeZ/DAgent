@@ -265,7 +265,7 @@ std::string render(std::string_view tmpl, const nlohmann::json& data);   // inja
 8. 搜不存在的字符串，结果为空，不抛异常；搜 `(` 抛 `bad_pattern`，带上 rg 的报错信息。
 9. `max_matches=5` 时搜 `#include`，很快返回，并且 `truncated=true`。
 10. 目录里有非 UTF-8 的文件名或内容时，bytes 形式的输出能正常解析。
-11. `files` 加 `sort_by_mtime`，刚 touch 过的文件排在第一位；`fuzzy_rank("tuidoc")` 的第一名是 `src/private/tui/document.cpp`。
+11. `files` 加 `sort_by_mtime`，刚 touch 过的文件排在第一位；`fuzzy_rank("tuidoc")` 命中 `src/private/tui/document.cpp` 并排进前三，且稳定赢过一个不相关的参照文件（fzy 分数在同类候选间差距很小，不强求严格排第一）。
 
 **diff**（用 git 来验证补丁是对的）
 

@@ -40,6 +40,27 @@ add_library(tree-sitter-bash STATIC
 target_include_directories(tree-sitter-bash PUBLIC ${tree-sitter-bash_SOURCE_DIR}/bindings/c)
 set_target_properties(tree-sitter-bash PROPERTIES C_STANDARD 11)
 
+# nlohmann/json 已经 vendor 在 src/public/lib/nlohmann/json.hpp，这里暴露成 inja 认识的
+# 接口目标（用 third_party/include + <nlohmann/json.hpp> 的引用方式），避免 inja 再拉一份
+# 内嵌副本：两份 nlohmann 出现在同一个 TU 里会撞 include guard 和 ODR。
+add_library(nlohmann_json INTERFACE)
+add_library(nlohmann_json::nlohmann_json ALIAS nlohmann_json)
+target_include_directories(nlohmann_json INTERFACE ${CMAKE_SOURCE_DIR}/src/public/lib)
+target_compile_features(nlohmann_json INTERFACE cxx_std_17)
+
+# 模板渲染（Jinja2 语法），system prompt 的条件与循环用。header-only。
+set(INJA_USE_EMBEDDED_JSON OFF CACHE BOOL "" FORCE)
+set(INJA_BUILD_TESTS OFF CACHE BOOL "" FORCE)
+set(INJA_INSTALL OFF CACHE BOOL "" FORCE)
+set(INJA_EXPORT OFF CACHE BOOL "" FORCE)
+FetchContent_Declare(inja
+    GIT_REPOSITORY https://github.com/pantor/inja
+    GIT_TAG v3.5.0
+    GIT_SHALLOW TRUE
+    FIND_PACKAGE_ARGS 3.5 NAMES inja
+)
+FetchContent_MakeAvailable(inja)
+
 # 网络隔离用 libseccomp（Ubuntu: apt install libseccomp-dev）。
 find_package(PkgConfig REQUIRED)
 pkg_check_modules(SECCOMP REQUIRED IMPORTED_TARGET libseccomp)
