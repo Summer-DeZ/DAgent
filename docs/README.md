@@ -9,6 +9,7 @@ DAgent 是一个使用 C++23 和 CMake 构建的终端 Agent，仅支持 Linux�
 | TUI 框架 | `src/*/tui`，库 `dagent_tui` | 已完成并冻结（2026-09-18）：只修缺陷，不增删原语 |
 | 应用层界面 | `src/*/ui`，库 `dagent_ui` | 起步：JSON 主题加载（`ui::load_theme`），默认主题 `config/themes/dagent.json` |
 | Agent 运行时 | `src/*/agent` | 未开始 |
+| 基础库 | `src/*/base`，库 `dagent_base` | 已完成：日志、`.env` 密钥、文本工具、JSON 脱敏 |
 | 网络 | `src/*/net`，库 `dagent_net` | 已完成：libcurl 薄封装（整包/流式、stop_token 取消、超时分类）与 SSE 解析；设计文档待补 |
 
 `config/dagent.json` 已包含模型网关、HTTP、上下文、会话等配置项，目前还没有代码读取它。
@@ -27,6 +28,7 @@ session、mcp、app（配置、命令行），按里程碑 M1–M5 推进。模�
 
 | 文档 | 内容 |
 | --- | --- |
+| [base：日志与公共工具](design/base.md) | 日志接入与 `DAGENT_LOG`、`.env` 密钥与格式、文本工具与 JSON 脱敏的行为 |
 | [终端 UI 框架](design/tui-framework.md) | 框架能做什么、分层与对象关系、应用怎样接入、各模块的职责。源码注释中的 `§N` 指这份文档的章节 |
 
 ## 构建与测试
@@ -48,7 +50,8 @@ ctest --test-dir build/dev         # 运行 test/tui（tui_tests）
 运行时用例在真实子进程里跑，经管道或 pty 注入按键、鼠标与终端应答。
 
 依赖：CMake ≥ 3.25、支持 C++23 的编译器、Boost ≥ 1.83（Boost.Test）、libcurl。第三方头文件
-随仓库放在 `src/public/lib/`（nlohmann/json v3.12.0）。
+随仓库放在 `src/public/lib/`（nlohmann/json v3.12.0）；需要源码构建的第三方库在 `cmake/deps.cmake`
+中以 FetchContent 引入（spdlog v1.17.0），首次配置需要联网。
 
 ## 目录约定
 

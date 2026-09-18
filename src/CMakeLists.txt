@@ -1,3 +1,16 @@
+# 最底层公共库：日志、dotenv 密钥、文本工具、JSON 脱敏。
+add_library(dagent_base STATIC
+    private/base/log.cpp
+    private/base/dotenv.cpp
+    private/base/text.cpp
+    private/base/json.cpp
+)
+
+target_include_directories(dagent_base PUBLIC ${CMAKE_SOURCE_DIR}/src/public)
+target_compile_features(dagent_base PUBLIC cxx_std_23)
+target_compile_options(dagent_base PRIVATE -Wall -Wextra)
+target_link_libraries(dagent_base PUBLIC spdlog::spdlog)
+
 add_library(dagent_tui STATIC
     private/tui/terminal.cpp
     private/tui/grapheme.cpp

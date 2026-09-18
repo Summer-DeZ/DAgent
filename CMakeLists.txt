@@ -14,6 +14,8 @@ find_package(Boost 1.83 REQUIRED)
 find_package(CURL REQUIRED)
 find_package(Threads REQUIRED)
 
+include(cmake/deps.cmake)
+
 add_subdirectory(src)
 
 enable_testing()
