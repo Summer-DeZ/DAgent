@@ -113,6 +113,21 @@ target_link_libraries(dagent_mcp
     PUBLIC dagent_base dagent_exec dagent_net
 )
 
+# 入口层：配置加载与命令行解析。认识所有模块的 Options，其他模块都不依赖它。
+add_library(dagent_app STATIC
+    private/app/config.cpp
+    private/app/cli.cpp
+)
+
+target_include_directories(dagent_app PUBLIC ${CMAKE_SOURCE_DIR}/src/public)
+target_compile_features(dagent_app PUBLIC cxx_std_23)
+target_compile_options(dagent_app PRIVATE -Wall -Wextra)
+target_compile_definitions(dagent_app PRIVATE DAGENT_VERSION="${PROJECT_VERSION}")
+target_link_libraries(dagent_app
+    PUBLIC dagent_base dagent_exec dagent_workspace dagent_net dagent_session dagent_mcp
+    PRIVATE CLI11::CLI11
+)
+
 # 核心 agent：中立消息模型与各厂商协议的 LLM 编解码。
 add_library(dagent_agent STATIC
     private/agent/llm.cpp

@@ -19,7 +19,7 @@ namespace dagent::workspace {
 
 /// @brief 搜索选项。rg 缺失时抛 tool_missing。
 struct SearchOptions {
-    std::filesystem::path rg_path; ///< 为空时在 PATH 里找 rg，并把结果缓存
+    std::filesystem::path rg_path; ///< 为空时在 PATH 里找 rg 并缓存；不含 '/' 的值当命令名在 PATH 里找
 };
 
 struct GrepQuery {

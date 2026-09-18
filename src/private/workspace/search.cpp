@@ -25,8 +25,14 @@ fs::path find_rg(const SearchOptions& opt) {
                                  "; install it with: apt install ripgrep");
     };
     if (!opt.rg_path.empty()) {
-        if (::access(opt.rg_path.c_str(), X_OK) != 0) missing(opt.rg_path.string() + " is not executable");
-        return opt.rg_path;
+        fs::path path = opt.rg_path;
+        if (path.string().find('/') == std::string::npos) { // 命令名：在 PATH 里找
+            const auto found = exec::which(path.string());
+            if (!found) missing(path.string() + " not found in PATH");
+            path = *found;
+        }
+        if (::access(path.c_str(), X_OK) != 0) missing(path.string() + " is not executable");
+        return path;
     }
     static const fs::path cached = [] {
         const auto found = exec::which("rg");

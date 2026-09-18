@@ -25,7 +25,6 @@
     "compaction_target_percent": 60
   },
   "files": {
-    "max_list_entries": 16,
     "max_read_bytes": 65536,
     "max_write_bytes": 131072
   },
@@ -38,8 +37,7 @@
   },
   "process": {
     "default_timeout_ms": 300000,
-    "max_output_bytes": 262144,
-    "max_read_bytes": 65536
+    "max_output_bytes": 262144
   },
   "run": {
     "max_model_calls": 24,

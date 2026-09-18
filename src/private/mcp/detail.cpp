@@ -176,14 +176,7 @@ json make_error_response(const json& id, int code, const std::string& message) {
     return {{"jsonrpc", "2.0"}, {"id", id}, {"error", {{"code", code}, {"message", message}}}};
 }
 
-std::string sanitize(std::string_view s) {
-    std::string out(s);
-    for (char& c : out) {
-        const auto uc = static_cast<unsigned char>(c);
-        if (std::isalnum(uc) == 0 && c != '_' && c != '-') c = '_';
-    }
-    return out;
-}
+std::string sanitize(std::string_view s) { return sanitize_name(s); }
 
 std::string qualified_name(std::string_view server, std::string_view tool) {
     return "mcp__" + sanitize(server) + "__" + sanitize(tool);
@@ -253,3 +246,16 @@ std::string encode_header_value(std::string_view value) {
 }
 
 } // namespace dagent::mcp::detail
+
+namespace dagent::mcp {
+
+std::string sanitize_name(std::string_view name) {
+    std::string out(name);
+    for (char& c : out) {
+        const auto uc = static_cast<unsigned char>(c);
+        if (std::isalnum(uc) == 0 && c != '_' && c != '-') c = '_';
+    }
+    return out;
+}
+
+} // namespace dagent::mcp

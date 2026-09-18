@@ -51,6 +51,10 @@ struct Tool {
     nlohmann::json input_schema;
 };
 
+/// @brief 名字清理规则：[A-Za-z0-9_-] 以外的字符换成 '_'。qualified_name 由它拼出；app 检查跨 server
+/// 的名字冲突时也用它。
+std::string sanitize_name(std::string_view name);
+
 /// @brief tools/call 的结果：content 里的内容块（text / image / resource 等）原样交给核心；
 /// 只给结构化结果的 server（没有 content 的）把数据放在 structured 里。
 struct CallResult {

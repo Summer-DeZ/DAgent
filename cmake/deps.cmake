@@ -61,6 +61,18 @@ FetchContent_Declare(inja
 )
 FetchContent_MakeAvailable(inja)
 
+# 命令行解析（header-only）：子命令、互斥选项与环境变量回退。
+set(CLI11_BUILD_TESTS OFF CACHE BOOL "" FORCE)
+set(CLI11_BUILD_EXAMPLES OFF CACHE BOOL "" FORCE)
+set(CLI11_INSTALL OFF CACHE BOOL "" FORCE)
+FetchContent_Declare(CLI11
+    GIT_REPOSITORY https://github.com/CLIUtils/CLI11
+    GIT_TAG v2.7.2
+    GIT_SHALLOW TRUE
+    FIND_PACKAGE_ARGS 2.7 NAMES CLI11
+)
+FetchContent_MakeAvailable(CLI11)
+
 # 网络隔离用 libseccomp（Ubuntu: apt install libseccomp-dev）。
 find_package(PkgConfig REQUIRED)
 pkg_check_modules(SECCOMP REQUIRED IMPORTED_TARGET libseccomp)
