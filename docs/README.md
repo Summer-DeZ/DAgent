@@ -11,14 +11,14 @@ DAgent 是一个使用 C++23 和 CMake 构建的终端 Agent，仅支持 Linux�
 | Agent 运行时 | `src/*/agent` | 未开始 |
 | 基础库 | `src/*/base`，库 `dagent_base` | 已完成：日志、`.env` 密钥、文本工具、JSON 脱敏 |
 | 子进程与沙箱 | `src/*/exec`，库 `dagent_exec` | 已完成：命令执行与进程组清理、长期子进程、bash 只读分析、Landlock + seccomp 沙箱 |
-| 网络 | `src/*/net`，库 `dagent_net` | 已完成：libcurl 薄封装（整包/流式、stop_token 取消、超时分类）与 SSE 解析；设计文档待补 |
+| 网络 | `src/*/net`，库 `dagent_net` | 已完成：libcurl 薄封装（整包/流式、stop_token 取消、超时分类）与 SSE 解析 |
 
 `config/dagent.json` 已包含模型网关、HTTP、上下文、会话等配置项，目前还没有代码读取它。
 
 ## 后续工作
 
 [next-to-do/](next-to-do/README.md)：外围模块的设计、技术路线与验收标准，共七个库——base（日志、密钥、
-文本工具）、exec（子进程、沙箱）、workspace（文件、搜索、diff、项目上下文）、net（HTTP/SSE 已完成，LLM 编解码）、
+文本工具）、exec（子进程、沙箱）、workspace（文件、搜索、diff、项目上下文）、net（HTTP/SSE）、
 session、mcp、app（配置、命令行），按里程碑 M1–M5 推进。模块完成并审核通过后，对应文档改写成 `design/`
 下的设计文档，并从 next-to-do 删除。
 
@@ -30,6 +30,7 @@ session、mcp、app（配置、命令行），按里程碑 M1–M5 推进。模�
 | 文档 | 内容 |
 | --- | --- |
 | [base：日志与公共工具](design/base.md) | 日志接入与 `DAGENT_LOG`、`.env` 密钥与格式、文本工具与 JSON 脱敏的行为 |
+| [net：HTTP 客户端与 SSE 解析](design/net.md) | 整包与流式请求、三种超时、错误分类、即时取消、连接复用与线程约束、SSE 解析规则 |
 | [exec：子进程与沙箱](design/exec.md) | `run` 的行为与子进程运行环境、`Child`、只读判定白名单、沙箱模式与已知限制；exec 会让整个进程忽略 SIGPIPE |
 | [终端 UI 框架](design/tui-framework.md) | 框架能做什么、分层与对象关系、应用怎样接入、各模块的职责。源码注释中的 `§N` 指这份文档的章节 |
 
