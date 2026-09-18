@@ -74,10 +74,10 @@ resize：终端尺寸由渲染线程逐帧 ioctl 探测，L7 合成 `Kind::resiz
 
 ### 0.5 测试范围
 
-`test/tui` 只覆盖**当前里程碑**（现在是 M2：§3.2 解码器终端字符串 + kitty 键盘、§3.3
-能力握手），解码器直接喂字节断言事件流，握手用 pty 进程级用例由父进程扮演终端，不做烟雾
-测试。L1–L7 与 M1 的用例已随各自里程碑完成而移除；M3–M6 每个里程碑按本文各节的「验收」
-重新补齐该里程碑的用例，并移除上一里程碑的用例。
+`test/tui` 只覆盖**当前里程碑**（现在是 M4 的 §3.4 层栈与浮层）：摆放、命中与损伤传播直接
+用真实控件树断言，浮层与光标来源的衔接用 pty 进程级用例，不做烟雾测试。L1–L7、M1、M2 的
+用例已随各自里程碑完成而移除；后续每个里程碑按本文各节的「验收」重新补齐该里程碑的用例，
+并移除上一里程碑的用例。
 
 ---
 
@@ -306,12 +306,14 @@ public:
 
 ```cpp
 // L7：打开浮层并（可选）接管输入与光标；关闭时恢复打开前的焦点与光标来源。
-uint32_t Runtime::open_overlay(std::unique_ptr<Widget> w, Placement p,
+uint32_t Runtime::open_overlay(std::unique_ptr<Widget> w, Placement p, Point point,
                                EventHandler* modal, Widget* cursor_source);
 void Runtime::close_overlay(uint32_t id);
 ```
 
-`modal` 压入现有模态栈；关闭顺序不是后进先出时，按 L6 已有的空槽语义处理。
+`point` 与 `LayerStack::push` 同义（`above_point` / `at_point` 需要）。`modal` 压入现有模态栈；
+关闭顺序不是后进先出时，按 L6 已有的空槽语义处理；光标来源同理 —— 先关的浮层若是上层浮层
+记下的恢复点，恢复点改接到先关浮层自己的恢复点，不会恢复成已销毁的控件。
 
 **验收**（`test/tui/layout_test.cpp`、`frame_test.cpp`）：
 - **增量 == 全量**：随机序列（打开/移动/关闭浮层、基础层控件随机失效、改变尺寸）每一步后，

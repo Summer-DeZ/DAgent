@@ -92,9 +92,11 @@ public:
 
     // ---- 浮层（§3.4.3；run() 之前或渲染线程）----
     // root 必须是 LayerStack。打开并可选接管输入（modal 压入模态栈）
-    // 与光标来源；关闭时弹出模态、恢复打开前的光标来源。关闭顺序不是
-    // 后进先出时，模态栈按 L6 的空槽语义处理。
+    // 与光标来源；point 供 above_point / at_point 使用。关闭时弹出模态、
+    // 恢复打开前的光标来源。关闭顺序不是后进先出时，模态栈按 L6 的
+    // 空槽语义处理，光标恢复点改接到被关浮层自己的恢复点。
     uint32_t open_overlay(std::unique_ptr<Widget> w, Placement p,
+                          Point point = {},
                           EventHandler* modal = nullptr,
                           Widget* cursor_source = nullptr);
     void close_overlay(uint32_t id);

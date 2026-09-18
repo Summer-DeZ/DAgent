@@ -1,7 +1,6 @@
 add_executable(tui_tests
     main.cpp
     app_test.cpp
-    input_test.cpp
     layout_test.cpp
     frame_test.cpp
 )

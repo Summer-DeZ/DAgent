@@ -1,16 +1,15 @@
-// M2 §3.3 能力握手验收：子进程跑在 forkpty 的从端上（真实 tty），
-// 父进程在主端扮演终端 —— 读取查询、按用例写回应答，再注入按键。
-// 子进程用退出码报告断言结果；alarm 兜底，死锁/空转的用例判失败。
+// M4 §3.4.3 浮层与光标来源：子进程跑在 forkpty 的从端上（真实 tty），
+// 父进程读主端的帧输出、注入按键。子进程用退出码报告断言结果；alarm
+// 兜底，死锁/空转的用例判失败。
 
 #include <boost/test/unit_test.hpp>
 
 #include <cerrno>
 #include <chrono>
-#include <cstdlib>
 #include <memory>
+#include <optional>
 #include <string>
 #include <string_view>
-#include <thread>
 
 #include <poll.h>
 #include <pty.h>
@@ -18,6 +17,7 @@
 #include <unistd.h>
 
 #include "tui/app.hpp"
+#include "tui/layout.hpp"
 #include "tui/widget.hpp"
 
 using namespace dagent::tui;
@@ -30,7 +30,7 @@ struct Child {
     int fd = -1; // pty 主端
 };
 
-// 子进程的 alarm 兜底：最长的用例等 1 秒握手超时，10 秒足够把
+// 子进程的 alarm 兜底：用例只等几帧（毫秒级），10 秒足够把
 // 死锁/空转判成失败。
 constexpr unsigned k_alarm_s = 10;
 
@@ -94,180 +94,95 @@ bool read_until(Child& c, std::string& out, std::string_view needle,
     return true;
 }
 
-// 回车退出：父进程写完输入后以 \r 收尾，子进程据此结束 run()。
-struct QuitOnKey : EventHandler {
-    Runtime* rt = nullptr;
-    bool on_event(const Event& e) override {
-        if (e.kind == Event::Kind::key && e.key == Key::enter) {
-            rt->quit();
-            return true;
-        }
-        return false;
+// 光标来源：固定 10×1、光标恒在左上角（InputBox 带边框，空内容时
+// 量出来放不下光标）。
+class CursorBlock : public Widget {
+public:
+    Size measure(Size) const override { return {10, 1}; }
+    void render(Surface& s) override {
+        s.fill({0, 0, s.cols(), s.rows()}, U'#', Style{});
     }
+    std::optional<Point> cursor() const override { return Point{0, 0}; }
 };
 
-// 握手 pty 用例的子进程侧脚手架：最小输入界面 + Runtime，父进程退出后
-// 按退出码报告断言结果。
-struct HandshakeUi {
-    Container root{Container::Direction::vertical};
-    std::unique_ptr<InputBox> box = std::make_unique<InputBox>();
-    InputBox* input = box.get();
-    InputBoxHandler handler{*input};
-    Terminal term;
-    Runtime rt{term, root};
-    QuitOnKey quit_on_enter;
-
-    HandshakeUi() {
-        root.add({Sizing::flex, 1}, std::move(box));
-        quit_on_enter.rt = &rt;
-        rt.set_focus(&handler, input);
-        rt.set_global(quit_on_enter);
+// 最后一帧定位光标的行号（1 基）：帧末是 CUP + \e[?25h。
+int last_cursor_row(std::string_view out) {
+    const std::size_t show = out.rfind("\x1b[?25h");
+    if (show == std::string_view::npos) return -1;
+    const std::size_t cup = out.rfind("\x1b[", show - 1);
+    if (cup == std::string_view::npos) return -1;
+    int row = 0;
+    for (std::size_t i = cup + 2; i < show && out[i] >= '0' && out[i] <= '9'; ++i) {
+        row = row * 10 + (out[i] - '0');
     }
-
-    [[nodiscard]] bool caps_unchanged(const Terminal::Caps& initial) const {
-        const Terminal::Caps& c = term.caps();
-        return c.synchronized == initial.synchronized &&
-               c.grapheme_width == initial.grapheme_width &&
-               c.kitty_keyboard == initial.kitty_keyboard &&
-               c.background.has_value() == initial.background.has_value();
-    }
-};
+    return row;
+}
 
 } // namespace
 
 BOOST_AUTO_TEST_SUITE(app)
 
-// §3.3 验收（pty，父进程扮演终端）：
-//   1. 回全部应答 → caps 升级 + 主端收到 \e[>1u + 输入框无杂字；
-//   2. 只回 DA1 → caps 保持初始值，窗口关闭后 \e] 仍是 Alt-]；
-//   3. 不回应 → 1 秒后窗口关闭，其间与之后的输入正常。
-
-BOOST_AUTO_TEST_CASE(handshake_full_replies_upgrade_caps_and_enable_kitty) {
+// 非后进先出关闭带光标来源的浮层：先开 A、再开 B，先关 A 再关 B。
+// B 记下的恢复点是 A 的光标来源，而 A 关闭时控件已销毁 —— 恢复点必须
+// 改接到 A 自己的恢复点（基础层光标来源，第 1 行），不能悬垂。
+BOOST_AUTO_TEST_CASE(non_lifo_overlay_close_restores_base_cursor) {
     Child c = spawn_pty_child(
         [] {
-            HandshakeUi ui;
-            ui.rt.run();
+            auto base = std::make_unique<Container>(Container::Direction::vertical);
+            auto field = std::make_unique<CursorBlock>();
+            Widget* base_cursor = field.get();
+            base->add({Sizing::fixed, 1}, std::move(field));
+            LayerStack root{std::move(base)};
+            Terminal term;
+            Runtime rt{term, root};
+            rt.set_focus(nullptr, base_cursor);
 
-            const Terminal::Caps& caps = ui.term.caps();
-            if (!caps.synchronized) ::_exit(3);
-            if (!caps.grapheme_width) ::_exit(4);
-            if (!caps.kitty_keyboard) ::_exit(5);
-            if (!caps.background || caps.background->kind != Color::Kind::rgb ||
-                caps.background->r != 0x1e || caps.background->g != 0x1e ||
-                caps.background->b != 0x1e) {
-                ::_exit(6);
-            }
-            if (ui.input->text() != "hi") ::_exit(7); // 应答没有泄漏成文本
-            ui.term.restore(); // _exit 不跑析构：显式还原，弹出 kitty flag
-            ::_exit(0);
-        },
-        80, 24);
+            auto a = std::make_unique<CursorBlock>();
+            Widget* a_cursor = a.get();
+            auto b = std::make_unique<CursorBlock>();
+            Widget* b_cursor = b.get();
+            const uint32_t id_a = rt.open_overlay(std::move(a), Placement::at_point,
+                                                  {0, 5}, nullptr, a_cursor);
+            const uint32_t id_b = rt.open_overlay(std::move(b), Placement::at_point,
+                                                  {0, 8}, nullptr, b_cursor);
 
-    std::string out;
-    // 子进程 run() 开始即发出全部查询（DA1 最后）。
-    BOOST_REQUIRE(read_until(
-        c, out,
-        "\x1b[?2026$p\x1b[?2027$p\x1b[?u\x1b]11;?\x1b\\\x1b[c"));
-    const std::string replies =
-        "\x1b[?2026;2$y"                     // 同步输出支持
-        "\x1b[?2027;2$y"                     // 字素簇宽度支持
-        "\x1b[?1u"                           // kitty flags（协议支持）
-        "\x1b]11;rgb:1e1e/1e1e/1e1e\x1b\\"   // 背景色
-        "\x1b[?62;22c";                      // DA1 哨兵
-    BOOST_REQUIRE(::write(c.fd, replies.data(), replies.size()) ==
-                  static_cast<ssize_t>(replies.size()));
-    // caps 升级后推入 kitty flag 1（\e[>1u）。
-    BOOST_REQUIRE(read_until(c, out, "\x1b[>1u"));
-    BOOST_REQUIRE(::write(c.fd, "hi\r", 3) == 3);
-    BOOST_TEST(read_until(c, out, "\x1b[<u")); // 还原路径逆序弹出 flag
-    BOOST_TEST(drain_pty_until_exit(c, out) == 0);
-}
-
-BOOST_AUTO_TEST_CASE(handshake_unsupported_reply_overrides_env_guess) {
-    // 环境变量只是初始值：明确的“不支持”应答（DECRQM value 0）必须
-    // 覆盖乐观猜测（TERM 含 kitty → synchronized 初始为 true）。
-    Child c = spawn_pty_child(
-        [] {
-            ::setenv("TERM", "xterm-kitty", 1);
-            ::unsetenv("COLORTERM");
-            HandshakeUi ui;
-            if (!ui.term.caps().synchronized) ::_exit(3);
-            ui.rt.run();
-            if (ui.term.caps().synchronized) ::_exit(4);
-            ::_exit(0);
-        },
-        80, 24);
-
-    std::string out;
-    BOOST_REQUIRE(read_until(c, out, "\x1b[c"));
-    const std::string replies = "\x1b[?2026;0$y\x1b[?62;22c";
-    BOOST_REQUIRE(::write(c.fd, replies.data(), replies.size()) ==
-                  static_cast<ssize_t>(replies.size()));
-    BOOST_REQUIRE(::write(c.fd, "\r", 1) == 1);
-    BOOST_TEST(drain_pty_until_exit(c, out) == 0);
-}
-
-BOOST_AUTO_TEST_CASE(handshake_only_da1_keeps_initial_caps) {
-    Child c = spawn_pty_child(
-        [] {
-            HandshakeUi ui;
-            const Terminal::Caps initial = ui.term.caps();
-
-            struct Probe : EventHandler {
+            // 第一次回车：按 A、B 的顺序关闭；第二次回车：退出。
+            struct Closer : EventHandler {
                 Runtime* rt = nullptr;
-                bool saw_alt_bracket = false;
+                uint32_t first = 0;
+                uint32_t second = 0;
+                bool closed = false;
                 bool on_event(const Event& e) override {
-                    if (e.kind == Event::Kind::key && e.key == Key::enter) {
+                    if (e.kind != Event::Kind::key || e.key != Key::enter) return false;
+                    if (closed) {
                         rt->quit();
-                        return true;
+                    } else {
+                        rt->close_overlay(first);
+                        rt->close_overlay(second);
+                        closed = true;
                     }
-                    if (e.kind == Event::Kind::key &&
-                        any(e.mods & Mods::alt) && e.text == "]") {
-                        saw_alt_bracket = true;
-                        return true;
-                    }
-                    return false;
+                    return true;
                 }
-            } probe;
-            probe.rt = &ui.rt;
-            ui.rt.set_global(probe);
-            ui.rt.run();
-
-            if (!ui.caps_unchanged(initial)) ::_exit(3);
-            if (!probe.saw_alt_bracket) ::_exit(4); // 窗口已关：\e] 仍是 Alt-]
-            if (ui.input->text() != "x") ::_exit(5); // 没被当成应答吞掉
+            } closer;
+            closer.rt = &rt;
+            closer.first = id_a;
+            closer.second = id_b;
+            rt.set_global(closer);
+            rt.run();
             ::_exit(0);
         },
         80, 24);
 
     std::string out;
-    BOOST_REQUIRE(read_until(c, out, "\x1b[c"));
-    const std::string da1 = "\x1b[?62;22c";
-    BOOST_REQUIRE(::write(c.fd, da1.data(), da1.size()) ==
-                  static_cast<ssize_t>(da1.size()));
-    std::this_thread::sleep_for(100ms); // 等子进程消费 DA1、关闭应答窗口
-    BOOST_REQUIRE(::write(c.fd, "\x1b]x\r", 4) == 4);
-    BOOST_TEST(drain_pty_until_exit(c, out) == 0);
-}
+    BOOST_REQUIRE(read_until(c, out, "\x1b[?25h")); // 首帧：光标在 B（第 9 行）
+    BOOST_TEST(last_cursor_row(out) == 9);
 
-BOOST_AUTO_TEST_CASE(handshake_timeout_keeps_input_working) {
-    Child c = spawn_pty_child(
-        [] {
-            HandshakeUi ui;
-            const Terminal::Caps initial = ui.term.caps();
-            ui.rt.run();
+    out.clear();
+    BOOST_REQUIRE(::write(c.fd, "\r", 1) == 1);
+    BOOST_REQUIRE(read_until(c, out, "\x1b[?25h")); // 关闭后的帧
+    BOOST_TEST(last_cursor_row(out) == 1);          // 回到基础层光标来源
 
-            if (!ui.caps_unchanged(initial)) ::_exit(3);
-            if (ui.input->text() != "ab") ::_exit(4); // 窗口内与之后的输入都正常
-            ::_exit(0);
-        },
-        80, 24);
-
-    std::string out;
-    BOOST_REQUIRE(read_until(c, out, "\x1b[c"));
-    BOOST_REQUIRE(::write(c.fd, "a", 1) == 1); // 应答窗口打开期间的输入
-    std::this_thread::sleep_for(1300ms);        // 1 秒超时：窗口关闭、能力保持初始值
-    BOOST_REQUIRE(::write(c.fd, "b\r", 2) == 2);
+    BOOST_REQUIRE(::write(c.fd, "\r", 1) == 1);
     BOOST_TEST(drain_pty_until_exit(c, out) == 0);
 }
 

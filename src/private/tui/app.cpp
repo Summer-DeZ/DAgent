@@ -131,9 +131,10 @@ void Runtime::on_tick(std::function<bool()> fn) {
 // ---- 浮层（§3.4.3）----
 
 uint32_t Runtime::open_overlay(std::unique_ptr<Widget> w, Placement p,
-                               EventHandler* modal, Widget* cursor_source) {
+                               Point point, EventHandler* modal,
+                               Widget* cursor_source) {
     if (stack_ == nullptr) std::terminate(); // root 必须是 LayerStack（§3.4）
-    const uint32_t id = stack_->push(std::move(w), p);
+    const uint32_t id = stack_->push(std::move(w), p, point);
     overlays_.push_back({id, modal, cursor_source, cursor_source_});
     if (modal != nullptr) router_.push(*modal);
     if (cursor_source != nullptr) {
@@ -149,11 +150,21 @@ void Runtime::close_overlay(uint32_t id) {
     for (auto it = overlays_.begin(); it != overlays_.end(); ++it) {
         if (it->id != id) continue;
         if (it->modal != nullptr) router_.pop(*it->modal);
-        // 只在本浮层的光标来源仍生效时恢复，非后进先出的关闭不会
-        // 把上层浮层的光标来源改掉。
-        if (it->cursor_source != nullptr && cursor_source_ == it->cursor_source) {
-            cursor_source_ = it->prev_cursor;
-            dirty_ = true;
+        if (it->cursor_source != nullptr) {
+            // 只在本浮层的光标来源仍生效时恢复，非后进先出的关闭不会
+            // 把上层浮层的光标来源改掉。
+            if (cursor_source_ == it->cursor_source) {
+                cursor_source_ = it->prev_cursor;
+                dirty_ = true;
+            }
+            // 上层浮层把本浮层的光标来源记作恢复点，而本浮层的控件随即
+            // 销毁：恢复点改接到本浮层自己的恢复点，否则上层关闭时会
+            // 恢复成悬垂指针。
+            for (auto up = it + 1; up != overlays_.end(); ++up) {
+                if (up->prev_cursor == it->cursor_source) {
+                    up->prev_cursor = it->prev_cursor;
+                }
+            }
         }
         stack_->remove(id);
         overlays_.erase(it);
