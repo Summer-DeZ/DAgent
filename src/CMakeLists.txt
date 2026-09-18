@@ -26,3 +26,14 @@ add_library(dagent_ui STATIC
 
 target_link_libraries(dagent_ui PUBLIC dagent_tui)
 target_compile_options(dagent_ui PRIVATE -Wall -Wextra)
+
+# 网络层：libcurl 薄封装（HTTP 整包/流式、取消、超时）与 SSE 解析，不含任何模型协议。
+add_library(dagent_net STATIC
+    private/net/http.cpp
+    private/net/sse.cpp
+)
+
+target_include_directories(dagent_net PUBLIC ${CMAKE_SOURCE_DIR}/src/public)
+target_compile_features(dagent_net PUBLIC cxx_std_23)
+target_compile_options(dagent_net PRIVATE -Wall -Wextra)
+target_link_libraries(dagent_net PRIVATE CURL::libcurl)
