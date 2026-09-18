@@ -1,4 +1,4 @@
-#include "tui/app.hpp"
+#include "tui/runtime.hpp"
 
 #include <algorithm>
 #include <cerrno>

@@ -68,7 +68,7 @@ L1 终端     Terminal
 | L4 控件 | `widget.hpp` | `widget.cpp`、`theme.cpp` |
 | L5 文档层 | `document.hpp` | `document.cpp`、`wrap.cpp`、`markdown.cpp`、`syntax.cpp` |
 | L6 输入 | `input.hpp` | `input.cpp` |
-| L7 运行时 | `app.hpp` | `app.cpp`、`keymap.cpp` |
+| L7 运行时 | `runtime.hpp` | `runtime.cpp`、`keymap.cpp` |
 
 ### 对象关系
 

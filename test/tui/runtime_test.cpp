@@ -25,7 +25,7 @@
 #include <termios.h>
 #include <unistd.h>
 
-#include "tui/app.hpp"
+#include "tui/runtime.hpp"
 #include "tui/document.hpp"
 #include "tui/layout.hpp"
 #include "tui/widget.hpp"

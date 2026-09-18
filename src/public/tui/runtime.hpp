@@ -1,4 +1,4 @@
-/// @file app.hpp
+/// @file runtime.hpp
 /// @brief 渲染运行时：控件树归渲染线程独占，业务线程经 post() 入队更新。
 #pragma once
 
