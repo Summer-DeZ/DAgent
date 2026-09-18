@@ -24,6 +24,10 @@ namespace {
 // 单实例约定下的全局锚点：atexit 兜底与信号处理器（无 this 可用）都需要它。
 std::atomic<Terminal*> g_instance{nullptr};
 std::atomic<int> g_signal_write_fd{-1};
+// 挂起中（§3.10）：外部程序占用前台，终端的 Ctrl+C 是发给它的 —— 规范模式
+// 下 SIGINT 会送达整个前台进程组，本进程不能据此退出。只在处理器里忽略，
+// 不改成 SIG_IGN：被忽略的信号跨 exec 继承，外部程序会收不到 Ctrl+C。
+std::atomic<bool> g_interrupt_ignored{false};
 std::once_flag g_atexit_once;
 
 // 被接管的信号与其原有处理器：卸载时还原调用方自己装的处理器，
@@ -42,6 +46,10 @@ struct sigaction g_saved_handlers[std::size(kSignals)] = {};
 void terminal_on_signal(int sig) noexcept {
     const int saved_errno = errno; // 处理器不得改动被打断代码看到的 errno
     const int fd = g_signal_write_fd.load(std::memory_order_relaxed);
+    if (sig == SIGINT && g_interrupt_ignored.load(std::memory_order_relaxed)) {
+        errno = saved_errno;
+        return;
+    }
     if (fd >= 0) {
         const char b = sig == SIGWINCH ? kResizeByte : kQuitByte;
         ssize_t n = ::write(fd, &b, 1); // 管道满（EAGAIN）= 唤醒已挂起
@@ -59,6 +67,20 @@ void terminal_atexit_restore() noexcept {
 
 bool env_has(std::string_view value, std::string_view key) noexcept {
     return value.find(key) != std::string_view::npos;
+}
+
+// 离开界面模式的转义序列：严格逆序（可选上报模式 → 光标/换行 → 备用屏）。
+// restore 与 suspend 共用；传入的是"当前确实开着"的模式。
+std::string leave_screen_seq(bool mouse, bool focus, bool paste, bool kitty) {
+    std::string seq;
+    if (mouse) seq += "\x1b[?1006l\x1b[?1002l";
+    if (focus) seq += "\x1b[?1004l";
+    if (kitty) seq += "\x1b[<u"; // 弹出握手时推入的键盘 flag
+    if (paste) seq += "\x1b[?2004l";
+    seq += "\x1b[?25h";   // 显示光标
+    seq += "\x1b[?7h";    // 恢复自动换行
+    seq += "\x1b[?1049l"; // 离开备用屏，还原用户原有终端内容
+    return seq;
 }
 
 } // namespace
@@ -250,35 +272,96 @@ void Terminal::set_kitty_keyboard(bool on) {
 // 还原 = 进入序列的严格逆序，只关自己开过的模式。
 // restored_ 先行置位保证：析构 / atexit / 信号路径并发叠加时只执行一次。
 // screen_active_ 门控：stdout 是管道时从未进入过界面模式，不得写出转义。
+// 挂起中调用同样安全：终端已被 suspend 还原，这里只落终态、不再写出。
 void Terminal::restore() noexcept {
     if (restored_.exchange(true, std::memory_order_acq_rel)) {
         return;
     }
+    // 挂起现场不必清除：resume 先检查 restored_，终态之后是空操作（这里
+    // 可能在 atexit 线程上执行，不碰渲染线程独占的挂起字段）。
+    g_interrupt_ignored.store(false, std::memory_order_relaxed);
 
     if (screen_active_.load(std::memory_order_acquire)) {
-        std::string seq;
-        if (mouse_.exchange(false, std::memory_order_acq_rel)) {
-            seq += "\x1b[?1006l\x1b[?1002l";
-        }
-        if (focus_.exchange(false, std::memory_order_acq_rel)) {
-            seq += "\x1b[?1004l";
-        }
-        if (kitty_.exchange(false, std::memory_order_acq_rel)) {
-            seq += "\x1b[<u"; // 弹出握手时推入的键盘 flag
-        }
-        if (paste_.exchange(false, std::memory_order_acq_rel)) {
-            seq += "\x1b[?2004l";
-        }
-        seq += "\x1b[?25h";  // 显示光标
-        seq += "\x1b[?7h";   // 恢复自动换行
-        seq += "\x1b[?1049l"; // 离开备用屏，还原用户原有终端内容
-        write(seq);
+        write(leave_screen_seq(
+            mouse_.exchange(false, std::memory_order_acq_rel),
+            focus_.exchange(false, std::memory_order_acq_rel),
+            paste_.exchange(false, std::memory_order_acq_rel),
+            kitty_.exchange(false, std::memory_order_acq_rel)));
         screen_active_.store(false, std::memory_order_release);
     }
 
     if (raw_saved_) {
         ::tcsetattr(STDIN_FILENO, TCSANOW, &saved_);
         raw_saved_ = false;
+    }
+}
+
+// 挂起：逆序退出界面模式 + 还原 termios，但把"挂起前开着什么"记下来，
+// 供 resume 精确恢复；restored_ 不动（restore 仍是唯一终态）。
+// 信号处理器不卸：SIGINT/TERM/HUP/WINCH 在挂起期间照常唤醒（此时主循环
+// 不在 poll，写管道只是缓冲一个字节，恢复后由 drain_signal 消费）。
+void Terminal::suspend() noexcept {
+    if (restored_.load(std::memory_order_acquire) || suspended_) return;
+    suspended_ = true;
+    g_interrupt_ignored.store(true, std::memory_order_relaxed);
+
+    if (screen_active_.load(std::memory_order_acquire)) {
+        suspended_screen_ = true;
+        suspended_mouse_ = mouse_.exchange(false, std::memory_order_acq_rel);
+        suspended_focus_ = focus_.exchange(false, std::memory_order_acq_rel);
+        suspended_paste_ = paste_.exchange(false, std::memory_order_acq_rel);
+        suspended_kitty_ = kitty_.exchange(false, std::memory_order_acq_rel);
+        write(leave_screen_seq(suspended_mouse_, suspended_focus_,
+                               suspended_paste_, suspended_kitty_));
+        screen_active_.store(false, std::memory_order_release);
+    }
+
+    suspended_raw_ = raw_saved_;
+    if (raw_saved_) {
+        ::tcsetattr(STDIN_FILENO, TCSANOW, &saved_);
+        raw_saved_ = false;
+    }
+}
+
+// 恢复：与 suspend 严格配对，重新进入备用屏/raw 并恢复挂起前开着的
+// 上报模式（顺序与 enter 一致：备用屏 → 光标/换行 → 粘贴 → 鼠标/焦点/
+// kitty）。终端在这段时间被外部程序用过，屏幕内容由 L7 强制整屏重画。
+void Terminal::resume() {
+    if (!suspended_ || restored_.load(std::memory_order_acquire)) return;
+    suspended_ = false;
+    g_interrupt_ignored.store(false, std::memory_order_relaxed);
+
+    if (suspended_raw_) {
+        suspended_raw_ = false;
+        termios raw = saved_;
+        ::cfmakeraw(&raw);
+        ::tcsetattr(STDIN_FILENO, TCSANOW, &raw);
+        raw_saved_ = true;
+    }
+
+    if (suspended_screen_) {
+        suspended_screen_ = false;
+        std::string seq = "\x1b[?1049h"; // 备用屏幕
+        seq += "\x1b[?7l";               // 关自动换行
+        seq += "\x1b[?25l";              // 藏光标
+        if (suspended_paste_) {
+            seq += "\x1b[?2004h";
+            paste_.store(true, std::memory_order_release);
+        }
+        if (suspended_mouse_) {
+            seq += "\x1b[?1002h\x1b[?1006h";
+            mouse_.store(true, std::memory_order_release);
+        }
+        if (suspended_focus_) {
+            seq += "\x1b[?1004h";
+            focus_.store(true, std::memory_order_release);
+        }
+        if (suspended_kitty_) {
+            seq += "\x1b[>1u";
+            kitty_.store(true, std::memory_order_release);
+        }
+        write(seq);
+        screen_active_.store(true, std::memory_order_release);
     }
 }
 

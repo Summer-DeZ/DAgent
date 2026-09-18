@@ -11,6 +11,7 @@
 #include <atomic>
 #include <cerrno>
 #include <chrono>
+#include <csignal>
 #include <memory>
 #include <string>
 #include <string_view>
@@ -302,6 +303,193 @@ BOOST_AUTO_TEST_CASE(drag_and_double_click_copy_source_text_via_osc52) {
     BOOST_TEST(next_clipboard(c, out, pos) == "world");
 
     BOOST_REQUIRE(::write(c.fd, "\r", 1) == 1);
+    BOOST_TEST(drain_pty_until_exit(c, out) == 0);
+}
+
+BOOST_AUTO_TEST_CASE(keymap_parses_bindings_and_dispatches) {
+    // 在子进程里建 Runtime 与 Keymap，避免测试进程自己进入界面模式；
+    // 事件直接喂给 Keymap（解析与分派是纯状态机，不需要终端）。
+    Child c = spawn_child([] {
+        Container root{Container::Direction::vertical};
+        Terminal term;
+        Runtime rt{term, root};
+        Keymap km{rt};
+
+        int a = 0;
+        int b = 0;
+        int ch = 0;
+        int d = 0;
+        int first = 0;
+        int second = 0;
+        int disabled_runs = 0;
+        km.add({"a", "A", "", [&] { ++a; }, {}});
+        km.add({"b", "B", "", [&] { ++b; }, {}});
+        km.add({"c", "C", "", [&] { ++ch; }, {}});
+        km.add({"d", "D", "", [&] { ++d; }, {}});
+        km.add({"conflict", "X", "", [&] { ++first; }, {}});
+        km.add({"conflict2", "X", "", [&] { ++second; }, {}});
+        km.add({"off", "O", "", [&] { ++disabled_runs; },
+                [] { return false; }});
+        int shifted = 0;
+        km.add({"shifted", "S", "", [&] { ++shifted; }, {}});
+
+        if (!km.bind("ctrl+shift+a", "a")) ::_exit(3);
+        if (!km.bind("alt+enter", "b")) ::_exit(4);
+        if (!km.bind("f5", "c")) ::_exit(5);
+        km.set_leader("ctrl+x", 60ms);
+        if (!km.bind("<leader> ctrl+c", "d")) ::_exit(6);
+        if (!km.bind("escape", "conflict")) ::_exit(7);
+        if (!km.bind("escape", "conflict2")) ::_exit(8); // 后绑定覆盖先绑定
+        if (!km.bind("ctrl+q", "off")) ::_exit(9);
+        if (!km.bind("shift+g", "shifted")) ::_exit(40);
+
+        const auto key = [](Key k, Mods m) {
+            Event e;
+            e.kind = Event::Kind::key;
+            e.key = k;
+            e.mods = m;
+            return e;
+        };
+        const auto chr = [](std::string t, Mods m) {
+            Event e;
+            e.kind = any(m) ? Event::Kind::key : Event::Kind::text;
+            e.mods = m;
+            e.text = std::move(t);
+            return e;
+        };
+
+        // ctrl+shift+a：kitty 上报大写 alternate，按基键小写匹配。
+        if (!km.on_event(chr("A", Mods::ctrl | Mods::shift))) ::_exit(10);
+        if (a != 1) ::_exit(11);
+        if (!km.on_event(key(Key::enter, Mods::alt))) ::_exit(12);
+        if (b != 1) ::_exit(13);
+        if (!km.on_event(key(Key::f5, Mods::none))) ::_exit(14);
+        if (ch != 1) ::_exit(15);
+        // <leader> ctrl+c
+        if (!km.on_event(chr("x", Mods::ctrl))) ::_exit(16);
+        if (!km.on_event(chr("c", Mods::ctrl))) ::_exit(17);
+        if (d != 1) ::_exit(18);
+        // escape 后绑定覆盖先绑定
+        if (!km.on_event(key(Key::escape, Mods::none))) ::_exit(19);
+        if (first != 0 || second != 1) ::_exit(20);
+        // enabled 返回 false：按键被消费但不执行
+        if (!km.on_event(chr("q", Mods::ctrl))) ::_exit(21);
+        if (disabled_runs != 0) ::_exit(22);
+        // Shift+字母：终端报成无修饰的文本 "G"，与 "shift+g" 匹配；小写 g
+        // 不匹配；绑定串写 "G" 与 "shift+g" 是同一序列（后绑定覆盖）。
+        if (!km.on_event(chr("G", Mods::none))) ::_exit(41);
+        if (km.on_event(chr("g", Mods::none))) ::_exit(42);
+        if (shifted != 1) ::_exit(43);
+        if (!km.bind("G", "a")) ::_exit(44);
+        if (!km.on_event(chr("G", Mods::none)) || shifted != 1 || a != 2) ::_exit(45);
+
+        // 非法串：空、裸露修饰键、未知修饰键/键名、越界功能键。
+        const char* bad[] = {"", "   ", "ctrl+", "+a", "hyper+a",
+                             "nope", "f13", "ctrl+shift+"};
+        for (const char* s : bad) {
+            if (km.bind(s, "a")) ::_exit(30);
+        }
+        if (km.bind("ctrl+b", "missing")) ::_exit(31); // 命令不存在
+        // 合法：单键、前后多余空格。
+        if (!km.bind("ctrl+x", "a")) ::_exit(32);
+        if (!km.bind("  ctrl+a   ", "b")) ::_exit(33);
+        if (km.commands().size() != 8) ::_exit(34);
+        ::_exit(0);
+    });
+    BOOST_TEST(wait_exit_code(c.pid) == 0);
+    ::close(c.fd);
+}
+
+BOOST_AUTO_TEST_CASE(keymap_leader_executes_and_timeout_falls_through) {
+    Child c = spawn_child([] {
+        Container root{Container::Direction::vertical};
+        auto box = std::make_unique<InputBox>();
+        InputBox* const box_p = box.get();
+        root.add({Sizing::flex, 1}, std::move(box));
+        Terminal term;
+        Runtime rt{term, root};
+        InputBoxHandler input{*box_p};
+        rt.set_focus(&input, box_p);
+        Keymap km{rt};
+        rt.set_global(km);
+
+        int runs = 0;
+        km.add({"test.n", "N", "", [&] { ++runs; }, {}});
+        km.set_leader("ctrl+x", 80ms);
+        if (!km.bind("<leader> n", "test.n")) ::_exit(3);
+        rt.after(600ms, [&] { rt.quit(); });
+        rt.run();
+
+        if (runs != 1) ::_exit(4);        // leader 后的 n 执行命令
+        if (box_p->text() != "n") ::_exit(5); // 超时后的 n 才进输入框
+        ::_exit(0);
+    });
+
+    // ctrl+x 后按 n：Keymap 自压模态，n 不进输入框。
+    BOOST_REQUIRE(::write(c.fd, "\x18", 1) == 1);
+    std::this_thread::sleep_for(20ms);
+    BOOST_REQUIRE(::write(c.fd, "n", 1) == 1);
+    std::this_thread::sleep_for(120ms); // 上一序列状态落定
+
+    // 再按一次 leader 后停手：等超过 leader 超时（80ms），模态已弹出，
+    // 随后的 n 走焦点链进输入框；若超时没生效，它会完成 <leader> n
+    // 让 runs 变成 2（子进程据此判失败）。
+    BOOST_REQUIRE(::write(c.fd, "\x18", 1) == 1);
+    std::this_thread::sleep_for(200ms);
+    BOOST_REQUIRE(::write(c.fd, "n", 1) == 1);
+    BOOST_TEST(wait_exit_code(c.pid) == 0);
+    ::close(c.fd);
+}
+
+BOOST_AUTO_TEST_CASE(run_external_suspends_and_resumes_with_full_repaint) {
+    Child c = spawn_pty_child(
+        [] {
+            Container root{Container::Direction::vertical};
+            auto first = std::make_unique<Text>();
+            first->set_text("alpha");
+            root.add({Sizing::fixed, 1}, std::move(first));
+            auto second = std::make_unique<Text>();
+            second->set_text("bravo");
+            root.add({Sizing::fixed, 1}, std::move(second));
+            Terminal term;
+            Runtime rt{term, root};
+            rt.after(80ms, [&] {
+                rt.run_external([] {
+                    constexpr std::string_view line = "EXTERNAL-EDITOR\n";
+                    if (::write(STDOUT_FILENO, line.data(), line.size()) < 0) {
+                        ::_exit(8);
+                    }
+                    // 外部程序运行期间用户按 Ctrl+C：规范模式下 SIGINT 送达
+                    // 整个前台进程组，本进程也会收到 —— 不能因此退出。
+                    ::kill(::getpid(), SIGINT);
+                });
+            });
+            bool survived = false;
+            rt.after(300ms, [&] {
+                survived = true;
+                rt.quit();
+            });
+            rt.run();
+            ::_exit(survived ? 0 : 7);
+        },
+        40, 10);
+
+    std::string out;
+    BOOST_REQUIRE(read_until(c, out, "alpha") != std::string::npos); // 首帧
+    const std::size_t ext = read_until(c, out, "EXTERNAL-EDITOR");
+    BOOST_REQUIRE(ext != std::string::npos);
+    // 恢复后的第一帧整屏重画：两行在重新进入备用屏之后再次写出。
+    BOOST_REQUIRE(read_until(c, out, "alpha", ext) != std::string::npos);
+    BOOST_REQUIRE(read_until(c, out, "bravo", ext) != std::string::npos);
+
+    const std::size_t leave_at = out.rfind("\x1b[?1049l", ext);
+    const std::size_t enter_at = out.find("\x1b[?1049h", ext);
+    const std::size_t alpha_at = out.find("alpha", ext);
+    BOOST_TEST(leave_at != std::string::npos);   // 挂起离开备用屏
+    BOOST_TEST(enter_at != std::string::npos);   // 恢复重新进入
+    BOOST_TEST(leave_at < ext);                  // 外部文本在界面模式之外
+    BOOST_TEST(ext < enter_at);
+    BOOST_TEST(enter_at < alpha_at);             // 恢复后整行写出 alpha/bravo
     BOOST_TEST(drain_pty_until_exit(c, out) == 0);
 }
 

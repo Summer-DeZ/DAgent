@@ -3,6 +3,7 @@
 #include <algorithm>
 #include <cerrno>
 #include <climits>
+#include <csignal>
 #include <string_view>
 #include <unistd.h>
 
@@ -651,6 +652,37 @@ void Runtime::run() {
         frames_.fetch_add(1, std::memory_order_relaxed);
         last_frame_ = Clock::now();
     }
+}
+
+// ---- 挂起/恢复（§3.10）----
+
+// 外部程序（$EDITOR 等）独占终端的窗口：挂起框架的界面模式，跑完再恢复。
+// 本函数阻塞渲染线程，期间 post 在更新队列里累积，恢复后由主循环统一
+// 执行；fn 直接向 stdout 写自己的内容（此时终端已不在备用屏）。
+void Runtime::run_external(std::function<void()> fn) {
+    term_.suspend();
+    fn();
+    resume_after_suspend();
+}
+
+// Ctrl+Z：raw 模式下以字节 0x1A 到达，由全局处理器决定调用。向整个进程
+// 组发 SIGTSTP（与终端 Ctrl+Z 的效果一致，应用拉起的子进程一并停住），
+// 收到 SIGCONT 后从这里继续（shell 的 fg/bg 会发 SIGCONT）；孤儿进程组
+// 中内核丢弃 SIGTSTP，表现为立即恢复。
+void Runtime::suspend_process() {
+    term_.suspend();
+    ::kill(0, SIGTSTP);
+    resume_after_suspend();
+}
+
+// 恢复后的共同收尾：终端在挂起期间被外部程序改过，备用屏内容也不再由
+// front_ 代表 —— 作废双缓冲、整树补画，下一帧走全量写出。
+void Runtime::resume_after_suspend() {
+    term_.resume();
+    front_.resize(0, 0);
+    root_.invalidate_tree();
+    check_size(); // 挂起期间终端尺寸可能变过
+    dirty_ = true;
 }
 
 // ---- ScrollbackMouse（§3.8）----

@@ -43,6 +43,10 @@ struct Color {
 //   2. SIGINT/SIGTERM/SIGHUP → self-pipe 唤醒主循环，走正常退出路径；
 //   3. atexit 兜底（restore() 幂等，多路径可安全叠加）。
 // SIGKILL/SIGSEGV 无法覆盖，是终端程序的共同边界。
+//
+// 挂起/恢复（§3.10）与还原共用同一套转义栈，但不是终态：suspend() 逆序
+// 退出界面模式并还原 termios（信号处理器保留），resume() 重新进入并恢复
+// 挂起前开着的模式；restore() 之后 suspend()/resume() 均为空操作。
 class Terminal {
 public:
     // 终端能力。进入时按环境变量取初始值，Runtime 握手（§3.3）确认后
@@ -111,6 +115,16 @@ public:
     // 也是 atexit 兜底路径的入口。
     void restore() noexcept;
 
+    // 挂起/恢复（§3.10，渲染线程执行，与 restore 共用逆序栈）：
+    // suspend() 逆序退出界面模式、还原 termios 并记住挂起前的鼠标/焦点/
+    // 粘贴/kitty 模式；resume() 逆序重新进入（含备用屏与 raw）。挂起期间
+    // SIGINT 不触发退出（Ctrl+C 属于占用前台的外部程序），SIGTERM/SIGHUP
+    // 照常。两者配对
+    // 使用，suspend 后 restore 仍是终态、resume 变空操作。stdout/stdin
+    // 非 tty 时退化为空操作。
+    void suspend() noexcept;
+    void resume();
+
     // self-pipe 读端：信号处理器只写一个字节唤醒，主循环 poll 此 fd。
     // 接管 SIGINT/SIGTERM/SIGHUP（退出类）与 SIGWINCH（尺寸变化）。
     // O_NONBLOCK | O_CLOEXEC。
@@ -146,6 +160,15 @@ private:
     std::atomic<bool> focus_{false};
     std::atomic<bool> paste_{false};
     std::atomic<bool> kitty_{false};
+
+    // 挂起现场（只由 suspend/resume 在渲染线程读写；restore 不碰）。
+    bool suspended_ = false;
+    bool suspended_screen_ = false; // 挂起前在界面模式
+    bool suspended_raw_ = false;    // 挂起前 stdin 是 raw
+    bool suspended_mouse_ = false;
+    bool suspended_focus_ = false;
+    bool suspended_paste_ = false;
+    bool suspended_kitty_ = false;
 };
 
 } // namespace dagent::tui

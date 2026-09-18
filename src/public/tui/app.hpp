@@ -126,6 +126,17 @@ public:
     TimerId every(std::chrono::milliseconds period, std::function<bool()> fn);
     void cancel(TimerId id);
 
+    // ---- 挂起/恢复（§3.10；渲染线程，事件处理器/定时器回调内调用）----
+    // run_external：suspend → fn（例如 fork/exec $EDITOR 并等待）→ resume
+    // → front 作废 → 查尺寸 → 整屏重画。fn 期间 post 在队列中累积，恢复
+    // 后由主循环统一执行；fn 里不要调用本 Runtime 的渲染线程接口。
+    void run_external(std::function<void()> fn);
+    // Ctrl+Z：suspend → 向进程组发 SIGTSTP → 被 SIGCONT 继续后 resume +
+    // 整屏重画。raw 模式下 Ctrl+Z 以字节 0x1A 到达，由全局处理器按策略
+    // 调用（框架不预设绑定）。孤儿进程组中 SIGTSTP 会被内核丢弃，表现为
+    // 立即恢复，与真实交互终端不同。
+    void suspend_process();
+
     // 写系统剪贴板（OSC 52，§3.8；渲染线程）。渲染线程是唯一的终端写者，
     // 事件处理器与定时器回调就在渲染线程上，调用即写出，不等下一帧。
     // 返回是否完整写出（见 Terminal::set_clipboard）。
@@ -170,6 +181,9 @@ private:
     void start_handshake();                 // 发查询 + 打开应答窗口 + 起 1s 超时
     bool handle_handshake_reply(const Event& e); // 返回 true = 已消费
     void finish_handshake(bool commit);     // DA1 提交能力；超时不提交
+
+    // ---- 挂起/恢复（§3.10）：只在渲染线程上 ----
+    void resume_after_suspend();            // resume + 作废 front + 整屏重画
 
     // ---- 鼠标命中（§3.5）：只在渲染线程上 ----
     void dispatch_mouse(const Event& e);    // 捕获 → 模态 → 命中链 → 全局
@@ -296,6 +310,88 @@ private:
     Point last_press_{-1, -1};
     Location press_{};        // 拖拽起点
     bool dragging_ = false;   // 单击按下后，拖动即选择
+};
+
+// 命令（§3.11）：id 供绑定引用，title/category 供命令面板显示。
+struct Command {
+    std::string id;       // "session.new"
+    std::string title;    // 命令面板显示
+    std::string category;
+    std::function<void()> run;
+    std::function<bool()> enabled; // 空 = 始终可用
+};
+
+// 快捷键与命令层（§3.11）。绑定串是以空格分隔的按键序列，例：
+// "ctrl+p"、"<leader> n"、"shift+enter"、"escape"；"<leader>" 展开为
+// set_leader 配置的按键。Keymap 作为全局处理器安装（set_global）：
+//   * 单键绑定在事件到达它时直接匹配执行；
+//   * 多键序列（含 <leader> 开头）在第一个键按下时把自身压入模态栈并
+//     启动超时定时器，因此后续按键不会先被输入框当作文本消费 —— 匹配
+//     成功、不匹配或超时后弹出，不匹配的按键照常沿栈继续下沉；
+//   * 上下文归属仍由 L6 的栈顺序决定：对话框消费了 Escape，它就不到达
+//     Keymap。
+// 命中的命令 enabled 返回 false 时不执行（按键仍被消费）。同一序列后
+// 绑定覆盖先绑定；命中序列同时是更长序列前缀时立即执行，不再等待。
+//
+// 线程与生命周期：与 Runtime 同线程使用；必须先于 Runtime 销毁（析构
+// 要取消超时定时器、弹出自压的模态）。
+//
+// 按键归一化：Shift 与字母的组合一律表示为「小写字母 + shift」——终端把
+// Shift+A 报成文本 "A"（传统编码与 kitty flag 1 都如此），绑定串里写
+// "shift+a" 或 "A" 等价。Shift 与符号的组合按终端报出的字符匹配（写 "?"
+// 而不是 "shift+/"）。
+class Keymap : public EventHandler {
+public:
+    explicit Keymap(Runtime& rt) noexcept;
+    ~Keymap() override;
+    Keymap(const Keymap&) = delete;
+    Keymap& operator=(const Keymap&) = delete;
+
+    // 重复 id 覆盖旧命令。命令表是命令面板的数据源。
+    void add(Command c);
+    // 注册绑定；按键串非法或命令 id 不存在时返回 false。
+    bool bind(std::string_view keys, std::string_view command_id);
+    // <leader> 按键与多键序列的等待超时；按键串非法则清除 leader。
+    void set_leader(std::string_view key, std::chrono::milliseconds timeout);
+    const std::vector<Command>& commands() const noexcept { return commands_; }
+
+    bool on_event(const Event& e) override;
+
+private:
+    // 一次按键：命名键或单个可打印码点（两者互斥）+ 修饰键。
+    struct KeyPress {
+        Key key = Key::none;
+        char32_t ch = 0;
+        Mods mods = Mods::none;
+        bool operator==(const KeyPress&) const noexcept = default;
+    };
+    struct Token {
+        bool leader = false; // "<leader>" 占位；否则是字面按键
+        KeyPress key{};
+        bool operator==(const Token&) const noexcept = default;
+    };
+    struct Binding {
+        std::vector<Token> keys;
+        size_t command = 0; // commands_ 下标
+    };
+
+    static std::optional<KeyPress> press_from(const Event& e);
+    static bool parse_key(std::string_view text, Mods mods, KeyPress& out);
+    static bool parse_token(std::string_view text, Token& out);
+    static bool parse_binding(std::string_view text, std::vector<Token>& out);
+
+    void arm_timeout();
+    void reset_sequence();
+    void execute(size_t command_index);
+
+    Runtime& rt_;
+    std::vector<Command> commands_;
+    std::vector<Binding> bindings_;
+    std::optional<KeyPress> leader_;
+    std::chrono::milliseconds timeout_{500};
+    std::vector<KeyPress> pending_; // 已按下的序列前缀（非空 = 模态已压栈）
+    bool modal_active_ = false;
+    TimerId timeout_id_ = 0;
 };
 
 } // namespace dagent::tui
