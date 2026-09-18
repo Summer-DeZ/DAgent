@@ -68,10 +68,14 @@ struct Event {
     ReplyType reply_type = ReplyType::csi; // Kind::reply 的序列来源
     struct Mouse {
         int button = -1; // 0/1/2 = 左/中/右；4/5/6/7 = 滚轮上/下/左/右；-1 = 无键
-        int col = 0;     // 0 基列（1006 编码是 1 基，解码时已减一）
-        int row = 0;     // 0 基行
+        int col = 0;     // 屏幕 0 基列（1006 编码是 1 基，解码时已减一）
+        int row = 0;     // 屏幕 0 基行
+        // 相对命中控件左上角（L7 分发时改写，§3.5）；捕获期间相对捕获控件。
+        int x = 0;
+        int y = 0;
         bool press = false;  // 按下/拖拽 true，释放 false
         bool motion = false; // 移动（拖拽或悬停）
+        bool outside = false; // 模态判定：点在该模态浮层之外
     } mouse;
     // Kind::resize 的新尺寸（L7 逐帧 ioctl 探测后合成，解码器不产生）。
     Size size{};

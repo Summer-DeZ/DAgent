@@ -55,6 +55,7 @@
 #include <optional>
 #include <string>
 #include <thread>
+#include <utility>
 #include <vector>
 
 #include "tui/input.hpp"
@@ -86,9 +87,18 @@ public:
         cursor_source_ = cursor_source;
         dirty_ = true; // 光标来源变了：即使控件都没失效也要重新定位
     }
-    void set_global(EventHandler& h) noexcept { router_.set_global(&h); }
+    void set_global(EventHandler& h) noexcept {
+        global_ = &h;
+        router_.set_global(&h);
+    }
     void push_modal(EventHandler& h) { router_.push(h); }
     void pop_modal(EventHandler& h) { router_.pop(h); }
+
+    // ---- 鼠标命中（§3.5；run() 之前或渲染线程）----
+    // 键盘路由不变；鼠标事件按坐标分发：L3/L4 不感知事件，控件与处理器的
+    // 对应关系登记在这里。绑定以控件身份为准，重复绑定覆盖。
+    void bind_mouse(Widget& w, EventHandler& h);
+    void unbind_mouse(Widget& w) noexcept;
 
     // ---- 浮层（§3.4.3；run() 之前或渲染线程）----
     // root 必须是 LayerStack。打开并可选接管输入（modal 压入模态栈）
@@ -140,6 +150,11 @@ private:
     bool handle_handshake_reply(const Event& e); // 返回 true = 已消费
     void finish_handshake(bool commit);     // DA1 提交能力；超时不提交
 
+    // ---- 鼠标命中（§3.5）：只在渲染线程上 ----
+    void dispatch_mouse(const Event& e);    // 捕获 → 模态 → 命中链 → 全局
+    bool deliver_mouse(EventHandler& h, const Widget* w, Event e);
+    EventHandler* mouse_handler(Widget& w) const noexcept;
+
     Terminal& term_;
     Widget& root_;
     Options opt_;
@@ -180,12 +195,24 @@ private:
     // stack_ 在构造时取得；root 不是 LayerStack 时浮层 API 不可用。
     struct OverlayState {
         uint32_t id = 0;
+        Widget* widget = nullptr; // 浮层矩形（模态鼠标判定的边界）
         EventHandler* modal = nullptr;
         Widget* cursor_source = nullptr;
         Widget* prev_cursor = nullptr;
     };
     LayerStack* stack_ = nullptr;
     std::vector<OverlayState> overlays_;
+
+    // 鼠标（§3.5）：控件 → 处理器登记表；捕获记录按下时消费的处理器，
+    // 直到释放前移动/释放都直接交给它。
+    struct MouseCapture {
+        Widget* widget = nullptr; // 相对坐标的参照；全局处理器为 nullptr
+        EventHandler* handler = nullptr;
+        int button = -1;
+    };
+    std::vector<std::pair<Widget*, EventHandler*>> mouse_bindings_;
+    MouseCapture capture_;
+    EventHandler* global_ = nullptr;
 
     // ---- 跨线程原子 ----
     std::atomic<bool> quit_{false};

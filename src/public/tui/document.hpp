@@ -174,17 +174,31 @@ public:
     // 只改内存并置脏，绝不 I/O。
     uint64_t append_block(BlockKind kind, std::string source = {});
     uint64_t append_block(Block block); // 完整控制 meta/group/depth/open/collapsed
-    // 建一个可增长的尾部块（流式输出的入口，配合 append/close_block）。
+    // 建一个可增长的块（流式输出的入口，配合 append/close_block）。
+    // 多个块可以同时 open，尾部之外的中部块也一样（§3.6）。
     uint64_t open_block(BlockKind kind, std::string source = {});
     // 追加到 open 块；只 source += chunk（O(chunk)，不折行、零分配）。
     // id 不存在或块已关闭时返回 false。
     bool append(uint64_t id, std::string_view chunk);
+    // 任意块整体替换 source（工具状态回写、重试输出）。重置该块缓存，
+    // 折行在渲染时进行；锚点在该块时字节偏移夹到新长度（§3.6）。
+    bool replace(uint64_t id, std::string source);
+    // 只改 meta 并失效该块物化缓存（计数不受影响）。
+    bool set_meta(uint64_t id, std::string meta);
+    // 删除 id 及其后所有块（/undo），返回删除数。锚点块被删除时移到
+    // 删除点之前最后一块的末尾；文档已空则贴底（§3.6）。
+    size_t erase_from(uint64_t id);
     bool close_block(uint64_t id); // 终结增长：行数从此不再变
     bool set_collapsed(uint64_t id, bool collapsed, uint32_t rows);
 
     void clear();
     void trim_blocks(size_t keep); // 头部裁剪到至多 keep 块，O(1)/块
     void trim_rows(size_t keep);   // 头部裁剪到至多 keep 行，O(1)/块
+
+    // 滚动锚点（§8.4）由文档持有：replace/erase_from 自动维护其有效性，
+    // Scrollback 只读取与重定位。
+    const Anchor& anchor() const noexcept { return anchor_; }
+    void set_anchor(Anchor anchor) noexcept { anchor_ = anchor; }
 
     size_t block_count() const noexcept { return blocks_.size(); }
     const Block& block_at(size_t index) const noexcept { return blocks_[index]; }
@@ -226,6 +240,7 @@ private:
     std::deque<Block> blocks_;
     std::deque<size_t> prefix_; // 长度 == blocks_+1；值为绝对行号（不因裁剪平移）
     std::array<std::unique_ptr<BlockRenderer>, k_block_kind_count> renderers_{};
+    Anchor anchor_{};         // 滚动锚点（replace/erase_from 自动维护）
     uint64_t next_id_ = 1;
     uint64_t revision_ = 0;   // 任何内容变更后递增（Scrollback 的脏判定）
     size_t first_dirty_ = static_cast<size_t>(-1);
@@ -256,7 +271,7 @@ public:
     void scroll_end(); // 贴底并保持跟随
 
     [[nodiscard]] bool pinned() const noexcept {
-        return anchor_.pinned_to_bottom;
+        return doc_.anchor().pinned_to_bottom;
     }
     // 上次渲染时视口下方的行数（不贴底时 > 0，可用于「有 N 行新内容」提示）。
     [[nodiscard]] size_t unseen_rows() const noexcept { return unseen_; }
@@ -271,7 +286,6 @@ private:
 
     Document doc_;
     Theme theme_{};
-    Anchor anchor_{};
     uint64_t rendered_rev_ = 0; // 已渲染到的内容版本
     size_t total_ = 0;          // 上次渲染的文档总行数
     size_t top_ = 0;            // 上次渲染的视口顶行

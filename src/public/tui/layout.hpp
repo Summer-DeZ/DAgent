@@ -74,6 +74,9 @@ public:
     // 需要屏幕位置（光标定位）时用 screen_origin()。
     Rect rect() const noexcept { return rect_; }
 
+    // 沿父链上溯（L7 鼠标命中链用，§3.5）。根控件为 nullptr。
+    Widget* parent() const noexcept { return parent_; }
+
     // 左上角的屏幕坐标：沿父链累加各层局部偏移。O(嵌套深度)。
     Point screen_origin() const noexcept {
         Point p{rect_.x, rect_.y};

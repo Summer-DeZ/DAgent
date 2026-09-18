@@ -134,8 +134,9 @@ uint32_t Runtime::open_overlay(std::unique_ptr<Widget> w, Placement p,
                                Point point, EventHandler* modal,
                                Widget* cursor_source) {
     if (stack_ == nullptr) std::terminate(); // root 必须是 LayerStack（§3.4）
+    Widget* const widget = w.get();
     const uint32_t id = stack_->push(std::move(w), p, point);
-    overlays_.push_back({id, modal, cursor_source, cursor_source_});
+    overlays_.push_back({id, widget, modal, cursor_source, cursor_source_});
     if (modal != nullptr) router_.push(*modal);
     if (cursor_source != nullptr) {
         cursor_source_ = cursor_source;
@@ -243,11 +244,105 @@ void Runtime::arm_tick() noexcept {
 void Runtime::route_events() {
     if (events_.empty()) return;
     for (const Event& e : events_) {
-        if (!handle_handshake_reply(e)) router_.route(e);
+        if (handle_handshake_reply(e)) continue;
+        if (e.kind == Event::Kind::mouse) {
+            dispatch_mouse(e); // 键盘走路由链，鼠标按坐标分发（§3.5）
+        } else {
+            router_.route(e);
+        }
     }
     events_.clear();
     note_changes();
     arm_tick(); // 输入可能启动了动画（例如提交后开始转圈）
+}
+
+// ---- 鼠标命中（§3.5）----
+
+void Runtime::bind_mouse(Widget& w, EventHandler& h) {
+    for (auto& [widget, handler] : mouse_bindings_) {
+        if (widget == &w) {
+            handler = &h; // 重复绑定覆盖
+            return;
+        }
+    }
+    mouse_bindings_.push_back({&w, &h});
+}
+
+void Runtime::unbind_mouse(Widget& w) noexcept {
+    std::erase_if(mouse_bindings_,
+                  [&](const auto& b) { return b.first == &w; });
+}
+
+EventHandler* Runtime::mouse_handler(Widget& w) const noexcept {
+    for (const auto& [widget, handler] : mouse_bindings_) {
+        if (widget == &w) return handler;
+    }
+    return nullptr;
+}
+
+// 事件先改写为相对命中控件的坐标（w 为空 = 全局：保持屏幕坐标）。
+bool Runtime::deliver_mouse(EventHandler& h, const Widget* w, Event e) {
+    if (w != nullptr) {
+        const Point o = w->screen_origin();
+        e.mouse.x = e.mouse.col - o.x;
+        e.mouse.y = e.mouse.row - o.y;
+    } else {
+        e.mouse.x = e.mouse.col;
+        e.mouse.y = e.mouse.row;
+    }
+    return h.on_event(e);
+}
+
+void Runtime::dispatch_mouse(const Event& event) {
+    const Event::Mouse& m = event.mouse;
+
+    // 1. 捕获：按下被消费后，该按钮的移动与释放都直接交给它，
+    //    不论指针是否移出（拖拽选择、拖动滚动条）。
+    if (capture_.handler != nullptr && m.button == capture_.button &&
+        (m.motion || !m.press)) {
+        deliver_mouse(*capture_.handler, capture_.widget, event);
+        if (!m.press) capture_ = {};
+        return;
+    }
+
+    // 2. 模态：带 modal 的最上层浮层。点在它之外 → 事件给模态处理器
+    //    （outside = true）并吞掉，不穿透到下层；是否关闭由处理器决定。
+    for (auto it = overlays_.rbegin(); it != overlays_.rend(); ++it) {
+        if (it->modal == nullptr || it->widget == nullptr) continue;
+        const Rect r = it->widget->screen_rect();
+        if (!r.contains({m.col, m.row})) {
+            Event out = event;
+            out.mouse.outside = true;
+            out.mouse.x = m.col - r.x;
+            out.mouse.y = m.row - r.y;
+            it->modal->on_event(out);
+            return;
+        }
+        break; // 包含该点：继续走命中链（模态处理器可绑定在浮层上）
+    }
+
+    // 3. 命中链：最上层包含该点的最深控件沿父链向上，第一个绑定了
+    //    处理器且消费的为止。
+    if (stack_ != nullptr) {
+        for (Widget* w = stack_->hit({m.col, m.row}); w != nullptr;
+             w = w->parent()) {
+            EventHandler* h = mouse_handler(*w);
+            if (h == nullptr) continue;
+            if (deliver_mouse(*h, w, event)) {
+                // 非滚轮的按下被消费：进入捕获，后续拖拽/释放归它。
+                if (capture_.handler == nullptr && m.press && m.button >= 0 &&
+                    m.button < 4) {
+                    capture_ = {w, h, m.button};
+                }
+                return;
+            }
+        }
+    }
+
+    // 4. 全局处理器。
+    if (global_ != nullptr) {
+        deliver_mouse(*global_, nullptr, event);
+    }
 }
 
 // ---- 能力握手（§3.3）----

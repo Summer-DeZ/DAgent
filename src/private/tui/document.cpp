@@ -85,6 +85,67 @@ bool Document::append(uint64_t id, std::string_view chunk) {
     return true;
 }
 
+// 整体替换：source 任意变化（不是尾部追加），必须走整块重数路径 ——
+// cache_key = -1 让 begin_frame 对该块 count_full。物化缓存同时作废，
+// 帧协议保证 begin_frame 先于物化，但清掉可避免误用旧行。
+bool Document::replace(uint64_t id, std::string source) {
+    const auto idx = index_of(id);
+    if (!idx) return false;
+    Block& b = blocks_[*idx];
+    b.source = std::move(source);
+    b.cache_key = -1;
+    b.stable_rows = 0;
+    b.stable_bytes = 0;
+    b.rows.clear();
+    b.rows_valid = 0;
+    b.rows_bytes = 0;
+    if (*idx < first_dirty_) first_dirty_ = *idx;
+    // 锚点在该块：字节偏移夹到新长度（§3.6）。
+    if (!anchor_.pinned_to_bottom && anchor_.block_id == id) {
+        anchor_.byte_in_block = std::min(anchor_.byte_in_block, b.source.size());
+    }
+    ++revision_;
+    return true;
+}
+
+// meta 只影响物化（渲染器可读），不影响折行计数：失效该块的行缓存即可。
+bool Document::set_meta(uint64_t id, std::string meta) {
+    const auto idx = index_of(id);
+    if (!idx) return false;
+    Block& b = blocks_[*idx];
+    b.meta = std::move(meta);
+    b.rows.clear();
+    b.rows_valid = 0;
+    b.rows_bytes = 0;
+    ++revision_;
+    return true;
+}
+
+// 删除 id 及其后所有块（/undo）。前缀和只需截断；锚点块被删除时
+// 移到删除点之前最后一块的末尾，文档已空则贴底（§3.6）。
+size_t Document::erase_from(uint64_t id) {
+    const auto idx = index_of(id);
+    if (!idx) return 0;
+    const size_t removed = blocks_.size() - *idx;
+    blocks_.erase(blocks_.begin() + static_cast<std::ptrdiff_t>(*idx),
+                  blocks_.end());
+    prefix_.erase(prefix_.begin() + static_cast<std::ptrdiff_t>(*idx) + 1,
+                  prefix_.end());
+    if (first_dirty_ != k_npos && first_dirty_ >= *idx) {
+        first_dirty_ = *idx;
+    }
+    if (!anchor_.pinned_to_bottom && anchor_.block_id >= id) {
+        if (*idx == 0) {
+            anchor_ = Anchor{}; // 文档已空：贴底
+        } else {
+            const Block& prev = blocks_[*idx - 1];
+            anchor_ = Anchor{prev.id, prev.source.size(), false};
+        }
+    }
+    ++revision_;
+    return removed;
+}
+
 bool Document::close_block(uint64_t id) {
     const auto idx = index_of(id);
     if (!idx) return false;
@@ -115,6 +176,7 @@ void Document::clear() {
     prefix_.push_back(0);
     base_rows_ = 0;
     first_dirty_ = k_npos;
+    anchor_ = Anchor{}; // 内容清空：贴底
     ++revision_; // id 序列保持单调，不复用
 }
 
@@ -346,11 +408,11 @@ size_t Scrollback::max_top() const noexcept {
 void Scrollback::anchor_to(size_t row) {
     const size_t max = max_top();
     if (row >= max) {
-        anchor_.pinned_to_bottom = true;
+        doc_.set_anchor(Anchor{}); // pinned_to_bottom = true
         return;
     }
     const Location loc = doc_.location_of(row, theme_);
-    anchor_ = Anchor{loc.block_id, loc.byte_in_block, false};
+    doc_.set_anchor(Anchor{loc.block_id, loc.byte_in_block, false});
 }
 
 void Scrollback::scroll_lines(int lines) {
@@ -372,7 +434,7 @@ void Scrollback::scroll_home() {
 }
 
 void Scrollback::scroll_end() {
-    anchor_ = Anchor{}; // pinned_to_bottom = true
+    doc_.set_anchor(Anchor{}); // pinned_to_bottom = true
     invalidate();
 }
 
@@ -386,15 +448,16 @@ void Scrollback::render(Surface& s) {
     const size_t view = static_cast<size_t>(h);
     const size_t max = total > view ? total - view : 0;
     size_t top = max;
-    if (!anchor_.pinned_to_bottom) {
+    const Anchor anchor = doc_.anchor();
+    if (!anchor.pinned_to_bottom) {
         // 锚点是 (块 id, 字节偏移)：不受重折与裁剪影响（§8.4）。
-        const auto r = doc_.row_of(anchor_.block_id, anchor_.byte_in_block, theme_);
+        const auto r = doc_.row_of(anchor.block_id, anchor.byte_in_block, theme_);
         top = std::min(r.value_or(0), max);
         // 块被裁剪或内容缩水导致夹取时，锚点跟随实际视口顶行；未夹取时
         // 保留原字节偏移，来回改变宽度不会逐次漂到行首。
         if ((!r || top != *r) && total > 0) {
             const Location loc = doc_.location_of(top, theme_);
-            anchor_ = Anchor{loc.block_id, loc.byte_in_block, false};
+            doc_.set_anchor(Anchor{loc.block_id, loc.byte_in_block, false});
         }
     }
 
