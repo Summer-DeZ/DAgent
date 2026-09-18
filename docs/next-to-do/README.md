@@ -40,7 +40,7 @@ LLM 编解码（中立消息模型与厂商协议之间的翻译）归核心，�
 | 04 | net（[设计文档](../design/net.md)） | HTTP · SSE | libcurl | **已完成** |
 | 05 | session（[设计文档](../design/session.md)） | 会话存储（JSONL） | 暂时没有 | **已完成** |
 | 06 | mcp（[设计文档](../design/mcp.md)） | MCP 客户端（stdio / Streamable HTTP，现代与经典协议） | 暂时没有 | **已完成** |
-| 07 | [app](07-app.md) | 配置加载 · 命令行解析（入口层） | CLI11 | 未开始 |
+| 07 | app（[设计文档](../design/app.md)） | 配置加载 · 项目信任 · 命令行解析（入口层） | CLI11 | **已完成** |
 
 ### 依赖方向
 
@@ -59,14 +59,14 @@ exec, workspace, net, session, mcp ──► base
 
 | 里程碑 | 内容 | 做完之后能做什么 |
 | --- | --- | --- |
-| **M1 基础设施** | base 全部（已完成）· app（config、cli） | 你可以开始写 agent 循环：读配置、打日志、解析参数、用 net 调模型 |
+| **M1 基础设施** | base 全部（已完成）· app（config、cli，已完成） | 你可以开始写 agent 循环：读配置、打日志、解析参数、用 net 调模型 |
 | **M2 工具底座** | exec 的 process（已完成）· workspace 的 files、search、diff（已完成） | 能实现 bash/read/write/edit/grep/glob 工具，跑通第一个真正的编码任务 |
 | **M3 持久化与上下文** | session（已完成）· workspace 的 context（已完成）；LLM 编解码归核心，已完成，见 [docs/design/llm.md](../design/llm.md) | 会话可以恢复；system prompt 带上项目信息 |
 | **M4 扩展** | mcp（已完成）· exec 的 Child（已完成） | 接入外部 MCP 工具 |
 | **M5 安全** | exec 的命令分析和沙箱（已完成） | bash 命令在受限环境里执行，只读命令自动放行 |
 
 exec 已经整体完成（包括原计划放在 M4、M5 的 Child 和沙箱）；workspace 也已经整体完成（包括原计划放在
-M3 的 context）。外围模块只剩 app（config、cli）未开始。
+M3 的 context）。**七个外围模块已全部完成**；下一步是核心（agent 循环、tools 层、入口组装）。
 
 ---
 
@@ -118,7 +118,7 @@ Result do_something(const Input&, const Options&,
 | 小型、长期不更新的 header-only 库 | 放进 `src/public/lib/<库名>/`，保留 LICENSE | nlohmann/json（已有）、dtl |
 | 运行时程序 | 启动时用 `exec::which` 检查，缺失时报错并给出安装提示 | ripgrep、git |
 
-所有 `FetchContent_Declare` 集中写在 [cmake/deps.cmake](../../cmake/deps.cmake)（已由根 `CMakeLists.txt` include，目前有 spdlog、tree-sitter、tree-sitter-bash 与 libseccomp 的查找）。
+所有 `FetchContent_Declare` 集中写在 [cmake/deps.cmake](../../cmake/deps.cmake)（已由根 `CMakeLists.txt` include）。
 
 需要你安装的系统包（Ubuntu 24.04）：
 
@@ -129,7 +129,7 @@ sudo apt install libseccomp-dev    # exec 的沙箱需要，已安装
 
 ### 3.6 密钥
 
-- 密钥只放在 `.env.dev` 或 `.env` 里（格式见 [.env.example](../../.env.example)），通过 `base::Secrets` 读取，**不写进进程环境变量**。
+- 密钥放在环境变量、用户级 `~/.config/dagent/.env` 或项目的 `.env.dev`/`.env` 里（格式见 [.env.example](../../.env.example)，优先级见 [app 设计文档](../design/app.md)），通过 `base::Secrets` 读取，**不写进进程环境变量**。
 - `exec` 默认把名字像密钥的环境变量从子进程里过滤掉。
 - 任何日志、异常信息、会话记录里都不能出现密钥。
 

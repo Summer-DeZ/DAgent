@@ -77,7 +77,7 @@ public:
 
 ### grep / files：调用 rg
 
-- rg 路径：`SearchOptions::rg_path` 非空时直接用（会检查可执行位），否则用 `exec::which("rg")` 查 PATH
+- rg 路径：`SearchOptions::rg_path` 非空时使用它（不含 `/` 时当命令名用 `exec::which` 在 PATH 里找，并检查可执行位），否则用 `exec::which("rg")` 查 PATH
   并用静态局部变量缓存。都找不到时抛 `tool_missing`，信息里带 `apt install ripgrep`。
 - `grep` 固定加 `--json --no-messages --color=never --max-columns 500 --max-columns-preview`；
   `case_insensitive` 不设时用 `--smart-case`；模式串前面加 `--`，不会被解析成选项。
