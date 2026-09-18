@@ -2,12 +2,98 @@
 
 #include <cerrno>
 #include <climits>
+#include <string_view>
 #include <unistd.h>
 
 #include <fcntl.h>
 #include <poll.h>
 
 namespace dagent::tui {
+
+namespace {
+
+// 握手查询组（§3.3）：DA1 必须最后发 —— 终端按顺序应答（DA1 之前没
+// 收到的查询视为不支持），它同时是应答窗口的哨兵。
+//   * DECRQM 2026 / 2027：同步输出、字素簇宽度；
+//   * \e[?u：kitty 键盘协议当前 flags；
+//   * OSC 11：背景色（ST 终止）；
+//   * \e[c：DA1。
+constexpr std::string_view k_handshake_queries =
+    "\x1b[?2026$p"
+    "\x1b[?2027$p"
+    "\x1b[?u"
+    "\x1b]11;?\x1b\\"
+    "\x1b[c";
+
+constexpr std::chrono::milliseconds k_handshake_timeout{1000};
+
+std::optional<int> parse_uint(std::string_view s) {
+    if (s.empty()) return std::nullopt;
+    int v = 0;
+    for (const char c : s) {
+        if (c < '0' || c > '9') return std::nullopt;
+        v = v * 10 + (c - '0');
+        if (v > 100000) return std::nullopt;
+    }
+    return v;
+}
+
+// DECRQM 应答文本：?{mode};{value}$y（value 1/2 = 已置位/已复位 = 支持）。
+bool parse_decrqm(std::string_view body, int& mode, int& value) {
+    if (!body.starts_with('?') || !body.ends_with("$y")) return false;
+    body.remove_prefix(1);
+    body.remove_suffix(2);
+    const std::size_t semi = body.find(';');
+    if (semi == std::string_view::npos) return false;
+    const std::optional<int> m = parse_uint(body.substr(0, semi));
+    const std::optional<int> v = parse_uint(body.substr(semi + 1));
+    if (!m || !v) return false;
+    mode = *m;
+    value = *v;
+    return true;
+}
+
+int hex_digit(char c) noexcept {
+    if (c >= '0' && c <= '9') return c - '0';
+    if (c >= 'a' && c <= 'f') return c - 'a' + 10;
+    if (c >= 'A' && c <= 'F') return c - 'A' + 10;
+    return -1;
+}
+
+// OSC 11 应答文本：11;rgb:RR/GG/BB（每段 1..4 位十六进制，可同用 rgba:）。
+// 每段按位数线性放大到 8 位，够 §3.12 判亮度。
+bool parse_osc11_background(std::string_view body, Color& out) {
+    if (!body.starts_with("11;")) return false;
+    body.remove_prefix(3);
+    if (body.starts_with("rgba:")) {
+        body.remove_prefix(5);
+    } else if (body.starts_with("rgb:")) {
+        body.remove_prefix(4);
+    } else {
+        return false;
+    }
+
+    uint8_t comp[3] = {};
+    for (int i = 0; i < 3; ++i) {
+        const std::size_t slash = body.find('/');
+        if (i < 2 && slash == std::string_view::npos) return false;
+        const std::string_view part = i < 2 ? body.substr(0, slash) : body;
+        if (part.empty() || part.size() > 4) return false;
+        int v = 0;
+        for (const char c : part) {
+            const int d = hex_digit(c);
+            if (d < 0) return false;
+            v = v * 16 + d;
+        }
+        const int max = (1 << (4 * static_cast<int>(part.size()))) - 1;
+        comp[i] = static_cast<uint8_t>(v * 255 / max);
+        if (i < 2) body.remove_prefix(slash + 1);
+    }
+    out = Color::rgb(comp[0], comp[1], comp[2]);
+    return true;
+}
+
+} // namespace
 
 Runtime::Runtime(Terminal& term, Widget& root, Options opt)
     : term_(term), root_(root), opt_(opt) {
@@ -111,11 +197,75 @@ void Runtime::arm_tick() noexcept {
 void Runtime::route_events() {
     if (events_.empty()) return;
     for (const Event& e : events_) {
-        router_.route(e);
+        if (!handle_handshake_reply(e)) router_.route(e);
     }
     events_.clear();
     note_changes();
     arm_tick(); // 输入可能启动了动画（例如提交后开始转圈）
+}
+
+// ---- 能力握手（§3.3）----
+
+// run() 开始时调用：发出查询、打开应答窗口、起 1 秒超时。查询只是
+// 写出，不等待 —— 首帧照常调度，应答在 poll 循环里以事件到达。
+// pending_caps_ 从初始值出发，只被收到的应答覆盖，未应答的项不变。
+void Runtime::start_handshake() {
+    pending_caps_ = term_.caps();
+    handshake_active_ = true;
+    reply_due_ = Clock::now() + k_handshake_timeout;
+    decoder_.set_reply_window(true);
+    term_.write(k_handshake_queries);
+}
+
+// 窗口期间所有应答都由运行时消费（应用只看到按键）。DA1（私有 CSI、
+// 最终字节 c）是哨兵：收到即提交累积的能力；其余按应答类型记录。
+bool Runtime::handle_handshake_reply(const Event& e) {
+    if (!handshake_active_ || e.kind != Event::Kind::reply) return false;
+    if (e.reply_type == Event::ReplyType::csi) {
+        if (e.text.ends_with('c')) {
+            finish_handshake(true); // 哨兵：终端按顺序应答，DA1 之后无需再等
+            return true;
+        }
+        if (e.text.ends_with("$y")) {
+            int mode = 0;
+            int value = 0;
+            if (parse_decrqm(e.text, mode, value)) {
+                // value 1/2 = 已置位/已复位（支持），其余 = 不支持；
+                // 有应答即以应答为准（可覆盖环境变量的乐观猜测）。
+                const bool supported = value == 1 || value == 2;
+                if (mode == 2026) pending_caps_.synchronized = supported;
+                if (mode == 2027) pending_caps_.grapheme_width = supported;
+            }
+            return true;
+        }
+        if (e.text.ends_with('u')) {
+            // 有应答即支持本协议；flag 1 由 set_kitty_keyboard 推入。
+            pending_caps_.kitty_keyboard = true;
+            return true;
+        }
+        return true;
+    }
+    if (e.reply_type == Event::ReplyType::osc) {
+        if (Color bg; parse_osc11_background(e.text, bg)) {
+            pending_caps_.background = bg;
+        }
+        return true;
+    }
+    return true; // dcs/apc：握手期间一并消费
+}
+
+// commit = DA1 已到（提交能力，含推入 kitty flag 1）；false = 1 秒
+// 超时（管道、异常终端），保持环境变量初始值。
+void Runtime::finish_handshake(bool commit) {
+    if (!handshake_active_) return;
+    handshake_active_ = false;
+    reply_due_.reset();
+    decoder_.set_reply_window(false); // 未终止的应答整体丢弃
+    if (commit) {
+        term_.apply_caps(pending_caps_);
+        if (pending_caps_.kitty_keyboard) term_.set_kitty_keyboard(true);
+    }
+    pending_caps_ = Terminal::Caps{};
 }
 
 void Runtime::check_size() {
@@ -162,6 +312,7 @@ int Runtime::poll_timeout(Clock::time_point now) const noexcept {
     };
     if (ticking_) consider(next_tick_);
     if (esc_due_) consider(*esc_due_);
+    if (reply_due_) consider(*reply_due_); // 握手超时：1 秒内没有 DA1 就收窗口
     if (dirty_) consider(last_frame_ + opt_.min_frame); // 合帧：余量交给 poll 精确等待
     if (!due) return -1; // 无事可等：无限期阻塞，静止界面零唤醒
     if (*due <= now) return 0;
@@ -207,6 +358,7 @@ void Runtime::run() {
     dirty_ = true;
     ticking_ = false;
     arm_tick();
+    start_handshake(); // 查询已写出，应答到达前不阻塞首帧
 
     while (!quit_.load(std::memory_order_acquire)) {
         pollfd fds[3] = {
@@ -266,6 +418,10 @@ void Runtime::run() {
             esc_due_.reset();
             decoder_.flush_escape(events_);
             route_events();
+        }
+        if (reply_due_ && now >= *reply_due_) {
+            // 1 秒内没收到 DA1：窗口关闭，保持环境变量初始值。
+            finish_handshake(false);
         }
         if (quit_.load(std::memory_order_acquire)) break;
         if (!dirty_) continue;

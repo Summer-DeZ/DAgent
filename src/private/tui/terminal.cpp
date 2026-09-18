@@ -192,6 +192,19 @@ void Terminal::set_focus_events(bool on) {
     write(on ? "\x1b[?1004h" : "\x1b[?1004l");
 }
 
+// 握手结果以应答为准（§3.3）：Runtime 传入的副本已把「有应答」的项
+// 覆盖为应答值、未应答的项保持初始值，这里直接落盘即可。
+void Terminal::apply_caps(const Caps& caps) noexcept { caps_ = caps; }
+
+void Terminal::set_kitty_keyboard(bool on) {
+    if (!screen_active_.load(std::memory_order_acquire) ||
+        !caps_.kitty_keyboard ||
+        kitty_.exchange(on, std::memory_order_acq_rel) == on) {
+        return;
+    }
+    write(on ? "\x1b[>1u" : "\x1b[<u");
+}
+
 // 还原 = 进入序列的严格逆序，只关自己开过的模式。
 // restored_ 先行置位保证：析构 / atexit / 信号路径并发叠加时只执行一次。
 // screen_active_ 门控：stdout 是管道时从未进入过界面模式，不得写出转义。
@@ -207,6 +220,9 @@ void Terminal::restore() noexcept {
         }
         if (focus_.exchange(false, std::memory_order_acq_rel)) {
             seq += "\x1b[?1004l";
+        }
+        if (kitty_.exchange(false, std::memory_order_acq_rel)) {
+            seq += "\x1b[<u"; // 弹出握手时推入的键盘 flag
         }
         if (paste_.exchange(false, std::memory_order_acq_rel)) {
             seq += "\x1b[?2004l";

@@ -38,6 +38,12 @@
 // resize 纪元 + 整树补画，并经路由下发 Kind::resize 事件（首帧从
 // 未知尺寸到实际尺寸也算一次）。SIGINT/SIGTERM/SIGHUP 转成正常退出路径；
 // SIGKILL/SIGSEGV 无法覆盖。
+//
+// 能力握手（§3.3）：run() 开始时发出查询（DECRQM 2026/2027、kitty
+// flags、OSC 11 背景、DA1 哨兵）并打开 L6 的应答窗口，不阻塞首帧。
+// 终端按顺序应答；DA1 到达前收到的应答累积为能力升级，DA1 到达时
+// 一次性提交（含推入 kitty flag 1），1 秒无 DA1 则关闭窗口保持初始值。
+// 应答事件由运行时消费，不下发给应用；窗口关闭后 \e] 恢复 Alt-] 语义。
 #pragma once
 
 #include <atomic>
@@ -107,7 +113,7 @@ private:
 
     // 以下都只在渲染线程上调用（控件树与此处状态零锁）。
     void apply_inbox();                     // 摘走更新队列并依序执行
-    void route_events();                    // 路由 events_ 并清空
+    void route_events();                    // 路由 events_（握手应答先被运行时消费）并清空
     void check_size();                      // ioctl 尺寸；变了则纪元 + resize 事件
     void frame();                           // 尺寸 → 布局 → 光栅化 → 光标
     void note_changes() noexcept;           // 控件树失效 → 需要出帧
@@ -116,6 +122,11 @@ private:
     bool on_render_thread() const noexcept;
     void wake() noexcept;
     void drain_wake() noexcept;
+
+    // ---- 能力握手（§3.3）：只在渲染线程上 ----
+    void start_handshake();                 // 发查询 + 打开应答窗口 + 起 1s 超时
+    bool handle_handshake_reply(const Event& e); // 返回 true = 已消费
+    void finish_handshake(bool commit);     // DA1 提交能力；超时不提交
 
     Terminal& term_;
     Widget& root_;
@@ -147,6 +158,11 @@ private:
     std::function<bool()> tick_fn_;
     std::vector<Event> events_; // 复用：解码事件的缓冲
     Size size_{};               // 已知终端尺寸（{0,0} = 未知）
+
+    // 握手（§3.3）：窗口期间累积 pending_caps_，DA1 到达才提交。
+    bool handshake_active_ = false;
+    Terminal::Caps pending_caps_{};
+    std::optional<Clock::time_point> reply_due_; // 1 秒未收到 DA1 的截止时刻
 
     // ---- 跨线程原子 ----
     std::atomic<bool> quit_{false};

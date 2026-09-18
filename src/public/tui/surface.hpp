@@ -41,22 +41,7 @@ struct Rect {
     }
 };
 
-// 颜色：1 字节 tag + 3 字节值，恰好 4 字节；indexed 时 r 即调色板索引。
-struct Color {
-    enum class Kind : uint8_t { default_, indexed, rgb };
-    Kind kind = Kind::default_;
-    uint8_t r = 0;
-    uint8_t g = 0;
-    uint8_t b = 0;
-    bool operator==(const Color&) const noexcept = default;
-
-    static constexpr Color indexed(uint8_t i) noexcept {
-        return {Kind::indexed, i, 0, 0};
-    }
-    static constexpr Color rgb(uint8_t r, uint8_t g, uint8_t b) noexcept {
-        return {Kind::rgb, r, g, b};
-    }
-};
+// 颜色定义在 terminal.hpp（L1 的 Caps 需要携带背景色，§3.3）。
 
 // 文本属性位。帧末统一 \e[0m 归零，帧首终端恒处于默认态，
 // 差分器用 Style{} 即可表达起点，无需哨兵。

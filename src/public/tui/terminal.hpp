@@ -3,6 +3,8 @@
 #pragma once
 
 #include <atomic>
+#include <cstdint>
+#include <optional>
 #include <string_view>
 #include <termios.h>
 
@@ -15,6 +17,24 @@ struct Size {
     bool operator==(const Size&) const noexcept = default;
 };
 
+// 颜色：1 字节 tag + 3 字节值，恰好 4 字节；indexed 时 r 即调色板索引。
+// 定义在 L1 是因为 Terminal::Caps 需要携带握手取得的背景色（§3.3）。
+struct Color {
+    enum class Kind : uint8_t { default_, indexed, rgb };
+    Kind kind = Kind::default_;
+    uint8_t r = 0;
+    uint8_t g = 0;
+    uint8_t b = 0;
+    bool operator==(const Color&) const noexcept = default;
+
+    static constexpr Color indexed(uint8_t i) noexcept {
+        return {Kind::indexed, i, 0, 0};
+    }
+    static constexpr Color rgb(uint8_t r, uint8_t g, uint8_t b) noexcept {
+        return {Kind::rgb, r, g, b};
+    }
+};
+
 // 终端会话。
 //
 // RAII：构造即进入界面模式（备用屏 + 关自动换行 + 藏光标 + raw termios），
@@ -25,13 +45,17 @@ struct Size {
 // SIGKILL/SIGSEGV 无法覆盖，是终端程序的共同边界。
 class Terminal {
 public:
-    // 终端能力。进入时按能力决定开启哪些模式，不支持的做合理降级。
+    // 终端能力。进入时按环境变量取初始值，Runtime 握手（§3.3）确认后
+    // 由渲染线程升级；不支持的做合理降级。
     struct Caps {
         bool truecolor       = false; // COLORTERM=truecolor / 24bit
         bool synchronized    = false; // DEC 2026 同步输出（逐帧包裹用）
         bool sgr_mouse       = false; // 1006 扩展鼠标上报（>223 列必需）
         bool bracketed_paste = false; // 2004 括号粘贴
         bool focus_events    = false; // 1004 焦点事件
+        bool kitty_keyboard  = false; // kitty 键盘协议（确认后推入 flag 1）
+        bool grapheme_width  = false; // mode 2027 字素簇宽度（§3.13）
+        std::optional<Color> background; // OSC 11 背景色；未取得时为空
     };
 
     Terminal();
@@ -43,6 +67,15 @@ public:
     Terminal& operator=(Terminal&&)      = delete;
 
     const Caps& caps() const noexcept { return caps_; }
+
+    // 握手应答结果（§3.3，渲染线程调用）：以应答为准写入能力记录。
+    // 调用方传入「初始值 + 已收到的应答覆盖」后的副本，未应答的查询
+    // 保持环境变量初始值（包括显式应答“不支持”时覆盖猜测的降级）。
+    void apply_caps(const Caps& caps) noexcept;
+
+    // kitty 键盘协议（§3.2.2）：握手确认支持后由渲染线程推入 flag 1，
+    // restore 逆序弹出 \e[<u。能力缺失或未进入界面模式时空操作。
+    void set_kitty_keyboard(bool on);
 
     // 渲染线程查询（ioctl TIOCGWINSZ 约 1µs），尺寸变化时由上层提升布局纪元。
     // 尺寸只在这里读；SIGWINCH 处理器只往 self-pipe 写一个字节唤醒空闲的
@@ -97,6 +130,7 @@ private:
     std::atomic<bool> mouse_{false};
     std::atomic<bool> focus_{false};
     std::atomic<bool> paste_{false};
+    std::atomic<bool> kitty_{false};
 };
 
 } // namespace dagent::tui
