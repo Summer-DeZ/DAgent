@@ -615,6 +615,7 @@ BOOST_AUTO_TEST_CASE(handshake_full_replies_upgrade_caps_and_enable_kitty) {
                 ::_exit(6);
             }
             if (ui.input->text() != "hi") ::_exit(7); // 应答没有泄漏成文本
+            ui.term.restore(); // _exit 不跑析构：显式还原，弹出 kitty flag
             ::_exit(0);
         },
         80, 24);
@@ -635,6 +636,7 @@ BOOST_AUTO_TEST_CASE(handshake_full_replies_upgrade_caps_and_enable_kitty) {
     // caps 升级后推入 kitty flag 1（\e[>1u）。
     BOOST_REQUIRE(read_until(c, out, "\x1b[>1u"));
     BOOST_REQUIRE(::write(c.fd, "hi\r", 3) == 3);
+    BOOST_TEST(read_until(c, out, "\x1b[<u")); // 还原路径逆序弹出 flag
     BOOST_TEST(drain_pty_until_exit(c, out) == 0);
 }
 

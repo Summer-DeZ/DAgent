@@ -77,6 +77,13 @@ public:
     // restore 逆序弹出 \e[<u。能力缺失或未进入界面模式时空操作。
     void set_kitty_keyboard(bool on);
 
+    // 能否发出终端查询（§3.3 握手）：stdout 已进入界面模式、stdin 是
+    // raw 模式的 tty，两者缺一不可 —— 否则查询会写进管道，或应答落进
+    // 无人读取的 tty 输入队列，程序退出后作为杂字出现在 shell 里。
+    bool can_query() const noexcept {
+        return raw_saved_ && screen_active_.load(std::memory_order_acquire);
+    }
+
     // 渲染线程查询（ioctl TIOCGWINSZ 约 1µs），尺寸变化时由上层提升布局纪元。
     // 尺寸只在这里读；SIGWINCH 处理器只往 self-pipe 写一个字节唤醒空闲的
     // 渲染线程，不在信号上下文里做任何别的事。非 tty 时回退 80×24。

@@ -209,7 +209,9 @@ void Runtime::route_events() {
 // run() 开始时调用：发出查询、打开应答窗口、起 1 秒超时。查询只是
 // 写出，不等待 —— 首帧照常调度，应答在 poll 循环里以事件到达。
 // pending_caps_ 从初始值出发，只被收到的应答覆盖，未应答的项不变。
+// 非交互终端（stdin/stdout 被重定向）不握手，能力保持环境变量初始值。
 void Runtime::start_handshake() {
+    if (!term_.can_query()) return;
     pending_caps_ = term_.caps();
     handshake_active_ = true;
     reply_due_ = Clock::now() + k_handshake_timeout;
