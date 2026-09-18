@@ -78,6 +78,8 @@ struct Config {
     exec::Options process;
     workspace::FileOptions files;
     session::Options session;
+    mcp::Options mcp;
+    std::vector<mcp::ServerConfig> mcp_servers; // 来自 .mcp.json，已展开 ${VAR}
     base::LogOptions log;
     // context / run / permissions 这几段的类型由核心定义，config 只负责映射
     std::vector<std::filesystem::path> sources; // 实际参与合并的文件，按优先级从低到高
@@ -103,6 +105,25 @@ class ConfigError : public std::runtime_error { /* Kind: parse / type / io */ };
 - 键名到字段的映射**逐项手写**（例如 `timeout_seconds` → `std::chrono::seconds`）。不要用 `NLOHMANN_DEFINE_TYPE_*` 宏，因为键名、字段名和单位都对不上。
 - `--set` 的值先尝试按 JSON 解析（`true`、`3`、`"x"`、`[1,2]`），失败就当字符串，所以 `--set gateway.model=qwen` 不用写引号。
 - `api_key` 不能出现在任何日志和错误信息里。
+
+### MCP server 配置（.mcp.json）
+
+mcp 模块只认 `mcp::ServerConfig`（见 [mcp 设计文档](../design/mcp.md)），`.mcp.json` 的读取归这里。格式沿用
+Claude Code 等客户端通用的写法，用户现成的配置可以直接复制过来：
+
+```json
+{ "mcpServers": { "fs": { "command": "npx", "args": ["-y", "@modelcontextprotocol/server-filesystem", "."] },
+                  "remote": { "type": "http", "url": "https://…/mcp", "headers": {"Authorization": "Bearer ${TOKEN}"} } } }
+```
+
+- 读项目根的 `.mcp.json`（项目根的判定同上）；`command` + `args` 拼成 `ServerConfig::command`，`env` 映射到
+  `ServerConfig::env`；`type` 为 `http` 时用 `url` 和 `headers`。
+- `${VAR}` 占位符用 `base::Secrets` 展开（先环境变量、再 `.env.dev`/`.env`）；变量不存在时报错并指出是哪个
+  server 的哪个字段，展开后的值不能出现在日志和错误信息里。
+- **server 名要保证工具名不冲突**：工具名是 `mcp__<server>__<tool>`，名字里 `[A-Za-z0-9_-]` 以外的字符会被
+  换成 `_`。所以 server 名清理后必须互不相同（`my.fs` 和 `my_fs` 算冲突），也不能含 `__`（否则
+  `a__b` + `c` 与 `a` + `b__c` 会撞名）。mcp 模块只能检测同一个 server 内部的冲突，跨 server 的由这里拒绝。
+- mcp 的选项在 `config/dagent.json` 的 `mcp` 段：`connect_timeout_ms`、`probe_timeout_ms`。
 
 ---
 
@@ -176,13 +197,15 @@ std::variant<Args, int> parse_args(int argc, char** argv);
 4. 写错一个键名，日志里出现警告；类型写错时，报错信息里带 JSON 指针路径。
 5. 带 `//` 注释的配置能正常加载。
 6. `api_key_env` 指向的变量能从 `.env.dev` 取到；进程环境里已经有同名变量时，以环境变量为准。
+7. `.mcp.json` 的 stdio 与 http 两种写法都映射成正确的 `ServerConfig`，`${TOKEN}` 被展开；清理后重名或含
+   `__` 的 server 名被拒绝，报错指出是哪两个。
 
 **cli**
 
-7. 上面列出的每种写法都能解析成正确的 `Args`，包括子命令和选项顺序打乱的情况。
-8. `echo hi | dagent run "说"` 得到的 prompt 是 `说\n\nhi`。
-9. 交互模式下 stdin 被重定向时，给出提示并以退出码 2 退出。
-10. `--help` 输出完整，中文不乱码。
+8. 上面列出的每种写法都能解析成正确的 `Args`，包括子命令和选项顺序打乱的情况。
+9. `echo hi | dagent run "说"` 得到的 prompt 是 `说\n\nhi`。
+10. 交互模式下 stdin 被重定向时，给出提示并以退出码 2 退出。
+11. `--help` 输出完整，中文不乱码。
 
 ## 审核关注点
 
