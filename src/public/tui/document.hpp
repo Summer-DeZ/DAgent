@@ -41,9 +41,15 @@ inline constexpr std::size_t k_block_kind_count = 6;
 
 // 物化行的一段连续同样式文本。制表符已展开为空格（§5.4：网格里不存 '\t'，
 // 否则每次列计算都要回溯），可直接交给 Surface::text。
+inline constexpr size_t k_no_src = static_cast<size_t>(-1);
+
 struct Span {
     std::string text;
     Style style{};
+    // 首字节在 source 中的偏移（§3.8 选择）：显示文本与源文本从这里起逐字素
+    // 对应（制表符展开为空格除外）。k_no_src = 无源的装饰（列表符号、引用
+    // 竖线、表格边框），选择时归属于其后的内容。
+    size_t src = k_no_src;
 };
 
 // 物化行（屏幕行）。spans 支持一行内多段样式；增量物化会原地复用 Line
@@ -107,9 +113,18 @@ struct Anchor {
 };
 
 // 行的内容位置：所在块 + 行首字节偏移（行号由 Document::row_of 换算）。
+// 块 id 单调递增、块按 id 有序，因此按 (块 id, 字节) 比较即文档顺序。
 struct Location {
     uint64_t block_id = 0;
     size_t byte_in_block = 0;
+    auto operator<=>(const Location&) const = default;
+};
+
+// 选区（§3.8）：两个逻辑位置，都指向字素起点，闭区间（含两端的字素）。
+// 用块 id + 字节偏移表示，改变宽度后仍覆盖同一段内容。
+struct Selection {
+    Location anchor;
+    Location head;
 };
 
 // 折行计数结果（§8.2/§8.5）。除最后一行外，每一行的断点都由已有字符
@@ -288,6 +303,20 @@ public:
     // 释放可见窗口 ± count 行以外块的 rows（open 块除外，见 .cpp）。
     void evict_outside(size_t first, size_t count) noexcept;
 
+    // ---- 选择（§3.8） ----
+    // 屏幕位置 → 逻辑位置：第 row 行第 col 列处字素的源字节。装饰（列表
+    // 符号等）归属于其后的内容；行尾之后在硬换行/块尾处取行尾（含换行），
+    // 在软折行处取行内最后一个字素。边距行取块首。调用者保证 row < total_rows()。
+    Location location_at(size_t row, int col, const Theme& theme);
+    // [a, b] 之间的源文本（Markdown 原文，含 b 处的字素；a、b 次序任意）。
+    // 软折行不插入换行；跨块时补齐块间换行，有上边距的块前空一行。
+    // 任一端的块已不存在时返回空串。
+    std::string text_between(Location a, Location b) const;
+    // 双击选词：loc 所在的词（字母数字、'_' 与非 ASCII 字符的连续段）；
+    // 不在词上时只选该字素。三击选逻辑行（不含行尾换行）。
+    Selection word_around(Location loc) const;
+    Selection line_around(Location loc) const;
+
     // ---- 渲染器注册（扩展点） ----
     void set_renderer(BlockKind kind, std::unique_ptr<BlockRenderer> renderer);
     const BlockRenderer& renderer(BlockKind kind) const noexcept;
@@ -402,11 +431,25 @@ public:
     // 上次渲染时视口下方的行数（不贴底时 > 0，可用于「有 N 行新内容」提示）。
     [[nodiscard]] size_t unseen_rows() const noexcept { return unseen_; }
 
+    // ---- 选择（§3.8）：选区只影响本视图的绘制（叠加反色），不写进
+    // Document 的物化缓存；变化时只失效本 widget。 ----
+    // 视图内坐标 → 逻辑位置（按上次渲染的视口；越界夹到视口内，拖出
+    // 视口时选区延伸到可见的首/末行）。文档为空时返回 nullopt。
+    std::optional<Location> hit(Point p);
+    void select(Selection s);
+    void clear_selection();
+    [[nodiscard]] const std::optional<Selection>& selection() const noexcept {
+        return selection_;
+    }
+    // 选区的源文本（Document::text_between）；无选区时为空串。
+    [[nodiscard]] std::string selected_text() const;
+
     Size measure(Size available) const override;
     void render(Surface& s) override;
     bool dirty_tree() const noexcept override;
 
 private:
+    void draw_row(Surface& s, int y, size_t row, const Line& ln);
     size_t max_top() const noexcept;
     // dir < 0：向上滚动（落在边距行时越过边距，锚到上一块的末行）。
     void anchor_to(size_t row, int dir);
@@ -418,6 +461,7 @@ private:
     size_t top_ = 0;            // 上次渲染的视口顶行
     size_t unseen_ = 0;         // 视口下方行数
     int view_ = 0;              // 上次渲染的视口高度
+    std::optional<Selection> selection_;
 };
 
 } // namespace dagent::tui

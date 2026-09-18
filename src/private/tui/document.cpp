@@ -4,7 +4,10 @@
 #include "tui/document.hpp"
 
 #include <algorithm>
+#include <limits>
 #include <utility>
+
+#include "tui/grapheme.hpp"
 
 namespace dagent::tui {
 
@@ -39,6 +42,81 @@ size_t display_rows(const Block& b) noexcept {
 }
 
 const Line k_margin_line{}; // 边距行：无 span 的空行
+
+constexpr int k_tab_stop = 8; // 与 wrap.cpp 的制表符展开一致
+
+// 物化行与源文本的逐字素对应（§3.8）：对每个显示字素回调
+// f(col, width, byte, content, grapheme, span)。byte 是该字素的源字节偏移；
+// 无源装饰取其后第一段内容的起点（没有则取当前位置，行首为 Line::offset），
+// content = false。显示与源逐字素对应，制表符例外：源里一个 '\t' 对应
+// 展开出的若干空格（到下一个 tab stop，或 markdown 的单个空格）。
+// 返回行内内容在源文本中的结束偏移。
+template <class F>
+size_t walk_line(const Line& ln, std::string_view src, F&& f) {
+    int col = 0;
+    size_t byte = ln.offset;
+    for (size_t k = 0; k < ln.spans.size(); ++k) {
+        const Span& sp = ln.spans[k];
+        std::string_view d = sp.text;
+        unicode::Grapheme g;
+        if (sp.src == k_no_src) {
+            size_t deco = byte;
+            for (size_t m = k + 1; m < ln.spans.size(); ++m) {
+                if (ln.spans[m].src != k_no_src) {
+                    deco = ln.spans[m].src;
+                    break;
+                }
+            }
+            while (!d.empty() && unicode::next_grapheme(d, g)) {
+                f(col, g.width, deco, false, g.bytes, sp);
+                col += g.width;
+            }
+            continue;
+        }
+        size_t p = sp.src;
+        int tab_from = -1;
+        while (!d.empty() && unicode::next_grapheme(d, g)) {
+            f(col, g.width, p, true, g.bytes, sp);
+            col += g.width;
+            if (p >= src.size()) continue;
+            if (src[p] == '\t') {
+                if (tab_from < 0) tab_from = col - g.width;
+                const int stop = (tab_from / k_tab_stop + 1) * k_tab_stop;
+                if (col >= stop || d.empty() || d[0] != ' ') {
+                    ++p;
+                    tab_from = -1;
+                }
+                continue;
+            }
+            std::string_view rest = src.substr(p);
+            unicode::Grapheme sg;
+            p += unicode::next_grapheme(rest, sg) ? sg.bytes.size() : 1;
+        }
+        byte = p;
+    }
+    return byte;
+}
+
+bool word_byte(char c) noexcept {
+    const auto u = static_cast<unsigned char>(c);
+    return u >= 0x80 || u == '_' || (u >= '0' && u <= '9') ||
+           (u >= 'a' && u <= 'z') || (u >= 'A' && u <= 'Z');
+}
+
+// p 之前最后一个字素（此处按 UTF-8 码点近似）的起点；p == from 时返回 from。
+size_t prev_char(std::string_view s, size_t from, size_t p) noexcept {
+    if (p <= from) return from;
+    size_t h = p - 1;
+    while (h > from && (static_cast<unsigned char>(s[h]) & 0xC0) == 0x80) --h;
+    return h;
+}
+
+size_t grapheme_len_at(std::string_view s, size_t p) noexcept {
+    if (p >= s.size()) return 0;
+    std::string_view rest = s.substr(p);
+    unicode::Grapheme g;
+    return unicode::next_grapheme(rest, g) ? g.bytes.size() : 1;
+}
 
 } // namespace
 
@@ -396,6 +474,84 @@ void Document::evict_outside(size_t first, size_t count) noexcept {
     }
 }
 
+// ---- 选择（§3.8） ----
+
+Location Document::location_at(size_t row, int col, const Theme& theme) {
+    const size_t abs = row + base_rows_;
+    size_t i = static_cast<size_t>(
+        std::upper_bound(prefix_.begin(), prefix_.end(), abs) -
+        prefix_.begin());
+    --i;
+    Block& b = blocks_[i];
+    const size_t local = abs - prefix_[i];
+    const size_t margin = margin_rows(b);
+    if (local < margin) return {b.id, 0};
+    ensure_rows(b, theme);
+    const Line& ln = b.rows[local - margin];
+    std::optional<size_t> hit;
+    size_t last = ln.offset; // 行内最后一个内容字素
+    const size_t end = walk_line(
+        ln, b.source,
+        [&](int c, int w, size_t byte, bool content, std::string_view, const Span&) {
+            if (!hit && w > 0 && col < c + w) hit = byte;
+            if (content) last = byte;
+        });
+    if (hit) return {b.id, *hit};
+    const std::string& src = b.source;
+    if (end >= src.size() || src[end] == '\n' || src[end] == '\r') return {b.id, end};
+    return {b.id, last};
+}
+
+std::string Document::text_between(Location a, Location b) const {
+    if (b < a) std::swap(a, b);
+    const auto ia = index_of(a.block_id);
+    const auto ib = index_of(b.block_id);
+    if (!ia || !ib) return {};
+    std::string out;
+    for (size_t i = *ia; i <= *ib; ++i) {
+        const Block& blk = blocks_[i];
+        const std::string_view src = blk.source;
+        const size_t from = i == *ia ? std::min(a.byte_in_block, src.size()) : 0;
+        size_t to = src.size();
+        if (i == *ib) {
+            to = std::min(b.byte_in_block, src.size());
+            to += grapheme_len_at(src, to); // 闭区间：含 b 处的字素
+        }
+        if (i > *ia) {
+            if (!out.empty() && out.back() != '\n') out += '\n';
+            if (margin_rows(blk) > 0) out += '\n'; // 段落间距
+        }
+        if (from < to) out.append(src.substr(from, to - from));
+    }
+    return out;
+}
+
+Selection Document::word_around(Location loc) const {
+    const Block* b = find(loc.block_id);
+    if (b == nullptr) return {loc, loc};
+    const std::string_view s = b->source;
+    const size_t p = std::min(loc.byte_in_block, s.size());
+    if (p >= s.size() || !word_byte(s[p])) return {loc, loc};
+    size_t q = p;
+    while (q > 0 && word_byte(s[q - 1])) --q;
+    size_t e = p;
+    while (e < s.size() && word_byte(s[e])) ++e;
+    return {{loc.block_id, q}, {loc.block_id, prev_char(s, q, e)}};
+}
+
+Selection Document::line_around(Location loc) const {
+    const Block* b = find(loc.block_id);
+    if (b == nullptr) return {loc, loc};
+    const std::string_view s = b->source;
+    const size_t p = std::min(loc.byte_in_block, s.size());
+    const size_t nl = p > 0 ? s.rfind('\n', p - 1) : std::string_view::npos;
+    const size_t q = nl == std::string_view::npos ? 0 : nl + 1;
+    size_t e = s.find('\n', p);
+    if (e == std::string_view::npos) e = s.size();
+    if (e > q && s[e - 1] == '\r') --e;
+    return {{loc.block_id, q}, {loc.block_id, prev_char(s, q, e)}};
+}
+
 // ---- 渲染器注册 ----
 
 void Document::set_renderer(BlockKind kind, std::unique_ptr<BlockRenderer> r) {
@@ -497,13 +653,9 @@ void Scrollback::render(Surface& s) {
 
     s.fill({0, 0, w, h}, U' ', Style{});
     for (int y = 0; y < h; ++y) {
-        const Line* ln = doc_.line_at(top + static_cast<size_t>(y));
-        if (ln == nullptr) continue;
-        int col = 0;
-        for (const Span& sp : ln->spans) {
-            col = s.text(col, y, sp.text, sp.style);
-        }
-        if (col < w) s.fill({col, y, w - col, 1}, U' ', Style{});
+        const size_t row = top + static_cast<size_t>(y);
+        const Line* ln = doc_.line_at(row);
+        if (ln != nullptr) draw_row(s, y, row, *ln);
     }
     doc_.evict_outside(top, view);
 
@@ -512,6 +664,67 @@ void Scrollback::render(Surface& s) {
     view_ = h;
     unseen_ = total > top + view ? total - top - view : 0;
     rendered_rev_ = doc_.revision();
+}
+
+// 一行的绘制：无选区（或本行所在块不在选区内）时逐 span 写出；否则逐
+// 字素判定是否落在选区内，选中的反色（在原样式上翻转 reverse）。
+void Scrollback::draw_row(Surface& s, int y, size_t row, const Line& ln) {
+    int col = 0;
+    const Block* blk = nullptr;
+    Location lo;
+    Location hi;
+    if (selection_) {
+        lo = std::min(selection_->anchor, selection_->head);
+        hi = std::max(selection_->anchor, selection_->head);
+        const uint64_t id = doc_.location_of(row, theme_).block_id;
+        if (id >= lo.block_id && id <= hi.block_id) blk = doc_.find(id);
+    }
+    if (blk == nullptr) {
+        for (const Span& sp : ln.spans) col = s.text(col, y, sp.text, sp.style);
+    } else {
+        walk_line(ln, blk->source,
+                  [&](int, int, size_t byte, bool, std::string_view g, const Span& sp) {
+                      const Location at{blk->id, byte};
+                      Style st = sp.style;
+                      if (!(at < lo) && !(hi < at)) {
+                          st.attrs = any(st.attrs & Attr::reverse)
+                                         ? st.attrs & ~Attr::reverse
+                                         : st.attrs | Attr::reverse;
+                      }
+                      col = s.text(col, y, g, st);
+                  });
+    }
+    if (col < s.cols()) s.fill({col, y, s.cols() - col, 1}, U' ', Style{});
+}
+
+std::optional<Location> Scrollback::hit(Point p) {
+    if (total_ == 0 || view_ <= 0) return std::nullopt;
+    int x = std::max(p.x, 0);
+    if (p.y < 0) x = 0;                                 // 拖出视口上方：到行首
+    if (p.y >= view_) x = std::numeric_limits<int>::max(); // 下方：到行尾
+    const int y = std::clamp(p.y, 0, view_ - 1);
+    size_t row = top_ + static_cast<size_t>(y);
+    if (row >= total_) {
+        row = total_ - 1; // 视口下方的空白：视为最后一行的行尾之后
+        x = std::numeric_limits<int>::max();
+    }
+    return doc_.location_at(row, x, theme_);
+}
+
+void Scrollback::select(Selection sel) {
+    selection_ = sel;
+    invalidate();
+}
+
+void Scrollback::clear_selection() {
+    if (!selection_) return;
+    selection_.reset();
+    invalidate();
+}
+
+std::string Scrollback::selected_text() const {
+    return selection_ ? doc_.text_between(selection_->anchor, selection_->head)
+                      : std::string{};
 }
 
 } // namespace dagent::tui

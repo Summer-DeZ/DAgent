@@ -79,6 +79,7 @@ void put_row(std::vector<Line>& out, size_t i, std::string_view src, size_t begi
     ln.spans.resize(1); // 复用首个 span 的字符串容量
     expand_row(ln.spans[0].text, src, begin, end);
     ln.spans[0].style = st;
+    ln.spans[0].src = begin;
     ln.width = width;
     ln.offset = begin;
     ln.lex = 0;

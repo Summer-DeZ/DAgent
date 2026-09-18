@@ -11,9 +11,10 @@
 //     —— 大文档重排期间业务线程也不会被等锁。fn 入队即返回，稍后在渲染线程上执行
 //     （不是在调用线程上）；需要完成通知的调用方在 fn 内 set_value
 //     一个 promise，自己 get() 等待。渲染线程上的应用代码（事件
-//     处理器、tick 回调、widget 的 render）调用 post() 时直接执行，
+//     处理器、定时器回调、widget 的 render）调用 post() 时直接执行，
 //     保持重入语义。
-//   * set_focus / on_tick 等配置接口的线程约束：run() 之前或渲染线程。
+//   * set_focus / after / every 等配置接口的线程约束：run() 之前或渲染
+//     线程；业务线程经 post 间接调用。
 //
 // 关键纪律：队列锁 queue_mutex_ 内只有指针改写。
 // 业务线程入队：锁外分配节点 → 锁 queue_mutex_ → 尾插（改两个指针）→
@@ -25,9 +26,10 @@
 // 最小帧间隔（默认 16ms）只用来合并突发（一千 token/秒 ≈ 60 帧）。
 // 只有控件树真的失效（或尺寸/焦点变化）才出帧。
 //
-// 动画 tick（默认 100ms）只在动画进行时挂着：tick 回调返回 false 即暂停，
-// 下一次 post() 或输入事件（可能启动了新动画）重新挂上。静止界面零输出、
-// 零唤醒 —— poll 无限期阻塞，直到真的有事发生。
+// 定时器（§3.9）：after / every 的到期时刻存最小堆，poll 超时取堆顶、
+// Esc 超时、握手超时、合帧余量的最小值。动画用 every，回调返回 false
+// 即停止；启动动画的代码显式调用 every。堆空且无其他等待时 poll 无限期
+// 阻塞：静止界面零输出、零唤醒。
 //
 // 等待点用唤醒管道而不是条件变量：渲染线程要同时等文件描述符
 // （stdin / self-pipe）与业务线程的更新通知，单线程里 poll 与
@@ -55,20 +57,23 @@
 #include <optional>
 #include <string>
 #include <thread>
+#include <unordered_map>
 #include <utility>
 #include <vector>
 
+#include "tui/document.hpp"
 #include "tui/input.hpp"
 #include "tui/terminal.hpp"
 #include "tui/widget.hpp"
 
 namespace dagent::tui {
 
+using TimerId = uint64_t;
+
 class Runtime {
 public:
     struct Options {
         std::chrono::milliseconds min_frame{16}; // 合帧窗口（≈60fps 上限）
-        std::chrono::milliseconds tick{100};     // 动画 tick 周期
     };
 
     // root 是整棵控件树的根（非拥有）。run() 期间它只被渲染线程触碰。
@@ -113,10 +118,18 @@ public:
                           Widget* cursor_source = nullptr);
     void close_overlay(uint32_t id);
 
-    // 动画 tick 回调，在渲染线程上调用：推进动画帧并 invalidate。
-    // 返回 true = 动画仍在进行，继续下一个 tick；返回 false = 暂停，
-    // 直到下一次 post() 或输入事件重新挂上。
-    void on_tick(std::function<bool()> fn);
+    // ---- 定时器（§3.9；run() 之前或渲染线程，回调在渲染线程执行）----
+    // after：delay 后执行一次。every：每 period 执行一次，回调返回 false
+    // 即取消（动画）。cancel 对已执行/已取消的 id 是空操作；回调里可以
+    // 取消自己或新建定时器。
+    TimerId after(std::chrono::milliseconds delay, std::function<void()> fn);
+    TimerId every(std::chrono::milliseconds period, std::function<bool()> fn);
+    void cancel(TimerId id);
+
+    // 写系统剪贴板（OSC 52，§3.8；渲染线程）。渲染线程是唯一的终端写者，
+    // 事件处理器与定时器回调就在渲染线程上，调用即写出，不等下一帧。
+    // 返回是否完整写出（见 Terminal::set_clipboard）。
+    bool set_clipboard(std::string_view text) { return term_.set_clipboard(text); }
 
     // ---- 更新通道（任意线程）----
     // 把 fn 交给渲染线程执行，入队即返回。fn 里改的是控件树/Document
@@ -131,6 +144,8 @@ public:
 
     // 已产出的帧数（诊断与验证用；稳态下增速即帧率）。
     uint64_t frames() const noexcept { return frames_.load(std::memory_order_relaxed); }
+    // 主循环被唤醒（poll 返回）的次数（诊断与验证用；静止界面不增长）。
+    uint64_t wakeups() const noexcept { return wakeups_.load(std::memory_order_relaxed); }
 
 private:
     using Clock = std::chrono::steady_clock;
@@ -141,11 +156,15 @@ private:
     void check_size();                      // ioctl 尺寸；变了则纪元 + resize 事件
     void frame();                           // 尺寸 → 布局 → 光栅化 → 光标
     void note_changes() noexcept;           // 控件树失效 → 需要出帧
-    void arm_tick() noexcept;               // 可能启动了动画：挂上 tick
     int poll_timeout(Clock::time_point now) const noexcept; // -1 = 无限期
     bool on_render_thread() const noexcept;
     void wake() noexcept;
     void drain_wake() noexcept;
+
+    // ---- 定时器（§3.9）：只在渲染线程上 ----
+    void schedule(TimerId id, Clock::time_point due);
+    void prune_timers();                    // 堆顶已取消的条目出堆
+    void run_timers(Clock::time_point now); // 执行已到期的定时器
 
     // ---- 能力握手（§3.3）：只在渲染线程上 ----
     void start_handshake();                 // 发查询 + 打开应答窗口 + 起 1s 超时
@@ -180,11 +199,8 @@ private:
 
     // ---- 仅渲染线程触碰（控件树与下列状态，零锁）----
     bool dirty_ = true;    // 需要出帧（首帧）
-    bool ticking_ = false; // tick 是否挂着
     std::optional<Clock::time_point> esc_due_; // Esc 歧义超时的截止时刻
-    Clock::time_point next_tick_{};
     Widget* cursor_source_ = nullptr;
-    std::function<bool()> tick_fn_;
     std::vector<Event> events_; // 复用：解码事件的缓冲
     Size size_{};               // 已知终端尺寸（{0,0} = 未知）
 
@@ -192,6 +208,26 @@ private:
     bool handshake_active_ = false;
     Terminal::Caps pending_caps_{};
     std::optional<Clock::time_point> reply_due_; // 1 秒未收到 DA1 的截止时刻
+
+    // 定时器（§3.9）：登记表 + 到期时刻最小堆（惰性删除）。
+    struct TimerEntry {
+        std::function<void()> once;   // after
+        std::function<bool()> repeat; // every
+        std::chrono::milliseconds period{0}; // 0 = after
+    };
+    struct TimerSlot {
+        Clock::time_point due;
+        TimerId id;
+    };
+    struct TimerLater { // 最小堆：到期早的在顶，同时到期的先建先出
+        bool operator()(const TimerSlot& a, const TimerSlot& b) const noexcept {
+            return a.due != b.due ? a.due > b.due : a.id > b.id;
+        }
+    };
+    std::unordered_map<TimerId, TimerEntry> timers_;
+    std::vector<TimerSlot> timer_heap_;
+    std::vector<TimerSlot> fired_; // 复用：本轮到期的条目
+    TimerId next_timer_ = 1;
 
     // 浮层（§3.4）：记录每个打开浮层的模态处理器与光标恢复点。
     // stack_ 在构造时取得；root 不是 LayerStack 时浮层 API 不可用。
@@ -220,6 +256,7 @@ private:
     std::atomic<bool> quit_{false};
     std::atomic<bool> wake_pending_{false}; // 管道里已有未消费的唤醒字节
     std::atomic<uint64_t> frames_{0};
+    std::atomic<uint64_t> wakeups_{0};
     std::atomic<std::thread::id> render_thread_{};
 
     // ---- 仅渲染线程触碰（帧缓冲与输出）----
@@ -229,6 +266,36 @@ private:
     std::string out_; // 复用容量：稳态帧路径零分配
     std::optional<Point> cursor_;
     int wake_pipe_[2] = {-1, -1}; // post()/quit() 唤醒 poll 的管道
+};
+
+// 滚动区的鼠标翻译（§3.8）：rt.bind_mouse(scrollback, handler)。
+//   * 左键拖拽选择（依赖 §3.5 的捕获：拖出控件也归它）；单击不拖拽清除选区；
+//   * 双击选词、三击选逻辑行（400ms 内同一格连击，由 §3.9 定时器判定）；
+//   * 释放时把选区源文本写入剪贴板（OSC 52），copy_on_release = false 关闭；
+//   * 滚轮滚动 3 行。
+// 需要应用开启鼠标上报（Terminal::set_mouse(true)，1002 模式才上报拖拽）。
+// 生命周期：必须先于 Runtime 与 Scrollback 销毁（析构取消连击定时器）。
+class ScrollbackMouse : public EventHandler {
+public:
+    static constexpr std::chrono::milliseconds k_multi_click{400};
+
+    ScrollbackMouse(Runtime& rt, Scrollback& sb) noexcept : rt_(rt), sb_(sb) {}
+    ~ScrollbackMouse() override;
+    ScrollbackMouse(const ScrollbackMouse&) = delete;
+    ScrollbackMouse& operator=(const ScrollbackMouse&) = delete;
+
+    bool copy_on_release = true;
+
+    bool on_event(const Event& e) override;
+
+private:
+    Runtime& rt_;
+    Scrollback& sb_;
+    TimerId click_timer_ = 0; // 连击窗口（到期即清零 clicks_）
+    int clicks_ = 0;
+    Point last_press_{-1, -1};
+    Location press_{};        // 拖拽起点
+    bool dragging_ = false;   // 单击按下后，拖动即选择
 };
 
 } // namespace dagent::tui

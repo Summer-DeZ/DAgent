@@ -292,11 +292,12 @@ public:
         ln_ = &ln;
         idx_ = 0;
     }
-    std::string& next(const Style& style) {
+    std::string& next(const Style& style, size_t src) {
         if (idx_ == ln_->spans.size()) ln_->spans.emplace_back();
         Span& sp = ln_->spans[idx_++];
         sp.text.clear();
         sp.style = style;
+        sp.src = src;
         return sp.text;
     }
     void finish() { ln_->spans.resize(idx_); }
@@ -802,7 +803,7 @@ size_t SyntaxRenderer::render(const Block& block, int width, const Theme& theme,
             w.reset(ln);
             if (lang == Lang::plain) {
                 expand_row(text, src, pos, row.end);
-                w.next(theme.code) = text;
+                w.next(theme.code, pos) = text;
             } else if (row.end > pos) {
                 const size_t b = pos - ls;
                 const size_t e = row.end - ls;
@@ -815,7 +816,8 @@ size_t SyntaxRenderer::render(const Block& block, int width, const Theme& theme,
                     const size_t rb = std::max(b, r->at);
                     const size_t re = std::min(e, r + 1 != rs.end() ? (r + 1)->at
                                                                     : line.size());
-                    append_expanded(w.next(r->style), line.substr(rb, re - rb), col);
+                    append_expanded(w.next(r->style, ls + rb),
+                                    line.substr(rb, re - rb), col);
                 }
             }
             w.finish();

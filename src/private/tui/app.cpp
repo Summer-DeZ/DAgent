@@ -1,5 +1,6 @@
 #include "tui/app.hpp"
 
+#include <algorithm>
 #include <cerrno>
 #include <climits>
 #include <string_view>
@@ -128,12 +129,81 @@ Runtime::~Runtime() {
     if (wake_pipe_[1] >= 0) ::close(wake_pipe_[1]);
 }
 
-// ---- 配置 ----
+// ---- 定时器（§3.9）----
 
-void Runtime::on_tick(std::function<bool()> fn) {
-    tick_fn_ = std::move(fn);
-    ticking_ = false;
-    arm_tick();
+// 到期时刻存最小堆；取消只从登记表删除，堆里的旧条目弹出时丢弃
+// （惰性删除）。取消积压过多时整堆重建，堆大小与存活定时器同阶。
+TimerId Runtime::after(std::chrono::milliseconds delay, std::function<void()> fn) {
+    const TimerId id = next_timer_++;
+    timers_.emplace(id, TimerEntry{std::move(fn), {}, {}});
+    schedule(id, Clock::now() + delay);
+    return id;
+}
+
+TimerId Runtime::every(std::chrono::milliseconds period, std::function<bool()> fn) {
+    const TimerId id = next_timer_++;
+    timers_.emplace(id, TimerEntry{{}, std::move(fn), period});
+    schedule(id, Clock::now() + period);
+    return id;
+}
+
+void Runtime::cancel(TimerId id) {
+    if (timers_.erase(id) == 0) return;
+    if (timer_heap_.size() > 2 * timers_.size() + 64) {
+        std::erase_if(timer_heap_, [this](const TimerSlot& t) {
+            return !timers_.contains(t.id);
+        });
+        std::make_heap(timer_heap_.begin(), timer_heap_.end(), TimerLater{});
+    }
+}
+
+void Runtime::schedule(TimerId id, Clock::time_point due) {
+    timer_heap_.push_back({due, id});
+    std::push_heap(timer_heap_.begin(), timer_heap_.end(), TimerLater{});
+}
+
+// 堆顶的已取消条目出堆：poll 超时只看存活定时器，取消不会造成空唤醒。
+void Runtime::prune_timers() {
+    while (!timer_heap_.empty() && !timers_.contains(timer_heap_.front().id)) {
+        std::pop_heap(timer_heap_.begin(), timer_heap_.end(), TimerLater{});
+        timer_heap_.pop_back();
+    }
+}
+
+// 先摘出全部已到期条目再执行：回调里新建的 after(0) 留到下一轮，
+// 不会在同一轮里无限续命。同时到期的按到期时刻、再按创建顺序执行。
+// 回调执行前把函数移出登记表，回调可以安全地取消自己或别的定时器。
+void Runtime::run_timers(Clock::time_point now) {
+    fired_.clear();
+    while (!timer_heap_.empty() && timer_heap_.front().due <= now) {
+        std::pop_heap(timer_heap_.begin(), timer_heap_.end(), TimerLater{});
+        fired_.push_back(timer_heap_.back());
+        timer_heap_.pop_back();
+    }
+    for (const TimerSlot& slot : fired_) {
+        auto it = timers_.find(slot.id);
+        if (it == timers_.end()) continue; // 已取消
+        if (it->second.period.count() == 0) {
+            std::function<void()> fn = std::move(it->second.once);
+            timers_.erase(it);
+            fn();
+            continue;
+        }
+        std::function<bool()> fn = std::move(it->second.repeat);
+        const auto period = it->second.period;
+        const bool keep = fn();
+        it = timers_.find(slot.id); // 回调可能取消了自己
+        if (it == timers_.end()) continue;
+        if (!keep) {
+            timers_.erase(it); // 返回 false：取消
+            continue;
+        }
+        it->second.repeat = std::move(fn);
+        // 按周期对齐推进；落后（慢帧）时从现在起算，不补发积压的周期。
+        const auto next = slot.due + period;
+        schedule(slot.id, next > now ? next : now + period);
+    }
+    if (!fired_.empty()) note_changes();
 }
 
 // ---- 浮层（§3.4.3）----
@@ -151,7 +221,6 @@ uint32_t Runtime::open_overlay(std::unique_ptr<Widget> w, Placement p,
         dirty_ = true; // 光标来源变了：即使控件都没失效也要重新定位
     }
     note_changes();
-    arm_tick();
     return id;
 }
 
@@ -192,7 +261,7 @@ void Runtime::close_overlay(uint32_t id) {
 
 // ---- 更新通道 ----
 
-// 渲染线程上的应用代码（事件处理器 / tick 回调 / render）调用 post()
+// 渲染线程上的应用代码（事件处理器 / 定时器回调 / render）调用 post()
 // 时直接执行 —— 此时控件树已归渲染线程所有，入队反而是绕路；主循环
 // 会在调用返回后检查 dirty_，不需要唤醒。
 // 其余线程：节点在锁外分配，临界区只有一次尾插（两个指针写），最坏
@@ -201,7 +270,6 @@ void Runtime::post(std::function<void()> fn) {
     if (on_render_thread()) {
         fn();
         note_changes();
-        arm_tick();
         return;
     }
     Task* const node = new Task{std::move(fn), nullptr};
@@ -233,7 +301,6 @@ void Runtime::apply_inbox() {
         node = next;
     }
     note_changes();
-    arm_tick();
 }
 
 void Runtime::quit() noexcept {
@@ -251,12 +318,6 @@ void Runtime::note_changes() noexcept {
     if (root_.dirty_tree() || root_.needs_layout()) dirty_ = true;
 }
 
-void Runtime::arm_tick() noexcept {
-    if (ticking_ || !tick_fn_) return;
-    ticking_ = true;
-    next_tick_ = Clock::now() + opt_.tick;
-}
-
 void Runtime::route_events() {
     if (events_.empty()) return;
     for (const Event& e : events_) {
@@ -269,7 +330,6 @@ void Runtime::route_events() {
     }
     events_.clear();
     note_changes();
-    arm_tick(); // 输入可能启动了动画（例如提交后开始转圈）
 }
 
 // ---- 鼠标命中（§3.5）----
@@ -470,7 +530,7 @@ int Runtime::poll_timeout(Clock::time_point now) const noexcept {
     const auto consider = [&](Clock::time_point t) {
         if (!due || t < *due) due = t;
     };
-    if (ticking_) consider(next_tick_);
+    if (!timer_heap_.empty()) consider(timer_heap_.front().due); // 已先 prune_timers
     if (esc_due_) consider(*esc_due_);
     if (reply_due_) consider(*reply_due_); // 握手超时：1 秒内没有 DA1 就收窗口
     if (dirty_) consider(last_frame_ + opt_.min_frame); // 合帧：余量交给 poll 精确等待
@@ -516,8 +576,6 @@ void Runtime::run() {
 
     last_frame_ = Clock::now() - opt_.min_frame; // 首帧立即可出
     dirty_ = true;
-    ticking_ = false;
-    arm_tick();
     start_handshake(); // 查询已写出，应答到达前不阻塞首帧
 
     while (!quit_.load(std::memory_order_acquire)) {
@@ -526,8 +584,10 @@ void Runtime::run() {
             {term_.signal_fd(), POLLIN, 0},
             {wake_pipe_[0], POLLIN, 0},
         };
+        prune_timers();
         const int timeout = poll_timeout(Clock::now());
         const int rc = ::poll(fds, 3, timeout);
+        wakeups_.fetch_add(1, std::memory_order_relaxed);
         if (rc < 0) {
             if (errno == EINTR) continue;
             quit_.store(true, std::memory_order_release); // poll 失败：收摊
@@ -569,11 +629,7 @@ void Runtime::run() {
 
         const auto now = Clock::now();
         if (resized) check_size();
-        if (ticking_ && now >= next_tick_) {
-            next_tick_ = now + opt_.tick;
-            ticking_ = tick_fn_ && tick_fn_(); // false：动画结束，暂停 tick
-            note_changes();                    // 没动画就不出帧
-        }
+        run_timers(now); // 回调失效了控件才出帧
         if (esc_due_ && now >= *esc_due_) {
             esc_due_.reset();
             decoder_.flush_escape(events_);
@@ -595,6 +651,58 @@ void Runtime::run() {
         frames_.fetch_add(1, std::memory_order_relaxed);
         last_frame_ = Clock::now();
     }
+}
+
+// ---- ScrollbackMouse（§3.8）----
+
+ScrollbackMouse::~ScrollbackMouse() {
+    if (click_timer_ != 0) rt_.cancel(click_timer_);
+}
+
+bool ScrollbackMouse::on_event(const Event& e) {
+    if (e.kind != Event::Kind::mouse) return false;
+    const Event::Mouse& m = e.mouse;
+    if (m.button == 4 || m.button == 5) { // 滚轮
+        sb_.scroll_lines(m.button == 4 ? -3 : 3);
+        return true;
+    }
+    if (m.button != 0) return false;
+    const Point at{m.x, m.y};
+
+    if (m.press && !m.motion) {
+        // 连击：窗口内同一格再按一次记为多击；窗口从每次按下重新起算。
+        clicks_ = click_timer_ != 0 && at == last_press_ ? clicks_ + 1 : 1;
+        last_press_ = at;
+        if (click_timer_ != 0) rt_.cancel(click_timer_);
+        click_timer_ = rt_.after(k_multi_click, [this] {
+            click_timer_ = 0;
+            clicks_ = 0;
+        });
+        const std::optional<Location> loc = sb_.hit(at);
+        dragging_ = false;
+        if (!loc) return true;
+        if (clicks_ == 1) {
+            press_ = *loc;
+            dragging_ = true;
+            sb_.clear_selection();
+        } else if (clicks_ == 2) {
+            sb_.select(sb_.document().word_around(*loc));
+        } else {
+            sb_.select(sb_.document().line_around(*loc));
+        }
+        return true;
+    }
+    if (m.press && m.motion) { // 拖拽（捕获中，坐标可能在控件外）
+        if (!dragging_) return true;
+        if (const std::optional<Location> loc = sb_.hit(at)) {
+            sb_.select({press_, *loc});
+        }
+        return true;
+    }
+    // 释放：单击未拖动时选区已清除，不复制。
+    dragging_ = false;
+    if (copy_on_release && sb_.selection()) rt_.set_clipboard(sb_.selected_text());
+    return true;
 }
 
 } // namespace dagent::tui

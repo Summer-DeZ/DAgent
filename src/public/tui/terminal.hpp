@@ -73,6 +73,12 @@ public:
     // 保持环境变量初始值（包括显式应答“不支持”时覆盖猜测的降级）。
     void apply_caps(const Caps& caps) noexcept;
 
+    // 剪贴板（§3.8）：写 OSC 52 \e]52;c;<base64>\a，由渲染线程调用。
+    // 上限 1 MiB 原文，超出按 UTF-8 边界截断。返回是否完整写出（false =
+    // 已截断或未进入界面模式），截断提示归应用层。tmux 需要
+    // set-clipboard on，属使用方配置。
+    bool set_clipboard(std::string_view text);
+
     // kitty 键盘协议（§3.2.2）：握手确认支持后由渲染线程推入 flag 1，
     // restore 逆序弹出 \e[<u。能力缺失或未进入界面模式时空操作。
     void set_kitty_keyboard(bool on);
@@ -93,8 +99,10 @@ public:
     // 阻塞式写满全部字节（EINTR 重试），不做用户态缓冲。
     void write(std::string_view bytes) noexcept;
 
-    // 可选上报模式的开关。能力缺失或未进入界面模式时是空操作；
-    // 鼠标开启会牺牲文本选择（多数终端需按住 Shift），故默认关闭。
+    // 可选上报模式的开关。能力缺失或未进入界面模式时是空操作。
+    // 鼠标上报（1002 + 1006 SGR：按下/释放/拖拽/滚轮）开启后终端不再做
+    // 原生选择（多数终端按住 Shift 仍可原生选择），应用内选择由 §3.8 的
+    // ScrollbackMouse 接管；是否开启由应用决定，故默认关闭。
     // 括号粘贴由构造按能力开启，不提供运行时开关。
     void set_mouse(bool on);
     void set_focus_events(bool on);

@@ -188,12 +188,13 @@ Line& ensure_line(std::vector<Line>& out, size_t i) {
 class SpanBuilder {
 public:
     explicit SpanBuilder(Line& ln) noexcept : ln_(&ln) {}
-    void add(std::string_view text, const Style& style) {
+    void add(std::string_view text, const Style& style, size_t src = k_no_src) {
         if (text.empty()) return;
         if (idx_ == ln_->spans.size()) ln_->spans.emplace_back();
         Span& sp = ln_->spans[idx_++];
         sp.text.assign(text);
         sp.style = style;
+        sp.src = src;
     }
     void finish() { ln_->spans.resize(idx_); }
 
@@ -1109,7 +1110,7 @@ size_t MarkdownRenderer::render(const Block& block, int width, const Theme& them
                             std::min(e, r + 1 != sg.runs.end() ? (r + 1)->disp
                                                                : sg.disp.size());
                         sb.add(std::string_view(sg.disp).substr(rb, re - rb),
-                               r->style);
+                               r->style, sg.src_of(rb));
                     }
                 }
             }

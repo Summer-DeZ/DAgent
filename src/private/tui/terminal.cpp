@@ -181,7 +181,9 @@ void Terminal::set_mouse(bool on) {
         mouse_.exchange(on, std::memory_order_acq_rel) == on) {
         return;
     }
-    write(on ? "\x1b[?1000h\x1b[?1006h" : "\x1b[?1006l\x1b[?1000l");
+    // 1002 = 按键事件跟踪：按下/释放 + 按住按键时的移动（拖拽选择必需，
+    // §3.8）；1000 不报移动，1003 连悬停也报、事件量大且无用。
+    write(on ? "\x1b[?1002h\x1b[?1006h" : "\x1b[?1006l\x1b[?1002l");
 }
 
 void Terminal::set_focus_events(bool on) {
@@ -195,6 +197,46 @@ void Terminal::set_focus_events(bool on) {
 // 握手结果以应答为准（§3.3）：Runtime 传入的副本已把「有应答」的项
 // 覆盖为应答值、未应答的项保持初始值，这里直接落盘即可。
 void Terminal::apply_caps(const Caps& caps) noexcept { caps_ = caps; }
+
+bool Terminal::set_clipboard(std::string_view text) {
+    if (!screen_active_.load(std::memory_order_acquire)) return false;
+    constexpr size_t k_max = size_t{1} << 20;
+    bool complete = true;
+    if (text.size() > k_max) {
+        size_t cut = k_max;
+        while (cut > 0 && (static_cast<unsigned char>(text[cut]) & 0xC0) == 0x80) {
+            --cut; // 不从多字节字符中间截断
+        }
+        text = text.substr(0, cut);
+        complete = false;
+    }
+    static constexpr char k_b64[] =
+        "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+    std::string seq = "\x1b]52;c;";
+    seq.reserve(seq.size() + (text.size() + 2) / 3 * 4 + 1);
+    size_t i = 0;
+    for (; i + 3 <= text.size(); i += 3) {
+        const uint32_t v = (static_cast<uint8_t>(text[i]) << 16) |
+                           (static_cast<uint8_t>(text[i + 1]) << 8) |
+                           static_cast<uint8_t>(text[i + 2]);
+        seq += k_b64[(v >> 18) & 63];
+        seq += k_b64[(v >> 12) & 63];
+        seq += k_b64[(v >> 6) & 63];
+        seq += k_b64[v & 63];
+    }
+    if (i < text.size()) {
+        const bool two = i + 1 < text.size();
+        const uint32_t v = (static_cast<uint8_t>(text[i]) << 16) |
+                           (two ? static_cast<uint8_t>(text[i + 1]) << 8 : 0);
+        seq += k_b64[(v >> 18) & 63];
+        seq += k_b64[(v >> 12) & 63];
+        seq += two ? k_b64[(v >> 6) & 63] : '=';
+        seq += '=';
+    }
+    seq += '\a';
+    write(seq);
+    return complete;
+}
 
 void Terminal::set_kitty_keyboard(bool on) {
     if (!screen_active_.load(std::memory_order_acquire) ||
@@ -216,7 +258,7 @@ void Terminal::restore() noexcept {
     if (screen_active_.load(std::memory_order_acquire)) {
         std::string seq;
         if (mouse_.exchange(false, std::memory_order_acq_rel)) {
-            seq += "\x1b[?1006l\x1b[?1000l";
+            seq += "\x1b[?1006l\x1b[?1002l";
         }
         if (focus_.exchange(false, std::memory_order_acq_rel)) {
             seq += "\x1b[?1004l";

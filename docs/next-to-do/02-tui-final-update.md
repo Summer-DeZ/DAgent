@@ -74,11 +74,11 @@ resize：终端尺寸由渲染线程逐帧 ioctl 探测，L7 合成 `Kind::resiz
 
 ### 0.5 测试范围
 
-`test/tui` 只覆盖**当前里程碑**（现在是 M5 的 §3.6 文档变更 API 与 §3.7 流式 Markdown）：
-文档层是纯内存结构，随机变更序列逐帧与重建的 Document 逐行比对，Markdown 语料按随机分块
-喂入并与整份喂入的块序列、逐行渲染比对，不做烟雾测试。L1–L7、M1、M2、M4 的用例已随
-各自里程碑完成而移除；后续每个里程碑按本文各节的「验收」重新补齐该里程碑的用例，并移除
-上一里程碑的用例。
+`test/tui` 只覆盖**当前里程碑**（现在是 §3.8 选择与复制、§3.9 定时器）：选区直接驱动真实的
+Scrollback + Document 断言源文本与反色，定时器用管道子进程观察 Runtime 的诊断计数，OSC 52
+用 pty 进程级用例由父进程扮演终端，不做烟雾测试。L1–L7、M1、M2、M4、M5 的用例已随各自
+里程碑完成而移除；后续每个里程碑按本文各节的「验收」重新补齐该里程碑的用例，并移除上一
+里程碑的用例。
 
 ---
 
@@ -165,7 +165,8 @@ private:
 - `post` 由「同步执行完再返回」变为「入队即返回」。依赖同步读取状态的代码（现有
   `app_test.cpp` 里 `rt.post([&]{ seen = ...; })` 后立即读取）改用 `std::promise`
   在 fn 内 `set_value`，调用方 `get()` 等待。
-- `on_tick`、`set_focus` 等配置接口的线程约束改为「run 之前或渲染线程」，与现状一致。
+- `set_focus`、`after`/`every`（§3.9，取代原 `on_tick`）等配置接口的线程约束改为「run 之前
+  或渲染线程」，与现状一致。
 - §0.2 ① 与 §0.3 的管线图同步改写：不再有 `state_mutex`，纪律变为「队列锁内只改指针」。
 
 **验收**（`test/tui/app_test.cpp`）：
@@ -437,14 +438,25 @@ JavaScript/TypeScript、JSON、Bash、Go、Rust；未识别的语言按纯文本
 - **选择模型**：`Scrollback` 持有 `Selection{Location anchor, Location head}`。用逻辑位置
   （块 id + 字节偏移）表示，改变宽度后选区仍覆盖同一段内容。
 - **交互**：鼠标拖拽选择（依赖 §3.5 的捕获）；双击选词、三击选逻辑行（依赖 §3.9 定时器判定
-  连击间隔 400ms）；释放时复制，可配置关闭。
+  连击间隔 400ms）；释放时复制，可配置关闭。拖拽是首选的选择方式：应用开启鼠标上报（滚轮、
+  点击）后终端不再做原生选择，不按修饰键直接拖拽只能由应用接管；原生选择（Shift + 拖拽）
+  按屏幕格复制，软折行处会插入换行、带上装饰、只能选当前视口。鼠标上报用 1002（按键事件
+  跟踪）：1000 不报按住时的移动，拖拽收不到。
 - **绘制**：选区在 `Scrollback::render` 时叠加反色，不写进 Document 的物化缓存；选区变化只
   失效滚动区视图。
 - **复制内容**：Document 中两位置之间的**源文本**（Markdown 原文），不是屏幕字符，因此软
   折行不会插入换行。
 - **剪贴板**：L1 新增 `Terminal::set_clipboard(std::string_view)`，写 OSC 52
-  `\e]52;c;<base64>\a`，由渲染线程在出帧时写出。上限 1 MiB，超出时截断并由应用层提示。
-  tmux 需要 `set-clipboard on`，属使用方配置。
+  `\e]52;c;<base64>\a`，由渲染线程写出（L7 经 `Runtime::set_clipboard` 转发）。事件处理器
+  本身就在渲染线程上，调用即写出、不等下一帧 —— 选区不变时释放鼠标不会出帧，等帧会丢复制。
+  上限 1 MiB，超出时按 UTF-8 边界截断、返回 false 由应用层提示。tmux 需要 `set-clipboard on`，
+  属使用方配置。
+- **落点**：`Span::src` 记录每段显示文本的源偏移（装饰为 `k_no_src`），据此把屏幕坐标换算
+  成逻辑位置（`Document::location_at`）、逐字素判定反色；`Document::text_between` /
+  `word_around` / `line_around` 提供复制与连击扩展；`Scrollback` 持有选区（`hit` / `select` /
+  `clear_selection` / `selected_text`）；L7 的 `ScrollbackMouse` 处理器把拖拽、连击、滚轮
+  翻译成上述调用，经 `bind_mouse` 绑到滚动区。跨块复制补齐块间换行，有上边距的块前空一行；
+  代码块的围栏行不在 source 里，复制内容不含围栏。
 
 **验收**：
 - 跨软折行的选区复制出源文本，不含软折行处的换行（`document_test.cpp`）。
@@ -472,6 +484,7 @@ void Runtime::cancel(TimerId id);
 **验收**（`test/tui/app_test.cpp`）：
 - 多个 `after` 按到期顺序执行；`cancel` 后不执行；`every` 返回 false 后不再执行。
 - 没有定时器时静置 300ms：零唤醒、零帧（改写现有 `idle_ui_neither_ticks_nor_renders`）。
+  唤醒次数由诊断计数 `Runtime::wakeups()`（poll 每返回一次加一）观察，与 `frames()` 并列。
 
 ---
 
