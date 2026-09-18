@@ -1,14 +1,3 @@
-// L5 流式 Markdown 切分与块渲染（§10.8）。
-//
-// 切分器把一条持续增长的 Markdown 消息切成多个 Document 块，只有最后一个
-// 块在增长：段落/标题/列表/引用进 markdown 块，围栏代码进 code 块（info
-// 存 meta），表格进 table 块，分隔线自成一块立即关闭。结构判定全部发生在
-// 完整行上，因此结果与喂入分块无关；未完成行先追加到当前块立即显示，整行
-// 到达后判定为"新结构"时用 replace 回退该行。replace 整块替换，代价是
-// O(当前块)，与 markdown/表格块每帧的整块重排同阶。
-//
-// 渲染：markdown 块隐藏行内标记，按段解析、按显示文本折行（见"Markdown
-// 排版"）；code 块由 syntax.cpp 的 SyntaxRenderer 着色；表格整块重排。
 #include "tui/document.hpp"
 
 #include <algorithm>
@@ -41,7 +30,7 @@ bool blank(std::string_view s) noexcept {
     return true;
 }
 
-// 块级标记最多允许 3 个前导空格。
+/// @brief 块级标记最多允许 3 个前导空格。
 size_t leading_spaces(std::string_view s) noexcept {
     size_t i = 0;
     while (i < s.size() && i < 3 && s[i] == ' ') ++i;
@@ -67,7 +56,7 @@ bool fence_open(std::string_view s, char& ch, size_t& len, std::string& info) {
     return true;
 }
 
-// 闭合围栏：同字符、长度不短于开启、其后只有空白。
+/// @brief 闭合围栏：同字符、长度不短于开启、其后只有空白。
 bool fence_close(std::string_view s, char ch, size_t len) noexcept {
     const size_t i = leading_spaces(s);
     size_t j = i;
@@ -79,7 +68,7 @@ bool fence_close(std::string_view s, char ch, size_t len) noexcept {
     return true;
 }
 
-// 代码块中未完成行仍可能是闭合围栏（只含围栏字符与空白）。
+/// @brief 代码块中未完成行仍可能是闭合围栏（只含围栏字符与空白）。
 bool could_close_fence(std::string_view s, char ch) noexcept {
     const size_t i = leading_spaces(s);
     for (size_t j = i; j < s.size(); ++j) {
@@ -114,8 +103,7 @@ bool heading(std::string_view s) noexcept {
     return j == s.size() || s[j] == ' ';
 }
 
-// 列表项允许任意缩进（嵌套列表常用 2 或 4 个空格；本框架不支持缩进
-// 代码块，不存在歧义）。
+/// @brief 列表项标记前允许任意缩进。
 bool list_item(std::string_view s) noexcept {
     size_t i = 0;
     while (i < s.size() && s[i] == ' ') ++i;
@@ -144,7 +132,7 @@ bool starts_pipe(std::string_view s) noexcept {
     return i < s.size() && s[i] == '|';
 }
 
-// 表格分隔行：以 '|' 开头，单元只含 '-' ':' 空白，且至少一个 '-'。
+/// @brief 表格分隔行：以 '|' 开头，单元只含 '-' ':' 空白，且至少一个 '-'。
 bool table_sep(std::string_view s) noexcept {
     if (!starts_pipe(s)) return false;
     bool dash = false;
@@ -184,7 +172,7 @@ Line& ensure_line(std::vector<Line>& out, size_t i) {
     return out[i];
 }
 
-// 复用的 span 写入器：原地覆盖 Line 的 spans，保留 string 容量。
+/// @brief span 写入器：原地覆盖 Line 的 spans。
 class SpanBuilder {
 public:
     explicit SpanBuilder(Line& ln) noexcept : ln_(&ln) {}
@@ -206,7 +194,7 @@ private:
 // ---- 表格 ----
 
 struct TableCell {
-    std::string text; // 原文（tab 已展开、已去首尾空白），行内标记在渲染时解析
+    std::string text; ///< 原文（tab 已展开、已去首尾空白）
 };
 
 struct TableRow {
@@ -323,7 +311,7 @@ size_t count_table_lines(std::string_view src, size_t from) noexcept {
     return n;
 }
 
-// 取显示宽度不超过 cols 的字素前缀。
+/// @brief 取显示宽度不超过 cols 的字素前缀。
 std::string_view take_cols(std::string_view s, int cols) noexcept {
     if (cols <= 0) return {};
     int col = 0;
@@ -339,29 +327,18 @@ std::string_view take_cols(std::string_view s, int cols) noexcept {
     return s.substr(0, i);
 }
 
-// ---- Markdown 排版（§10.8）----
-//
-// 行内标记（** * _ ` [文本](地址) 与反斜杠转义）显示时隐藏，显示文本因此
-// 比原文短：计数与物化必须走同一个排版函数 layout_markdown，按显示文本
-// 折行，两边的行数才一致。
-//
-// 排版以"段"为单位：一个块级起始行（段落首行、标题、列表项、引用行）加上
-// 其后的续行（普通文本行并入前面的段落、列表项或引用，即 CommonMark 的
-// 软换行与懒续行，在显示文本里保留为 '\n'）。行内标记在整段内配对，折行
-// 与软换行都不会把它切断。块级前缀用 dim：标题保留 #，列表符号换成 •，
-// 引用换成 │；续行对齐到正文起点。
+// ---- Markdown 排版 ----
 
 enum class RenderKind : uint8_t { text, heading, list, quote, hr };
 
-// 显示文本上的同样式区间：显示起点、对应的合并原文位置、样式。区间内
-// 显示字符与合并原文逐字节对应。
+/// @brief 显示文本上的同样式区间：显示起点、对应的合并原文位置、样式。
 struct MdRun {
     size_t disp = 0;
     size_t comb = 0;
     Style style{};
 };
 
-// 合并原文到 source 字节偏移的分段映射（每个原文行一段）。
+/// @brief 合并原文到 source 字节偏移的分段映射（每个原文行一段）。
 struct MdPiece {
     size_t comb = 0;
     size_t src = 0;
@@ -369,14 +346,14 @@ struct MdPiece {
 
 struct MdSegment {
     RenderKind kind = RenderKind::text;
-    size_t src_begin = 0; // 段首行在 source 中的偏移（首行的 Line::offset）
-    std::string prefix;   // 首行前缀
-    std::string cont;     // 续行前缀
+    size_t src_begin = 0; // 段首行在 source 中的偏移
+    std::string prefix;
+    std::string cont;
     int prefix_w = 0;
     int cont_w = 0;
-    Style prefix_style{}; // 块级前缀（#、•、│、分行符）的样式
+    Style prefix_style{};
     Style base{};
-    std::string comb;     // 合并原文：去块级前缀，续行去前导空白，tab → 空格
+    std::string comb;     // 合并原文：去前缀、续行去前导空白、tab → 空格
     std::vector<MdPiece> pieces;
     std::string disp;     // 隐藏行内标记后的显示文本
     std::vector<MdRun> runs;
@@ -401,7 +378,7 @@ struct MdSegment {
         for (const char c : content) comb += c == '\t' ? ' ' : c;
     }
 
-    // 显示位置 → source 字节偏移（锚点解析用；段内单调不减）。
+    /// @brief 显示位置 → source 字节偏移（锚点解析用）。
     size_t src_of(size_t d) const noexcept {
         if (runs.empty()) return src_begin;
         auto r = std::upper_bound(runs.begin(), runs.end(), d,
@@ -415,7 +392,7 @@ struct MdSegment {
     }
 };
 
-// 读一个原文行：text 不含行尾换行与 '\r'，next 是下一行起点。
+/// @brief 读一个原文行：text 不含行尾换行与 '\r'，next 是下一行起点。
 struct SrcLine {
     std::string_view text;
     size_t begin = 0;
@@ -446,9 +423,8 @@ bool inline_special(char c) noexcept {
     return c == '\\' || c == '`' || c == '*' || c == '_' || c == '[';
 }
 
-// 行内解析：在合并原文 [lo, hi) 上产出显示文本与样式区间。标记配对遵循
-// CommonMark 的简化规则：开标记后不能是空白，闭标记前不能是空白，'_'
-// 不在词内生效；配不上对的标记按字面输出。嵌套深度受限。
+/// @brief 行内解析：在合并原文 [lo, hi) 上产出显示文本与样式区间；配不上对
+/// 的标记按字面输出。
 class InlineParser {
 public:
     InlineParser(MdSegment& seg, const ThemeTokens& theme) noexcept
@@ -522,7 +498,7 @@ public:
     }
 
 private:
-    // 追加合并原文 [at, at+len) 到显示文本；与上一区间同样式且原文连续时合并。
+    /// @brief 追加合并原文 [at, at+len) 到显示文本；与上一区间同样式且原文连续时合并。
     void add(size_t at, size_t len, const Style& st) {
         if (len == 0) return;
         if (!seg_.runs.empty()) {
@@ -556,7 +532,7 @@ private:
         return k_npos;
     }
 
-    // i 处的 n 个定界符能否开启强调：其后非空白，'_' 不在词内。
+    /// @brief i 处的 n 个定界符能否开启强调：其后非空白，'_' 不在词内。
     bool opens(size_t i, size_t n, size_t hi) const noexcept {
         const std::string_view s = seg_.comb;
         if (i + n >= hi) return false;
@@ -565,7 +541,7 @@ private:
         return s[i] != '_' || i == 0 || !alnum(s[i - 1]);
     }
 
-    // 从 from 起找能闭合的 n 个定界符（n = 1 只认单个，n = 2 认 >= 2 的游程）。
+    /// @brief 从 from 起找能闭合的 n 个定界符（n = 1 只认单个，n = 2 认 >= 2 的游程）。
     size_t find_close(size_t from, size_t hi, char c, size_t n) const noexcept {
         const std::string_view s = seg_.comb;
         size_t j = from;
@@ -606,7 +582,7 @@ size_t quote_depth(std::string_view t, size_t& content) noexcept {
 
 std::string spaces(int n) { return std::string(static_cast<size_t>(std::max(n, 0)), ' '); }
 
-// 从 pos 起建一个段，返回下一段的起点。
+/// @brief 从 pos 起建一个段，返回下一段的起点。
 size_t build_segment(std::string_view src, size_t pos, const ThemeTokens& theme,
                      MdSegment& seg) {
     seg.reset(pos);
@@ -672,8 +648,7 @@ size_t build_segment(std::string_view src, size_t pos, const ThemeTokens& theme,
     seg.cont_w = display_width(seg.cont);
     seg.add_piece(first.begin + content, t.substr(std::min(content, t.size())));
 
-    // 续行：普通文本行并入段落、列表项与引用（懒续行），同层引用行并入
-    // 引用；标题只占一行。
+    // 续行并入当前段（懒续行；同层引用行并入，标题不续）。
     size_t next = first.next;
     if (seg.kind != RenderKind::heading) {
         while (next < src.size()) {
@@ -698,7 +673,7 @@ size_t build_segment(std::string_view src, size_t pos, const ThemeTokens& theme,
     return next;
 }
 
-// 逐段排版，每个显示行回调一次 row(段, 是否段首行, 显示起点, 显示终点, 行宽)。
+/// @brief 逐段排版，每个显示行回调一次 row(段, 是否段首行, 显示起点, 显示终点, 行宽)。
 template <class Row>
 void layout_markdown(std::string_view src, int width, const ThemeTokens& theme,
                      MdSegment& seg, Row&& row) {
@@ -747,8 +722,8 @@ void MarkdownStream::feed(std::string_view chunk) {
     }
 }
 
-// pending_ 增长但尚无换行：能确定的（普通段落行）立即建块显示；
-// 可能是围栏/表格开头的字符先攒着，整行到达后再判定。
+/// @brief pending_ 增长但尚无换行：普通行立即建块显示，疑似围栏/表格开头的
+/// 先攒到整行到达再判定。
 void MarkdownStream::on_partial() {
     if (staging_) return;
     if (mode_ == Mode::none) {
@@ -777,7 +752,7 @@ void MarkdownStream::on_partial() {
     line_in_block_ = true;
 }
 
-// pending_ 是一整行（has_newline 时行尾有 '\n'，finish 的收尾行没有）。
+/// @brief pending_ 是一整行；has_newline 表示行尾带 '\n'。
 void MarkdownStream::on_line(bool has_newline) {
     std::string_view raw = pending_;
     const std::string_view line = drop_cr(raw);
@@ -866,7 +841,7 @@ void MarkdownStream::handle_markdown_line(std::string_view line,
     const LineClass k = classify(line);
 
     if (k == LineClass::blank) {
-        // 空行不进块：只回退本行已显示的空白（通常没有），不做整块替换。
+        // 空行不进块，只回退本行已显示的空白。
         if (!pending_.empty()) remove_last(pending_.size());
         close_current();
         return;
@@ -874,7 +849,7 @@ void MarkdownStream::handle_markdown_line(std::string_view line,
     if (k == LineClass::hr) {
         if (has_newline) doc_->append(cur_, "\n");
         if (line_new_) {
-            close_current(); // 块由本行开启：分隔线自成一等，不回退
+            close_current(); // 分隔线自成一块，不回退
             return;
         }
         remove_last(raw_len);
@@ -900,8 +875,7 @@ void MarkdownStream::handle_markdown_line(std::string_view line,
                  : k == LineClass::list   ? Family::list
                  : k == LineClass::quote  ? Family::quote
                                           : Family::text;
-    // 列表项与引用的续行（缩进续行或懒续行）没有开启新的块级结构，
-    // 留在当前块；渲染器把它并入前一个列表项/引用。
+    // 列表/引用的续行留在当前块。
     if (fam == Family::text &&
         (family_ == Family::list || family_ == Family::quote)) {
         fam = family_;
@@ -923,7 +897,7 @@ void MarkdownStream::handle_markdown_line(std::string_view line,
     line_new_ = false;
 }
 
-// 行不在任何块中（模式 none，或表格刚结束）：整行决定新块。
+/// @brief 行不在任何块中（模式 none，或表格刚结束）：整行决定新块。
 void MarkdownStream::handle_detached_line(std::string_view line,
                                           bool has_newline, bool allow_table) {
     char fence = 0;
@@ -991,8 +965,7 @@ void MarkdownStream::start_code(char fence, size_t len, std::string info) {
     line_new_ = false;
 }
 
-// 新块的上边距：消息内第一块用 first_margin_（消息之间的间距归应用），
-// 其后每块空 1 行（段落间距）。
+/// @brief 上边距：消息内第一块用 first_margin_，其后每块空 1 行。
 Block MarkdownStream::new_block(BlockKind kind) {
     Block b;
     b.kind = kind;
@@ -1066,7 +1039,6 @@ void MarkdownStream::finish() {
 
 // ---- 表格单元格的行内样式 ----
 
-// 单元格与段落走同一个行内解析器：标记隐藏，列宽按显示文本计算。
 struct CellPiece {
     std::string text;
     Style style;
@@ -1076,6 +1048,7 @@ struct CellView {
     int width = 0;
 };
 
+/// @brief 解析单元格行内标记，返回显示片段与显示宽度。
 CellView layout_cell(const std::string& text, const Style& base,
                      const ThemeTokens& theme, MdSegment& seg) {
     seg.reset(0);
@@ -1092,7 +1065,7 @@ CellView layout_cell(const std::string& text, const Style& base,
     return v;
 }
 
-// 把单元格写成恰好 cols 列：放得下补空格，放不下按显示文本截断加 "…"。
+/// @brief 把单元格写成恰好 cols 列：放得下补空格，放不下按显示文本截断加 "…"。
 void emit_cell(SpanBuilder& w, const CellView& v, int cols, const Style& base) {
     int used = 0;
     if (v.width <= cols) {
@@ -1117,14 +1090,12 @@ void emit_cell(SpanBuilder& w, const CellView& v, int cols, const Style& base) {
 
 // ---- MarkdownRenderer ----
 
-// 行内标记隐藏后行数取决于整段解析，而强调可跨软换行：stable_rows = 0，
-// 每帧从块首整块排版（代价受段落长度约束，§10.8）。计数与物化共用
-// layout_markdown，行数必然一致。封闭块（stable_bytes = 末尾）重数时增量为零。
+/// @brief 整块排版计数，stable_rows = 0。
 WrapResult MarkdownRenderer::measure(std::string_view source, size_t from,
                                      int width) const {
     if (from >= source.size()) return {};
-    thread_local MdSegment seg; // 复用容量：流式帧路径不反复分配
-    static const ThemeTokens theme{};  // 计数只看显示文本，与样式无关
+    thread_local MdSegment seg;
+    static const ThemeTokens theme{}; // 计数只看显示文本，与样式无关
     size_t rows = 0;
     layout_markdown(source.substr(from), width, theme, seg,
                     [&](const MdSegment&, bool, size_t, size_t, int) { ++rows; });
@@ -1179,8 +1150,7 @@ size_t MarkdownRenderer::render(const Block& block, int width, const ThemeTokens
 
 // ---- TableRenderer ----
 
-// 列宽依赖全部行，stable_rows = 0：每次变化整块重排。行数从 from 起数，
-// 封闭块（stable_bytes = 末尾）重数时增量为零。
+/// @brief 列宽依赖全部行，stable_rows = 0。
 WrapResult TableRenderer::measure(std::string_view source, size_t from,
                                   int width) const {
     (void)width;
@@ -1201,7 +1171,7 @@ size_t TableRenderer::render(const Block& block, int width, const ThemeTokens& t
     const Style body = theme.text;
     const Style header = theme.primary;
 
-    // 先解析每个单元格的行内样式：列宽取决于隐藏标记后的显示宽度。
+    // 列宽取决于隐藏行内标记后的显示宽度。
     thread_local MdSegment seg;
     size_t cols = 0;
     for (const TableRow& r : rows) cols = std::max(cols, r.cells.size());

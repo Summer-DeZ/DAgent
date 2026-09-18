@@ -21,28 +21,23 @@ namespace dagent::tui {
 
 namespace {
 
-// 单实例约定下的全局锚点：atexit 兜底与信号处理器（无 this 可用）都需要它。
+// atexit 兜底与信号处理器（无 this 可用）所需的全局锚点。
 std::atomic<Terminal*> g_instance{nullptr};
 std::atomic<int> g_signal_write_fd{-1};
-// 挂起中（§6.3）：外部程序占用前台，终端的 Ctrl+C 是发给它的 —— 规范模式
-// 下 SIGINT 会送达整个前台进程组，本进程不能据此退出。只在处理器里忽略，
-// 不改成 SIG_IGN：被忽略的信号跨 exec 继承，外部程序会收不到 Ctrl+C。
+// 挂起中：SIGINT 在处理器里忽略（不改 SIG_IGN，避免跨 exec 继承）。
+
 std::atomic<bool> g_interrupt_ignored{false};
 std::once_flag g_atexit_once;
 
-// 被接管的信号与其原有处理器：卸载时还原调用方自己装的处理器，
-// 而不是粗暴地重置为 SIG_DFL。
-// SIGWINCH 同样只写管道：尺寸仍由渲染线程 ioctl 读取，信号只负责
-// 在空闲时唤醒（渲染按需驱动，没有信号就没有下一帧去探测尺寸）。
+// 被接管的信号：卸载时还原调用方原装的处理器，而非 SIG_DFL。
 constexpr int kSignals[] = {SIGINT, SIGTERM, SIGHUP, SIGWINCH};
 
-// 管道字节区分信号类别：'q' = 退出类，'w' = 尺寸变化。
-constexpr char kQuitByte   = 'q';
-constexpr char kResizeByte = 'w';
+// 管道字节区分信号类别。
+constexpr char kQuitByte   = 'q'; ///< 退出类
+constexpr char kResizeByte = 'w'; ///< 尺寸变化
 struct sigaction g_saved_handlers[std::size(kSignals)] = {};
 
-// 异步信号处理器：只允许调用 async-signal-safe 的 write()。
-// 惯例是 self-pipe —— 真正的还原与退出逻辑全部留在主循环的正常路径上做。
+// 异步信号处理器：只 write self-pipe，逻辑留在主循环正常路径。
 void terminal_on_signal(int sig) noexcept {
     const int saved_errno = errno; // 处理器不得改动被打断代码看到的 errno
     const int fd = g_signal_write_fd.load(std::memory_order_relaxed);
@@ -58,7 +53,7 @@ void terminal_on_signal(int sig) noexcept {
     errno = saved_errno;
 }
 
-// 兜底路径 3：无论 main 如何返回（含遗漏 delete 的异常路径），退出前还原。
+// atexit 兜底：进程退出前还原。
 void terminal_atexit_restore() noexcept {
     if (Terminal* t = g_instance.load(std::memory_order_acquire)) {
         t->restore();
@@ -69,8 +64,7 @@ bool env_has(std::string_view value, std::string_view key) noexcept {
     return value.find(key) != std::string_view::npos;
 }
 
-// 离开界面模式的转义序列：严格逆序（可选上报模式 → 光标/换行 → 备用屏）。
-// restore 与 suspend 共用；传入的是"当前确实开着"的模式。
+// 离开界面模式的序列；restore 与 suspend 共用，传入"当前确实开着"的模式。
 std::string leave_screen_seq(bool mouse, bool focus, bool paste, bool kitty,
                              bool grapheme) {
     std::string seq;
@@ -90,14 +84,13 @@ std::string leave_screen_seq(bool mouse, bool focus, bool paste, bool kitty,
 Terminal::Terminal() {
     probe_caps();
 
-    // self-pipe 建立失败只意味着失去信号唤醒能力，不影响其余功能。
+    // self-pipe 失败只失去信号唤醒能力，不影响其余功能。
     if (::pipe2(signal_pipe_, O_CLOEXEC | O_NONBLOCK) == 0) {
         g_signal_write_fd.store(signal_pipe_[1], std::memory_order_release);
         install_signal_handlers();
     }
 
-    // raw 模式：关行缓冲与回显，逐字节拿到输入。
-    // stdin 非 tty（管道/重定向）时跳过，saved_ 保持无效。
+    // raw 模式：关行缓冲与回显，逐字节拿到输入；stdin 非 tty 时跳过。
     if (::isatty(STDIN_FILENO) && ::tcgetattr(STDIN_FILENO, &saved_) == 0) {
         raw_saved_ = true;
         termios raw = saved_;
@@ -125,9 +118,7 @@ Terminal::~Terminal() {
     }
 }
 
-// 进入界面模式。stdout 非 tty 时不发任何序列（screen_active_ 保持
-// false，restore/set_* 据此门控，避免把转义写进管道）。
-// 顺序即文档约定的栈序：还原时严格逆序弹出。
+// 进入界面模式：顺序即栈序，还原时严格逆序弹出；stdout 非 tty 时不发任何序列。
 void Terminal::enter() {
     if (!::isatty(STDOUT_FILENO)) {
         return;
@@ -136,8 +127,7 @@ void Terminal::enter() {
     std::string seq;
     seq.reserve(64);
     seq += "\x1b[?1049h"; // 备用屏幕：退出后完整还原用户原有内容
-    seq += "\x1b[?7l";    // 关自动换行（DECAWM）：框架自己控制折行，
-                          // 否则写满一行终端会自动折行，网格坐标全乱
+    seq += "\x1b[?7l";    // 关自动换行（DECAWM）：折行由框架控制，否则网格坐标全乱
     seq += "\x1b[?25l";   // 藏光标：帧末由渲染器定位后再显示
     if (caps_.bracketed_paste) {
         seq += "\x1b[?2004h"; // 粘贴内容被 \e[200~…\e[201~ 包裹，可区分逐字输入
@@ -147,8 +137,7 @@ void Terminal::enter() {
     screen_active_.store(true, std::memory_order_release);
 }
 
-// 能力探测：不查 terminfo，只用环境变量启发式 + 合理降级。
-// modern = 现代终端的粗判；linux 控制台无 1006/dumb 无一切，全部按不支持处理。
+// 能力探测：环境变量启发式，不查 terminfo。
 void Terminal::probe_caps() noexcept {
     const char* term_env      = ::getenv("TERM");
     const char* colorterm_env = ::getenv("COLORTERM");
@@ -160,8 +149,7 @@ void Terminal::probe_caps() noexcept {
     caps_.truecolor = env_has(colorterm, "truecolor") || env_has(colorterm, "24bit") ||
                       env_has(term, "truecolor") || env_has(term, "-direct");
 
-    // DEC 2026 支持面：设置 COLORTERM 的（VTE 系）+ 已知支持的终端名。
-    // 不支持的终端会忽略 2026 序列，误报无副作用。
+    // DEC 2026：设置 COLORTERM 的终端 + 已知支持的终端名。
     caps_.synchronized =
         modern && (!colorterm.empty() || env_has(term, "kitty") ||
                    env_has(term, "alacritty") || env_has(term, "foot") ||
@@ -183,8 +171,7 @@ Size Terminal::size() const noexcept {
     return {80, 24};
 }
 
-// 阻塞式写满：渲染线程是唯一写者，不存在交错；pty 写出慢时被阻塞
-// 属设计内行为（业务线程的更新在 post 队列里积压，不会被等锁）。
+// 阻塞式写满。
 void Terminal::write(std::string_view bytes) noexcept {
     while (!bytes.empty()) {
         ssize_t n = ::write(STDOUT_FILENO, bytes.data(), bytes.size());
@@ -198,15 +185,13 @@ void Terminal::write(std::string_view bytes) noexcept {
     }
 }
 
-// exchange 去重：重复 set 不重复发序列。开与关的序列各自内部逆序配对。
-// 未进入界面模式（stdout 非 tty）时是空操作，避免把转义写进管道。
+// 开关鼠标上报；exchange 去重。
 void Terminal::set_mouse(bool on) {
     if (!screen_active_.load(std::memory_order_acquire) || !caps_.sgr_mouse ||
         mouse_.exchange(on, std::memory_order_acq_rel) == on) {
         return;
     }
-    // 1002 = 按键事件跟踪：按下/释放 + 按住按键时的移动（拖拽选择必需，
-    // §10.10）；1000 不报移动，1003 连悬停也报、事件量大且无用。
+    // 1002 = 按键事件跟踪；1006 = SGR 扩展坐标。
     write(on ? "\x1b[?1002h\x1b[?1006h" : "\x1b[?1006l\x1b[?1002l");
 }
 
@@ -218,8 +203,6 @@ void Terminal::set_focus_events(bool on) {
     write(on ? "\x1b[?1004h" : "\x1b[?1004l");
 }
 
-// 握手结果以应答为准（§6.2）：Runtime 传入的副本已把「有应答」的项
-// 覆盖为应答值、未应答的项保持初始值，这里直接落盘即可。
 void Terminal::apply_caps(const Caps& caps) noexcept { caps_ = caps; }
 
 bool Terminal::set_clipboard(std::string_view text) {
@@ -280,16 +263,11 @@ void Terminal::set_grapheme_width(bool on) {
     write(on ? "\x1b[?2027h" : "\x1b[?2027l");
 }
 
-// 还原 = 进入序列的严格逆序，只关自己开过的模式。
-// restored_ 先行置位保证：析构 / atexit / 信号路径并发叠加时只执行一次。
-// screen_active_ 门控：stdout 是管道时从未进入过界面模式，不得写出转义。
-// 挂起中调用同样安全：终端已被 suspend 还原，这里只落终态、不再写出。
+// 还原为进入序列的严格逆序，只关自己开过的模式。
 void Terminal::restore() noexcept {
     if (restored_.exchange(true, std::memory_order_acq_rel)) {
         return;
     }
-    // 挂起现场不必清除：resume 先检查 restored_，终态之后是空操作（这里
-    // 可能在 atexit 线程上执行，不碰渲染线程独占的挂起字段）。
     g_interrupt_ignored.store(false, std::memory_order_relaxed);
 
     if (screen_active_.load(std::memory_order_acquire)) {
@@ -308,10 +286,7 @@ void Terminal::restore() noexcept {
     }
 }
 
-// 挂起：逆序退出界面模式 + 还原 termios，但把"挂起前开着什么"记下来，
-// 供 resume 精确恢复；restored_ 不动（restore 仍是唯一终态）。
-// 信号处理器不卸：SIGINT/TERM/HUP/WINCH 在挂起期间照常唤醒（此时主循环
-// 不在 poll，写管道只是缓冲一个字节，恢复后由 drain_signal 消费）。
+// 挂起：逆序退出界面模式并还原 termios，记住现场供 resume 恢复。
 void Terminal::suspend() noexcept {
     if (restored_.load(std::memory_order_acquire) || suspended_) return;
     suspended_ = true;
@@ -337,9 +312,7 @@ void Terminal::suspend() noexcept {
     }
 }
 
-// 恢复：与 suspend 严格配对，重新进入备用屏/raw 并恢复挂起前开着的
-// 上报模式（顺序与 enter 一致：备用屏 → 光标/换行 → 粘贴 → 鼠标/焦点/
-// kitty）。终端在这段时间被外部程序用过，屏幕内容由 L7 强制整屏重画。
+// 恢复：与 suspend 配对，重进备用屏/raw 并恢复挂起前的上报模式。
 void Terminal::resume() {
     if (!suspended_ || restored_.load(std::memory_order_acquire)) return;
     suspended_ = false;
@@ -383,7 +356,7 @@ void Terminal::resume() {
     }
 }
 
-// 管道 O_NONBLOCK：读尽即止（EAGAIN 使循环退出）。
+// 读尽 self-pipe 即止（O_NONBLOCK，EAGAIN 退出循环）。
 Terminal::Signals Terminal::drain_signal() noexcept {
     Signals got;
     if (signal_pipe_[0] < 0) {
@@ -408,7 +381,7 @@ void Terminal::install_signal_handlers() noexcept {
     sa.sa_handler = &terminal_on_signal;
     sa.sa_flags   = SA_RESTART; // 渲染线程的 write 不被信号打断
     ::sigemptyset(&sa.sa_mask);
-    // 保存原有处理器：卸载时还原调用方自己装的，而不是重置 SIG_DFL。
+    // 保存原有处理器供卸载时还原。
     for (std::size_t i = 0; i < std::size(kSignals); ++i) {
         ::sigaction(kSignals[i], &sa, &g_saved_handlers[i]);
     }

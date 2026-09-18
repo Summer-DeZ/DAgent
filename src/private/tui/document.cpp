@@ -1,6 +1,3 @@
-// L5 文档实现：前缀和定位、锚点、增量物化与驱逐、Scrollback widget。
-// 全部操作都是纯内存操作；控件树与 Document 只属于渲染线程（设计文档 §4），
-// 本文件不加锁、不做 I/O。
 #include "tui/document.hpp"
 
 #include <algorithm>
@@ -15,8 +12,7 @@ namespace {
 
 constexpr size_t k_npos = static_cast<size_t>(-1);
 
-// cache_key 打包：宽度 16 位 | 折叠 1 位 | 折叠行数 15 位 | 主题纪元 32 位。
-// 实际取值域远小于各字段位宽，键相等即缓存可用。
+/// @brief cache_key 打包：宽度 16 位 | 折叠 1 位 | 折叠行数 15 位 | 主题纪元 32 位。
 int64_t block_key(const Block& b, int width, uint32_t epoch) noexcept {
     const uint64_t w = static_cast<uint32_t>(width) & 0xFFFFu;
     const uint64_t c = b.collapsed ? 1u : 0u;
@@ -25,32 +21,28 @@ int64_t block_key(const Block& b, int width, uint32_t epoch) noexcept {
                                 (static_cast<uint64_t>(epoch) << 32));
 }
 
-// 内容行数：折叠时是截断后的计数，未折叠时等于全程计数。
+/// @brief 内容行数：折叠时是截断后的计数，未折叠时等于全程计数。
 size_t content_rows(const Block& b) noexcept {
     return b.collapsed ? std::min<size_t>(b.collapsed_rows, b.row_count)
                        : b.row_count;
 }
 
-// 生效的上边距：没有内容行的块边距折叠为 0。
+/// @brief 生效的上边距：没有内容行的块边距折叠为 0。
 size_t margin_rows(const Block& b) noexcept {
     return content_rows(b) > 0 ? b.margin_top : 0;
 }
 
-// 块在前缀和中占的行数 = 上边距 + 内容行。
+/// @brief 块在前缀和中占的行数 = 上边距 + 内容行。
 size_t display_rows(const Block& b) noexcept {
     return margin_rows(b) + content_rows(b);
 }
 
-const Line k_margin_line{}; // 边距行：无 span 的空行
+const Line k_margin_line{}; ///< 边距行：无 span 的空行
 
-constexpr int k_tab_stop = 8; // 与 wrap.cpp 的制表符展开一致
+constexpr int k_tab_stop = 8; ///< 与 wrap.cpp 的制表符展开一致
 
-// 物化行与源文本的逐字素对应（§10.10）：对每个显示字素回调
-// f(col, width, byte, content, grapheme, span)。byte 是该字素的源字节偏移；
-// 无源装饰取其后第一段内容的起点（没有则取当前位置，行首为 Line::offset），
-// content = false。显示与源逐字素对应，制表符例外：源里一个 '\t' 对应
-// 展开出的若干空格（到下一个 tab stop，或 markdown 的单个空格）。
-// 返回行内内容在源文本中的结束偏移。
+/// @brief 对物化行的每个显示字素回调 f(col, width, byte, content, grapheme, span)；
+/// 返回行内内容在源文本中的结束偏移。
 template <class F>
 size_t walk_line(const Line& ln, std::string_view src, F&& f) {
     int col = 0;
@@ -60,7 +52,7 @@ size_t walk_line(const Line& ln, std::string_view src, F&& f) {
         std::string_view d = sp.text;
         unicode::Grapheme g;
         if (sp.src == k_no_src) {
-            size_t deco = byte;
+            size_t deco = byte; // 无源装饰锚到其后第一段内容的源偏移
             for (size_t m = k + 1; m < ln.spans.size(); ++m) {
                 if (ln.spans[m].src != k_no_src) {
                     deco = ln.spans[m].src;
@@ -79,7 +71,7 @@ size_t walk_line(const Line& ln, std::string_view src, F&& f) {
             f(col, g.width, p, true, g.bytes, sp);
             col += g.width;
             if (p >= src.size()) continue;
-            if (src[p] == '\t') {
+            if (src[p] == '\t') { // 源 '\t' 对应展开出的多个空格
                 if (tab_from < 0) tab_from = col - g.width;
                 const int stop = (tab_from / k_tab_stop + 1) * k_tab_stop;
                 if (col >= stop || d.empty() || d[0] != ' ') {
@@ -103,7 +95,7 @@ bool word_byte(char c) noexcept {
            (u >= 'a' && u <= 'z') || (u >= 'A' && u <= 'Z');
 }
 
-// p 之前最后一个字素（此处按 UTF-8 码点近似）的起点；p == from 时返回 from。
+/// @brief p 之前最后一个字素（此处按 UTF-8 码点近似）的起点；p == from 时返回 from。
 size_t prev_char(std::string_view s, size_t from, size_t p) noexcept {
     if (p <= from) return from;
     size_t h = p - 1;
@@ -153,7 +145,6 @@ uint64_t Document::open_block(BlockKind kind, std::string source) {
     return append_block(std::move(b));
 }
 
-// 新区块立即计数（O(该块文本)），但不到可见之前不物化（§10.2）。
 uint64_t Document::append_block(Block block) {
     block.id = next_id_++;
     block.cache_key = -1;
@@ -168,7 +159,6 @@ uint64_t Document::append_block(Block block) {
     return b.id;
 }
 
-// §10.3：追加只改 source 并置脏，不折行、不分配、零 I/O。
 bool Document::append(uint64_t id, std::string_view chunk) {
     const auto idx = index_of(id);
     if (!idx || !blocks_[*idx].open) return false;
@@ -179,9 +169,6 @@ bool Document::append(uint64_t id, std::string_view chunk) {
     return true;
 }
 
-// 整体替换：source 任意变化（不是尾部追加），必须走整块重数路径 ——
-// cache_key = -1 让 begin_frame 对该块 count_full。物化缓存同时作废，
-// 帧协议保证 begin_frame 先于物化，但清掉可避免误用旧行。
 bool Document::replace(uint64_t id, std::string source) {
     const auto idx = index_of(id);
     if (!idx) return false;
@@ -194,7 +181,7 @@ bool Document::replace(uint64_t id, std::string source) {
     b.rows_valid = 0;
     b.rows_bytes = 0;
     if (*idx < first_dirty_) first_dirty_ = *idx;
-    // 锚点在该块：字节偏移夹到新长度（§10.6）。
+    // 锚点在该块：字节偏移夹到新长度。
     if (!anchor_.pinned_to_bottom && anchor_.block_id == id) {
         anchor_.byte_in_block = std::min(anchor_.byte_in_block, b.source.size());
     }
@@ -202,7 +189,6 @@ bool Document::replace(uint64_t id, std::string source) {
     return true;
 }
 
-// meta 只影响物化（渲染器可读），不影响折行计数：失效该块的行缓存即可。
 bool Document::set_meta(uint64_t id, std::string meta) {
     const auto idx = index_of(id);
     if (!idx) return false;
@@ -215,8 +201,6 @@ bool Document::set_meta(uint64_t id, std::string meta) {
     return true;
 }
 
-// 删除 id 及其后所有块（/undo）。前缀和只需截断；锚点块被删除时
-// 移到删除点之前最后一块的末尾，文档已空则贴底（§10.6）。
 size_t Document::erase_from(uint64_t id) {
     const auto idx = index_of(id);
     if (!idx) return 0;
@@ -229,6 +213,7 @@ size_t Document::erase_from(uint64_t id) {
         first_dirty_ = *idx;
     }
     if (!anchor_.pinned_to_bottom && anchor_.block_id >= id) {
+        // 锚点块被删：移到前一块末尾
         if (*idx == 0) {
             anchor_ = Anchor{}; // 文档已空：贴底
         } else {
@@ -258,7 +243,7 @@ bool Document::set_collapsed(uint64_t id, bool collapsed, uint32_t rows) {
     if (b.collapsed == collapsed && b.collapsed_rows == rows) return true;
     b.collapsed = collapsed;
     b.collapsed_rows = rows;
-    // cache_key 含折叠状态：置脏后由 begin_frame 走整块重数路径。
+    // cache_key 含折叠状态：置脏走整块重数。
     if (*idx < first_dirty_) first_dirty_ = *idx;
     ++revision_;
     return true;
@@ -274,7 +259,6 @@ void Document::clear() {
     ++revision_; // id 序列保持单调，不复用
 }
 
-// 头部裁剪 O(1)/块：只弹出并抬高全局行偏移，不平移前缀和（§10.4）。
 void Document::trim_blocks(size_t keep) {
     if (blocks_.size() <= keep) return;
     while (blocks_.size() > keep) {
@@ -302,7 +286,6 @@ const Block* Document::find(uint64_t id) const noexcept {
     return idx ? &blocks_[*idx] : nullptr;
 }
 
-// id 单调递增 → blocks_ 按 id 有序，二分定位（§10.4）。
 std::optional<size_t> Document::index_of(uint64_t id) const noexcept {
     const auto it = std::lower_bound(
         blocks_.begin(), blocks_.end(), id,
@@ -315,8 +298,7 @@ std::optional<size_t> Document::index_of(uint64_t id) const noexcept {
 
 void Document::begin_frame(int width, uint32_t theme_epoch) {
     if (width != width_ || theme_epoch != theme_epoch_) {
-        // 宽度/主题纪元变化：折行与物化缓存整体作废，O(全部块文本)
-        // 一次无分配重数；物化仍只发生在可见窗口（§10.2）。
+        // 宽度/主题纪元变化：缓存整体作废并全量重数。
         width_ = width;
         theme_epoch_ = theme_epoch;
         for (Block& b : blocks_) count_full(b);
@@ -327,8 +309,7 @@ void Document::begin_frame(int width, uint32_t theme_epoch) {
     if (first_dirty_ == k_npos) return;
     for (size_t i = first_dirty_; i < blocks_.size(); ++i) {
         Block& b = blocks_[i];
-        // 折叠视图是截断，增量锚点无意义；cache_key 变化（折叠开关）
-        // 同样走整块重数。
+        // 折叠或 cache_key 变化（折叠开关）走整块重数，否则增量。
         if (b.collapsed || b.cache_key != block_key(b, width, theme_epoch)) {
             count_full(b);
         } else {
@@ -339,14 +320,14 @@ void Document::begin_frame(int width, uint32_t theme_epoch) {
     first_dirty_ = k_npos;
 }
 
-// 整块重数：折行全量扫一遍（零分配），物化缓存全部作废。
+/// @brief 整块重数，并作废该块物化缓存。
 void Document::count_full(Block& b) {
     const WrapResult r = renderer(b.kind).measure(b.source, 0, width_);
     b.row_count = r.rows;
     b.stable_rows = r.stable_rows;
     b.stable_bytes = r.stable_bytes;
     if (!b.open) {
-        // 封闭块不会再有追加：全部行都是稳定的。
+        // 封闭块：全部行都稳定。
         b.stable_rows = b.row_count;
         b.stable_bytes = b.source.size();
     }
@@ -356,9 +337,9 @@ void Document::count_full(Block& b) {
     b.rows_bytes = 0;
 }
 
-// 增量重数：只重扫 stable_bytes 之后的最后一个不完整行，O(最后一行)。
+/// @brief 增量重数：只重扫 stable_bytes 之后的不完整行。
 void Document::count_incremental(Block& b) {
-    // 渲染过但内容已过时的不稳定尾行作废；稳定前缀保留，物化锚点随之回退。
+    // 渲染过但已过时的尾行作废，物化锚点回退到稳定前缀。
     if (b.rows_valid > b.stable_rows) {
         b.rows_valid = b.stable_rows;
         b.rows_bytes = b.stable_bytes;
@@ -373,15 +354,14 @@ void Document::count_incremental(Block& b) {
     }
 }
 
-// 只重建受影响的后缀（尾部追加时是 O(1)）。
+/// @brief 从 from 起重建前缀和后缀。
 void Document::rebuild_prefix(size_t from) {
     for (size_t i = from; i < blocks_.size(); ++i) {
         prefix_[i + 1] = prefix_[i] + display_rows(blocks_[i]);
     }
 }
 
-// 行首偏移随行号单调递增：二分找最后一个行首 <= byte 的行。
-// 折叠块只物化了前 collapsed_rows 行，更靠后的字节夹到末行。
+/// @brief 二分找 byte 所在显示行（行首偏移随行号单调递增）。
 std::optional<size_t> Document::row_of(uint64_t block_id, size_t byte_in_block,
                                        const ThemeTokens& theme) {
     const auto idx = index_of(block_id);
@@ -425,16 +405,13 @@ void Document::materialize_range(size_t first, size_t count,
     }
 }
 
-// 物化一个块到「当前应有的有效行数」。两条路径：
-//   * 已完整物化 → 什么都不做；
-//   * 否则从 rows_bytes（有效前缀之后）继续画到末尾；
-//     被驱逐时 rows_valid/rows_bytes 已归零，等价于从头物化。
+/// @brief 物化块到当前应有行数：已完整则跳过，否则从 rows_bytes 续画。
 void Document::ensure_rows(Block& b, const ThemeTokens& theme) {
     const size_t want = content_rows(b);
     if (b.rows_valid == want) return;
     b.rows_valid = renderer(b.kind).render(b, width_, theme, b.rows_bytes,
                                            b.rows_valid, b.rows);
-    // 非折叠渲染一定扫到 source 末尾；折叠是截断视图，不参与增量续画。
+    // 折叠是截断视图，不参与增量续画。
     b.rows_bytes = b.collapsed ? 0 : b.source.size();
 }
 
@@ -455,9 +432,6 @@ const Line* Document::line_at(size_t row) const noexcept {
     return &b.rows[r];
 }
 
-// 只保留可见窗口 ± 一屏范围内块的物化结果（§10.2 的驱逐）。
-// open 块不驱逐：它的 rows 就是增量折行的锚点，丢掉会把
-// 「每帧 O(最后一行)」退化成「每帧 O(全文)」。
 void Document::evict_outside(size_t first, size_t count) noexcept {
     const size_t first_abs = first + base_rows_;
     const size_t lo = first_abs > count ? first_abs - count : 0;
@@ -474,7 +448,7 @@ void Document::evict_outside(size_t first, size_t count) noexcept {
     }
 }
 
-// ---- 选择（§10.10） ----
+// ---- 选择 ----
 
 Location Document::location_at(size_t row, int col, const ThemeTokens& theme) {
     const size_t abs = row + base_rows_;
@@ -556,7 +530,6 @@ Selection Document::line_around(Location loc) const {
 
 void Document::set_renderer(BlockKind kind, std::unique_ptr<BlockRenderer> r) {
     renderers_[static_cast<size_t>(kind)] = std::move(r);
-    // 已有块可能用旧渲染器物化过：整体置脏，下次帧路径重新推导。
     for (Block& b : blocks_) {
         if (b.kind == kind) b.cache_key = -1;
     }
@@ -572,7 +545,7 @@ const BlockRenderer& Document::renderer(BlockKind kind) const noexcept {
 
 Size Scrollback::measure(Size available) const { return available; }
 
-// 内容版本变化也视为脏：业务线程 append 后不需要手动 invalidate。
+/// @brief 文档版本变化也视为脏。
 bool Scrollback::dirty_tree() const noexcept {
     return Widget::dirty_tree() || rendered_rev_ != doc_.revision();
 }
@@ -582,10 +555,6 @@ size_t Scrollback::max_top() const noexcept {
     return total_ > h ? total_ - h : 0;
 }
 
-// 把视口顶行锚到绝对行 row：贴底由 pinned 表示，其余记录 (块 id, 字节偏移)。
-// 边距行没有内容可锚，location_of 把它映射到下方的块首：向下滚动因此
-// 越过边距；向上滚动则继续上移到上一块的末行，否则会被映射回原处卡住。
-// 视口顶行因此从不停在边距行上。
 void Scrollback::anchor_to(size_t row, int dir) {
     const size_t max = max_top();
     if (row >= max) {
@@ -594,6 +563,7 @@ void Scrollback::anchor_to(size_t row, int dir) {
     }
     Location loc = doc_.location_of(row, theme_);
     if (dir < 0) {
+        // 边距行映射到下方块首：回退到真实内容行
         while (row > 0 &&
                doc_.row_of(loc.block_id, loc.byte_in_block, theme_).value_or(row) > row) {
             loc = doc_.location_of(--row, theme_);
@@ -638,11 +608,10 @@ void Scrollback::render(Surface& s) {
     size_t top = max;
     const Anchor anchor = doc_.anchor();
     if (!anchor.pinned_to_bottom) {
-        // 锚点是 (块 id, 字节偏移)：不受重折与裁剪影响（§10.5）。
+        // 锚点换算视口顶行
         const auto r = doc_.row_of(anchor.block_id, anchor.byte_in_block, theme_);
         top = std::min(r.value_or(0), max);
-        // 块被裁剪或内容缩水导致夹取时，锚点跟随实际视口顶行；未夹取时
-        // 保留原字节偏移，来回改变宽度不会逐次漂到行首。
+        // 被夹取时锚点跟随实际顶行。
         if ((!r || top != *r) && total > 0) {
             const Location loc = doc_.location_of(top, theme_);
             doc_.set_anchor(Anchor{loc.block_id, loc.byte_in_block, false});
@@ -666,8 +635,7 @@ void Scrollback::render(Surface& s) {
     rendered_rev_ = doc_.revision();
 }
 
-// 一行的绘制：无选区（或本行所在块不在选区内）时逐 span 写出；否则逐
-// 字素判定是否落在选区内，选中的反色（在原样式上翻转 reverse）。
+/// @brief 绘制一行；落在选区内的字素套选区样式。
 void Scrollback::draw_row(Surface& s, int y, size_t row, const Line& ln) {
     int col = 0;
     const Block* blk = nullptr;
@@ -687,16 +655,14 @@ void Scrollback::draw_row(Surface& s, int y, size_t row, const Line& ln) {
                       const Location at{blk->id, byte};
                       Style st = sp.style;
                       if (!(at < lo) && !(hi < at)) {
-                          // 选区令牌（§9.2）：设了 fg/bg 就覆盖，反色翻转，
-                          // 其余属性取并集。只叠加在绘制上，不进缓存。
+                          // 选区令牌：设了 fg/bg 就覆盖，其余属性取并集。
                           if (theme_.selection.fg.kind != Color::Kind::default_) {
                               st.fg = theme_.selection.fg;
                           }
                           if (theme_.selection.bg.kind != Color::Kind::default_) {
                               st.bg = theme_.selection.bg;
                           }
-                          // 反色取翻转而不是并集：原样式已是反色时并集
-                          // 看不出选区。
+                          // 反色取翻转而非并集。
                           if (any(theme_.selection.attrs & Attr::reverse)) {
                               st.attrs = any(st.attrs & Attr::reverse)
                                              ? st.attrs & ~Attr::reverse

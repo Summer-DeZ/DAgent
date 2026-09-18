@@ -9,17 +9,14 @@ namespace {
 
 constexpr std::string_view k_paste_end = "\x1b[201~";
 
-// 参数个数与取值上限：键序列至多两三个参数，SGR 鼠标三个；
-// 上限之外仍完整消费到终止符，只是不再记录（§11.1：必须读完再丢）。
+// 超限参数仍消费到终止符，只是不再记录。
 constexpr int k_max_params = 8;
 constexpr int k_param_cap = 0xFFFF;
 
-// 终端字符串（OSC/DCS/APC/PM/SOS）的应答上限：超出部分丢弃，但仍
-// 读到终止符；异常输入不能把应答事件撑爆（§11.2）。
+// 超出部分丢弃但仍读到终止符。
 constexpr std::size_t k_max_reply = 1u << 20;
 
-// pos 处 UTF-8 序列的完整长度；缓冲不足且前缀合法 → 0（等更多字节）；
-// 非法（坏续字节 / 过长编码 / 代理区 / 越界）→ -1（丢首字节）。
+// s[0] 处 UTF-8 序列长度：缓冲不足且前缀合法 → 0（等更多字节），非法 → -1（丢首字节）。
 int utf8_length(std::string_view s) noexcept {
     const auto b0 = static_cast<unsigned char>(s[0]);
     int len = 0;
@@ -56,9 +53,7 @@ int utf8_length(std::string_view s) noexcept {
     return len;
 }
 
-// xterm / kitty 共用的 modifier 参数：值 = 1 + 位集
-// （bit0 shift / bit1 alt / bit2 ctrl / bit3 super）。缺省参数（0 或 1）
-// = 无修饰；kitty 的 hyper/meta/caps/num 位忽略（§11.2）。
+// modifier 参数 = 1 + 位集（shift/alt/ctrl/super）；缺省 = 无修饰。
 Mods mods_from_param(int p) noexcept {
     if (p < 1) return Mods::none;
     const int bits = p - 1;
@@ -74,7 +69,7 @@ bool valid_codepoint(int cp) noexcept {
     return cp > 0 && cp <= 0x10FFFF && !(cp >= 0xD800 && cp <= 0xDFFF);
 }
 
-// 码点 → UTF-8（仅对 valid_codepoint 的输入调用）。
+// 仅对 valid_codepoint 的输入调用。
 std::string utf8_from_codepoint(int cp) {
     std::string s;
     if (cp < 0x80) {
@@ -113,8 +108,7 @@ Event key_event(Key k, Mods m, std::string_view ch) {
     return e;
 }
 
-// C0 控制字节 → 键事件。CR/LF 都算 enter（raw 模式下 Enter 发 CR、
-// Ctrl-J 发 LF）；Ctrl-字母按 xterm 惯例用 text 携带字母、mods=ctrl 表达。
+// C0 控制字节 → 键事件；Ctrl-字母用 text 携带字母、mods=ctrl 表达。
 Event control_event(unsigned char b, bool alt) {
     const Mods base = alt ? Mods::alt : Mods::none;
     switch (b) {
@@ -140,7 +134,7 @@ Event control_event(unsigned char b, bool alt) {
     }
 }
 
-// \e[n~ 的功能键表（§11.1）。
+// \e[n~ 的功能键表。
 Key key_from_tilde(int p) noexcept {
     switch (p) {
     case 1:
@@ -174,8 +168,7 @@ Key key_from_tilde(int p) noexcept {
     }
 }
 
-// SGR 1006 鼠标：\e[<Cb;Cx;Cy(M|m)。Cb 位 0-1 按钮、4/8/16 = shift/alt/ctrl、
-// 32 = 移动、64 = 滚轮；坐标 1 基，解码为 0 基。M = 按下/拖拽/滚轮，m = 释放。
+// SGR 1006 鼠标：坐标 1 基解码为 0 基，M = 按下/拖拽，m = 释放。
 void decode_mouse(const int* params, int np, char final_, bool alt,
                   std::vector<Event>& out) {
     if (np < 3) return;
@@ -198,23 +191,19 @@ void decode_mouse(const int* params, int np, char final_, bool alt,
     out.push_back(std::move(e));
 }
 
-// CSI 参数：支持 ':' 子参数（kitty 的 shifted key 与事件类型，§11.2）
-// 与私有标记（'?' '>' '=' 的应答，'<' 的 SGR 鼠标）。
+// CSI 参数：支持 ':' 子参数与私有标记（'?' '>' '=' 应答、'<' SGR 鼠标）。
 struct CsiParams {
-    int v[k_max_params] = {};         // 各 ';' 段的主值
-    int sub[k_max_params] = {};       // 各段 ':' 后的第一个子参数
-    bool sub_seen[k_max_params] = {}; // 该段是否带子参数
+    int v[k_max_params] = {};         ///< 各 ';' 段的主值
+    int sub[k_max_params] = {};       ///< 各段 ':' 后的第一个子参数
+    bool sub_seen[k_max_params] = {}; ///< 该段是否带子参数
     int np = 0;
-    char marker = 0;         // 私有标记（'?' '>' '='），0 = 无
-    bool sgr = false;        // '<' 私有标记：SGR 鼠标
-    bool intermediate = false; // 中间字节（如 DECRQM 的 '$'）
-    bool junk = false;       // 其余不可识别的私有标记/中间字节
+    char marker = 0;           ///< 私有标记（'?' '>' '='），0 = 无
+    bool sgr = false;          ///< '<' 私有标记：SGR 鼠标
+    bool intermediate = false; ///< 中间字节（如 DECRQM 的 '$'）
+    bool junk = false;         ///< 其余不可识别的私有标记/中间字节
 };
 
-// kitty 键盘协议（flag 1，§11.2）：\e[code[:alternate];mods[:event]u。
-// 13/9/127/27 映射命名键；其余为可打印码点：有修饰走 Kind::key + text，
-// 无修饰走 Kind::text（文本路径与 legacy 一致）。事件类型子参数只用于
-// 判断（release 丢弃）；本框架只推 flag 1，正常情况下不会出现。
+// kitty 键 \e[code;mods:event u：命名键映射，其余按可打印码点产出。
 void decode_kitty_key(const CsiParams& p, bool alt, std::vector<Event>& out) {
     if (p.np < 1 || p.v[0] <= 0) return;
     if (p.sub_seen[1] && p.sub[1] == 3) return; // release 事件
@@ -242,7 +231,7 @@ void decode_kitty_key(const CsiParams& p, bool alt, std::vector<Event>& out) {
     out.push_back(std::move(e));
 }
 
-// CSI 键盘终止符 → 键/焦点事件。识别不了的终止符静默丢弃。
+// CSI 键盘终止符 → 键/焦点事件；识别不了的静默丢弃。
 void decode_csi_key(const CsiParams& p, char final_, bool alt,
                     std::vector<Event>& out) {
     Mods mods = p.np >= 2 ? mods_from_param(p.v[1]) : Mods::none;
@@ -283,16 +272,15 @@ void decode_csi_key(const CsiParams& p, char final_, bool alt,
     }
 }
 
+// 单个序列的扫描结果。
 struct SeqResult {
-    std::size_t next = 0; // 消费到的位置
-    bool enter_paste = false;
-    bool wait = false; // 序列不完整：一个字节都没消费、一个事件都没产出，留在缓冲等后续
-    bool reply = false; // wait 时有效：窗口内未读完的应答（不参与 Esc 超时，关闭时丢弃）
+    std::size_t next = 0;    ///< 消费到的位置
+    bool enter_paste = false; ///< 命中 \e[200~：转入粘贴收集态
+    bool wait = false;        ///< 序列不完整：留在缓冲等后续
+    bool reply = false;       ///< wait 时有效：窗口内未读完的应答，不参与 Esc 超时
 };
 
-// 序列内的非参数字节（CSI 与 SS3 共用，ECMA-48）：
-//   C0 → 照常执行（产出事件，不带序列的 Alt 前缀），序列继续；
-//   DEL → 忽略；≥0x80 → 中止序列。
+// 序列内非参数字节（CSI 与 SS3 共用）的处理方式。
 enum class SeqByte { handled, abort, final_ };
 
 SeqByte seq_control_byte(unsigned char c, std::vector<Event>& out) {
@@ -305,16 +293,13 @@ SeqByte seq_control_byte(unsigned char c, std::vector<Event>& out) {
     return SeqByte::final_;
 }
 
-// 不完整返回：撤回扫描期间已产出的 C0 事件 —— 缓冲原样保留，下一轮
-// 会整体重新解析，不撤回就会重复产出（分块不变性）。
+// 不完整返回：撤回已产出的 C0 事件，缓冲留待整体重新解析。
 SeqResult wait_from(std::size_t start, std::vector<Event>& out, std::size_t base) {
     out.erase(out.begin() + static_cast<std::ptrdiff_t>(base), out.end());
     return {start, false, true};
 }
 
-// 终端字符串（§11.2）：OSC 由 BEL 或 ST 终止，DCS/APC/PM/SOS 仅 ST。
-// 只在应答窗口打开时被调用。字符串体超过 k_max_reply 的部分丢弃，但
-// 仍消费到终止符；不完整时留在缓冲（不产出事件、不参与 Esc 超时）。
+// 终端字符串：OSC 由 BEL 或 ST 终止，其余仅 ST；只在应答窗口打开时调用。
 SeqResult decode_string(std::string_view s, std::size_t start, char intro,
                         std::vector<Event>& out) {
     const bool osc = intro == ']';
@@ -354,11 +339,7 @@ SeqResult decode_string(std::string_view s, std::size_t start, char intro,
     return {start, false, true, true}; // 不完整：留在缓冲等终止符
 }
 
-// 从 start（\e[ 之后）扫描 CSI 序列到终止符。参数含 ';'、数字与 ':'
-// 子参数（kitty）；'<' 引导 SGR 鼠标；应答窗口内带私有标记 '?' '>' '='
-// 的序列产出 Kind::reply（§11.2），窗口外整体丢弃。不可识别的序列仍
-// 完整读到终止符再丢弃；序列中途出现 ESC 时丢弃已收前缀并从新 ESC
-// 重新解析。
+// 从 start（\e[ 之后）扫描 CSI 到终止符；窗口内私有标记序列产出应答。
 SeqResult decode_csi(std::string_view s, std::size_t start, bool alt,
                      bool reply_window, std::vector<Event>& out) {
     CsiParams p;
@@ -454,7 +435,6 @@ SeqResult decode_csi(std::string_view s, std::size_t start, bool alt,
         if (digit || p.np > 0 || have_primary || sub_seen) push();
         ++i;
         if (p.marker != 0 && reply_window) {
-            // 完整序列体：私有标记、参数（含子参数）、中间字节与最终字节。
             push_reply(out, Event::ReplyType::csi, s.substr(start, i - start));
             return {i, false, false};
         }
@@ -466,10 +446,7 @@ SeqResult decode_csi(std::string_view s, std::size_t start, bool alt,
             return {i, false, false};
         }
         if (c == 'M' && p.np == 0) {
-            // 旧式 X10 鼠标：\e[M 后跟 3 个原始字节。终端不支持 1006 时
-            // 会发这种序列（terminal 按能力开启，老 tmux/screen 例外）；
-            // 不解释该协议，但必须连负载一起吞掉，否则 3 个字节会被
-            // 当成文本插进输入框。
+            // 旧式 X10 鼠标：\e[M 后跟 3 个原始字节，连负载一起吞掉。
             if (n - i < 3) return wait_from(start, out, base); // 负载不足：等待
             return {i + 3, false, false};
         }
@@ -480,15 +457,13 @@ SeqResult decode_csi(std::string_view s, std::size_t start, bool alt,
         decode_csi_key(p, static_cast<char>(c), alt, out);
         return {i, false, false};
     }
-    // 不完整：窗口内的私有标记应答不参与 Esc 超时（窗口关闭时整体丢弃），
-    // 其余残留（用户按键序列）交给 40ms 超时消解。
+    // 不完整：私有标记应答不参与 Esc 超时，其余交超时消解。
     const bool reply = reply_window && p.marker != 0;
     out.erase(out.begin() + static_cast<std::ptrdiff_t>(base), out.end());
     return {start, false, true, reply};
 }
 
-// SS3（应用键盘模式）：\eO 后至多一段参数，单终止符。序列内的
-// C0 / DEL / ≥0x80 与 CSI 同规则。
+// SS3（应用键盘模式）：\eO 后至多一段参数，单终止符。
 SeqResult decode_ss3(std::string_view s, std::size_t start, bool alt,
                      std::vector<Event>& out) {
     const std::size_t n = s.size();
@@ -544,10 +519,7 @@ void Decoder::feed(std::string_view bytes, std::vector<Event>& out) {
 
         const std::size_t n = buf_.size();
         std::size_t pos = 0;
-        // 同一次 feed 内连续的可打印字符合并为一个 text 事件：大段输入
-        // （不支持 2004 时的粘贴、输入法整段上屏）只触发一次
-        // InputBox::insert，而不是逐码点 O(行长) 重算行宽。
-        // 分块不变性因此约束"拼接后的文本"而不是事件边界。
+        // 连续可打印字符合并为一个 text 事件。
         std::string run;
         const auto flush_run = [&] {
             if (run.empty()) return;
@@ -562,12 +534,7 @@ void Decoder::feed(std::string_view bytes, std::vector<Event>& out) {
             const auto b = static_cast<unsigned char>(buf_[pos]);
 
             if (b == 0x1B) {
-                // ESC 串 = [多出的 Esc 按键…] [Alt 前缀] + 后随内容。
-                //   * 后随 [ / O（CSI/SS3）：串的最后一个 ESC 是序列自身的
-                //     引导符，倒数第二个是 Alt 前缀（rxvt 的 \e\e[A = Alt-Up），
-                //     再往前的各是一次 Esc 按键；
-                //   * 后随其他字节：最后一个 ESC 是 Alt 前缀，其余各是 Esc。
-                // 串延伸到缓冲末尾时等后续字节或 flush_escape 消解。
+                // ESC 串 = 多余的 Esc 按键 + Alt 前缀 + 后随内容。
                 std::size_t esc = pos;
                 while (esc < n && buf_[esc] == '\x1b') ++esc;
                 if (esc == n) break;
@@ -575,8 +542,7 @@ void Decoder::feed(std::string_view bytes, std::vector<Event>& out) {
                 const bool has_alt = esc_run >= 2;
                 const auto c = static_cast<unsigned char>(buf_[esc]);
                 flush_run();
-                // 多余的 Esc 按键要等序列确认完整后才产出：若序列不完整
-                // 留在缓冲，下一轮会整体重新解析，先发就会重复。
+                // 多余的 Esc 按键等序列确认完整后再产出。
                 const auto emit_strays = [&] {
                     for (std::size_t k = 0; k + 1 < esc_run; ++k) {
                         out.push_back(key_event(Key::escape, Mods::none, {}));
@@ -589,7 +555,7 @@ void Decoder::feed(std::string_view bytes, std::vector<Event>& out) {
                         ? decode_csi(buf_, esc + 1, has_alt, reply_window_, out)
                         : decode_ss3(buf_, esc + 1, has_alt, out);
                     if (r.wait) {
-                        // 窗口内未读完的应答（残缺私有 CSI）不参与 Esc 超时
+                        // 残缺应答不参与 Esc 超时
                         reply_pending_ = r.reply;
                         break;
                     }
@@ -607,9 +573,7 @@ void Decoder::feed(std::string_view bytes, std::vector<Event>& out) {
                     }
                     continue;
                 }
-                // 终端字符串（§11.2）：只有应答窗口打开时按应答解析；
-                // ESC 串里多出的 ESC 说明是用户的 Alt 组合键（\e\e] =
-                // Esc、Alt-]），不是终端应答。
+                // 终端字符串：只有应答窗口打开时按应答解析；多余的 ESC 是 Alt 组合键。
                 if (reply_window_ && !has_alt &&
                     (c == ']' || c == 'P' || c == '_' || c == '^' || c == 'X')) {
                     const SeqResult r =
@@ -687,18 +651,14 @@ void Decoder::feed(std::string_view bytes, std::vector<Event>& out) {
 void Decoder::set_reply_window(bool open) noexcept {
     reply_window_ = open;
     if (!open && reply_pending_) {
-        // 窗口关闭时仍未终止的应答整体丢弃：其中没有任何按键语义，
-        // 留着会把后续用户输入一起吞进字符串。
+        // 窗口关闭时仍未终止的应答整体丢弃。
         buf_.clear();
         reply_pending_ = false;
     }
 }
 
 bool Decoder::pending_escape() const noexcept {
-    // 覆盖所有以 ESC 开头的不完整序列：孤立 ESC 串、\e[ / \eO 引导符、
-    // 已收了部分参数的残缺 CSI —— 它们都在等后续字节，而终端发 Alt-[
-    // / Alt-O 时用户可能不再按任何键，超时判定必须能把它们消解掉。
-    // 应答窗口内的残缺应答除外：等待期由窗口的哨兵/超时控制，整体丢弃。
+    // 以 ESC 开头的不完整序列均可被超时消解；应答窗口内的残缺应答除外。
     return !paste_ && !reply_pending_ && !buf_.empty() && buf_[0] == '\x1b';
 }
 
@@ -717,7 +677,7 @@ void Decoder::flush_escape(std::vector<Event>& out) {
     if (body.empty()) {
         escapes(run); // 孤立 ESC 串：每个都是 Esc 按键
     } else if (body[0] == '[' || body[0] == 'O') {
-        // 残缺 CSI/SS3。序列内的 C0 在 feed 里随 wait 被撤回，这里照常产出。
+        // 残缺 CSI/SS3：序列内 C0 已被 feed 撤回，这里照常产出。
         const bool x10 = body.starts_with("[M"); // 负载是原始数据，不含按键
         bool params = x10;
         for (const char ch : body.substr(1)) {
@@ -725,13 +685,11 @@ void Decoder::flush_escape(std::vector<Event>& out) {
             if (c >= 0x20 && c != 0x7F) params = true;
         }
         if (!params) {
-            // 引导符后只有 C0/DEL：用户按了 Alt-[ / Alt-O 后停手（可能
-            // 紧跟着回车等控制键）。最后一个 ESC 是 Alt 前缀。
+            // 引导符后只有 C0/DEL：最后一个 ESC 是 Alt 前缀。
             escapes(run - 1);
             out.push_back(key_event(Key::none, Mods::alt, body.substr(0, 1)));
         } else {
-            // 已收参数的残缺序列整体丢弃：最后一个 ESC 是引导符，
-            // 倒数第二个（若有）是它的 Alt 前缀，与 feed 规则一致。
+            // 已收参数的残缺序列整体丢弃：最后一个 ESC 是引导符，倒数第二个是 Alt 前缀。
             escapes(run >= 2 ? run - 2 : 0);
         }
         if (!x10) {
@@ -787,8 +745,7 @@ void EventRouter::pop(EventHandler& h) {
 }
 
 bool EventRouter::route(const Event& e) {
-    // 按下标自顶向下：期间 push 追加到原栈顶之上，不在本次遍历范围；
-    // push 引起的重分配不影响下标访问；pop 只置空槽。
+    // 按下标自顶向下；期间的 push/pop 不影响本次遍历。
     struct Depth {
         EventRouter& r;
         explicit Depth(EventRouter& router) : r(router) { ++r.routing_; }
@@ -804,7 +761,7 @@ bool EventRouter::route(const Event& e) {
         EventHandler* h = stack_[i];
         if (h != nullptr && h->on_event(e)) return true;
     }
-    // 焦点/全局在调用时刻读取：栈上的处理器可能刚改过它们。
+    // 焦点/全局在调用时刻读取。
     if (focus_ != nullptr && focus_->on_event(e)) return true;
     return global_ != nullptr && global_->on_event(e);
 }
@@ -812,8 +769,7 @@ bool EventRouter::route(const Event& e) {
 // ---- InputBoxHandler ----
 
 bool InputBoxHandler::on_event(const Event& e) {
-    // 粘贴与逐字输入同路：insert 入口会规范化 \r\n 并丢弃控制符，
-    // 粘贴里的换行只分行、不触发提交。
+    // 粘贴与逐字输入同路走 insert。
     if (e.kind == Event::Kind::text || e.kind == Event::Kind::paste) {
         box_.insert(e.text);
         return true;

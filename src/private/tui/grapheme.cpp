@@ -1,11 +1,3 @@
-// L2 内部依赖：UTF-8 解码、字素簇聚合、码点显示宽度（§7）。
-// 宽度与字素属性表由 Unicode 数据文件生成（见下方生成区段），不再手工
-// 维护；独立成编译单元是因为它是每帧热路径，且区间表体量大。
-//
-// 字素簇按 UAX #29 实现，按文档 §7.1 的口径有意不实现两条规则：
-//   * GB9b（Prepend ×）：前置字符不强制粘连；
-//   * GB9c（Indic 辅音连缀）：不识别 InCB Consonant/Linker/Extend 序列。
-// 一致性测试按这两条规则涉及的码点清单排除对应用例。
 #include "tui/grapheme.hpp"
 
 #include <algorithm>
@@ -21,7 +13,7 @@ struct Range {
     char32_t hi;
 };
 
-// UAX #29 字素簇断行属性（GraphemeBreakProperty.txt）。other 为默认值。
+/// @brief UAX #29 字素簇断行属性（GraphemeBreakProperty.txt）；other 为默认值。
 enum class Gcb : uint8_t {
     other = 0,
     cr,
@@ -45,12 +37,8 @@ struct GcbRange {
     Gcb gc;
 };
 
-// ===== 生成区段开始（Unicode 17.0.0）=====
-// Unicode 版本：17.0.0（数据文件头部自带版本号）
+// ===== 生成区段开始（Unicode 17.0.0；脚本整体覆写，勿手改）=====
 // 生成命令：python3 temp/gen_unicode_tables.py temp/unicode/17.0.0
-// 数据源：EastAsianWidth.txt / emoji-data.txt / GraphemeBreakProperty.txt /
-//         DerivedGeneralCategory.txt（脚本与数据文件不入库）。
-// 本区段由脚本整体覆写，不要手改。
 
 // 宽度 2：EastAsianWidth W/F 与 Emoji_Presentation=Yes。
 constexpr Range kWide[] = {
@@ -1669,10 +1657,9 @@ constexpr GcbRange kGcbRanges[] = {
 };
 // ===== 生成区段结束 =====
 
-// BMP 表的最高位标记 Extended_Pictographic（GB11）。
-constexpr uint8_t k_extpict_bit = 0x80;
+constexpr uint8_t k_extpict_bit = 0x80; ///< BMP 表的最高位标记 Extended_Pictographic（GB11）
 
-// 区间表按 lo 升序存放，二分查找。
+/// @brief 区间表按 lo 升序存放，二分查找。
 bool in_sorted(const Range* a, std::size_t n, char32_t cp) noexcept {
     std::size_t lo = 0, hi = n;
     while (lo < hi) {
@@ -1718,7 +1705,7 @@ void mark_range(std::array<uint8_t, 0x10000>& t, const Range& r,
     }
 }
 
-// 宽度表：BMP 一次构建（64KB），星面走区间二分。
+/// @brief 宽度表：BMP 一次构建（64KB），星面走区间二分。
 const std::array<uint8_t, 0x10000>& bmp_width() noexcept {
     static const std::array<uint8_t, 0x10000> table = [] {
         std::array<uint8_t, 0x10000> t{};
@@ -1732,7 +1719,7 @@ const std::array<uint8_t, 0x10000>& bmp_width() noexcept {
     return table;
 }
 
-// GCB 表：低 4 位类别，最高位 Extended_Pictographic。
+/// @brief GCB 表：低 4 位类别，最高位 Extended_Pictographic。
 const std::array<uint8_t, 0x10000>& bmp_gcb() noexcept {
     static const std::array<uint8_t, 0x10000> table = [] {
         std::array<uint8_t, 0x10000> t{};
@@ -1767,8 +1754,6 @@ bool is_extpict(char32_t cp) noexcept {
 
 } // namespace
 
-// 码点显示宽度：0（组合记号/格式/控制）、1（半角）、2（全角/emoji）。
-// Emoji_Presentation=Yes 与 EAW W/F 同为 2 列（§7）。
 int char_width(char32_t cp) noexcept {
     if (cp < 0x10000) return bmp_width()[cp];
     if (in_sorted(kZero, cp) || in_sorted(kJoiner, cp)) return 0;
@@ -1797,8 +1782,7 @@ char32_t decode_utf8(std::string_view& s) noexcept {
         return 0xFFFD;
     }
     for (std::size_t i = 1; i < len; ++i) {
-        // 末尾截断：已有的续字节整体作废；遇到非续字节：只丢首字节，
-        // 其后的合法内容保留。
+        // 末尾截断：续字节整体作废；非续字节只丢首字节，其后合法内容保留。
         if (i >= s.size()) {
             s.remove_prefix(s.size());
             return 0xFFFD;
@@ -1848,12 +1832,7 @@ std::size_t encode_utf8(char32_t cp, char (&out)[4]) noexcept {
     return 1;
 }
 
-// 取下一个字素簇并前移视图；末尾返回 false。
-// 规则顺序即 UAX #29：GB3–GB5（换行/控制符）→ GB6–GB8（Hangul）
-// → GB9/GB9a（Extend/ZWJ/SpacingMark）→ GB11（emoji ZWJ 序列）
-// → GB12/GB13（区域指示符成对）→ GB999。GB9b/GB9c 有意不实现。
-//
-// 簇宽度：取簇内码点最大宽度；VS16 或成对区域指示符强制 2 列（§7）。
+/// 按 UAX #29 实现；GB9b/GB9c 有意不实现。簇宽度取簇内码点最大宽度。
 bool next_grapheme(std::string_view& s, Grapheme& out) noexcept {
     if (s.empty()) {
         return false;
@@ -1906,7 +1885,7 @@ bool next_grapheme(std::string_view& s, Grapheme& out) noexcept {
             break;
         }
         cursor = probe;
-        if (next == 0xFE0F) vs16 = true; // VS16：文本呈现 → emoji 呈现
+        if (next == 0xFE0F) vs16 = true; // VS16
         width = std::max(width, char_width(next));
         if (is_extpict(next)) {
             gb11_ready = true;
@@ -1917,7 +1896,7 @@ bool next_grapheme(std::string_view& s, Grapheme& out) noexcept {
         prev = nclass;
     }
 
-    if (vs16) width = std::max(width, 2);      // §7：后随 VS16 的簇 2 列
+    if (vs16) width = std::max(width, 2);      // 后随 VS16 的簇 2 列
     if (ri_count >= 2) width = std::max(width, 2); // 国旗成对占 2 列
     out.bytes = s.substr(0, s.size() - cursor.size());
     out.width = width;

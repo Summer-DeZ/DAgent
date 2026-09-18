@@ -11,17 +11,15 @@ namespace {
 
 constexpr int k_tab_stop = 8;
 
-// 转圈符号（盲文点阵，窄字符）。动画帧节奏由 L7 驱动。
+// 转圈符号（盲文点阵，窄字符）。
 constexpr std::string_view k_spinner[10] = {
     "⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏",
 };
 
-// 单个字素的显示推进量。与 Surface::text 的宽度规则完全一致：
-// 制表符展开到 tab stop，'\n'/'\r' 终止（返回 -1 作信号），其余
-// 控制符跳过，零宽簇不计宽。
+// 单个字素的显示推进量：tab 展开、控制符跳过；返回 -1 = 行终止。
 int advance(int col, const unicode::Grapheme& g) noexcept {
     const unsigned char b0 = static_cast<unsigned char>(g.bytes[0]);
-    // GB3 把 CRLF 聚成一个簇：终止判断看首字节，不看簇长度。
+    // CRLF 聚成一个簇：行终止看首字节。
     if (b0 == '\n' || b0 == '\r') return -1;
     if (g.bytes.size() == 1) {
         if (b0 == '\t') return (col / k_tab_stop + 1) * k_tab_stop;
@@ -30,7 +28,6 @@ int advance(int col, const unicode::Grapheme& g) noexcept {
     return col + g.width;
 }
 
-// 整行显示宽度（渲染宽度的权威定义，与 Surface::text 逐格一致）。
 int line_width(std::string_view line) noexcept {
     int col = 0;
     unicode::Grapheme g;
@@ -42,7 +39,7 @@ int line_width(std::string_view line) noexcept {
     return col;
 }
 
-// 光标字节偏移 → 显示列（只走到光标为止）。
+// 光标字节偏移 → 显示列。
 int display_col_of(std::string_view line, int byte) noexcept {
     int col = 0;
     int pos = 0;
@@ -56,8 +53,7 @@ int display_col_of(std::string_view line, int byte) noexcept {
     return col;
 }
 
-// 显示列 → 字节偏移：第一个起始列 >= col 的字素之前。
-// 光标永远落在字素边界上，不会停在宽字符两列之间。
+// 显示列 → 字节偏移（落在字素边界上）。
 int byte_of_display_col(std::string_view line, int col) noexcept {
     int c = 0;
     int pos = 0;
@@ -71,7 +67,6 @@ int byte_of_display_col(std::string_view line, int col) noexcept {
     return pos;
 }
 
-// 光标前一个字素簇的起始字节。行短（输入框尺度），O(col) 从头走。
 int prev_grapheme_start(std::string_view line, int byte) noexcept {
     int prev = 0;
     int pos = 0;
@@ -83,7 +78,6 @@ int prev_grapheme_start(std::string_view line, int byte) noexcept {
     return prev;
 }
 
-// 光标后一个字素簇的结束字节（不越出行尾）。
 int next_grapheme_end(std::string_view line, int byte) noexcept {
     std::string_view rest = line;
     rest.remove_prefix(static_cast<std::size_t>(byte));
@@ -94,8 +88,7 @@ int next_grapheme_end(std::string_view line, int byte) noexcept {
     return byte;
 }
 
-// 编辑模型的内容不变量：只含 '\n' 分行、'\t' 与可见字符。
-// '\r' 会截断渲染、其余控制符不可见却占光标步，因此在入口处规范化。
+// 是否含需规范化的控制符。
 bool needs_normalize(std::string_view s) noexcept {
     for (const char ch : s) {
         const unsigned char b = static_cast<unsigned char>(ch);
@@ -131,8 +124,6 @@ void Text::set_text(std::string s) {
     invalidate_layout();
 }
 
-// 行切片 + 宽度缓存。行数与最长行宽度只在这里算一次，
-// measure/render 都是 O(1)/O(行数) 的缓存读取。
 void Text::resplit() {
     lines_.clear();
     width_ = 0;
@@ -252,8 +243,6 @@ std::string InputBox::text() const {
     return out;
 }
 
-// 插入 '\n' 时把当前行重分节：首节留在原行，其余节成为新行插到后面，
-// 光标落在最后一个插入字素之后（行内容 = 尾节去掉原光标之后的后缀）。
 void InputBox::insert(std::string_view utf8) {
     std::string normalized;
     if (needs_normalize(utf8)) {
@@ -272,7 +261,6 @@ void InputBox::insert(std::string_view utf8) {
         return;
     }
 
-    // 拷贝后再分节：视图不受 vector 扩容 / string 重分配影响。
     const int suffix =
         static_cast<int>(lines_[static_cast<std::size_t>(line_)].size()) - col_;
     std::string merged = lines_[static_cast<std::size_t>(line_)];
@@ -296,7 +284,7 @@ void InputBox::insert(std::string_view utf8) {
         ws.push_back(line_width(*it));
     }
 
-    // 尾节 = 插入的末段 + 原光标之后的后缀；光标停在插入内容之后。
+    // 尾节含原光标后的后缀，光标停在插入内容之后。
     const int tail = static_cast<int>(parts.back().size()) - suffix;
     lines_[static_cast<std::size_t>(line_)] = std::move(parts[0]);
     line_widths_[static_cast<std::size_t>(line_)] =
@@ -355,8 +343,6 @@ void InputBox::del() {
     invalidate_layout();
 }
 
-// 相对移动。垂直先走（使用/确立目标显示列），水平后走（跨行），
-// 水平移动后以新位置重置目标列 —— 连续上下移动保持原始列。
 void InputBox::move(int dcols, int dlines) {
     if (dcols == 0 && dlines == 0) return;
     const int n = static_cast<int>(lines_.size());
@@ -426,8 +412,7 @@ Size InputBox::measure(Size) const {
     return {w + 2, static_cast<int>(lines_.size()) + 2};
 }
 
-// 边框 + 可见窗口。滚动只在这里推进（渲染线程），每次都把光标
-// 夹回可见窗口：行数/列数随编辑变化时不需要额外的滚动维护逻辑。
+/// @brief 边框 + 可见窗口；滚动只在这里推进。
 void InputBox::render(Surface& s) {
     const int w = s.cols();
     const int h = s.rows();
@@ -458,9 +443,8 @@ void InputBox::render(Surface& s) {
     if (hscroll_ < 0) hscroll_ = 0;
 
     const int last = std::min(n, vscroll_ + ih);
-    Surface inner = s.view({1, 1, iw, ih}); // 内容裁剪在边框内，结构性保证
-    // 整行从 -hscroll_ 起写：制表符与宽字符按真实显示列展开，
-    // 左侧裁剪与跨边界宽字符的半格由 Surface::text 处理。
+    Surface inner = s.view({1, 1, iw, ih}); // 内容裁剪在边框内
+    // 整行从 -hscroll_ 起写，裁剪由 Surface::text 处理。
     for (int i = vscroll_; i < last; ++i) {
         inner.text(-hscroll_, i - vscroll_, lines_[static_cast<std::size_t>(i)],
                    theme_->text);

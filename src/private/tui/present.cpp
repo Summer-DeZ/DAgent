@@ -6,14 +6,13 @@ namespace dagent::tui {
 
 namespace {
 
-// 整数直写（to_chars），帧路径上不允许 snprintf/分配。
 void append_uint(std::string& out, int v) {
     char buf[16];
     const auto res = std::to_chars(buf, buf + sizeof buf, v);
     out.append(buf, res.ptr);
 }
 
-// 绝对定位 CUP（1 基）。每行差分区间至多一次定位，开销已足够低。
+/// @brief 绝对定位 CUP（1 基）。
 void append_cup(std::string& out, int row1, int col1) {
     out += "\x1b[";
     append_uint(out, row1);
@@ -22,7 +21,7 @@ void append_cup(std::string& out, int row1, int col1) {
     out += 'H';
 }
 
-// 无 truecolor 能力时把 RGB 量化到 xterm 256：灰阶 232-255 / 6×6×6 立方体。
+/// @brief 无 truecolor 时把 RGB 量化到 xterm 256 色。
 int quantize256(const Color& c) noexcept {
     if (c.r == c.g && c.g == c.b) {
         const int v = (c.r * 24) / 256;
@@ -57,9 +56,7 @@ void append_color(std::string& out, const Color& c, bool foreground,
     out += 'm';
 }
 
-// SGR 增量：只发真正变化的属性，不每次 \e[0m + 全套重设。
-// bold 与 dim 共用关闭码 22：撤掉其中任一个，终端会把两个都清掉，
-// 幸存者必须紧接着重发，否则会丢失。
+/// @brief SGR 增量：只发真正变化的属性；bold/dim 共用关闭码 22。
 void append_sgr(std::string& out, const Style& from, const Style& to,
                 bool truecolor) {
     const Attr dropped = from.attrs & ~to.attrs;
@@ -94,16 +91,15 @@ void append_sgr(std::string& out, const Style& from, const Style& to,
 
 void render_frame(std::string& out, const Surface& back, const Surface& front,
                   const FrameOptions& opt) {
-    out.clear(); // 保留容量，稳态零分配
-    if (opt.synchronized) out += "\x1b[?2026h"; // 开始同步帧（不支持的终端忽略）
+    out.clear(); // 保留容量
+    if (opt.synchronized) out += "\x1b[?2026h"; // 开始同步帧
     out += "\x1b[?25l";                         // 绘制期间隐藏光标
 
-    // 帧首终端处于默认态（上一帧末已 \e[0m 归零），Style{} 即准确起点。
+    // 帧首样式处于默认态
     Style current{};
     const int cols = back.cols();
     const int rows = back.rows();
-    // 全量路径：front 尺寸错位（终端上还是旧尺寸的旧内容）或调用方强制。
-    // 此时行脏标记不可信（back 重建后未必有人重画过），逐行整行写出。
+    // 尺寸错位或强制全量时逐行整行写出
     const bool full =
         opt.full_repaint || front.cols() != cols || front.rows() != rows;
 
@@ -112,7 +108,7 @@ void render_frame(std::string& out, const Surface& back, const Surface& front,
         int last = cols - 1;
         if (!full) {
             if (!back.row_dirty(row)) {
-                continue; // 整行未动，连比较都不做
+                continue;
             }
             first = -1;
             last = -1;
@@ -125,7 +121,7 @@ void render_frame(std::string& out, const Surface& back, const Surface& front,
                 }
             }
             if (first < 0) {
-                continue; // 行被重画成与上一帧相同 → 零输出
+                continue;
             }
         }
         append_cup(out, row + 1, first + 1);
@@ -142,7 +138,7 @@ void render_frame(std::string& out, const Surface& back, const Surface& front,
         }
     }
 
-    // 帧末归零样式：保证下一帧"终端处于默认态"的假设成立。
+    // 帧末归零样式
     if (!(current == Style{})) out += "\x1b[0m";
     if (opt.cursor) {
         append_cup(out, opt.cursor->y + 1, opt.cursor->x + 1);
@@ -156,8 +152,7 @@ void present(Terminal& term, Surface& back, Surface& front, std::string& out,
     FrameOptions opt{term.caps().synchronized, term.caps().truecolor, cursor,
                      false};
     if (back.cols() != front.cols() || back.rows() != front.rows()) {
-        // 尺寸错位：front 重置为空白网格；终端真实状态是旧尺寸的旧内容，
-        // 必须强制全量重写，否则 back 里的空格会被判成"没变化"、旧字符残留。
+        // front 重置为空白网格，强制全量重写
         front.resize(back.cols(), back.rows());
         opt.full_repaint = true;
     }

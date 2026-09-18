@@ -1,5 +1,5 @@
-// 应用层：主题文件加载（TUI 框架 §9.2 把主题文件的格式与加载划给应用层，
-// 框架只定义 ThemeTokens 与 epoch 失效规则）。
+// 应用层：主题文件加载（TUI 框架 §1 把主题文件的读取划给应用层，
+// 框架只定义 ThemeTokens 与 epoch 失效规则，见 §4.5）。
 //
 // 主题文件是 JSON（默认主题见 config/themes/dagent.json）：
 //   {

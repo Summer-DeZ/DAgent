@@ -1,8 +1,3 @@
-// 语义主题令牌的内置 dark / light 两套取值（§9.2）。
-//
-// 全部用 256 色索引：present 已负责真彩色/256 色量化，主题不需要为低能力
-// 终端单独配色。颜色只是默认值 —— 应用可以用主题文件整体覆盖令牌，只要
-// 递增 epoch 即可让 Document 的物化缓存失效。
 #include "tui/widget.hpp"
 
 namespace dagent::tui {
@@ -13,7 +8,7 @@ constexpr Style plain(Color fg, Attr attrs = Attr::none) noexcept {
     return Style{fg, Color{}, attrs};
 }
 
-// background_* 令牌是底色：颜色放在 bg，fg 保持默认。
+/// @brief 底色令牌：颜色放 bg，fg 保持默认。
 constexpr Style fill(Color bg) noexcept { return Style{Color{}, bg, Attr::none}; }
 
 ThemeTokens make_dark() noexcept {
@@ -95,7 +90,7 @@ const ThemeTokens& light_theme() noexcept {
 }
 
 float relative_luminance(const Color& c) noexcept {
-    if (c.kind != Color::Kind::rgb) return 0.0f; // 索引/默认色无从判断
+    if (c.kind != Color::Kind::rgb) return 0.0f;
     return (0.2126f * c.r + 0.7152f * c.g + 0.0722f * c.b) / 255.0f;
 }
 

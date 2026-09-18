@@ -1,8 +1,3 @@
-// L7 快捷键与命令层（§12.6）。
-//
-// 绑定串解析 + 序列匹配 + leader 模态。Keymap 只做分派：命令的语义完全由
-// 应用层通过 Command::run 提供。多键序列在首个键按下时把自身压入模态栈并
-// 启动超时，后续按键不再经过输入框；匹配/不匹配/超时后弹出。
 #include "tui/app.hpp"
 
 #include <cstddef>
@@ -27,9 +22,7 @@ std::optional<char32_t> single_codepoint(std::string_view text) {
     return cp;
 }
 
-// 大写字母 = 小写基键 + shift：终端把 Shift+A 报成文本 "A"（无修饰），
-// kitty 的 ctrl+shift+a 也可能报出大写 alternate。按键与绑定串两侧都经
-// 这里归一，"shift+a"、"A"、"ctrl+shift+a" 与终端编码无关地成立。
+// 大写字母归一为小写基键 + shift（按键与绑定串两侧都经此归一）。
 void normalize_letter(char32_t& cp, Mods& mods) noexcept {
     if (cp >= 'A' && cp <= 'Z') {
         cp += 32;
@@ -132,7 +125,7 @@ bool Keymap::on_event(const Event& e) {
         }
         if (exact != k_none) {
             const size_t command = bindings_[exact].command;
-            reset_sequence(); // 执行前弹出：回调里可以安全地改绑定表
+            reset_sequence(); // 执行前先重置序列
             execute(command);
             return true;
         }
@@ -317,7 +310,7 @@ void Keymap::reset_sequence() {
 
 void Keymap::execute(size_t command_index) {
     if (command_index >= commands_.size()) return;
-    // 回调可能增删命令/绑定：先把函数对象拷出来再调用。
+    // 回调可能增删命令/绑定：先拷出再调用。
     const std::function<bool()> enabled = commands_[command_index].enabled;
     if (enabled && !enabled()) return; // 禁用：按键已消费，但不执行
     const std::function<void()> run = commands_[command_index].run;

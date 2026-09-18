@@ -1,8 +1,8 @@
 add_executable(tui_tests
     main.cpp
+    render_test.cpp
     document_test.cpp
-    app_test.cpp
-    grapheme_test.cpp
+    runtime_test.cpp
 )
 
 target_link_libraries(tui_tests PRIVATE dagent_tui Boost::headers)

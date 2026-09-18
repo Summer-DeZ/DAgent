@@ -13,7 +13,7 @@ int clampv(int v, int lo, int hi) noexcept {
     return v;
 }
 
-// 浮层矩形：已按屏幕夹过尺寸，这里再保证位置不越界（§8.2）。
+// 浮层矩形：尺寸已夹到屏幕内，这里再保证位置不越界。
 Rect placement_rect(Placement p, Size size, Point point, Size avail) noexcept {
     const int w = size.cols;
     const int h = size.rows;
@@ -73,7 +73,6 @@ void Container::invalidate_tree() noexcept {
     }
 }
 
-// 布局纪元提升的递归判定：任何子树声明了 invalidate_layout 就重算。
 bool Container::needs_layout() const noexcept {
     if (layout_dirty_) {
         return true;
@@ -86,9 +85,6 @@ bool Container::needs_layout() const noexcept {
     return false;
 }
 
-// 子树重画判定的递归聚合：孙控件 invalidate 时本容器返回 true，
-// 否则父容器会把整个子树跳过（深层失效无人重画）。gap_ 待清时
-// 同样必须经过一次 render。
 bool Container::dirty_tree() const noexcept {
     if (dirty_ || !gap_.empty()) {
         return true;
@@ -102,8 +98,7 @@ bool Container::dirty_tree() const noexcept {
 }
 
 void Container::layout(Rect area) {
-    // 子区域是局部坐标：容器移动或变形时子项 Rect 可能不变，
-    // 但屏幕位置已变，整棵子树都得重画。
+    // 子区域是局部坐标：Rect 不变也可能屏幕位置已变，整棵子树都得重画。
     const bool changed = !(rect_ == area);
     Widget::layout(area);
     distribute(area);
@@ -112,8 +107,6 @@ void Container::layout(Rect area) {
     }
 }
 
-// 损伤补画：任何子项与损伤相交都要失效 —— 只让子树根容器失效不够，
-// 容器 render 会跳过干净子项，深层内容就补不回来（§8.3 规则 2）。
 void Container::invalidate_rect(Rect r) {
     for (auto& it : items_) {
         it.widget->invalidate_rect(r);
@@ -133,9 +126,6 @@ void Container::take_painted(std::vector<Rect>& out) {
     painted_.clear();
 }
 
-// 区域分配。五个步骤见类注释。子区域用本容器局部坐标（原点为容器
-// 矩形左上角），render 的视图裁剪与之自然对齐；Rect 变化的失效统一
-// 由 Widget::layout 检测。
 void Container::distribute(Rect area) {
     const bool vert = dir_ == Direction::vertical;
     const int major = vert ? area.h : area.w;
@@ -164,8 +154,7 @@ void Container::distribute(Rect area) {
         }
     }
 
-    // 2. content 按声明顺序测量，夹到 [min, max]。不做剩余空间截断：
-    //    超订阅统一交给第 4 步的收缩步，否则 min 会被剩余空间压穿。
+    // 2. content 按声明顺序测量，夹到 [min, max]。
     for (int i = 0; i < n; ++i) {
         const Constraint& c = items_[static_cast<std::size_t>(i)].constraint;
         if (c.sizing != Sizing::content) {
@@ -193,7 +182,7 @@ void Container::distribute(Rect area) {
                 sz[static_cast<std::size_t>(i)] = v;
                 allocated += v;
             }
-            // floor 损失的余量按声明顺序补 1；被 max 截住就留给能长的
+            // floor 损失的余量按声明顺序补 1
             int leftover = rem - allocated;
             while (leftover > 0) {
                 bool progressed = false;
@@ -210,8 +199,7 @@ void Container::distribute(Rect area) {
                 if (!progressed) break;
             }
         } else {
-            // 剩余空间 ≤ 0：flex 先按 min 占位，交给第 4 步统一收缩；
-            // 否则此情形下 min 永不生效（flex 直接得 0）。
+            // 剩余空间 ≤ 0：flex 按 min 占位。
             for (int i : flex_idx) {
                 const Constraint& c =
                     items_[static_cast<std::size_t>(i)].constraint;
@@ -220,9 +208,7 @@ void Container::distribute(Rect area) {
         }
     }
 
-    // 4. 收缩步：总需求超出 major 时按声明顺序逆序压缩，直到 min。
-    //    覆盖三类情形：fixed/content 超订阅（rem < 0）、flex 的 min
-    //    夹取把总和顶出剩余空间、剩余空间 ≤ 0 时 flex 按 min 占位。
+    // 4. 收缩步：总需求超出 major 时按声明顺序逆序压缩到 min。
     int total = 0;
     for (int s : sz) total += s;
     if (total > major) {
@@ -239,8 +225,7 @@ void Container::distribute(Rect area) {
         }
     }
 
-    // 5. 兜底：Σmin 本身超出 major 的病态情形，按父边界硬截断，
-    //    子区域绝不越出父区域。
+    // 5. 兜底：子区域按父边界硬截断。
     {
         int off = 0;
         for (int i = 0; i < n; ++i) {
@@ -252,7 +237,7 @@ void Container::distribute(Rect area) {
         }
     }
 
-    // 赋区域：局部坐标。Rect 变化由 Widget::layout 自己检测并失效。
+    // 赋子区域：局部坐标，Rect 变化由 Widget::layout 检测失效。
     int off = 0;
     for (int i = 0; i < n; ++i) {
         const int s = sz[static_cast<std::size_t>(i)];
@@ -260,14 +245,11 @@ void Container::distribute(Rect area) {
         items_[static_cast<std::size_t>(i)].widget->layout(r);
         off += s;
     }
-    // 尾部空隙 [off, major)：子项连续排满 [0, off)，这一段无人认领。
-    // render 首次经过时清空一次即 disarm；未变化的纪元重复清空只是
-    // 空白覆空白，差分输出零字节，可接受。
+    // 尾部空隙无人认领，记入 gap_ 待 render 清空。
     const int slack = major - off > 0 ? major - off : 0;
     gap_ = vert ? Rect{0, off, minor, slack} : Rect{off, 0, slack, minor};
 }
 
-// 容器自身的自然尺寸（作为父容器的 content 子项被测量时使用）。
 Size Container::measure(Size available) const {
     int major = 0;
     int minor = 0;
@@ -297,14 +279,7 @@ Size Container::measure(Size available) const {
     return vert ? Size{minor, major} : Size{major, minor};
 }
 
-// 两条职责：
-//   1. 一次性清空布局收缩后尾部腾出的空隙（gap_）：子项沿主轴连续
-//      排布、副轴占满，未被覆盖的只可能是这一段。位置/尺寸变化的
-//      子项已由 Widget::layout 标记失效、走增量路径自行重画；resize
-//      纪元的全量补画由 L7 的 invalidate_tree() 负责，不在此重复。
-//   2. 增量重画子树失效的子项：未失效且 Rect 未变的子项在 front 里
-//      内容仍正确，back 起点又是 front 的拷贝 —— "只有转圈符号在动"
-//      时每帧只碰一行。
+/// @brief 清空尾部空隙（gap_），增量重画失效子项。
 void Container::render(Surface& s) {
     painted_.clear();
     if (!gap_.empty()) {
@@ -321,8 +296,7 @@ void Container::render(Surface& s) {
         Surface v = s.view(w.rect());
         w.render(v);
         w.clear_dirty();
-        // 记录实际重画的子项屏幕矩形：LayerStack 据此判断哪些浮层
-        // 被新画的内容盖住（整棵子树记根矩形，保守但正确）。
+        // 记录实际重画的子项屏幕矩形。
         painted_.push_back(w.screen_rect());
     }
     clear_dirty();
@@ -419,11 +393,7 @@ Widget* LayerStack::hit_test(Point screen) const noexcept {
     return base_->hit_test(screen);
 }
 
-// 损伤传播的四步（§8.3）。关键点：
-//   * 损伤矩形直接擦空白：基础层未必有控件覆盖那里（尾部 gap），
-//     只让相交控件失效会留下旧浮层像素；
-//   * 与 painted/damage 相交的浮层整层 invalidate_tree()：基础层新画的
-//     内容已经盖进 back，跳过干净子项就补不回浮层自己的像素。
+/// @brief 损伤矩形擦空白并传给相交子树，再逐层重画。
 void LayerStack::render(Surface& s) {
     for (const Rect d : damage_) {
         s.fill(d, U' ', Style{});

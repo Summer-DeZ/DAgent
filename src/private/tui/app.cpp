@@ -14,12 +14,7 @@ namespace dagent::tui {
 
 namespace {
 
-// 握手查询组（§6.2）：DA1 必须最后发 —— 终端按顺序应答（DA1 之前没
-// 收到的查询视为不支持），它同时是应答窗口的哨兵。
-//   * DECRQM 2026 / 2027：同步输出、字素簇宽度；
-//   * \e[?u：kitty 键盘协议当前 flags；
-//   * OSC 11：背景色（ST 终止）；
-//   * \e[c：DA1。
+// 握手查询组：DECRQM 2026/2027、\e[?u、OSC 11、DA1（最后发，作应答哨兵）。
 constexpr std::string_view k_handshake_queries =
     "\x1b[?2026$p"
     "\x1b[?2027$p"
@@ -40,7 +35,7 @@ std::optional<int> parse_uint(std::string_view s) {
     return v;
 }
 
-// DECRQM 应答文本：?{mode};{value}$y（value 1/2 = 已置位/已复位 = 支持）。
+// DECRQM 应答 ?{mode};{value}$y；value 1/2 = 支持。
 bool parse_decrqm(std::string_view body, int& mode, int& value) {
     if (!body.starts_with('?') || !body.ends_with("$y")) return false;
     body.remove_prefix(1);
@@ -62,8 +57,7 @@ int hex_digit(char c) noexcept {
     return -1;
 }
 
-// OSC 11 应答文本：11;rgb:RR/GG/BB（每段 1..4 位十六进制，可同用 rgba:）。
-// 每段按位数线性放大到 8 位，够 §9.2 判亮度。
+// OSC 11 应答 11;rgb:RR/GG/BB，每段按位数放大到 8 位。
 bool parse_osc11_background(std::string_view body, Color& out) {
     if (!body.starts_with("11;")) return false;
     body.remove_prefix(3);
@@ -95,7 +89,7 @@ bool parse_osc11_background(std::string_view body, Color& out) {
     return true;
 }
 
-// w 是否是 root 或其子孙（沿父链上溯）。
+// w 是否是 root 或其子孙。
 bool within(const Widget* w, const Widget* root) noexcept {
     for (; w != nullptr; w = w->parent()) {
         if (w == root) return true;
@@ -110,7 +104,7 @@ Runtime::Runtime(Terminal& term, Widget& root, Options opt)
       stack_(dynamic_cast<LayerStack*>(&root)) {
     int pipes[2];
     if (::pipe2(pipes, O_NONBLOCK | O_CLOEXEC) != 0) {
-        // 唤醒管道是调度机制的支柱，创建失败直接终止（与 OOM 同级）。
+        // 唤醒管道：创建失败直接终止。
         std::terminate();
     }
     wake_pipe_[0] = pipes[0];
@@ -120,7 +114,6 @@ Runtime::Runtime(Terminal& term, Widget& root, Options opt)
 Runtime::Runtime(Terminal& term, Widget& root) : Runtime(term, root, Options{}) {}
 
 Runtime::~Runtime() {
-    // run() 退出后队列里可能还剩没跑的更新（业务线程在 quit 之后仍 post）。
     for (Task* node = inbox_head_; node != nullptr;) {
         Task* const next = node->next;
         delete node;
@@ -130,10 +123,8 @@ Runtime::~Runtime() {
     if (wake_pipe_[1] >= 0) ::close(wake_pipe_[1]);
 }
 
-// ---- 定时器（§12.4）----
+// ---- 定时器 ----
 
-// 到期时刻存最小堆；取消只从登记表删除，堆里的旧条目弹出时丢弃
-// （惰性删除）。取消积压过多时整堆重建，堆大小与存活定时器同阶。
 TimerId Runtime::after(std::chrono::milliseconds delay, std::function<void()> fn) {
     const TimerId id = next_timer_++;
     timers_.emplace(id, TimerEntry{std::move(fn), {}, {}});
@@ -163,7 +154,6 @@ void Runtime::schedule(TimerId id, Clock::time_point due) {
     std::push_heap(timer_heap_.begin(), timer_heap_.end(), TimerLater{});
 }
 
-// 堆顶的已取消条目出堆：poll 超时只看存活定时器，取消不会造成空唤醒。
 void Runtime::prune_timers() {
     while (!timer_heap_.empty() && !timers_.contains(timer_heap_.front().id)) {
         std::pop_heap(timer_heap_.begin(), timer_heap_.end(), TimerLater{});
@@ -171,9 +161,7 @@ void Runtime::prune_timers() {
     }
 }
 
-// 先摘出全部已到期条目再执行：回调里新建的 after(0) 留到下一轮，
-// 不会在同一轮里无限续命。同时到期的按到期时刻、再按创建顺序执行。
-// 回调执行前把函数移出登记表，回调可以安全地取消自己或别的定时器。
+// 依序执行已到期定时器；周期定时器按周期对齐续排。
 void Runtime::run_timers(Clock::time_point now) {
     fired_.clear();
     while (!timer_heap_.empty() && timer_heap_.front().due <= now) {
@@ -200,26 +188,26 @@ void Runtime::run_timers(Clock::time_point now) {
             continue;
         }
         it->second.repeat = std::move(fn);
-        // 按周期对齐推进；落后（慢帧）时从现在起算，不补发积压的周期。
+        // 按周期对齐推进，落后时从现在起算。
         const auto next = slot.due + period;
         schedule(slot.id, next > now ? next : now + period);
     }
     if (!fired_.empty()) note_changes();
 }
 
-// ---- 浮层（§12.2）----
+// ---- 浮层 ----
 
 uint32_t Runtime::open_overlay(std::unique_ptr<Widget> w, Placement p,
                                Point point, EventHandler* modal,
                                Widget* cursor_source) {
-    if (stack_ == nullptr) std::terminate(); // root 必须是 LayerStack（§8.2）
+    if (stack_ == nullptr) std::terminate(); // root 必须是 LayerStack
     Widget* const widget = w.get();
     const uint32_t id = stack_->push(std::move(w), p, point);
     overlays_.push_back({id, widget, modal, cursor_source, cursor_source_});
     if (modal != nullptr) router_.push(*modal);
     if (cursor_source != nullptr) {
         cursor_source_ = cursor_source;
-        dirty_ = true; // 光标来源变了：即使控件都没失效也要重新定位
+        dirty_ = true; // 光标来源变了，需重新定位
     }
     note_changes();
     return id;
@@ -230,24 +218,19 @@ void Runtime::close_overlay(uint32_t id) {
         if (it->id != id) continue;
         if (it->modal != nullptr) router_.pop(*it->modal);
         if (it->cursor_source != nullptr) {
-            // 只在本浮层的光标来源仍生效时恢复，非后进先出的关闭不会
-            // 把上层浮层的光标来源改掉。
+            // 仅当本浮层的光标来源仍生效时才恢复。
             if (cursor_source_ == it->cursor_source) {
                 cursor_source_ = it->prev_cursor;
                 dirty_ = true;
             }
-            // 上层浮层把本浮层的光标来源记作恢复点，而本浮层的控件随即
-            // 销毁：恢复点改接到本浮层自己的恢复点，否则上层关闭时会
-            // 恢复成悬垂指针。
+            // 上层把本层光标来源记作恢复点的，改接本层的恢复点。
             for (auto up = it + 1; up != overlays_.end(); ++up) {
                 if (up->prev_cursor == it->cursor_source) {
                     up->prev_cursor = it->prev_cursor;
                 }
             }
         }
-        // 浮层子树随即销毁：解除其中控件的鼠标绑定与捕获（§12.3），否则
-        // 拖拽中途关闭时后续移动/释放会交给已销毁的控件，旧绑定也会被
-        // 复用同一地址的新控件继承。
+        // 浮层子树随即销毁：解除其中控件的鼠标绑定与捕获。
         const Widget* const root = it->widget;
         std::erase_if(mouse_bindings_, [&](const auto& b) {
             return within(b.first, root);
@@ -262,11 +245,7 @@ void Runtime::close_overlay(uint32_t id) {
 
 // ---- 更新通道 ----
 
-// 渲染线程上的应用代码（事件处理器 / 定时器回调 / render）调用 post()
-// 时直接执行 —— 此时控件树已归渲染线程所有，入队反而是绕路；主循环
-// 会在调用返回后检查 dirty_，不需要唤醒。
-// 其余线程：节点在锁外分配，临界区只有一次尾插（两个指针写），最坏
-// 情况 O(1) —— 与渲染耗时、与已积压的队列长度都无关（§4）。
+// 渲染线程上直接执行；其余线程入队后唤醒。
 void Runtime::post(std::function<void()> fn) {
     if (on_render_thread()) {
         fn();
@@ -276,16 +255,12 @@ void Runtime::post(std::function<void()> fn) {
     Task* const node = new Task{std::move(fn), nullptr};
     {
         std::lock_guard<std::mutex> lk(queue_mutex_);
-        // 空链表接头，否则接在尾节点后面。
         (inbox_tail_ != nullptr ? inbox_tail_->next : inbox_head_) = node;
         inbox_tail_ = node;
     }
     wake();
 }
 
-// 渲染线程每次被唤醒的固定动作：锁内只把整条链摘下来（头尾置空）；
-// 解锁后依序执行并释放节点，最后检查控件树是否失效。执行期间新到的
-// post 接在已空的链上并重新唤醒，不丢。
 void Runtime::apply_inbox() {
     Task* node;
     {
@@ -324,7 +299,7 @@ void Runtime::route_events() {
     for (const Event& e : events_) {
         if (handle_handshake_reply(e)) continue;
         if (e.kind == Event::Kind::mouse) {
-            dispatch_mouse(e); // 键盘走路由链，鼠标按坐标分发（§12.3）
+            dispatch_mouse(e); // 鼠标按坐标分发，键盘走路由链
         } else {
             router_.route(e);
         }
@@ -333,7 +308,7 @@ void Runtime::route_events() {
     note_changes();
 }
 
-// ---- 鼠标命中（§12.3）----
+// ---- 鼠标命中 ----
 
 void Runtime::bind_mouse(Widget& w, EventHandler& h) {
     for (auto& [widget, handler] : mouse_bindings_) {
@@ -358,7 +333,7 @@ EventHandler* Runtime::mouse_handler(Widget& w) const noexcept {
     return nullptr;
 }
 
-// 事件先改写为相对命中控件的坐标（w 为空 = 全局：保持屏幕坐标）。
+// 坐标改写为相对命中控件（w 为空 = 屏幕坐标）后投递。
 bool Runtime::deliver_mouse(EventHandler& h, const Widget* w, Event e) {
     if (w != nullptr) {
         const Point o = w->screen_origin();
@@ -374,8 +349,7 @@ bool Runtime::deliver_mouse(EventHandler& h, const Widget* w, Event e) {
 void Runtime::dispatch_mouse(const Event& event) {
     const Event::Mouse& m = event.mouse;
 
-    // 1. 捕获：按下被消费后，该按钮的移动与释放都直接交给它，
-    //    不论指针是否移出（拖拽选择、拖动滚动条）。
+    // 1. 捕获：按下被消费后，该按钮的移动与释放直接交给捕获者。
     if (capture_.handler != nullptr && m.button == capture_.button &&
         (m.motion || !m.press)) {
         deliver_mouse(*capture_.handler, capture_.widget, event);
@@ -383,8 +357,7 @@ void Runtime::dispatch_mouse(const Event& event) {
         return;
     }
 
-    // 2. 模态：带 modal 的最上层浮层。点在它之外 → 事件给模态处理器
-    //    （outside = true）并吞掉，不穿透到下层；是否关闭由处理器决定。
+    // 2. 模态：点在最上层模态浮层之外时事件交给模态处理器并吞掉。
     for (auto it = overlays_.rbegin(); it != overlays_.rend(); ++it) {
         if (it->modal == nullptr || it->widget == nullptr) continue;
         const Rect r = it->widget->screen_rect();
@@ -396,18 +369,17 @@ void Runtime::dispatch_mouse(const Event& event) {
             it->modal->on_event(out);
             return;
         }
-        break; // 包含该点：继续走命中链（模态处理器可绑定在浮层上）
+        break; // 包含该点：继续走命中链
     }
 
-    // 3. 命中链：最上层包含该点的最深控件沿父链向上，第一个绑定了
-    //    处理器且消费的为止。
+    // 3. 命中链：命中控件沿父链向上，第一个绑定并消费的为止。
     if (stack_ != nullptr) {
         for (Widget* w = stack_->hit({m.col, m.row}); w != nullptr;
              w = w->parent()) {
             EventHandler* h = mouse_handler(*w);
             if (h == nullptr) continue;
             if (deliver_mouse(*h, w, event)) {
-                // 非滚轮的按下被消费：进入捕获，后续拖拽/释放归它。
+                // 非滚轮按下被消费：进入捕获。
                 if (capture_.handler == nullptr && m.press && m.button >= 0 &&
                     m.button < 4) {
                     capture_ = {w, h, m.button};
@@ -423,12 +395,9 @@ void Runtime::dispatch_mouse(const Event& event) {
     }
 }
 
-// ---- 能力握手（§6.2）----
+// ---- 能力握手 ----
 
-// run() 开始时调用：发出查询、打开应答窗口、起 1 秒超时。查询只是
-// 写出，不等待 —— 首帧照常调度，应答在 poll 循环里以事件到达。
-// pending_caps_ 从初始值出发，只被收到的应答覆盖，未应答的项不变。
-// 非交互终端（stdin/stdout 被重定向）不握手，能力保持环境变量初始值。
+// 发出握手查询，打开 1 秒应答窗口。
 void Runtime::start_handshake() {
     if (!term_.can_query()) return;
     pending_caps_ = term_.caps();
@@ -438,21 +407,19 @@ void Runtime::start_handshake() {
     term_.write(k_handshake_queries);
 }
 
-// 窗口期间所有应答都由运行时消费（应用只看到按键）。DA1（私有 CSI、
-// 最终字节 c）是哨兵：收到即提交累积的能力；其余按应答类型记录。
+// 消费窗口期内的握手应答；DA1 到达即提交。
 bool Runtime::handle_handshake_reply(const Event& e) {
     if (!handshake_active_ || e.kind != Event::Kind::reply) return false;
     if (e.reply_type == Event::ReplyType::csi) {
         if (e.text.ends_with('c')) {
-            finish_handshake(true); // 哨兵：终端按顺序应答，DA1 之后无需再等
+            finish_handshake(true); // DA1 哨兵
             return true;
         }
         if (e.text.ends_with("$y")) {
             int mode = 0;
             int value = 0;
             if (parse_decrqm(e.text, mode, value)) {
-                // value 1/2 = 已置位/已复位（支持），其余 = 不支持；
-                // 有应答即以应答为准（可覆盖环境变量的乐观猜测）。
+                // value 1/2 = 支持，其余不支持。
                 const bool supported = value == 1 || value == 2;
                 if (mode == 2026) pending_caps_.synchronized = supported;
                 if (mode == 2027) pending_caps_.grapheme_width = supported;
@@ -460,7 +427,7 @@ bool Runtime::handle_handshake_reply(const Event& e) {
             return true;
         }
         if (e.text.ends_with('u')) {
-            // 有应答即支持本协议；flag 1 由 set_kitty_keyboard 推入。
+            // 有应答即支持本协议。
             pending_caps_.kitty_keyboard = true;
             return true;
         }
@@ -475,8 +442,7 @@ bool Runtime::handle_handshake_reply(const Event& e) {
     return true; // dcs/apc：握手期间一并消费
 }
 
-// commit = DA1 已到（提交能力，含推入 kitty flag 1）；false = 1 秒
-// 超时（管道、异常终端），保持环境变量初始值。
+/// @brief commit=true 应用能力并推入终端模式；false = 超时放弃。
 void Runtime::finish_handshake(bool commit) {
     if (!handshake_active_) return;
     handshake_active_ = false;
@@ -485,7 +451,6 @@ void Runtime::finish_handshake(bool commit) {
     if (commit) {
         term_.apply_caps(pending_caps_);
         if (pending_caps_.kitty_keyboard) term_.set_kitty_keyboard(true);
-        // §7：mode 2027 确认后开启；此后终端与框架使用同一套字素簇规则。
         if (pending_caps_.grapheme_width) term_.set_grapheme_width(true);
     }
     pending_caps_ = Terminal::Caps{};
@@ -497,7 +462,7 @@ void Runtime::on_caps(std::function<void(const Terminal::Caps&)> fn) {
     if (caps_final_ && caps_fn_) caps_fn_(term_.caps());
 }
 
-// 回调里通常会换主题（控件失效）：随后检查失效，照常合帧出帧。
+/// @brief 通知能力回调并检查失效。
 void Runtime::report_caps() {
     caps_final_ = true;
     if (caps_fn_) {
@@ -507,18 +472,17 @@ void Runtime::report_caps() {
 }
 
 void Runtime::check_size() {
-    // ioctl 约 1µs（§5.1）。SIGWINCH 唤醒时与每帧开头各查一次。
     const Size now = term_.size();
     if (now == size_) return;
     size_ = now;
     back_.resize(now.cols, now.rows);
-    root_.invalidate_tree(); // resize 纪元：终端上还是旧内容，整树补画
+    root_.invalidate_tree(); // 终端上仍是旧内容，整树补画
     dirty_ = true;
 
     Event e;
     e.kind = Event::Kind::resize;
     e.size = now;
-    router_.route(e); // 处理器的 invalidate 会在本帧的布局/光栅化里生效
+    router_.route(e); // 处理器的 invalidate 在本帧生效
 }
 
 void Runtime::frame() {
@@ -528,14 +492,13 @@ void Runtime::frame() {
         root_.layout(area);
     }
 
-    back_.copy_from(front_); // back 起点 = front：未失效区域即终端真相
-    root_.render(back_);     // Container 跳过干净子树（§5.3）
+    back_.copy_from(front_); // back 起点 = front
+    root_.render(back_);     // 跳过干净子树
 
     cursor_.reset();
     if (cursor_source_ != nullptr) {
         if (const auto c = cursor_source_->cursor()) {
-            // cursor() 是控件自身坐标；rect() 只是父容器局部坐标，嵌套时
-            // 必须沿父链累加到屏幕坐标。
+            // cursor() 是自身坐标，需沿父链累加到屏幕坐标。
             const Point o = cursor_source_->screen_origin();
             cursor_ = Point{o.x + c->x, o.y + c->y};
         }
@@ -550,19 +513,15 @@ int Runtime::poll_timeout(Clock::time_point now) const noexcept {
     };
     if (!timer_heap_.empty()) consider(timer_heap_.front().due); // 已先 prune_timers
     if (esc_due_) consider(*esc_due_);
-    if (reply_due_) consider(*reply_due_); // 握手超时：1 秒内没有 DA1 就收窗口
-    if (dirty_) consider(last_frame_ + opt_.min_frame); // 合帧：余量交给 poll 精确等待
-    if (!due) return -1; // 无事可等：无限期阻塞，静止界面零唤醒
+    if (reply_due_) consider(*reply_due_); // 握手超时
+    if (dirty_) consider(last_frame_ + opt_.min_frame); // 合帧
+    if (!due) return -1; // 无事可等：无限期阻塞
     if (*due <= now) return 0;
-    // 向上取整：向下截断会让 poll 提前醒来、在最后不足 1ms 里空转。
     const auto ms = std::chrono::ceil<std::chrono::milliseconds>(*due - now).count();
     return ms > INT_MAX ? INT_MAX : static_cast<int>(ms);
 }
 
-// 突发合并：管道里已有未消费的唤醒字节时不再写（一千次 post 一次 write）。
-// post 先入队再唤醒；渲染线程先清标志、读管道，再交换队列 —— 清标志后
-// 到达的 post 必然重新写入唤醒字节，且其 fn 必然还在 inbox_ 里等着被
-// 交换，唤醒与数据都不会丢。
+/// @brief 写唤醒字节；已有未消费字节则跳过。
 void Runtime::wake() noexcept {
     if (wake_pending_.exchange(true, std::memory_order_acq_rel)) return;
     const char b = 0;
@@ -570,7 +529,7 @@ void Runtime::wake() noexcept {
     do {
         n = ::write(wake_pipe_[1], &b, 1);
     } while (n < 0 && errno == EINTR);
-    // EAGAIN：管道满 = 唤醒已挂起，无需再写。
+    // 管道满：唤醒已挂起。
 }
 
 void Runtime::drain_wake() noexcept {
@@ -595,7 +554,7 @@ void Runtime::run() {
     last_frame_ = Clock::now() - opt_.min_frame; // 首帧立即可出
     dirty_ = true;
     caps_final_ = false;
-    start_handshake(); // 查询已写出，应答到达前不阻塞首帧
+    start_handshake(); // 应答异步到达，不阻塞首帧
     if (!handshake_active_) report_caps(); // 不握手：初始值即最终值
 
     while (!quit_.load(std::memory_order_acquire)) {
@@ -617,13 +576,13 @@ void Runtime::run() {
         bool resized = false;
         if ((fds[1].revents & POLLIN) != 0) {
             const Terminal::Signals sig = term_.drain_signal();
-            // SIGINT/SIGTERM/SIGHUP → 正常退出路径（§6.1）；SIGWINCH → 查尺寸。
+            // SIGINT/SIGTERM/SIGHUP → 退出；SIGWINCH → 查尺寸。
             if (sig.quit) quit_.store(true, std::memory_order_release);
             resized = sig.resize;
         }
         if ((fds[2].revents & POLLIN) != 0) drain_wake();
 
-        // POLLNVAL：stdin 不是有效描述符，poll 会立即返回 —— 不处理就空转。
+        // POLLNVAL：不消费会使 poll 立即返回空转。
         if ((fds[0].revents & (POLLIN | POLLHUP | POLLERR | POLLNVAL)) != 0) {
             char buf[4096];
             ssize_t nread;
@@ -645,34 +604,31 @@ void Runtime::run() {
             }
         }
 
-        apply_inbox(); // 业务线程的领域更新在出帧前落到控件树上
+        apply_inbox(); // 出帧前执行业务线程更新
 
         const auto now = Clock::now();
         if (resized) check_size();
-        run_timers(now); // 回调失效了控件才出帧
+        run_timers(now); // 先于出帧执行
         if (esc_due_ && now >= *esc_due_) {
             esc_due_.reset();
             decoder_.flush_escape(events_);
             route_events();
         }
         if (reply_due_ && now >= *reply_due_) {
-            // 1 秒内没收到 DA1：窗口关闭，保持环境变量初始值。
+            // 超时未收到 DA1：放弃握手。
             finish_handshake(false);
         }
         if (quit_.load(std::memory_order_acquire)) break;
         if (!dirty_) continue;
-        if (now < last_frame_ + opt_.min_frame) continue; // 合帧余量已交给 poll
+        if (now < last_frame_ + opt_.min_frame) continue; // 合帧
 
         frame();
 
-        // 差分 + 写终端：渲染线程是唯一的终端 I/O 者，业务线程在队列
-        // 另一侧，终端写入慢时只会让队列积压，不会阻塞业务线程。
         present(term_, back_, front_, out_, cursor_);
         frames_.fetch_add(1, std::memory_order_relaxed);
         last_frame_ = Clock::now();
 
-        // §7：超长字素 intern 表在帧间清空。缓冲区里的旧索引已经写出，
-        // 作废双缓冲并整树补画，下一帧全量重写后消失。
+        // intern 溢出：作废双缓冲，下一帧全量重写。
         if (intern_overflowed()) {
             intern_reset();
             front_.resize(0, 0);
@@ -683,29 +639,21 @@ void Runtime::run() {
     }
 }
 
-// ---- 挂起/恢复（§6.3）----
+// ---- 挂起/恢复 ----
 
-// 外部程序（$EDITOR 等）独占终端的窗口：挂起框架的界面模式，跑完再恢复。
-// 本函数阻塞渲染线程，期间 post 在更新队列里累积，恢复后由主循环统一
-// 执行；fn 直接向 stdout 写自己的内容（此时终端已不在备用屏）。
 void Runtime::run_external(std::function<void()> fn) {
     term_.suspend();
     fn();
     resume_after_suspend();
 }
 
-// Ctrl+Z：raw 模式下以字节 0x1A 到达，由全局处理器决定调用。向整个进程
-// 组发 SIGTSTP（与终端 Ctrl+Z 的效果一致，应用拉起的子进程一并停住），
-// 收到 SIGCONT 后从这里继续（shell 的 fg/bg 会发 SIGCONT）；孤儿进程组
-// 中内核丢弃 SIGTSTP，表现为立即恢复。
 void Runtime::suspend_process() {
     term_.suspend();
     ::kill(0, SIGTSTP);
     resume_after_suspend();
 }
 
-// 恢复后的共同收尾：终端在挂起期间被外部程序改过，备用屏内容也不再由
-// front_ 代表 —— 作废双缓冲、整树补画，下一帧走全量写出。
+/// @brief 恢复后作废双缓冲，整树补画。
 void Runtime::resume_after_suspend() {
     term_.resume();
     front_.resize(0, 0);
@@ -714,7 +662,7 @@ void Runtime::resume_after_suspend() {
     dirty_ = true;
 }
 
-// ---- ScrollbackMouse（§10.10）----
+// ---- ScrollbackMouse ----
 
 ScrollbackMouse::~ScrollbackMouse() {
     if (click_timer_ != 0) rt_.cancel(click_timer_);
@@ -731,7 +679,7 @@ bool ScrollbackMouse::on_event(const Event& e) {
     const Point at{m.x, m.y};
 
     if (m.press && !m.motion) {
-        // 连击：窗口内同一格再按一次记为多击；窗口从每次按下重新起算。
+        // 连击：窗口内同一格再按记为多击。
         clicks_ = click_timer_ != 0 && at == last_press_ ? clicks_ + 1 : 1;
         last_press_ = at;
         if (click_timer_ != 0) rt_.cancel(click_timer_);
@@ -760,7 +708,7 @@ bool ScrollbackMouse::on_event(const Event& e) {
         }
         return true;
     }
-    // 释放：单击未拖动时选区已清除，不复制。
+    // 释放：复制选区。
     dragging_ = false;
     if (copy_on_release && sb_.selection()) rt_.set_clipboard(sb_.selected_text());
     return true;

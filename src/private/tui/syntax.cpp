@@ -1,12 +1,3 @@
-// L5 轻量语法高亮（§10.9）。
-//
-// 一行扫描器：按语言配置识别行注释、块注释、字符串（含可跨行的 Python
-// 三引号、JS 模板串、Go/Rust 原始串、Bash 引号、Rust 生命周期）、数字、
-// 关键字、函数名与类型名。跨行词法状态存进 Line::lex，增量重扫从上一
-// 有效行继续，流式追加只处理最后一行。
-//
-// 不引入 tree-sitter：语法覆盖以"轻量、够用"为界，未识别的语言按主题
-// 的普通文本输出。样式全部取自 §9.2 的 syntax_* 语义令牌。
 #include "tui/document.hpp"
 
 #include "tui/grapheme.hpp"
@@ -47,8 +38,7 @@ struct Spec {
     bool preproc = false;
 };
 
-// Line::lex 的打包：低 4 位模式，高 4 位参数（三引号类型、注释嵌套深度、
-// 原始字符串的 # 数）。
+/// @brief Line::lex 的打包：低 4 位模式，高 4 位参数。
 enum : uint8_t {
     m_normal = 0,
     m_block_comment = 1,
@@ -257,15 +247,13 @@ struct LexStyles {
     Style number;
 };
 
-// 一条逻辑行上的着色区间：行内字节起点 + 样式（终点是下一区间的起点）。
-// 词法分析按整条逻辑行进行，折行只按字节范围切片 —— 行注释、字符串、
-// 标识符后的 '(' 判定都不会被折行打断。
+/// @brief 一条逻辑行上的着色区间：行内字节起点 + 样式（终点是下一区间的起点）。
 struct LexRun {
     size_t at = 0;
     Style style{};
 };
 
-// lex_row 的输出端：add 收到的都是行内子串，按指针差换算偏移。
+/// @brief lex_row 的输出端：add 收到的都是行内子串，按指针差换算偏移。
 class RunCollector {
 public:
     void reset(std::string_view line) noexcept {
@@ -284,7 +272,7 @@ private:
     std::vector<LexRun> runs_;
 };
 
-// 物化行的 span 写入器：原地覆盖，保留 string 容量。
+/// @brief 物化行的 span 写入器：原地覆盖。
 class SpanWriter {
 public:
     void reset(Line& ln) noexcept {
@@ -306,8 +294,7 @@ private:
     size_t idx_ = 0;
 };
 
-// 与 wrap_next_row / expand_row 相同的列推进：制表符展开到行内相对的
-// tab stop（8）。col 跨 span 连续，保证切片后的展开与整行展开一致。
+/// @brief 制表符展开的 tab stop，与 wrap_next_row/expand_row 的列推进一致。
 constexpr int k_tab_stop = 8;
 
 void append_expanded(std::string& dst, std::string_view s, int& col) {
@@ -785,9 +772,7 @@ size_t SyntaxRenderer::render(const Block& block, int width, const ThemeTokens& 
                              : block.row_count;
     size_t n = valid;
     size_t pos = from;
-    // 增量起点可能落在逻辑行中间（超宽折行的已定行）。词法按整条逻辑行
-    // 进行，回退到行首、从该行的第一个物化行重画：代价 O(最后一行)，
-    // 且行后部的内容（例如标识符后到达的 '('）能修正前面折行的着色。
+    // 增量起点可能落在逻辑行中间：词法按整条逻辑行进行，回退到行首重画。
     if (pos > 0 && pos < src.size()) {
         const size_t ls = line_start_of(src, pos);
         if (ls < pos) {
@@ -837,7 +822,7 @@ size_t SyntaxRenderer::render(const Block& block, int width, const ThemeTokens& 
             w.finish();
             ln.width = k_gutter + std::max(row.width, inner);
             ln.offset = pos;
-            ln.lex = state; // 整条逻辑行结束时的状态：续扫总从行首开始
+            ln.lex = state; // 整条逻辑行结束时的状态
             ++n;
             const bool crossed = row.next > row.end;
             pos = row.next;

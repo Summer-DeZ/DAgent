@@ -1,6 +1,5 @@
-// §10.10 选择与复制验收（文档层）：选区用逻辑位置（块 id + 字节偏移）
-// 表示，复制的是源文本而不是屏幕字符；改变宽度后选区覆盖同一段字节，
-// 反色落在同一段内容上。直接驱动真实的 Scrollback + Document，不做模拟。
+// 文档层（§4.5–§4.6）：流式 Markdown 分块、块渲染器与主题令牌、滚动区锚点、
+// 选择与复制。直接驱动真实的 Document / MarkdownStream / Scrollback。
 
 #include <boost/test/unit_test.hpp>
 
@@ -14,15 +13,14 @@
 #include "tui/document.hpp"
 #include "tui/surface.hpp"
 
-// Boost.Test 断言失败时要打印位置/颜色，测试 TU 内补上流输出。
+// Boost.Test 断言失败时打印位置与颜色。
 namespace dagent::tui {
 inline std::ostream& operator<<(std::ostream& os, const Location& l) {
     return os << "Location{" << l.block_id << "," << l.byte_in_block << "}";
 }
 inline std::ostream& operator<<(std::ostream& os, const Color& c) {
-    return os << "Color{" << static_cast<int>(c.kind) << ","
-              << static_cast<int>(c.r) << "," << static_cast<int>(c.g) << ","
-              << static_cast<int>(c.b) << "}";
+    return os << "Color{" << static_cast<int>(c.kind) << "," << static_cast<int>(c.r)
+              << "," << static_cast<int>(c.g) << "," << static_cast<int>(c.b) << "}";
 }
 } // namespace dagent::tui
 
@@ -30,29 +28,32 @@ using namespace dagent::tui;
 
 namespace {
 
-// 文本块 A（会被软折行）+ 带上边距的 markdown 块 B（行内标记隐藏）。
-constexpr std::string_view k_text = "alpha beta gamma delta epsilon";
-
-struct Fixture {
-    Scrollback sb;
-    uint64_t a = 0;
-    uint64_t b = 0;
-
-    Fixture() {
-        a = sb.document().append_block(BlockKind::text, std::string(k_text));
-        Block md;
-        md.kind = BlockKind::markdown;
-        md.source = "**bold** tail\n";
-        md.margin_top = 1;
-        b = sb.document().append_block(std::move(md));
+// 按宽度折行并物化全部行，返回每行的显示文本。
+std::vector<std::string> rows_of(Document& d, int width, const ThemeTokens& th) {
+    d.begin_frame(width, th.epoch);
+    d.materialize_range(0, d.total_rows(), th);
+    std::vector<std::string> out;
+    for (size_t r = 0; r < d.total_rows(); ++r) {
+        std::string t;
+        for (const Span& sp : d.line_at(r)->spans) t += sp.text;
+        out.push_back(t);
     }
+    return out;
+}
 
-    void render(int width, int height, Surface& s) {
-        s.resize(width, height);
-        sb.layout({0, 0, width, height});
-        sb.render(s);
+// 某行中显示文本为 text 的片段的样式。
+const Style* span_style(const Document& d, size_t row, std::string_view text) {
+    for (const Span& sp : d.line_at(row)->spans) {
+        if (sp.text == text) return &sp.style;
     }
-};
+    return nullptr;
+}
+
+void render(Scrollback& sb, Surface& s, int width, int height) {
+    s.resize(width, height);
+    sb.layout({0, 0, width, height});
+    sb.render(s);
+}
 
 // 反色单元格按行序拼接（选区高亮的屏幕内容）。
 std::string highlighted(const Surface& s) {
@@ -60,208 +61,121 @@ std::string highlighted(const Surface& s) {
     for (int r = 0; r < s.rows(); ++r) {
         for (int c = 0; c < s.cols(); ++c) {
             const Cell& cell = s.at(c, r);
-            if (cell.width == 0) continue;
-            if (any(cell.style.attrs & Attr::reverse)) out += cell.grapheme();
+            if (cell.width != 0 && any(cell.style.attrs & Attr::reverse)) {
+                out += cell.grapheme();
+            }
         }
     }
     return out;
 }
 
+constexpr std::string_view k_message =
+    "# 标题\n\n段落第一行，**粗体\n跨行**结束。\n- 列表一\n- 列表 `二`\n\n"
+    "```cpp\nint main() { return 0; }\n```\n"
+    "| 名称 | 值 |\n| --- | --- |\n| α | 1 |\n\n> 引用\n---\n尾段没有换行";
+
 } // namespace
 
 BOOST_AUTO_TEST_SUITE(document)
 
-BOOST_AUTO_TEST_CASE(selection_copies_source_text_across_soft_wraps) {
-    Fixture f;
-    Surface s;
-    f.render(12, 6, s);
-    // 宽 12：A 折成 "alpha beta " / "gamma delta " / "epsilon"，
-    // 空一行（B 的上边距），B 显示为 "bold tail"。
-    BOOST_TEST(s.at(0, 1).grapheme() == "g");
-    BOOST_TEST(s.at(0, 4).grapheme() == "b");
-
-    // 从 A 的开头拖到 B 显示列 3（"bold" 的 d，源里在 "**" 之后）：
-    // 复制出源文本 —— 软折行处没有换行，块间补换行与段落空行，
-    // markdown 的标记原样保留。
-    const auto from = f.sb.hit({0, 0});
-    const auto to = f.sb.hit({3, 4});
-    BOOST_REQUIRE(from && to);
-    BOOST_TEST(*from == (Location{f.a, 0}));
-    BOOST_TEST(*to == (Location{f.b, 5}));
-    f.sb.select({*from, *to});
-    BOOST_TEST(f.sb.selected_text() == "alpha beta gamma delta epsilon\n\n**bold");
-
-    // 反向拖拽等价；软折行的行尾之后取行内最后一个字素（折行处的空格），
-    // 块尾之后取块尾。
-    f.sb.select({*to, *from});
-    BOOST_TEST(f.sb.selected_text() == "alpha beta gamma delta epsilon\n\n**bold");
-    BOOST_TEST(*f.sb.hit({11, 0}) == (Location{f.a, 10}));
-    BOOST_TEST(*f.sb.hit({11, 2}) == (Location{f.a, k_text.size()}));
-
-    // 双击选词、三击选逻辑行（不含行尾换行）。
-    const Document& d = f.sb.document();
-    const Selection word = d.word_around(*f.sb.hit({2, 1}));
-    BOOST_TEST(d.text_between(word.anchor, word.head) == "gamma");
-    const Selection line = d.line_around(*f.sb.hit({6, 4}));
-    BOOST_TEST(d.text_between(line.anchor, line.head) == "**bold** tail");
-}
-
-BOOST_AUTO_TEST_CASE(selection_survives_width_change) {
-    Fixture f;
-    Surface s;
-    f.render(12, 6, s);
-    // 选中 "beta"（首行列 6）到 "delta" 末字符（第二行列 10）。
-    const auto from = f.sb.hit({6, 0});
-    const auto to = f.sb.hit({10, 1});
-    BOOST_REQUIRE(from && to);
-    f.sb.select({*from, *to});
-    const std::string want = f.sb.selected_text();
-    BOOST_TEST(want == "beta gamma delta");
-    f.render(12, 6, s);
-    BOOST_TEST(highlighted(s) == want);
-
-    // 改变宽度：选区的字节范围不变，反色仍落在同一段内容上。
-    for (const int width : {7, 30, 9}) {
-        f.render(width, 8, s);
-        BOOST_TEST_CONTEXT("width " << width) {
-            BOOST_REQUIRE(f.sb.selection().has_value());
-            BOOST_TEST(f.sb.selection()->anchor == *from);
-            BOOST_TEST(f.sb.selection()->head == *to);
-            BOOST_TEST(f.sb.selected_text() == want);
-            BOOST_TEST(highlighted(s) == want);
+// 流式 Markdown 按块级结构拆块，只有最后一块在增长；结果与喂入的分块方式无关。
+BOOST_AUTO_TEST_CASE(markdown_stream_splits_blocks_independent_of_chunking) {
+    const ThemeTokens& th = dark_theme();
+    Document ref;
+    {
+        MarkdownStream ms(ref, 2);
+        ms.feed(k_message);
+        ms.finish();
+    }
+    const BlockKind kinds[] = {BlockKind::markdown, BlockKind::markdown, BlockKind::markdown,
+                               BlockKind::code,     BlockKind::table,    BlockKind::markdown,
+                               BlockKind::markdown, BlockKind::markdown};
+    BOOST_REQUIRE(ref.block_count() == std::size(kinds));
+    for (size_t i = 0; i < ref.block_count(); ++i) {
+        BOOST_TEST_CONTEXT("block " << i) {
+            BOOST_TEST((ref.block_at(i).kind == kinds[i]));
+            BOOST_TEST(ref.block_at(i).margin_top == (i == 0 ? 2 : 1)); // 首块取构造参数
+            BOOST_TEST(!ref.block_at(i).open);
         }
     }
+    // 围栏行不进 source，语言进 meta。
+    BOOST_TEST(ref.block_at(3).source == "int main() { return 0; }\n");
+    BOOST_TEST(ref.block_at(3).meta == "cpp");
+    BOOST_TEST(ref.block_at(1).source == "段落第一行，**粗体\n跨行**结束。\n");
+    BOOST_TEST(ref.block_at(7).source == "尾段没有换行");
+    const std::vector<std::string> want = rows_of(ref, 24, th);
 
-    // 清除选区后不再有反色。
-    f.sb.clear_selection();
-    f.render(9, 8, s);
-    BOOST_TEST(highlighted(s).empty());
-}
-
-// §9.2 验收：修改令牌并递增 epoch 后，所有块的物化缓存失效、整块重排
-// 使用新样式；只改令牌不递增 epoch 则缓存不失效（epoch 是唯一契约）。
-BOOST_AUTO_TEST_CASE(theme_epoch_invalidates_all_block_materialization) {
-    Scrollback sb;
-    Document& d = sb.document();
-    d.append_block(BlockKind::text, "plain");
-    Block code;
-    code.kind = BlockKind::code;
-    code.source = "int x;";
-    code.meta = "cpp";
-    d.append_block(std::move(code));
-    d.append_block(BlockKind::diff, "+add");
-    d.append_block(BlockKind::markdown, "# h");
-    Block table;
-    table.kind = BlockKind::table;
-    table.source = "| a |\n| --- |\n| b |\n";
-    d.append_block(std::move(table));
-
-    // 每套测试主题用不同索引色标出各渲染器引用到的令牌。
-    const auto make = [](int text, int keyword, int added, int heading,
-                         int border) {
-        ThemeTokens t;
-        t.text = Style{Color::indexed(static_cast<uint8_t>(text)), Color{},
-                       Attr::none};
-        t.syntax_keyword =
-            Style{Color::indexed(static_cast<uint8_t>(keyword)), Color{},
-                  Attr::none};
-        t.diff_added = Style{Color::indexed(static_cast<uint8_t>(added)),
-                             Color{}, Attr::none};
-        t.markdown_heading =
-            Style{Color::indexed(static_cast<uint8_t>(heading)), Color{},
-                  Attr::none};
-        t.primary = t.markdown_heading; // 表头
-        t.border = Style{Color::indexed(static_cast<uint8_t>(border)), Color{},
-                         Attr::none};
-        return t;
-    };
-
-    Surface s;
-    const auto render = [&](const ThemeTokens& theme) {
-        sb.set_theme(theme);
-        s.resize(20, 8);
-        sb.layout({0, 0, 20, 8});
-        sb.render(s);
-    };
-    const auto fg = [&](int x, int y) { return s.at(x, y).style.fg; };
-
-    ThemeTokens first = make(1, 2, 3, 4, 5);
-    first.epoch = 1;
-    render(first);
-    // 行 0 文本、行 1 代码关键字（列 2：列 0-1 是代码块竖条）、行 2 diff '+'、行 3 标题前缀、
-    // 行 4 表头/边框、行 6 表格正文。
-    BOOST_TEST(fg(0, 0) == Color::indexed(1));
-    BOOST_TEST(fg(2, 1) == Color::indexed(2));
-    BOOST_TEST(fg(0, 2) == Color::indexed(3));
-    BOOST_TEST(fg(0, 3) == Color::indexed(4));
-    BOOST_TEST(fg(0, 4) == Color::indexed(5));
-    BOOST_TEST(fg(2, 4) == Color::indexed(4));
-    BOOST_TEST(fg(2, 6) == Color::indexed(1));
-
-    // 只改令牌、不递增 epoch：物化缓存不失效，仍是旧样式。
-    ThemeTokens stale = make(11, 12, 13, 14, 15);
-    stale.epoch = first.epoch;
-    render(stale);
-    BOOST_TEST(fg(0, 0) == Color::indexed(1));
-    BOOST_TEST(fg(2, 1) == Color::indexed(2));
-
-    // 递增 epoch：所有块重排，新样式落到每个渲染器。
-    ThemeTokens next = make(11, 12, 13, 14, 15);
-    next.epoch = first.epoch + 1;
-    render(next);
-    BOOST_TEST(fg(0, 0) == Color::indexed(11));
-    BOOST_TEST(fg(2, 1) == Color::indexed(12));
-    BOOST_TEST(fg(0, 2) == Color::indexed(13));
-    BOOST_TEST(fg(0, 3) == Color::indexed(14));
-    BOOST_TEST(fg(0, 4) == Color::indexed(15));
-    BOOST_TEST(fg(2, 4) == Color::indexed(14));
-    BOOST_TEST(fg(2, 6) == Color::indexed(11));
-}
-
-// dark / light 选择：按背景相对亮度（阈值 0.5），取不到默认 dark。
-BOOST_AUTO_TEST_CASE(theme_selects_dark_or_light_by_background_luminance) {
-    const ThemeTokens& dark = dark_theme();
-    const ThemeTokens& light = light_theme();
-    BOOST_TEST(&default_theme(std::nullopt) == &dark);
-    BOOST_TEST(&default_theme(Color::rgb(16, 16, 16)) == &dark);
-    BOOST_TEST(&default_theme(Color::rgb(250, 250, 250)) == &light);
-    BOOST_TEST(relative_luminance(Color::rgb(0, 0, 0)) == 0.0f);
-    BOOST_TEST(relative_luminance(Color::rgb(255, 255, 255)) > 0.9f);
-    BOOST_TEST(&default_theme(Color::indexed(1)) == &dark); // 索引色无从判断
-}
-
-// 中文折行、表格行内样式、代码块竖条（冻结后的缺陷修复）。
-BOOST_AUTO_TEST_CASE(cjk_wrap_table_inline_and_code_gutter) {
-    ThemeTokens th = dark_theme();
-    th.epoch = 7;
-    const auto rows_of = [&](Document& d, int width) {
-        d.begin_frame(width, th.epoch);
-        d.materialize_range(0, d.total_rows(), th);
-        std::vector<std::string> out;
-        for (size_t r = 0; r < d.total_rows(); ++r) {
-            std::string t;
-            for (const Span& sp : d.line_at(r)->spans) t += sp.text;
-            out.push_back(t);
+    for (const size_t step : {1u, 2u, 3u, 5u, 7u, 13u}) {
+        BOOST_TEST_CONTEXT("chunk " << step) {
+            Document d;
+            MarkdownStream ms(d, 2);
+            bool only_last_open = true;
+            for (size_t at = 0; at < k_message.size(); at += step) {
+                ms.feed(k_message.substr(at, step)); // 会切在多字节字符中间
+                for (size_t i = 0; i + 1 < d.block_count(); ++i) {
+                    if (d.block_at(i).open) only_last_open = false;
+                }
+            }
+            ms.finish();
+            BOOST_TEST(only_last_open);
+            BOOST_REQUIRE(d.block_count() == ref.block_count());
+            for (size_t i = 0; i < d.block_count(); ++i) {
+                BOOST_TEST((d.block_at(i).kind == ref.block_at(i).kind));
+                BOOST_TEST(d.block_at(i).source == ref.block_at(i).source);
+                BOOST_TEST(d.block_at(i).meta == ref.block_at(i).meta);
+                BOOST_TEST(d.block_at(i).open == false);
+            }
+            BOOST_TEST(rows_of(d, 24, th) == want, boost::test_tools::per_element());
         }
-        return out;
-    };
-    const auto starts = [](const std::string& s, std::string_view p) {
-        return s.compare(0, p.size(), p) == 0;
-    };
+    }
+}
 
+// 各类块的显示：Markdown 隐藏标记、表格对齐、代码竖条与高亮、diff 分色、中文折行；
+// 样式全部来自主题令牌，递增 epoch 后整体刷新。
+BOOST_AUTO_TEST_CASE(block_renderers_display_with_theme_tokens) {
+    ThemeTokens th = dark_theme();
+    th.epoch = 1;
     {
-        // 中英混排：在宽字符前后断开，每行（除末行）填满到行宽附近；
-        // 闭合标点不到行首，开启标点不留行尾。
+        Document d;
+        MarkdownStream ms(d);
+        ms.feed(k_message);
+        ms.finish();
+        const auto rows = rows_of(d, 24, th);
+        BOOST_REQUIRE(rows.size() == 20u);
+        BOOST_TEST(rows[0] == "# 标题");
+        BOOST_TEST(rows[2] == "段落第一行，粗体"); // 强调跨行配对，标记隐藏
+        BOOST_TEST(rows[3] == "跨行结束。");
+        BOOST_TEST(rows[5] == "• 列表一");
+        BOOST_TEST(rows[6] == "• 列表 二");
+        BOOST_TEST(rows[8].starts_with("▎ int main() { return"));
+        BOOST_TEST(rows[11] == "│ 名称 │ 值 │");
+        BOOST_TEST(rows[12] == "├──────┼────┤");
+        BOOST_TEST(rows[13] == "│ α    │ 1  │");
+        BOOST_TEST(rows[15] == "│ 引用");
+        std::string rule;
+        for (int i = 0; i < 24; ++i) rule += "─";
+        BOOST_TEST(rows[17] == rule); // 分隔线画满整行
+        BOOST_TEST((*span_style(d, 0, "标题") == th.markdown_heading));
+        BOOST_TEST((*span_style(d, 6, "二") == th.markdown_code));
+        BOOST_TEST(any(span_style(d, 2, "粗体")->attrs & Attr::bold));
+        BOOST_TEST((span_style(d, 8, "int")->fg == th.syntax_keyword.fg));
+        // 代码块整行铺底色（竖条 2 列，按 宽度 − 2 折行）。
+        BOOST_TEST(d.line_at(8)->width == 24);
+        BOOST_TEST(d.line_at(8)->spans.back().style.bg == th.background_element.bg);
+    }
+    {
+        // 中英混排：汉字前后可断行，每行（除末行）接近填满；闭合标点不到行首。
         Document d;
         d.append_block(BlockKind::text,
                        "欢迎使用 DAgent 演示终端。这里的 Agent 是脚本模拟的，但界面"
                        "（流式渲染、滚动、选择复制）都是真实的框架行为。");
-        const auto rows = rows_of(d, 20);
+        const auto rows = rows_of(d, 20, th);
         BOOST_REQUIRE(rows.size() >= 4u);
+        BOOST_TEST(rows[0] == "欢迎使用 DAgent 演示");
         for (size_t i = 0; i < rows.size(); ++i) {
             BOOST_TEST_CONTEXT("row " << i << " '" << rows[i] << "'") {
                 for (std::string_view p : {"，", "。", "、", "）"}) {
-                    BOOST_TEST(!starts(rows[i], p));
+                    BOOST_TEST(!rows[i].starts_with(p));
                 }
                 BOOST_TEST(!rows[i].ends_with("（"));
                 if (i + 1 < rows.size()) {
@@ -270,38 +184,171 @@ BOOST_AUTO_TEST_CASE(cjk_wrap_table_inline_and_code_gutter) {
                 }
             }
         }
-        BOOST_TEST(rows[0] == "欢迎使用 DAgent 演示");
     }
-    {
-        // 表格单元格隐藏行内标记：列宽按显示文本算，代码片段带 code 样式。
-        Document d;
-        d.append_block(BlockKind::table,
-                       "| 名称 | 说明 |\n| --- | --- |\n| `run()` | **粗体** 与 [链接](x) |\n");
-        const auto rows = rows_of(d, 40);
-        BOOST_REQUIRE(rows.size() == 3u);
-        BOOST_TEST(rows[2] == "│ run() │ 粗体 与 链接 │");
-        const Line& ln = *d.line_at(2);
-        bool code = false;
-        for (const Span& sp : ln.spans) {
-            if (sp.text == "run()") code = sp.style == th.markdown_code;
+
+    // 主题令牌：每个渲染器的样式都取自令牌；只改令牌不递增 epoch 不刷新。
+    Scrollback sb;
+    Document& d = sb.document();
+    d.append_block(BlockKind::text, "plain");
+    Block code;
+    code.kind = BlockKind::code;
+    code.source = "int x;";
+    code.meta = "cpp";
+    d.append_block(std::move(code));
+    d.append_block(BlockKind::diff, "+add\n-del");
+    d.append_block(BlockKind::markdown, "# h");
+    const auto make = [](uint8_t base) {
+        ThemeTokens t;
+        t.text = {Color::indexed(base), Color{}, Attr::none};
+        t.syntax_keyword = {Color::indexed(static_cast<uint8_t>(base + 1)), Color{}, Attr::none};
+        t.diff_added = {Color::indexed(static_cast<uint8_t>(base + 2)), Color{}, Attr::none};
+        t.diff_removed = {Color::indexed(static_cast<uint8_t>(base + 3)), Color{}, Attr::none};
+        t.markdown_heading = {Color::indexed(static_cast<uint8_t>(base + 4)), Color{}, Attr::none};
+        return t;
+    };
+    Surface s;
+    const auto fg = [&](int x, int y) { return s.at(x, y).style.fg; };
+    ThemeTokens first = make(10);
+    first.epoch = 1;
+    sb.set_theme(first);
+    render(sb, s, 20, 6);
+    BOOST_TEST(fg(0, 0) == Color::indexed(10));
+    BOOST_TEST(fg(2, 1) == Color::indexed(11));
+    BOOST_TEST(fg(0, 2) == Color::indexed(12));
+    BOOST_TEST(fg(0, 3) == Color::indexed(13));
+    BOOST_TEST(fg(0, 4) == Color::indexed(14));
+
+    ThemeTokens stale = make(20);
+    stale.epoch = first.epoch;
+    sb.set_theme(stale);
+    render(sb, s, 20, 6);
+    BOOST_TEST(fg(0, 0) == Color::indexed(10));
+
+    ThemeTokens next = make(20);
+    next.epoch = first.epoch + 1;
+    sb.set_theme(next);
+    render(sb, s, 20, 6);
+    BOOST_TEST(fg(0, 0) == Color::indexed(20));
+    BOOST_TEST(fg(2, 1) == Color::indexed(21));
+    BOOST_TEST(fg(0, 2) == Color::indexed(22));
+    BOOST_TEST(fg(0, 3) == Color::indexed(23));
+    BOOST_TEST(fg(0, 4) == Color::indexed(24));
+
+    // 按终端背景选明暗：取不到或是索引色时取 dark。
+    BOOST_TEST(&default_theme(std::nullopt) == &dark_theme());
+    BOOST_TEST(&default_theme(Color::rgb(16, 16, 16)) == &dark_theme());
+    BOOST_TEST(&default_theme(Color::rgb(250, 250, 250)) == &light_theme());
+    BOOST_TEST(&default_theme(Color::indexed(15)) == &dark_theme());
+}
+
+// 滚动区：贴底时跟随新内容；翻上去后，追加、改宽度、裁掉旧块都不让正在看的内容跳走。
+BOOST_AUTO_TEST_CASE(scrollback_view_follows_content_not_rows) {
+    Scrollback sb;
+    Document& d = sb.document();
+    for (int i = 0; i < 20; ++i) {
+        d.append_block(BlockKind::text,
+                       "块" + std::to_string(i) + " alpha beta gamma delta");
+    }
+    Surface s;
+    render(sb, s, 20, 6);
+    BOOST_TEST(sb.pinned());
+    BOOST_TEST(sb.hit({0, 5})->block_id == d.block_at(19).id);
+
+    // 贴底：新内容到达即显示在底部。
+    const uint64_t fresh = d.append_block(BlockKind::text, "新内容");
+    render(sb, s, 20, 6);
+    BOOST_TEST(sb.hit({0, 5})->block_id == fresh);
+    BOOST_TEST(sb.unseen_rows() == 0u);
+
+    // 翻上去：追加内容不动视口，底下未读行数增加。
+    sb.scroll_lines(-9);
+    render(sb, s, 20, 6);
+    BOOST_TEST(!sb.pinned());
+    const Location top = *sb.hit({0, 0});
+    const size_t unseen = sb.unseen_rows();
+    for (int i = 0; i < 3; ++i) d.append_block(BlockKind::text, "more");
+    render(sb, s, 20, 6);
+    BOOST_TEST(*sb.hit({0, 0}) == top);
+    BOOST_TEST(sb.unseen_rows() == unseen + 3);
+
+    // 改宽度：视口顶行仍是包含同一字节的那一行；改回来位置完全复原。
+    render(sb, s, 9, 6);
+    const Location narrow_top = *sb.hit({0, 0});
+    BOOST_TEST(narrow_top.block_id == top.block_id);
+    BOOST_TEST(narrow_top <= top);
+    BOOST_TEST(top < *sb.hit({0, 1}));
+    render(sb, s, 20, 6);
+    BOOST_TEST(*sb.hit({0, 0}) == top);
+
+    // 裁掉视口之前的旧块：视口不动。
+    size_t index = 0;
+    while (d.block_at(index).id != top.block_id) ++index;
+    d.trim_blocks(d.block_count() - index);
+    render(sb, s, 20, 6);
+    BOOST_TEST(d.block_at(0).id == top.block_id);
+    BOOST_TEST(*sb.hit({0, 0}) == top);
+
+    // 折叠：块最多显示指定行数。
+    d.begin_frame(20, sb.theme().epoch);
+    const size_t before = d.total_rows();
+    BOOST_TEST(d.set_collapsed(top.block_id, true, 1));
+    d.begin_frame(20, sb.theme().epoch);
+    BOOST_TEST(d.total_rows() == before - 1); // 两行的块折成一行
+
+    // 回到底部并恢复跟随。
+    sb.scroll_end();
+    render(sb, s, 20, 6);
+    BOOST_TEST(sb.pinned());
+    BOOST_TEST(sb.hit({0, 5})->block_id == d.block_at(d.block_count() - 1).id);
+}
+
+// 选择：屏幕坐标换算成源位置，复制出的是源文本（含 Markdown 标记、不含折行换行）；
+// 改变宽度后选区与高亮仍在同一段内容上。
+BOOST_AUTO_TEST_CASE(selection_copies_source_and_survives_width_change) {
+    Scrollback sb;
+    Document& d = sb.document();
+    const uint64_t a = d.append_block(BlockKind::text, "alpha beta gamma delta epsilon");
+    Block md;
+    md.kind = BlockKind::markdown;
+    md.source = "**bold** tail\n";
+    md.margin_top = 1;
+    const uint64_t b = d.append_block(std::move(md));
+
+    Surface s;
+    render(sb, s, 12, 6);
+    // 宽 12：A 折成三行，空一行（B 的上边距），B 显示为 "bold tail"。
+    BOOST_TEST(s.at(0, 1).grapheme() == "g");
+    BOOST_TEST(s.at(0, 4).grapheme() == "b");
+
+    const auto from = sb.hit({0, 0});
+    const auto to = sb.hit({3, 4}); // "bold" 的 d，源里在 "**" 之后
+    BOOST_REQUIRE(from && to);
+    BOOST_TEST(*from == (Location{a, 0}));
+    BOOST_TEST(*to == (Location{b, 5}));
+    sb.select({*to, *from}); // 反向拖拽等价
+    BOOST_TEST(sb.selected_text() == "alpha beta gamma delta epsilon\n\n**bold");
+
+    // 双击选词、三击选逻辑行。
+    const Selection word = d.word_around(*sb.hit({2, 1}));
+    BOOST_TEST(d.text_between(word.anchor, word.head) == "gamma");
+    const Selection line = d.line_around(*sb.hit({6, 4}));
+    BOOST_TEST(d.text_between(line.anchor, line.head) == "**bold** tail");
+
+    // 选中 "beta gamma delta"（跨软折行），换几种宽度后选区与高亮不变。
+    const Location lo = *sb.hit({6, 0});
+    const Location hi = *sb.hit({10, 1});
+    sb.select({lo, hi});
+    BOOST_TEST(sb.selected_text() == "beta gamma delta");
+    for (const int width : {7, 30, 9}) {
+        render(sb, s, width, 8);
+        BOOST_TEST_CONTEXT("width " << width) {
+            BOOST_TEST(sb.selected_text() == "beta gamma delta");
+            BOOST_TEST(highlighted(s) == "beta gamma delta");
         }
-        BOOST_TEST(code);
     }
-    {
-        // 代码块：每行左侧竖条 + 底色铺满整行，按「宽度 − 2」折行。
-        Document d;
-        Block code;
-        code.kind = BlockKind::code;
-        code.meta = "cpp";
-        code.source = "int x = 1;\nreturn x;";
-        d.append_block(std::move(code));
-        const auto rows = rows_of(d, 16);
-        BOOST_REQUIRE(rows.size() == 2u);
-        BOOST_TEST(starts(rows[0], "▎ int x = 1;"));
-        const Line& ln = *d.line_at(0);
-        BOOST_TEST(ln.width == 16);
-        BOOST_TEST(ln.spans.back().style.bg == th.background_element.bg);
-    }
+    sb.clear_selection();
+    render(sb, s, 9, 8);
+    BOOST_TEST(highlighted(s).empty());
 }
 
 BOOST_AUTO_TEST_SUITE_END()
