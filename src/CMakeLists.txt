@@ -99,6 +99,20 @@ target_link_libraries(dagent_session
     PUBLIC dagent_base
 )
 
+# MCP 客户端：JSON-RPC 2.0，stdio 走 dagent_exec 的 Child，Streamable HTTP 走 dagent_net。
+add_library(dagent_mcp STATIC
+    private/mcp/client.cpp
+    private/mcp/detail.cpp
+)
+
+target_include_directories(dagent_mcp PUBLIC ${CMAKE_SOURCE_DIR}/src/public)
+target_compile_features(dagent_mcp PUBLIC cxx_std_23)
+target_compile_options(dagent_mcp PRIVATE -Wall -Wextra)
+target_compile_definitions(dagent_mcp PRIVATE DAGENT_VERSION="${PROJECT_VERSION}")
+target_link_libraries(dagent_mcp
+    PUBLIC dagent_base dagent_exec dagent_net
+)
+
 # 核心 agent：中立消息模型与各厂商协议的 LLM 编解码。
 add_library(dagent_agent STATIC
     private/agent/llm.cpp
