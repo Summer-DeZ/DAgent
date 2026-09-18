@@ -9,9 +9,16 @@ DAgent 是一个使用 C++23 和 CMake 构建的终端 Agent，仅支持 Linux�
 | TUI 框架 | `src/*/tui`，库 `dagent_tui` | 已完成并冻结（2026-09-18）：只修缺陷，不增删原语 |
 | 应用层界面 | `src/*/ui`，库 `dagent_ui` | 起步：JSON 主题加载（`ui::load_theme`），默认主题 `config/themes/dagent.json` |
 | Agent 运行时 | `src/*/agent` | 未开始 |
-| 网络 | `src/*/net` | 未开始 |
+| 网络 | `src/*/net`，库 `dagent_net` | 已完成：libcurl 薄封装（整包/流式、stop_token 取消、超时分类）与 SSE 解析；设计文档待补 |
 
 `config/dagent.json` 已包含模型网关、HTTP、上下文、会话等配置项，目前还没有代码读取它。
+
+## 后续工作
+
+[next-to-do/](next-to-do/README.md)：外围模块的设计、技术路线与验收标准，共七个库——base（日志、密钥、
+文本工具）、exec（子进程、沙箱）、workspace（文件、搜索、diff、项目上下文）、net（HTTP/SSE 已完成，LLM 编解码）、
+session、mcp、app（配置、命令行），按里程碑 M1–M5 推进。模块完成并审核通过后，对应文档改写成 `design/`
+下的设计文档，并从 next-to-do 删除。
 
 ## 设计文档
 
@@ -48,7 +55,8 @@ ctest --test-dir build/dev         # 运行 test/tui（tui_tests）
 ```
 docs/
 ├── README.md    本索引
-└── design/      设计文档：描述当前实现
+├── design/      设计文档：描述当前实现
+└── next-to-do/  待实现模块的设计与技术路线（完成后迁入 design/）
 ```
 
 - 目录名不含空格，避免 Markdown 链接需要转义。
