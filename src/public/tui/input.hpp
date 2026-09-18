@@ -3,6 +3,8 @@
 // 解码与语义严格分离，这是避免"按键归谁管"这类冲突的结构性办法：
 //   * Decoder 是纯字节状态机：不知道任何控件，不持有时钟（Esc 歧义的
 //     超时判定权交给调用方的 poll 循环，见 k_escape_timeout_ms）；
+//     终端字符串与 kitty 键盘协议（§3.2）也在这一层解析：应答窗口打开
+//     期间 OSC/DCS 等查询应答产出 Kind::reply，见 set_reply_window()；
 //   * EventRouter 是固定的下沉顺序：处理器栈 → 焦点 → 全局兜底，
 //     "某个键在某种状态下归谁"由栈的顺序回答，不需要任何条件判断；
 //   * InputBoxHandler 是 L4 约定的按键翻译（widget.hpp：把事件翻译成
@@ -31,12 +33,14 @@ enum class Key : uint8_t {
     f1, f2, f3, f4, f5, f6, f7, f8, f9, f10, f11, f12,
 };
 
-// 修饰键位。组合规则与 xterm 的 modifier 参数一致（§9.1）。
+// 修饰键位。组合规则与 xterm 的 modifier 参数一致（§9.1），
+// super 来自 kitty 键盘协议（§3.2.2）；hyper/meta/caps/num 不表达。
 enum class Mods : uint8_t {
     none = 0,
     shift = 1 << 0,
     alt = 1 << 1,
     ctrl = 1 << 2,
+    super = 1 << 3,
 };
 
 constexpr Mods operator|(Mods a, Mods b) noexcept {
@@ -49,13 +53,19 @@ constexpr Mods& operator|=(Mods& a, Mods b) noexcept { return a = a | b; }
 constexpr bool any(Mods m) noexcept { return static_cast<uint8_t>(m) != 0; }
 
 struct Event {
-    enum class Kind { text, key, mouse, paste, resize, focus };
+    enum class Kind { text, key, mouse, paste, resize, focus, reply };
+    // Kind::reply：终端对查询的应答（§3.2.1）。text = 序列体：
+    //   * csi：\e[ 之后到最终字节为止的全部内容（含私有标记与最终字节，
+    //     应用靠最终字节区分 DA1 的 c、DECRQM 的 $y、kitty 的 u）；
+    //   * osc/dcs/apc：引导符之后、ST（OSC 还可用 BEL）之前的负载。
+    enum class ReplyType : uint8_t { csi, osc, dcs, apc };
     Kind kind = Kind::text;
     // text/paste 的内容（UTF-8）；Kind::key 携带可打印字符时是单码点
     // （例如 Ctrl-A → mods=ctrl, text="a"），命名键时为空。
     std::string text;
     Key key = Key::none;
     Mods mods = Mods::none;
+    ReplyType reply_type = ReplyType::csi; // Kind::reply 的序列来源
     struct Mouse {
         int button = -1; // 0/1/2 = 左/中/右；4/5/6/7 = 滚轮上/下/左/右；-1 = 无键
         int col = 0;     // 0 基列（1006 编码是 1 基，解码时已减一）
@@ -82,12 +92,18 @@ public:
     // 毫秒的超时；超时仍无后续字节即调 flush_escape() 判为单独 Esc。
     static constexpr int k_escape_timeout_ms = 40;
 
+    // 应答窗口（§3.2.1）：L7 发出终端查询时打开，收到哨兵应答（DA1）
+    // 或超时后关闭。窗口内 \e]/\eP/\e_/\e^/\eX 按终端字符串解析、带
+    // 私有标记的 CSI 产出 Kind::reply；窗口外保持原有按键语义
+    // （\e] = Alt-]）。关闭时仍未终止的应答整体丢弃。
+    void set_reply_window(bool open) noexcept;
+
     // 追加字节并解析，产出的事件追加到 out 尾部。
     void feed(std::string_view bytes, std::vector<Event>& out);
 
     // 是否停在转义歧义窗口：缓冲以 ESC 开头且不完整（孤立 ESC 串、
     // \e[ / \eO 引导符、已收部分参数的残缺 CSI）。true 时 poll 应带
-    // k_escape_timeout_ms 超时。
+    // k_escape_timeout_ms 超时。应答窗口内未读完的应答不在此列。
     bool pending_escape() const noexcept;
 
     // 转义歧义窗口的超时消解：
@@ -105,6 +121,8 @@ private:
 
     std::string buf_;               // 未消费字节；ground 态残留至多一个不完整单元
     bool paste_ = false;            // 正在收集括号粘贴内容
+    bool reply_window_ = false;     // 应答窗口是否打开（L7 驱动）
+    bool reply_pending_ = false;    // buf_ 中是窗口内未读完的应答：不参与 Esc 超时
     std::size_t paste_scanned_ = 0; // 粘贴内容中已排除过结束标记的前缀长度
 };
 

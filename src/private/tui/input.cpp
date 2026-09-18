@@ -14,6 +14,10 @@ constexpr std::string_view k_paste_end = "\x1b[201~";
 constexpr int k_max_params = 8;
 constexpr int k_param_cap = 0xFFFF;
 
+// 终端字符串（OSC/DCS/APC/PM/SOS）的应答上限：超出部分丢弃，但仍
+// 读到终止符；异常输入不能把应答事件撑爆（§3.2.1）。
+constexpr std::size_t k_max_reply = 1u << 20;
+
 // pos 处 UTF-8 序列的完整长度；缓冲不足且前缀合法 → 0（等更多字节）；
 // 非法（坏续字节 / 过长编码 / 代理区 / 越界）→ -1（丢首字节）。
 int utf8_length(std::string_view s) noexcept {
@@ -52,8 +56,9 @@ int utf8_length(std::string_view s) noexcept {
     return len;
 }
 
-// xterm modifier 参数：值 = 1 + 位集（bit0 shift / bit1 alt / bit2 ctrl）。
-// 缺省参数（0 或 1）= 无修饰。
+// xterm / kitty 共用的 modifier 参数：值 = 1 + 位集
+// （bit0 shift / bit1 alt / bit2 ctrl / bit3 super）。缺省参数（0 或 1）
+// = 无修饰；kitty 的 hyper/meta/caps/num 位忽略（§3.2.2）。
 Mods mods_from_param(int p) noexcept {
     if (p < 1) return Mods::none;
     const int bits = p - 1;
@@ -61,7 +66,42 @@ Mods mods_from_param(int p) noexcept {
     if (bits & 1) m = m | Mods::shift;
     if (bits & 2) m = m | Mods::alt;
     if (bits & 4) m = m | Mods::ctrl;
+    if (bits & 8) m = m | Mods::super;
     return m;
+}
+
+bool valid_codepoint(int cp) noexcept {
+    return cp > 0 && cp <= 0x10FFFF && !(cp >= 0xD800 && cp <= 0xDFFF);
+}
+
+// 码点 → UTF-8（仅对 valid_codepoint 的输入调用）。
+std::string utf8_from_codepoint(int cp) {
+    std::string s;
+    if (cp < 0x80) {
+        s.push_back(static_cast<char>(cp));
+    } else if (cp < 0x800) {
+        s.push_back(static_cast<char>(0xC0 | (cp >> 6)));
+        s.push_back(static_cast<char>(0x80 | (cp & 0x3F)));
+    } else if (cp < 0x10000) {
+        s.push_back(static_cast<char>(0xE0 | (cp >> 12)));
+        s.push_back(static_cast<char>(0x80 | ((cp >> 6) & 0x3F)));
+        s.push_back(static_cast<char>(0x80 | (cp & 0x3F)));
+    } else {
+        s.push_back(static_cast<char>(0xF0 | (cp >> 18)));
+        s.push_back(static_cast<char>(0x80 | ((cp >> 12) & 0x3F)));
+        s.push_back(static_cast<char>(0x80 | ((cp >> 6) & 0x3F)));
+        s.push_back(static_cast<char>(0x80 | (cp & 0x3F)));
+    }
+    return s;
+}
+
+void push_reply(std::vector<Event>& out, Event::ReplyType type,
+                std::string_view body) {
+    Event e;
+    e.kind = Event::Kind::reply;
+    e.reply_type = type;
+    e.text.assign(body);
+    out.push_back(std::move(e));
 }
 
 Event key_event(Key k, Mods m, std::string_view ch) {
@@ -158,10 +198,54 @@ void decode_mouse(const int* params, int np, char final_, bool alt,
     out.push_back(std::move(e));
 }
 
+// CSI 参数：支持 ':' 子参数（kitty 的 shifted key 与事件类型，§3.2.2）
+// 与私有标记（'?' '>' '=' 的应答，'<' 的 SGR 鼠标）。
+struct CsiParams {
+    int v[k_max_params] = {};         // 各 ';' 段的主值
+    int sub[k_max_params] = {};       // 各段 ':' 后的第一个子参数
+    bool sub_seen[k_max_params] = {}; // 该段是否带子参数
+    int np = 0;
+    char marker = 0;         // 私有标记（'?' '>' '='），0 = 无
+    bool sgr = false;        // '<' 私有标记：SGR 鼠标
+    bool intermediate = false; // 中间字节（如 DECRQM 的 '$'）
+    bool junk = false;       // 其余不可识别的私有标记/中间字节
+};
+
+// kitty 键盘协议（flag 1，§3.2.2）：\e[code[:alternate];mods[:event]u。
+// 13/9/127/27 映射命名键；其余为可打印码点：有修饰走 Kind::key + text，
+// 无修饰走 Kind::text（文本路径与 legacy 一致）。事件类型子参数只用于
+// 判断（release 丢弃）；本框架只推 flag 1，正常情况下不会出现。
+void decode_kitty_key(const CsiParams& p, bool alt, std::vector<Event>& out) {
+    if (p.np < 1 || p.v[0] <= 0) return;
+    if (p.sub_seen[1] && p.sub[1] == 3) return; // release 事件
+    Mods mods = p.np >= 2 ? mods_from_param(p.v[1]) : Mods::none;
+    if (alt) mods = mods | Mods::alt;
+    int code = p.v[0];
+    // 有 shift 且带 shifted key 时，alternate 才是实际上屏的字符。
+    if (any(mods & Mods::shift) && p.sub_seen[0] && p.sub[0] > 0) {
+        code = p.sub[0];
+    }
+    switch (code) {
+    case 13: out.push_back(key_event(Key::enter, mods, {})); return;
+    case 9: out.push_back(key_event(Key::tab, mods, {})); return;
+    case 127: out.push_back(key_event(Key::backspace, mods, {})); return;
+    case 27: out.push_back(key_event(Key::escape, mods, {})); return;
+    default:
+        break;
+    }
+    if (!valid_codepoint(code) || code < 0x20) return; // 只认可打印码点
+    Event e;
+    e.kind = any(mods) ? Event::Kind::key : Event::Kind::text;
+    e.key = Key::none;
+    e.mods = mods;
+    e.text = utf8_from_codepoint(code);
+    out.push_back(std::move(e));
+}
+
 // CSI 键盘终止符 → 键/焦点事件。识别不了的终止符静默丢弃。
-void decode_csi_key(const int* params, int np, char final_, bool alt,
+void decode_csi_key(const CsiParams& p, char final_, bool alt,
                     std::vector<Event>& out) {
-    Mods mods = np >= 2 ? mods_from_param(params[1]) : Mods::none;
+    Mods mods = p.np >= 2 ? mods_from_param(p.v[1]) : Mods::none;
     if (alt) mods = mods | Mods::alt;
 
     switch (final_) {
@@ -186,8 +270,11 @@ void decode_csi_key(const int* params, int np, char final_, bool alt,
         out.push_back(std::move(e));
         return;
     }
+    case 'u':
+        decode_kitty_key(p, alt, out);
+        return;
     case '~': {
-        const Key k = key_from_tilde(np >= 1 ? params[0] : 0);
+        const Key k = key_from_tilde(p.np >= 1 ? p.v[0] : 0);
         if (k != Key::none) out.push_back(key_event(k, mods, {}));
         return;
     }
@@ -200,6 +287,7 @@ struct SeqResult {
     std::size_t next = 0; // 消费到的位置
     bool enter_paste = false;
     bool wait = false; // 序列不完整：一个字节都没消费、一个事件都没产出，留在缓冲等后续
+    bool reply = false; // wait 时有效：窗口内未读完的应答（不参与 Esc 超时，关闭时丢弃）
 };
 
 // 序列内的非参数字节（CSI 与 SS3 共用，ECMA-48）：
@@ -224,26 +312,80 @@ SeqResult wait_from(std::size_t start, std::vector<Event>& out, std::size_t base
     return {start, false, true};
 }
 
-// 从 start（\e[ 之后）扫描 CSI 序列到终止符。参数含 ';' 与数字；
-// '<' 引导 SGR 鼠标；私有标记/中间字节/':' 使序列按不可识别处理 ——
-// 仍完整读到终止符再整体丢弃；序列中途出现 ESC 时丢弃已收前缀并从
-// 新 ESC 重新解析。
+// 终端字符串（§3.2.1）：OSC 由 BEL 或 ST 终止，DCS/APC/PM/SOS 仅 ST。
+// 只在应答窗口打开时被调用。字符串体超过 k_max_reply 的部分丢弃，但
+// 仍消费到终止符；不完整时留在缓冲（不产出事件、不参与 Esc 超时）。
+SeqResult decode_string(std::string_view s, std::size_t start, char intro,
+                        std::vector<Event>& out) {
+    const bool osc = intro == ']';
+    const std::size_t cap = start + k_max_reply;
+    const auto type = [&] {
+        switch (intro) {
+        case ']': return Event::ReplyType::osc;
+        case 'P': return Event::ReplyType::dcs;
+        default:  return Event::ReplyType::apc; // \e_ APC；废弃的 PM/SOS 并入
+        }
+    }();
+
+    std::size_t i = start;
+    while (i < s.size()) {
+        const auto c = static_cast<unsigned char>(s[i]);
+        std::size_t body_end = 0;
+        std::size_t next = 0;
+        if (osc && c == 0x07) {
+            body_end = i;
+            next = i + 1;
+        } else if (c == 0x1B) {
+            if (i + 1 >= s.size()) return {start, false, true, true}; // ST 只看了一半
+            if (s[i + 1] != '\\') {
+                ++i; // 字符串内容里的 ESC：继续
+                continue;
+            }
+            body_end = i;
+            next = i + 2;
+        } else {
+            ++i;
+            continue;
+        }
+        const std::size_t end = body_end < cap ? body_end : cap;
+        push_reply(out, type, s.substr(start, end - start));
+        return {next, false, false};
+    }
+    return {start, false, true, true}; // 不完整：留在缓冲等终止符
+}
+
+// 从 start（\e[ 之后）扫描 CSI 序列到终止符。参数含 ';'、数字与 ':'
+// 子参数（kitty）；'<' 引导 SGR 鼠标；应答窗口内带私有标记 '?' '>' '='
+// 的序列产出 Kind::reply（§3.2.1），窗口外整体丢弃。不可识别的序列仍
+// 完整读到终止符再丢弃；序列中途出现 ESC 时丢弃已收前缀并从新 ESC
+// 重新解析。
 SeqResult decode_csi(std::string_view s, std::size_t start, bool alt,
-                     std::vector<Event>& out) {
-    int params[k_max_params] = {};
-    int np = 0;
+                     bool reply_window, std::vector<Event>& out) {
+    CsiParams p;
     int cur = 0;
     bool digit = false;
-    bool sgr = false;
-    bool junk = false;
+    int primary = 0;
+    bool have_primary = false;
+    int sub = 0;
+    bool sub_seen = false;
     const std::size_t n = s.size();
     const std::size_t base = out.size();
     std::size_t i = start;
 
     const auto push = [&] {
-        if (np < k_max_params) params[np++] = cur;
+        if (p.np < k_max_params) {
+            p.v[p.np] = have_primary ? primary : cur;
+            // 只有一个 ':' 时子参数还在 cur 里，多段子参数时取第一段。
+            p.sub[p.np] = have_primary ? (sub_seen ? sub : cur) : 0;
+            p.sub_seen[p.np] = have_primary;
+            ++p.np;
+        }
         cur = 0;
+        primary = 0;
+        sub = 0;
         digit = false;
+        have_primary = false;
+        sub_seen = false;
     };
 
     while (i < n) {
@@ -261,17 +403,41 @@ SeqResult decode_csi(std::string_view s, std::size_t start, bool alt,
             continue;
         }
         if (c == ':') {
-            junk = true; // 子参数语法：不识别
+            // code[:alternate] / mods[:event]：首个冒号前是主值。
+            if (!have_primary) {
+                primary = cur;
+                have_primary = true;
+            } else if (!sub_seen) {
+                sub = cur;
+                sub_seen = true;
+            }
+            cur = 0;
+            digit = false;
+            ++i;
+            continue;
+        }
+        if (c == '?' || c == '>' || c == '=') {
+            if (p.np == 0 && p.marker == 0 && !p.sgr && !p.intermediate &&
+                !digit && !have_primary) {
+                p.marker = static_cast<char>(c);
+            } else {
+                p.junk = true;
+            }
             ++i;
             continue;
         }
         if (c == '<') {
-            sgr = true;
+            if (p.np == 0 && p.marker == 0 && !p.sgr && !p.intermediate &&
+                !digit && !have_primary) {
+                p.sgr = true;
+            } else {
+                p.junk = true;
+            }
             ++i;
             continue;
         }
-        if ((c >= 0x3C && c <= 0x3F) || (c >= 0x20 && c <= 0x2F)) {
-            junk = true; // 其余私有标记与中间字节
+        if (c >= 0x20 && c <= 0x2F) {
+            p.intermediate = true; // DECRQM 的 '$' 等
             ++i;
             continue;
         }
@@ -285,14 +451,21 @@ SeqResult decode_csi(std::string_view s, std::size_t start, bool alt,
             return {i, false, false}; // 非 ASCII：中止序列，字节按 ground 重解析
         }
         // 0x40..0x7E：终止符
-        if (digit || np > 0) push();
+        if (digit || p.np > 0 || have_primary || sub_seen) push();
         ++i;
-        if (junk) return {i, false, false};
-        if (sgr) {
-            decode_mouse(params, np, static_cast<char>(c), alt, out);
+        if (p.marker != 0 && reply_window) {
+            // 完整序列体：私有标记、参数（含子参数）、中间字节与最终字节。
+            push_reply(out, Event::ReplyType::csi, s.substr(start, i - start));
             return {i, false, false};
         }
-        if (c == 'M' && np == 0) {
+        if (p.junk || p.marker != 0 || p.intermediate) {
+            return {i, false, false}; // 不可识别：完整读到终止符后整体丢弃
+        }
+        if (p.sgr) {
+            decode_mouse(p.v, p.np, static_cast<char>(c), alt, out);
+            return {i, false, false};
+        }
+        if (c == 'M' && p.np == 0) {
             // 旧式 X10 鼠标：\e[M 后跟 3 个原始字节。终端不支持 1006 时
             // 会发这种序列（terminal 按能力开启，老 tmux/screen 例外）；
             // 不解释该协议，但必须连负载一起吞掉，否则 3 个字节会被
@@ -300,14 +473,18 @@ SeqResult decode_csi(std::string_view s, std::size_t start, bool alt,
             if (n - i < 3) return wait_from(start, out, base); // 负载不足：等待
             return {i + 3, false, false};
         }
-        if (c == '~' && np >= 1) {
-            if (params[0] == 200) return {i, true, false};  // 粘贴开始
-            if (params[0] == 201) return {i, false, false}; // 游离的结束标记
+        if (c == '~' && p.np >= 1) {
+            if (p.v[0] == 200) return {i, true, false};  // 粘贴开始
+            if (p.v[0] == 201) return {i, false, false}; // 游离的结束标记
         }
-        decode_csi_key(params, np, static_cast<char>(c), alt, out);
+        decode_csi_key(p, static_cast<char>(c), alt, out);
         return {i, false, false};
     }
-    return wait_from(start, out, base); // 不完整：留在缓冲等更多字节
+    // 不完整：窗口内的私有标记应答不参与 Esc 超时（窗口关闭时整体丢弃），
+    // 其余残留（用户按键序列）交给 40ms 超时消解。
+    const bool reply = reply_window && p.marker != 0;
+    out.erase(out.begin() + static_cast<std::ptrdiff_t>(base), out.end());
+    return {start, false, true, reply};
 }
 
 // SS3（应用键盘模式）：\eO 后至多一段参数，单终止符。序列内的
@@ -409,9 +586,14 @@ void Decoder::feed(std::string_view bytes, std::vector<Event>& out) {
                 if (c == '[' || c == 'O') {
                     const std::size_t base = out.size();
                     const SeqResult r = c == '['
-                        ? decode_csi(buf_, esc + 1, has_alt, out)
+                        ? decode_csi(buf_, esc + 1, has_alt, reply_window_, out)
                         : decode_ss3(buf_, esc + 1, has_alt, out);
-                    if (r.wait) break; // 不完整：原样留在缓冲，什么都没产出
+                    if (r.wait) {
+                        // 窗口内未读完的应答（残缺私有 CSI）不参与 Esc 超时
+                        reply_pending_ = r.reply;
+                        break;
+                    }
+                    reply_pending_ = false;
                     if (esc_run >= 3) {
                         out.insert(out.begin() + static_cast<std::ptrdiff_t>(base),
                                    esc_run - 2,
@@ -423,6 +605,21 @@ void Decoder::feed(std::string_view bytes, std::vector<Event>& out) {
                         paste_scanned_ = 0;
                         break; // 交给外层循环的 drain_paste
                     }
+                    continue;
+                }
+                // 终端字符串（§3.2.1）：只有应答窗口打开时按应答解析；
+                // ESC 串里多出的 ESC 说明是用户的 Alt 组合键（\e\e] =
+                // Esc、Alt-]），不是终端应答。
+                if (reply_window_ && !has_alt &&
+                    (c == ']' || c == 'P' || c == '_' || c == '^' || c == 'X')) {
+                    const SeqResult r =
+                        decode_string(buf_, esc + 1, static_cast<char>(c), out);
+                    if (r.wait) {
+                        reply_pending_ = true;
+                        break;
+                    }
+                    reply_pending_ = false;
+                    pos = r.next;
                     continue;
                 }
                 if (c >= 0x80) {
@@ -487,11 +684,22 @@ void Decoder::feed(std::string_view bytes, std::vector<Event>& out) {
     }
 }
 
+void Decoder::set_reply_window(bool open) noexcept {
+    reply_window_ = open;
+    if (!open && reply_pending_) {
+        // 窗口关闭时仍未终止的应答整体丢弃：其中没有任何按键语义，
+        // 留着会把后续用户输入一起吞进字符串。
+        buf_.clear();
+        reply_pending_ = false;
+    }
+}
+
 bool Decoder::pending_escape() const noexcept {
     // 覆盖所有以 ESC 开头的不完整序列：孤立 ESC 串、\e[ / \eO 引导符、
     // 已收了部分参数的残缺 CSI —— 它们都在等后续字节，而终端发 Alt-[
     // / Alt-O 时用户可能不再按任何键，超时判定必须能把它们消解掉。
-    return !paste_ && !buf_.empty() && buf_[0] == '\x1b';
+    // 应答窗口内的残缺应答除外：等待期由窗口的哨兵/超时控制，整体丢弃。
+    return !paste_ && !reply_pending_ && !buf_.empty() && buf_[0] == '\x1b';
 }
 
 void Decoder::flush_escape(std::vector<Event>& out) {
