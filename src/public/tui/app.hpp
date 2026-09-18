@@ -50,6 +50,7 @@
 #include <chrono>
 #include <cstdint>
 #include <functional>
+#include <memory>
 #include <mutex>
 #include <optional>
 #include <string>
@@ -88,6 +89,15 @@ public:
     void set_global(EventHandler& h) noexcept { router_.set_global(&h); }
     void push_modal(EventHandler& h) { router_.push(h); }
     void pop_modal(EventHandler& h) { router_.pop(h); }
+
+    // ---- 浮层（§3.4.3；run() 之前或渲染线程）----
+    // root 必须是 LayerStack。打开并可选接管输入（modal 压入模态栈）
+    // 与光标来源；关闭时弹出模态、恢复打开前的光标来源。关闭顺序不是
+    // 后进先出时，模态栈按 L6 的空槽语义处理。
+    uint32_t open_overlay(std::unique_ptr<Widget> w, Placement p,
+                          EventHandler* modal = nullptr,
+                          Widget* cursor_source = nullptr);
+    void close_overlay(uint32_t id);
 
     // 动画 tick 回调，在渲染线程上调用：推进动画帧并 invalidate。
     // 返回 true = 动画仍在进行，继续下一个 tick；返回 false = 暂停，
@@ -163,6 +173,17 @@ private:
     bool handshake_active_ = false;
     Terminal::Caps pending_caps_{};
     std::optional<Clock::time_point> reply_due_; // 1 秒未收到 DA1 的截止时刻
+
+    // 浮层（§3.4）：记录每个打开浮层的模态处理器与光标恢复点。
+    // stack_ 在构造时取得；root 不是 LayerStack 时浮层 API 不可用。
+    struct OverlayState {
+        uint32_t id = 0;
+        EventHandler* modal = nullptr;
+        Widget* cursor_source = nullptr;
+        Widget* prev_cursor = nullptr;
+    };
+    LayerStack* stack_ = nullptr;
+    std::vector<OverlayState> overlays_;
 
     // ---- 跨线程原子 ----
     std::atomic<bool> quit_{false};

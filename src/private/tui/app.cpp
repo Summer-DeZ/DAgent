@@ -96,7 +96,8 @@ bool parse_osc11_background(std::string_view body, Color& out) {
 } // namespace
 
 Runtime::Runtime(Terminal& term, Widget& root, Options opt)
-    : term_(term), root_(root), opt_(opt) {
+    : term_(term), root_(root), opt_(opt),
+      stack_(dynamic_cast<LayerStack*>(&root)) {
     int pipes[2];
     if (::pipe2(pipes, O_NONBLOCK | O_CLOEXEC) != 0) {
         // 唤醒管道是调度机制的支柱，创建失败直接终止（与 OOM 同级）。
@@ -125,6 +126,40 @@ void Runtime::on_tick(std::function<bool()> fn) {
     tick_fn_ = std::move(fn);
     ticking_ = false;
     arm_tick();
+}
+
+// ---- 浮层（§3.4.3）----
+
+uint32_t Runtime::open_overlay(std::unique_ptr<Widget> w, Placement p,
+                               EventHandler* modal, Widget* cursor_source) {
+    if (stack_ == nullptr) std::terminate(); // root 必须是 LayerStack（§3.4）
+    const uint32_t id = stack_->push(std::move(w), p);
+    overlays_.push_back({id, modal, cursor_source, cursor_source_});
+    if (modal != nullptr) router_.push(*modal);
+    if (cursor_source != nullptr) {
+        cursor_source_ = cursor_source;
+        dirty_ = true; // 光标来源变了：即使控件都没失效也要重新定位
+    }
+    note_changes();
+    arm_tick();
+    return id;
+}
+
+void Runtime::close_overlay(uint32_t id) {
+    for (auto it = overlays_.begin(); it != overlays_.end(); ++it) {
+        if (it->id != id) continue;
+        if (it->modal != nullptr) router_.pop(*it->modal);
+        // 只在本浮层的光标来源仍生效时恢复，非后进先出的关闭不会
+        // 把上层浮层的光标来源改掉。
+        if (it->cursor_source != nullptr && cursor_source_ == it->cursor_source) {
+            cursor_source_ = it->prev_cursor;
+            dirty_ = true;
+        }
+        stack_->remove(id);
+        overlays_.erase(it);
+        note_changes();
+        return;
+    }
 }
 
 // ---- 更新通道 ----

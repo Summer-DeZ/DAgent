@@ -1,6 +1,7 @@
 #include "tui/layout.hpp"
 
 #include <algorithm>
+#include <utility>
 
 namespace dagent::tui {
 
@@ -12,7 +13,50 @@ int clampv(int v, int lo, int hi) noexcept {
     return v;
 }
 
+// 浮层矩形：已按屏幕夹过尺寸，这里再保证位置不越界（§3.4.1）。
+Rect placement_rect(Placement p, Size size, Point point, Size avail) noexcept {
+    const int w = size.cols;
+    const int h = size.rows;
+    int x = 0;
+    int y = 0;
+    switch (p) {
+    case Placement::center:
+        x = (avail.cols - w) / 2;
+        y = (avail.rows - h) / 2;
+        break;
+    case Placement::top_right:
+        x = avail.cols - w;
+        break;
+    case Placement::above_point:
+        x = point.x;
+        y = point.y - h;
+        if (y < 0) y = point.y; // 上方空间不足：翻到点的下方
+        break;
+    case Placement::at_point:
+        x = point.x;
+        y = point.y;
+        break;
+    }
+    const int max_x = avail.cols - w;
+    const int max_y = avail.rows - h;
+    x = clampv(x, 0, max_x > 0 ? max_x : 0);
+    y = clampv(y, 0, max_y > 0 ? max_y : 0);
+    return {x, y, w, h};
+}
+
 } // namespace
+
+// ---- Widget 默认实现 ----
+
+void Widget::invalidate_rect(Rect r) {
+    if (!screen_rect().intersect(r).empty()) invalidate();
+}
+
+Widget* Widget::hit_test(Point screen) const noexcept {
+    return screen_rect().contains(screen) ? const_cast<Widget*>(this) : nullptr;
+}
+
+void Widget::take_painted(std::vector<Rect>&) {}
 
 Container::Container(Direction dir) noexcept : dir_(dir) {}
 
@@ -66,6 +110,27 @@ void Container::layout(Rect area) {
     if (changed) {
         invalidate_tree();
     }
+}
+
+// 损伤补画：任何子项与损伤相交都要失效 —— 只让子树根容器失效不够，
+// 容器 render 会跳过干净子项，深层内容就补不回来（§3.4.2 规则 2）。
+void Container::invalidate_rect(Rect r) {
+    for (auto& it : items_) {
+        it.widget->invalidate_rect(r);
+    }
+}
+
+Widget* Container::hit_test(Point screen) const noexcept {
+    // 逆序：后声明的子项画在上面。
+    for (auto it = items_.rbegin(); it != items_.rend(); ++it) {
+        if (Widget* w = it->widget->hit_test(screen)) return w;
+    }
+    return Widget::hit_test(screen);
+}
+
+void Container::take_painted(std::vector<Rect>& out) {
+    out.insert(out.end(), painted_.begin(), painted_.end());
+    painted_.clear();
 }
 
 // 区域分配。五个步骤见类注释。子区域用本容器局部坐标（原点为容器
@@ -241,8 +306,11 @@ Size Container::measure(Size available) const {
 //      内容仍正确，back 起点又是 front 的拷贝 —— "只有转圈符号在动"
 //      时每帧只碰一行。
 void Container::render(Surface& s) {
+    painted_.clear();
     if (!gap_.empty()) {
         s.fill(gap_, U' ', Style{});
+        const Point o = screen_origin();
+        painted_.push_back({o.x + gap_.x, o.y + gap_.y, gap_.w, gap_.h});
         gap_ = Rect{};
     }
     for (auto& it : items_) {
@@ -253,8 +321,169 @@ void Container::render(Surface& s) {
         Surface v = s.view(w.rect());
         w.render(v);
         w.clear_dirty();
+        // 记录实际重画的子项屏幕矩形：LayerStack 据此判断哪些浮层
+        // 被新画的内容盖住（整棵子树记根矩形，保守但正确）。
+        painted_.push_back(w.screen_rect());
     }
     clear_dirty();
+}
+
+// ---- LayerStack ----
+
+LayerStack::LayerStack(std::unique_ptr<Widget> base) : base_(std::move(base)) {
+    adopt(*this, *base_);
+}
+
+uint32_t LayerStack::push(std::unique_ptr<Widget> overlay, Placement p,
+                          Point point) {
+    adopt(*this, *overlay);
+    const uint32_t id = next_id_++;
+    overlays_.push_back({id, std::move(overlay), p, point, {}});
+    Overlay& ov = overlays_.back();
+    place(ov);
+    ov.widget->invalidate_tree(); // 新浮层首画
+    return id;
+}
+
+void LayerStack::move(uint32_t id, Placement p, Point point) {
+    for (auto& ov : overlays_) {
+        if (ov.id != id) continue;
+        ov.placement = p;
+        ov.point = point;
+        place(ov);
+        return;
+    }
+}
+
+std::unique_ptr<Widget> LayerStack::remove(uint32_t id) {
+    for (auto it = overlays_.begin(); it != overlays_.end(); ++it) {
+        if (it->id != id) continue;
+        damage(it->rect);
+        std::unique_ptr<Widget> w = std::move(it->widget);
+        overlays_.erase(it);
+        disown(*w);
+        return w;
+    }
+    return nullptr;
+}
+
+Widget* LayerStack::hit(Point screen) const noexcept { return hit_test(screen); }
+
+void LayerStack::layout(Rect area) {
+    // 根控件：area 即屏幕，浮层矩形因此就是屏幕坐标。
+    Widget::layout(area);
+    base_->layout(area);
+    for (auto& ov : overlays_) {
+        place(ov);
+    }
+}
+
+bool LayerStack::needs_layout() const noexcept {
+    if (layout_dirty_ || base_->needs_layout()) return true;
+    for (const auto& ov : overlays_) {
+        if (ov.widget->needs_layout()) return true;
+    }
+    return false;
+}
+
+bool LayerStack::dirty_tree() const noexcept {
+    if (dirty_ || !damage_.empty() || base_->dirty_tree()) return true;
+    for (const auto& ov : overlays_) {
+        if (ov.widget->dirty_tree()) return true;
+    }
+    return false;
+}
+
+void LayerStack::invalidate_tree() noexcept {
+    invalidate();
+    base_->invalidate_tree();
+    for (auto& ov : overlays_) {
+        ov.widget->invalidate_tree();
+    }
+}
+
+void LayerStack::invalidate_rect(Rect r) {
+    base_->invalidate_rect(r);
+    for (auto& ov : overlays_) {
+        ov.widget->invalidate_rect(r);
+    }
+}
+
+Size LayerStack::measure(Size available) const { return base_->measure(available); }
+
+Widget* LayerStack::hit_test(Point screen) const noexcept {
+    // 浮层逆序：后 push 的在上面；都没有命中的则落回基础层。
+    for (auto it = overlays_.rbegin(); it != overlays_.rend(); ++it) {
+        if (Widget* w = it->widget->hit_test(screen)) return w;
+    }
+    return base_->hit_test(screen);
+}
+
+// 损伤传播的四步（§3.4.2）。关键点：
+//   * 损伤矩形直接擦空白：基础层未必有控件覆盖那里（尾部 gap），
+//     只让相交控件失效会留下旧浮层像素；
+//   * 与 painted/damage 相交的浮层整层 invalidate_tree()：基础层新画的
+//     内容已经盖进 back，跳过干净子项就补不回浮层自己的像素。
+void LayerStack::render(Surface& s) {
+    for (const Rect d : damage_) {
+        s.fill(d, U' ', Style{});
+        base_->invalidate_rect(d);
+    }
+
+    painted_.clear();
+    const bool base_dirty = base_->dirty_tree();
+    if (base_dirty && !base_->rect().empty()) {
+        Surface v = s.view(base_->rect());
+        base_->render(v);
+        base_->clear_dirty();
+        base_->take_painted(painted_);
+        if (painted_.empty()) painted_.push_back(base_->screen_rect());
+    }
+
+    for (auto& ov : overlays_) {
+        if (ov.rect.empty()) {
+            ov.widget->clear_dirty();
+            continue;
+        }
+        const bool dirty = ov.widget->dirty_tree();
+        const bool covered = intersects(damage_, ov.rect) ||
+                             intersects(painted_, ov.rect);
+        if (!dirty && !covered) continue;
+        if (covered) ov.widget->invalidate_tree(); // 被盖住：整层重画
+        Surface v = s.view(ov.rect);
+        ov.widget->render(v);
+        ov.widget->clear_dirty();
+        painted_.push_back(ov.rect);
+    }
+
+    damage_.clear();
+    clear_dirty();
+}
+
+void LayerStack::place(Overlay& ov) {
+    const Size avail{rect_.w, rect_.h};
+    Size size = ov.widget->measure(avail);
+    size.cols = clampv(size.cols, 0, avail.cols > 0 ? avail.cols : 0);
+    size.rows = clampv(size.rows, 0, avail.rows > 0 ? avail.rows : 0);
+    const Rect r = placement_rect(ov.placement, size, ov.point, avail);
+    if (r == ov.rect) {
+        if (ov.widget->needs_layout()) ov.widget->layout(r);
+        return;
+    }
+    damage(ov.rect);
+    ov.rect = r;
+    ov.widget->layout(r);
+}
+
+void LayerStack::damage(Rect r) noexcept {
+    if (!r.empty()) damage_.push_back(r);
+}
+
+bool LayerStack::intersects(const std::vector<Rect>& rs, Rect r) noexcept {
+    for (const Rect& x : rs) {
+        if (!x.intersect(r).empty()) return true;
+    }
+    return false;
 }
 
 } // namespace dagent::tui

@@ -32,6 +32,9 @@ struct Rect {
     constexpr int right() const noexcept { return x + w; }
     constexpr int bottom() const noexcept { return y + h; }
     constexpr bool empty() const noexcept { return w <= 0 || h <= 0; }
+    constexpr bool contains(Point p) const noexcept {
+        return p.x >= x && p.y >= y && p.x < right() && p.y < bottom();
+    }
     constexpr Rect intersect(Rect o) const noexcept {
         const int x0 = x > o.x ? x : o.x;
         const int y0 = y > o.y ? y : o.y;
