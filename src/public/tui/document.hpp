@@ -67,6 +67,11 @@ struct Block {
     std::string meta;         // 标题、来源等附属信息（默认渲染器不解释）
     uint32_t group = 0;       // 分组（例如并发子任务）
     uint8_t depth = 0;        // 缩进层级（默认渲染器不解释，留给自定义渲染器）
+    // 上边距：块前的空行数（段落间距）。由产生块的一方设置 —— 只有它知道
+    // 语义（同一消息内的块之间、消息之间）；Document 把它计入行数前缀和
+    // 并在块前补空行，渲染器不感知。块没有内容行时边距不生效（空块的
+    // 边距折叠，流式新开的空块不会先冒出一行空白）。
+    uint8_t margin_top = 0;
     bool open = false;        // 仍在增长（只有尾部块适合，见 append）
     bool collapsed = false;
     uint32_t collapsed_rows = 0; // 折叠后最多显示的行数
@@ -273,11 +278,13 @@ public:
     // 两者都会物化所在块 —— 锚点所在块就是可见块，本来就要物化。
     std::optional<size_t> row_of(uint64_t block_id, size_t byte_in_block,
                                  const Theme& theme);
-    // 调用者保证 row < total_rows()。
+    // 调用者保证 row < total_rows()。边距行没有内容，返回其所在块的块首
+    // （即边距下方的第一行内容）。
     Location location_of(size_t row, const Theme& theme);
     // 物化与 [first, first+count) 相交的块。
     void materialize_range(size_t first, size_t count, const Theme& theme);
-    const Line* line_at(size_t row) const noexcept; // 未物化返回 nullptr
+    // 未物化返回 nullptr；边距行返回一个空行。
+    const Line* line_at(size_t row) const noexcept;
     // 释放可见窗口 ± count 行以外块的 rows（open 块除外，见 .cpp）。
     void evict_outside(size_t first, size_t count) noexcept;
 
@@ -310,6 +317,7 @@ private:
 //   * 围栏代码（``` / ~~~）→ code，info 串存入 meta（围栏行不属于 source）；
 //   * 表格（表头 + 分隔行）→ table（空行或不再以 '|' 开头的行结束）；
 //   * 分隔线 → markdown，立即关闭。
+// 消息内的块之间空 1 行（Block::margin_top），源码里的空行不进块。
 //
 // 未完成的行先追加到当前块立即显示；整行到达后若判定它开启了新结构，则用
 // replace 把它从当前块移除（整块替换，O(当前块)）。列表项与引用的续行
@@ -320,7 +328,10 @@ private:
 // finish() 之后状态复位，同一实例可以开始下一条消息。
 class MarkdownStream {
 public:
-    explicit MarkdownStream(Document& doc) noexcept : doc_(&doc) {}
+    // first_margin：每条消息第一块的上边距（消息之间的间距，由应用决定）；
+    // 消息内其后的块上边距为 1（段落间距，Block::margin_top）。
+    explicit MarkdownStream(Document& doc, uint8_t first_margin = 0) noexcept
+        : doc_(&doc), first_margin_(first_margin) {}
     MarkdownStream(const MarkdownStream&) = delete;
     MarkdownStream& operator=(const MarkdownStream&) = delete;
 
@@ -341,6 +352,7 @@ private:
     void open_markdown(std::string source, bool pipe);
     void open_table(std::string source);
     void start_code(char fence, size_t len, std::string info);
+    Block new_block(BlockKind kind); // 按消息内位置设置上边距
     void close_current();
     void remove_last(size_t bytes);
 
@@ -359,6 +371,8 @@ private:
     std::string pending_;          // 未完成行（原始字节，不含换行）
     std::string staged_;           // 模式 none 下暂存的表格候选表头（含换行）
     bool staging_ = false;
+    bool started_ = false;         // 本条消息已建过块（其后的块带段落间距）
+    uint8_t first_margin_ = 0;
 };
 
 // 大内容滚动区（§八）：Document 的门面 widget。
@@ -394,7 +408,8 @@ public:
 
 private:
     size_t max_top() const noexcept;
-    void anchor_to(size_t row);
+    // dir < 0：向上滚动（落在边距行时越过边距，锚到上一块的末行）。
+    void anchor_to(size_t row, int dir);
 
     Document doc_;
     Theme theme_{};

@@ -18,6 +18,7 @@
 #include <vector>
 
 #include "tui/document.hpp"
+#include "tui/surface.hpp"
 
 // Boost.Test 断言失败时要打印样式，测试 TU 内补上流输出。
 namespace dagent::tui {
@@ -782,6 +783,62 @@ BOOST_AUTO_TEST_CASE(code_highlighting_is_not_cut_by_wrapping) {
     const Snapshot b = snapshot(streamed, 16, th);
     BOOST_TEST(a.text == b.text);
     BOOST_TEST(a.styles == b.styles);
+}
+
+BOOST_AUTO_TEST_CASE(block_margins_space_paragraphs_and_never_trap_scrolling) {
+    {
+        // 消息内块之间空 1 行；源码里的空行不进块；消息第一块用 first_margin。
+        Document d;
+        MarkdownStream s(d);
+        s.feed("# T\n\npara\n- a\n");
+        s.finish();
+        MarkdownStream next(d, 2);
+        next.feed("second\n");
+        next.finish();
+        BOOST_TEST(snapshot(d, 20).text ==
+                   (std::vector<std::string>{"# T", "", "para", "", "• a", "", "",
+                                             "second"}));
+    }
+    {
+        // 流式新开的空块边距折叠：代码块有内容之前不冒出空行。
+        Document d;
+        MarkdownStream s(d);
+        s.feed("para\n\n```py\n");
+        BOOST_TEST(snapshot(d, 20).text == (std::vector<std::string>{"para"}));
+        s.feed("x = 1\n");
+        BOOST_TEST(snapshot(d, 20).text ==
+                   (std::vector<std::string>{"para", "", "x = 1"}));
+    }
+    {
+        // 逐行滚动：视口顶行从不停在边距行上，上下都不会卡住。
+        Scrollback sb;
+        MarkdownStream s(sb.document());
+        for (int i = 0; i < 10; ++i) s.feed("p" + std::to_string(i) + "\n\n");
+        s.finish();
+        sb.layout({0, 0, 20, 2});
+        Surface surf(20, 2);
+        auto top_text = [&] {
+            sb.render(surf);
+            return std::string(surf.at(0, 0).grapheme()) +
+                   std::string(surf.at(1, 0).grapheme());
+        };
+        top_text();
+        sb.scroll_home();
+        BOOST_TEST(top_text() == "p0");
+        for (int i = 1; i <= 8; ++i) {
+            sb.scroll_lines(1);
+            BOOST_TEST(top_text() == "p" + std::to_string(i));
+        }
+        sb.scroll_lines(1);
+        top_text();
+        BOOST_TEST(sb.pinned()); // 到底：贴底
+        for (int i = 8; i >= 0; --i) {
+            sb.scroll_lines(-1);
+            BOOST_TEST(top_text() == "p" + std::to_string(i));
+        }
+        sb.scroll_lines(-1);
+        BOOST_TEST(top_text() == "p0"); // 顶部夹住
+    }
 }
 
 BOOST_AUTO_TEST_SUITE_END()

@@ -22,11 +22,23 @@ int64_t block_key(const Block& b, int width, uint32_t epoch) noexcept {
                                 (static_cast<uint64_t>(epoch) << 32));
 }
 
-// 显示行数：折叠时是截断后的计数，未折叠时等于全程计数。
-size_t display_rows(const Block& b) noexcept {
+// 内容行数：折叠时是截断后的计数，未折叠时等于全程计数。
+size_t content_rows(const Block& b) noexcept {
     return b.collapsed ? std::min<size_t>(b.collapsed_rows, b.row_count)
                        : b.row_count;
 }
+
+// 生效的上边距：没有内容行的块边距折叠为 0。
+size_t margin_rows(const Block& b) noexcept {
+    return content_rows(b) > 0 ? b.margin_top : 0;
+}
+
+// 块在前缀和中占的行数 = 上边距 + 内容行。
+size_t display_rows(const Block& b) noexcept {
+    return margin_rows(b) + content_rows(b);
+}
+
+const Line k_margin_line{}; // 边距行：无 span 的空行
 
 } // namespace
 
@@ -298,7 +310,7 @@ std::optional<size_t> Document::row_of(uint64_t block_id, size_t byte_in_block,
     if (!idx) return std::nullopt; // 块已被头部裁剪
     Block& b = blocks_[*idx];
     ensure_rows(b, theme);
-    const size_t base = prefix_[*idx] - base_rows_;
+    const size_t base = prefix_[*idx] - base_rows_ + margin_rows(b);
     const auto first = b.rows.begin();
     const auto last = first + static_cast<std::ptrdiff_t>(b.rows_valid);
     const auto it = std::upper_bound(
@@ -314,8 +326,11 @@ Location Document::location_of(size_t row, const Theme& theme) {
         prefix_.begin());
     --i; // 调用者保证 abs < prefix_.back()，因此 i >= 1
     Block& b = blocks_[i];
+    const size_t local = abs - prefix_[i];
+    const size_t margin = margin_rows(b);
+    if (local < margin) return {b.id, 0}; // 边距行：锚到块首
     ensure_rows(b, theme);
-    return {b.id, b.rows[abs - prefix_[i]].offset};
+    return {b.id, b.rows[local - margin].offset};
 }
 
 void Document::materialize_range(size_t first, size_t count,
@@ -337,7 +352,7 @@ void Document::materialize_range(size_t first, size_t count,
 //   * 否则从 rows_bytes（有效前缀之后）继续画到末尾；
 //     被驱逐时 rows_valid/rows_bytes 已归零，等价于从头物化。
 void Document::ensure_rows(Block& b, const Theme& theme) {
-    const size_t want = display_rows(b);
+    const size_t want = content_rows(b);
     if (b.rows_valid == want) return;
     b.rows_valid = renderer(b.kind).render(b, width_, theme, b.rows_bytes,
                                            b.rows_valid, b.rows);
@@ -354,7 +369,10 @@ const Line* Document::line_at(size_t row) const noexcept {
         prefix_.begin());
     --i;
     const Block& b = blocks_[i];
-    const size_t r = abs - prefix_[i];
+    const size_t local = abs - prefix_[i];
+    const size_t margin = margin_rows(b);
+    if (local < margin) return &k_margin_line;
+    const size_t r = local - margin;
     if (r >= b.rows_valid) return nullptr; // 未物化：调用方先 materialize_range
     return &b.rows[r];
 }
@@ -408,14 +426,23 @@ size_t Scrollback::max_top() const noexcept {
     return total_ > h ? total_ - h : 0;
 }
 
-// 把视口顶行锚到绝对行 row：贴底由 pinned 表示，其余记录 (块 id, 块内行号)。
-void Scrollback::anchor_to(size_t row) {
+// 把视口顶行锚到绝对行 row：贴底由 pinned 表示，其余记录 (块 id, 字节偏移)。
+// 边距行没有内容可锚，location_of 把它映射到下方的块首：向下滚动因此
+// 越过边距；向上滚动则继续上移到上一块的末行，否则会被映射回原处卡住。
+// 视口顶行因此从不停在边距行上。
+void Scrollback::anchor_to(size_t row, int dir) {
     const size_t max = max_top();
     if (row >= max) {
         doc_.set_anchor(Anchor{}); // pinned_to_bottom = true
         return;
     }
-    const Location loc = doc_.location_of(row, theme_);
+    Location loc = doc_.location_of(row, theme_);
+    if (dir < 0) {
+        while (row > 0 &&
+               doc_.row_of(loc.block_id, loc.byte_in_block, theme_).value_or(row) > row) {
+            loc = doc_.location_of(--row, theme_);
+        }
+    }
     doc_.set_anchor(Anchor{loc.block_id, loc.byte_in_block, false});
 }
 
@@ -423,7 +450,8 @@ void Scrollback::scroll_lines(int lines) {
     if (lines == 0) return;
     const long long max = static_cast<long long>(max_top());
     const long long target = static_cast<long long>(top_) + lines;
-    anchor_to(static_cast<size_t>(target < 0 ? 0 : (target > max ? max : target)));
+    anchor_to(static_cast<size_t>(target < 0 ? 0 : (target > max ? max : target)),
+              lines);
     invalidate();
 }
 
@@ -433,7 +461,7 @@ void Scrollback::scroll_pages(int pages) {
 }
 
 void Scrollback::scroll_home() {
-    anchor_to(0);
+    anchor_to(0, 1);
     invalidate();
 }
 

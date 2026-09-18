@@ -753,8 +753,7 @@ void MarkdownStream::on_partial() {
         if (i >= pending_.size()) return;
         const char c = pending_[i];
         if (c == '`' || c == '~' || c == '|') return;
-        Block b;
-        b.kind = BlockKind::markdown;
+        Block b = new_block(BlockKind::markdown);
         b.open = true;
         cur_ = doc_->append_block(std::move(b));
         mode_ = Mode::markdown;
@@ -876,8 +875,7 @@ void MarkdownStream::handle_markdown_line(std::string_view line,
         }
         remove_last(raw_len);
         close_current();
-        Block b;
-        b.kind = BlockKind::markdown;
+        Block b = new_block(BlockKind::markdown);
         b.source = pending_;
         if (has_newline) b.source += '\n';
         doc_->append_block(std::move(b)); // 立即关闭
@@ -941,8 +939,7 @@ void MarkdownStream::handle_detached_line(std::string_view line,
         return;
     }
     if (k == LineClass::hr) {
-        Block b;
-        b.kind = BlockKind::markdown;
+        Block b = new_block(BlockKind::markdown);
         b.source = std::move(src);
         doc_->append_block(std::move(b)); // 立即关闭
         return;
@@ -955,8 +952,7 @@ void MarkdownStream::handle_detached_line(std::string_view line,
 }
 
 void MarkdownStream::open_markdown(std::string source, bool pipe) {
-    Block b;
-    b.kind = BlockKind::markdown;
+    Block b = new_block(BlockKind::markdown);
     b.source = std::move(source);
     b.open = true;
     last_line_len_ = b.source.size();
@@ -969,8 +965,7 @@ void MarkdownStream::open_markdown(std::string source, bool pipe) {
 }
 
 void MarkdownStream::open_table(std::string source) {
-    Block b;
-    b.kind = BlockKind::table;
+    Block b = new_block(BlockKind::table);
     b.source = std::move(source);
     b.open = true;
     cur_ = doc_->append_block(std::move(b));
@@ -980,8 +975,7 @@ void MarkdownStream::open_table(std::string source) {
 }
 
 void MarkdownStream::start_code(char fence, size_t len, std::string info) {
-    Block b;
-    b.kind = BlockKind::code;
+    Block b = new_block(BlockKind::code);
     b.meta = std::move(info);
     b.open = true;
     cur_ = doc_->append_block(std::move(b));
@@ -991,6 +985,16 @@ void MarkdownStream::start_code(char fence, size_t len, std::string info) {
     code_candidate_ = false;
     line_in_block_ = false;
     line_new_ = false;
+}
+
+// 新块的上边距：消息内第一块用 first_margin_（消息之间的间距归应用），
+// 其后每块空 1 行（段落间距）。
+Block MarkdownStream::new_block(BlockKind kind) {
+    Block b;
+    b.kind = kind;
+    b.margin_top = started_ ? 1 : first_margin_;
+    started_ = true;
+    return b;
 }
 
 void MarkdownStream::close_current() {
@@ -1053,6 +1057,7 @@ void MarkdownStream::finish() {
     line_in_block_ = false;
     line_new_ = false;
     close_current();
+    started_ = false; // 下一条消息重新从第一块开始
 }
 
 // ---- MarkdownRenderer ----
