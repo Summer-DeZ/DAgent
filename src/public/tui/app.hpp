@@ -96,7 +96,9 @@ public:
 
     // ---- 鼠标命中（§3.5；run() 之前或渲染线程）----
     // 键盘路由不变；鼠标事件按坐标分发：L3/L4 不感知事件，控件与处理器的
-    // 对应关系登记在这里。绑定以控件身份为准，重复绑定覆盖。
+    // 对应关系登记在这里。绑定以控件身份为准，重复绑定覆盖。控件销毁前
+    // 必须 unbind_mouse（同时解除其捕获）；浮层内的控件由 close_overlay
+    // 代为解除。
     void bind_mouse(Widget& w, EventHandler& h);
     void unbind_mouse(Widget& w) noexcept;
 

@@ -1,6 +1,7 @@
 // M5 §3.6 文档变更 API 验收：replace / set_meta / erase_from、多个 open
-// 块、锚点规则。随机变更序列后与「相同最终内容新建的 Document」逐行
-// （文本 + spans 样式）比对。文档层是纯内存结构，直接断言，不做模拟。
+// 块、锚点规则。随机变更序列的每一步都与「相同最终内容新建的 Document」
+// 逐行（文本 + spans 样式）比对，宽度不变的帧走增量计数路径。文档层是
+// 纯内存结构，直接断言，不做模拟。
 
 #include <boost/test/unit_test.hpp>
 
@@ -207,6 +208,8 @@ BOOST_AUTO_TEST_CASE(random_mutation_sequence_matches_rebuilt_document) {
         return model.empty() ? size_t{0} : pick(rng) % model.size();
     };
 
+    const int widths[] = {13, 5, 40};
+    int width = widths[0];
     for (int step = 0; step < 600; ++step) {
         switch (rng() % 8) {
         case 0: { // append 封闭块
@@ -274,37 +277,35 @@ BOOST_AUTO_TEST_CASE(random_mutation_sequence_matches_rebuilt_document) {
             break;
         }
 
-        if (step % 40 == 39 || step == 599) {
-            for (const int width : {5, 13, 40}) {
-                Document rebuilt;
-                for (const Entry& e : model) {
-                    const uint64_t id =
-                        rebuilt.append_block(e.kind, e.source);
-                    rebuilt.set_meta(id, e.meta);
-                }
-                const Snapshot expect = snapshot(rebuilt, width);
-                const Snapshot got = snapshot(d, width);
-                bool same = got.text == expect.text &&
-                            got.styles == expect.styles;
-                size_t first_bad = 0;
-                if (!same) {
-                    const std::size_t n =
-                        std::min(got.text.size(), expect.text.size());
-                    while (first_bad < n && got.text[first_bad] == expect.text[first_bad] &&
-                           got.styles[first_bad] == expect.styles[first_bad]) {
-                        ++first_bad;
-                    }
-                }
-                BOOST_TEST_CONTEXT("step " << step << " width " << width
-                                           << " first row " << first_bad) {
-                    BOOST_TEST(same);
-                }
-                for (std::size_t i = 0; i < model.size(); ++i) {
-                    BOOST_REQUIRE(d.find(ids[i]) != nullptr);
-                    BOOST_TEST(d.find(ids[i])->meta == model[i].meta);
-                }
+        // 每一步都按当前宽度出帧：宽度不变时 begin_frame 走增量计数
+        // （多个 open 块、中部脏块），这才是 §3.6 要验证的路径；宽度
+        // 只偶尔变化（整块重数的纪元路径）。
+        if (step % 100 == 99) width = widths[(step / 100 + 1) % 3];
+        Document rebuilt;
+        for (const Entry& e : model) {
+            const uint64_t id = rebuilt.append_block(e.kind, e.source);
+            rebuilt.set_meta(id, e.meta);
+        }
+        const Snapshot expect = snapshot(rebuilt, width);
+        const Snapshot got = snapshot(d, width);
+        const bool same = got.text == expect.text && got.styles == expect.styles;
+        size_t first_bad = 0;
+        if (!same) {
+            const std::size_t n = std::min(got.text.size(), expect.text.size());
+            while (first_bad < n && got.text[first_bad] == expect.text[first_bad] &&
+                   got.styles[first_bad] == expect.styles[first_bad]) {
+                ++first_bad;
             }
         }
+        BOOST_TEST_CONTEXT("step " << step << " width " << width
+                                   << " first row " << first_bad) {
+            BOOST_TEST(same);
+        }
+        if (!same) break;
+    }
+    for (std::size_t i = 0; i < model.size(); ++i) {
+        BOOST_REQUIRE(d.find(ids[i]) != nullptr);
+        BOOST_TEST(d.find(ids[i])->meta == model[i].meta);
     }
 }
 

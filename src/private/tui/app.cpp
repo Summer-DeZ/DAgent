@@ -93,6 +93,14 @@ bool parse_osc11_background(std::string_view body, Color& out) {
     return true;
 }
 
+// w 是否是 root 或其子孙（沿父链上溯）。
+bool within(const Widget* w, const Widget* root) noexcept {
+    for (; w != nullptr; w = w->parent()) {
+        if (w == root) return true;
+    }
+    return false;
+}
+
 } // namespace
 
 Runtime::Runtime(Terminal& term, Widget& root, Options opt)
@@ -167,6 +175,14 @@ void Runtime::close_overlay(uint32_t id) {
                 }
             }
         }
+        // 浮层子树随即销毁：解除其中控件的鼠标绑定与捕获（§3.5），否则
+        // 拖拽中途关闭时后续移动/释放会交给已销毁的控件，旧绑定也会被
+        // 复用同一地址的新控件继承。
+        const Widget* const root = it->widget;
+        std::erase_if(mouse_bindings_, [&](const auto& b) {
+            return within(b.first, root);
+        });
+        if (within(capture_.widget, root)) capture_ = {};
         stack_->remove(id);
         overlays_.erase(it);
         note_changes();
@@ -271,6 +287,7 @@ void Runtime::bind_mouse(Widget& w, EventHandler& h) {
 void Runtime::unbind_mouse(Widget& w) noexcept {
     std::erase_if(mouse_bindings_,
                   [&](const auto& b) { return b.first == &w; });
+    if (capture_.widget == &w) capture_ = {}; // 解绑后不再投递捕获事件
 }
 
 EventHandler* Runtime::mouse_handler(Widget& w) const noexcept {
