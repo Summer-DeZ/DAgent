@@ -36,7 +36,7 @@ LLM 编解码（中立消息模型与厂商协议之间的翻译）归核心，�
 | --- | --- | --- | --- | --- |
 | 01 | base（[设计文档](../design/base.md)） | 日志 · dotenv 与密钥 · 文本工具（UTF-8/截断/ANSI/base64）· JSON 脱敏 | spdlog | **已完成** |
 | 02 | exec（[设计文档](../design/exec.md)） | 一次性命令 · 长期存活子进程 · 命令分析 · 沙箱 | Boost.Process v2 + Asio、libseccomp、tree-sitter-bash；内核 Landlock | **已完成** |
-| 03 | [workspace](03-workspace.md) | 文件原语 · 代码搜索 · diff · 项目上下文 | dtl、inja；运行时依赖 ripgrep、git | 未开始 |
+| 03 | workspace（[设计文档](../design/workspace.md)） | 文件原语 · 代码搜索 · diff · 项目上下文 | dtl、inja；运行时依赖 ripgrep、git | **已完成** |
 | 04 | net（[设计文档](../design/net.md)） | HTTP · SSE | libcurl | **已完成** |
 | 05 | [session](05-session.md) | 会话存储（JSONL） | 暂时没有 | 未开始 |
 | 06 | [mcp](06-mcp.md) | MCP 客户端 | 暂时没有 | 未开始 |
@@ -60,12 +60,13 @@ exec, workspace, net, session, mcp ──► base
 | 里程碑 | 内容 | 做完之后能做什么 |
 | --- | --- | --- |
 | **M1 基础设施** | base 全部（已完成）· app（config、cli） | 你可以开始写 agent 循环：读配置、打日志、解析参数、用 net 调模型 |
-| **M2 工具底座** | exec 的 process（已完成）· workspace 的 files、search、diff | 能实现 bash/read/write/edit/grep/glob 工具，跑通第一个真正的编码任务 |
-| **M3 持久化与上下文** | session · workspace 的 context（LLM 编解码归核心，参考 [04-llm](04-llm.md)） | 会话可以恢复；system prompt 带上项目信息 |
+| **M2 工具底座** | exec 的 process（已完成）· workspace 的 files、search、diff（已完成） | 能实现 bash/read/write/edit/grep/glob 工具，跑通第一个真正的编码任务 |
+| **M3 持久化与上下文** | session · workspace 的 context（已完成；LLM 编解码归核心，参考 [04-llm](04-llm.md)） | 会话可以恢复；system prompt 带上项目信息 |
 | **M4 扩展** | mcp · exec 的 Child（已完成） | 接入外部 MCP 工具 |
 | **M5 安全** | exec 的命令分析和沙箱（已完成） | bash 命令在受限环境里执行，只读命令自动放行 |
 
-exec 已经整体完成（包括原计划放在 M4、M5 的 Child 和沙箱），workspace 的 search 和 context 可以直接用它调用 rg 和 git。
+exec 已经整体完成（包括原计划放在 M4、M5 的 Child 和沙箱）；workspace 也已经整体完成（包括原计划放在
+M3 的 context）。
 
 ---
 

@@ -12,6 +12,7 @@ DAgent 是一个使用 C++23 和 CMake 构建的终端 Agent，仅支持 Linux�
 | 基础库 | `src/*/base`，库 `dagent_base` | 已完成：日志、`.env` 密钥、文本工具、JSON 脱敏 |
 | 子进程与沙箱 | `src/*/exec`，库 `dagent_exec` | 已完成：命令执行与进程组清理、长期子进程、bash 只读分析、Landlock + seccomp 沙箱 |
 | 网络 | `src/*/net`，库 `dagent_net` | 已完成：libcurl 薄封装（整包/流式、stop_token 取消、超时分类）与 SSE 解析 |
+| 工作区 | `src/*/workspace`，库 `dagent_workspace` | 已完成：文件原语（原子写入、stale 检测）、ripgrep 搜索与模糊匹配、unified diff、项目上下文（git、AGENTS.md、模板渲染） |
 
 `config/dagent.json` 已包含模型网关、HTTP、上下文、会话等配置项，目前还没有代码读取它。
 
@@ -20,7 +21,7 @@ DAgent 是一个使用 C++23 和 CMake 构建的终端 Agent，仅支持 Linux�
 [next-to-do/](next-to-do/README.md)：外围模块的设计、技术路线与验收标准，共七个库——base（日志、密钥、
 文本工具）、exec（子进程、沙箱）、workspace（文件、搜索、diff、项目上下文）、net（HTTP/SSE）、
 session、mcp、app（配置、命令行），按里程碑 M1–M5 推进。模块完成并审核通过后，对应文档改写成 `design/`
-下的设计文档，并从 next-to-do 删除。
+下的设计文档，并从 next-to-do 删除。目前还剩 session、mcp、app 三个未开始。
 
 ## 设计文档
 
@@ -32,6 +33,7 @@ session、mcp、app（配置、命令行），按里程碑 M1–M5 推进。模�
 | [base：日志与公共工具](design/base.md) | 日志接入与 `DAGENT_LOG`、`.env` 密钥与格式、文本工具与 JSON 脱敏的行为 |
 | [net：HTTP 客户端与 SSE 解析](design/net.md) | 整包与流式请求、三种超时、错误分类、即时取消、连接复用与线程约束、SSE 解析规则 |
 | [exec：子进程与沙箱](design/exec.md) | `run` 的行为与子进程运行环境、`Child`、只读判定白名单、沙箱模式与已知限制；exec 会让整个进程忽略 SIGPIPE |
+| [workspace：文件、搜索、diff、项目上下文](design/workspace.md) | 路径解析与原子写入、ripgrep 调用与 fzy 模糊匹配、unified diff 的 hunk 合并、git 信息与 AGENTS.md 收集、inja 模板渲染 |
 | [终端 UI 框架](design/tui-framework.md) | 框架能做什么、分层与对象关系、应用怎样接入、各模块的职责。源码注释中的 `§N` 指这份文档的章节 |
 
 ## 构建与测试
@@ -53,9 +55,10 @@ ctest --test-dir build/dev         # 运行 test/tui（tui_tests）
 运行时用例在真实子进程里跑，经管道或 pty 注入按键、鼠标与终端应答。
 
 依赖：CMake ≥ 3.25、支持 C++23 的编译器、Boost ≥ 1.83（Boost.Test）、libcurl。第三方头文件
-随仓库放在 `src/public/lib/`（nlohmann/json v3.12.0）；需要源码构建的第三方库在 `cmake/deps.cmake`
-中以 FetchContent 引入（spdlog v1.17.0、tree-sitter v0.27.0、tree-sitter-bash v0.25.1），首次配置需要联网；
-exec 的沙箱另需系统库 libseccomp（`apt install libseccomp-dev`）。
+随仓库放在 `src/public/lib/`（nlohmann/json v3.12.0、dtl）；需要源码构建的第三方库在 `cmake/deps.cmake`
+中以 FetchContent 引入（spdlog v1.17.0、tree-sitter v0.27.0、tree-sitter-bash v0.25.1、inja v3.5.0），
+首次配置需要联网；exec 的沙箱另需系统库 libseccomp（`apt install libseccomp-dev`）；workspace 的搜索与
+项目上下文另需运行时程序 ripgrep 与 git。
 
 ## 目录约定
 
