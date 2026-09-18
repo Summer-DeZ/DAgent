@@ -485,8 +485,25 @@ void Runtime::finish_handshake(bool commit) {
     if (commit) {
         term_.apply_caps(pending_caps_);
         if (pending_caps_.kitty_keyboard) term_.set_kitty_keyboard(true);
+        // §3.13：mode 2027 确认后开启；此后终端与框架使用同一套字素簇规则。
+        if (pending_caps_.grapheme_width) term_.set_grapheme_width(true);
     }
     pending_caps_ = Terminal::Caps{};
+    report_caps();
+}
+
+void Runtime::on_caps(std::function<void(const Terminal::Caps&)> fn) {
+    caps_fn_ = std::move(fn);
+    if (caps_final_ && caps_fn_) caps_fn_(term_.caps());
+}
+
+// 回调里通常会换主题（控件失效）：随后检查失效，照常合帧出帧。
+void Runtime::report_caps() {
+    caps_final_ = true;
+    if (caps_fn_) {
+        caps_fn_(term_.caps());
+        note_changes();
+    }
 }
 
 void Runtime::check_size() {
@@ -577,7 +594,9 @@ void Runtime::run() {
 
     last_frame_ = Clock::now() - opt_.min_frame; // 首帧立即可出
     dirty_ = true;
+    caps_final_ = false;
     start_handshake(); // 查询已写出，应答到达前不阻塞首帧
+    if (!handshake_active_) report_caps(); // 不握手：初始值即最终值
 
     while (!quit_.load(std::memory_order_acquire)) {
         pollfd fds[3] = {
@@ -651,6 +670,16 @@ void Runtime::run() {
         present(term_, back_, front_, out_, cursor_);
         frames_.fetch_add(1, std::memory_order_relaxed);
         last_frame_ = Clock::now();
+
+        // §3.13：超长字素 intern 表在帧间清空。缓冲区里的旧索引已经写出，
+        // 作废双缓冲并整树补画，下一帧全量重写后消失。
+        if (intern_overflowed()) {
+            intern_reset();
+            front_.resize(0, 0);
+            back_.clear();
+            root_.invalidate_tree();
+            dirty_ = true;
+        }
     }
 }
 

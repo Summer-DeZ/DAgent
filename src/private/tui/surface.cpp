@@ -2,6 +2,7 @@
 
 #include "tui/grapheme.hpp"
 
+#include <atomic>
 #include <cstring>
 #include <deque>
 #include <unordered_map>
@@ -15,8 +16,10 @@ constexpr Cell k_blank_cell{};
 // 超长字素 intern 表：进程级、渲染线程专用（单写者架构，无锁）。
 // deque 保证元素地址稳定，string_view 作 key 不会因扩容失效。
 // 稳态下所有用到的簇早已入库：查找命中，零分配。
+// 表超过上限时置位 g_intern_overflow，由 L7 在帧间清空（§3.13）。
 std::deque<std::string> g_interned;
 std::unordered_map<std::string_view, uint32_t> g_intern_lookup;
+std::atomic<bool> g_intern_overflow{false};
 
 uint32_t intern(std::string_view g) {
     if (auto it = g_intern_lookup.find(g); it != g_intern_lookup.end()) {
@@ -25,6 +28,9 @@ uint32_t intern(std::string_view g) {
     g_interned.emplace_back(g);
     const auto id = static_cast<uint32_t>(g_interned.size() - 1);
     g_intern_lookup.emplace(g_interned.back(), id);
+    if (g_interned.size() > k_intern_max) {
+        g_intern_overflow.store(true, std::memory_order_relaxed);
+    }
     return id;
 }
 
@@ -184,8 +190,13 @@ int Surface::text(int col, int row, std::string_view s, const Style& st,
     const int origin = col;
     unicode::Grapheme g;
     while (col < cols_ && unicode::next_grapheme(s, g)) {
+        const unsigned char b0 = static_cast<unsigned char>(g.bytes[0]);
+        // GB3 把 CRLF 聚成一个簇：终止判断看首字节，不看簇长度。
+        if (b0 == '\n' || b0 == '\r') {
+            break;
+        }
         if (g.bytes.size() == 1) {
-            const unsigned char b = static_cast<unsigned char>(g.bytes[0]);
+            const unsigned char b = b0;
             if (b == '\t') {
                 // 制表符在写入时就展开成空格；网格里不存 \t，
                 // 否则每次列计算都要回溯。tab stop 相对文本起点计算，
@@ -200,9 +211,6 @@ int Surface::text(int col, int row, std::string_view s, const Style& st,
                     ++col;
                 }
                 continue;
-            }
-            if (b == '\n' || b == '\r') {
-                break;
             }
             if (b < 0x20 || b == 0x7F) {
                 continue; // 其余控制符丢弃
@@ -277,5 +285,17 @@ Surface Surface::view(Rect r) noexcept {
     }
     return v;
 }
+
+bool intern_overflowed() noexcept {
+    return g_intern_overflow.load(std::memory_order_relaxed);
+}
+
+void intern_reset() noexcept {
+    g_intern_lookup.clear();
+    g_interned.clear();
+    g_intern_overflow.store(false, std::memory_order_relaxed);
+}
+
+std::size_t intern_size() noexcept { return g_interned.size(); }
 
 } // namespace dagent::tui

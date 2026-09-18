@@ -87,6 +87,10 @@ public:
     // restore 逆序弹出 \e[<u。能力缺失或未进入界面模式时空操作。
     void set_kitty_keyboard(bool on);
 
+    // 字素簇宽度模式（§3.13，mode 2027）：握手确认支持后由渲染线程开启
+    // \e[?2027h，终端与框架使用同一套字素簇规则。挂起/还原时逆序关闭。
+    void set_grapheme_width(bool on);
+
     // 能否发出终端查询（§3.3 握手）：stdout 已进入界面模式、stdin 是
     // raw 模式的 tty，两者缺一不可 —— 否则查询会写进管道，或应答落进
     // 无人读取的 tty 输入队列，程序退出后作为杂字出现在 shell 里。
@@ -160,6 +164,7 @@ private:
     std::atomic<bool> focus_{false};
     std::atomic<bool> paste_{false};
     std::atomic<bool> kitty_{false};
+    std::atomic<bool> grapheme_{false};
 
     // 挂起现场（只由 suspend/resume 在渲染线程读写；restore 不碰）。
     bool suspended_ = false;
@@ -169,6 +174,7 @@ private:
     bool suspended_focus_ = false;
     bool suspended_paste_ = false;
     bool suspended_kitty_ = false;
+    bool suspended_grapheme_ = false;
 };
 
 } // namespace dagent::tui

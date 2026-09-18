@@ -21,6 +21,31 @@
 
 namespace dagent::tui {
 
+// 语义主题令牌（§3.12）：渲染器与控件只引用令牌，不写死颜色。令牌放在
+// L4 是因为控件与 L5 渲染器都要用；任何样式字段变更后必须递增 epoch，
+// Document 的物化缓存（cache_key 含 epoch）据此失效并整块重排。
+struct ThemeTokens {
+    Style text, text_muted, primary, accent;
+    Style border, border_active, background, background_panel,
+        background_element;
+    Style success, warning, error, info;
+    Style diff_added, diff_removed, diff_context, diff_hunk;
+    Style syntax_keyword, syntax_string, syntax_comment, syntax_number,
+        syntax_function, syntax_type;
+    Style markdown_heading, markdown_code, markdown_link, markdown_quote;
+    Style selection;
+    uint32_t epoch = 0;
+};
+
+// 内置 dark / light 两套令牌（256 色，present 负责按能力量化到真彩/256）。
+// §3.3 取得终端背景色后按相对亮度（阈值 0.5）选择；取不到时默认 dark。
+// 主题文件的格式与加载属于应用层，框架只提供令牌与选择规则。
+const ThemeTokens& dark_theme() noexcept;
+const ThemeTokens& light_theme() noexcept;
+// sRGB 相对亮度（0..1，线性无关的加权和）；非 RGB（索引/默认）返回 0。
+float relative_luminance(const Color& c) noexcept;
+const ThemeTokens& default_theme(const std::optional<Color>& background) noexcept;
+
 // 多行静态文本。逻辑内容是 '\n' 分隔的行；行不折行，超出视图宽度的
 // 部分由视图裁剪（折行属于 L5 滚动区的职责）。制表符按 tab stop 展开，
 // 自然宽度与渲染共用同一套宽度规则。
@@ -35,6 +60,11 @@ public:
         style_ = s;
         invalidate();
     }
+    // 底纹取自语义令牌 background（§3.12）；内容样式仍由 set_style 指定。
+    void set_theme(const ThemeTokens& t) noexcept {
+        theme_ = &t;
+        invalidate();
+    }
 
     Size measure(Size available) const override;
     void render(Surface& s) override;
@@ -46,6 +76,7 @@ private:
     std::vector<std::string_view> lines_; // 指向 text_ 的行切片
     Style style_{};
     int width_ = 0; // 缓存的自然宽度（最长行的显示宽度）
+    const ThemeTokens* theme_ = &dark_theme();
 };
 
 // 动作行：转圈符号 + 当前动作（文档§六 Activity，content(0..1)）。
@@ -56,6 +87,13 @@ public:
     void set_action(std::string text); // 空文本 = 空闲（0 行）
     void tick() noexcept;              // 推进转圈帧
 
+    // 语义令牌（§3.12）：只保存引用，主题对象必须比控件活得久
+    // （内置 dark/light 是进程级静态，可安全引用）。
+    void set_theme(const ThemeTokens& t) noexcept {
+        theme_ = &t;
+        invalidate();
+    }
+
     Size measure(Size available) const override;
     void render(Surface& s) override;
 
@@ -63,25 +101,31 @@ private:
     std::string action_;
     int width_ = 0;     // 缓存的自然宽度（符号 + 空格 + 文本）
     uint8_t frame_ = 0; // 转圈帧索引
+    const ThemeTokens* theme_ = &dark_theme();
 };
 
 // 提示条：单行通知（文档§六 Notice，content(0..1)）。文本为空时
-// 自然高度 0。严重级别决定样式：info 默认色、warn 黄、error 红 + 加粗。
+// 自然高度 0。严重级别映射语义令牌 info / warning / error。
 class Notice : public Widget {
 public:
     enum class Severity { info, warn, error };
 
     void show(Severity sev, std::string text); // 空文本 = 清除（0 行）
+    void set_theme(const ThemeTokens& t) noexcept {
+        theme_ = &t;
+        invalidate();
+    }
 
     Size measure(Size available) const override;
     void render(Surface& s) override;
 
 private:
-    [[nodiscard]] static Style style_of(Severity sev) noexcept;
+    [[nodiscard]] Style style_of(Severity sev) const noexcept;
 
     std::string text_;
     Severity sev_ = Severity::info;
     int width_ = 0; // 缓存的自然宽度
+    const ThemeTokens* theme_ = &dark_theme();
 };
 
 // 多行输入框：边框 + 逻辑多行文本 + 光标（文档§六 InputBox，
@@ -111,6 +155,12 @@ public:
     void line_home();                    // 移到本行行首
     void line_end();                     // 移到本行行尾
 
+    // 边框取自语义令牌 border（§3.12）。
+    void set_theme(const ThemeTokens& t) noexcept {
+        theme_ = &t;
+        invalidate();
+    }
+
     bool focusable() const override { return true; }
     std::optional<Point> cursor() const override;
     Size measure(Size available) const override;
@@ -127,6 +177,7 @@ private:
     int goal_ = -1;   // 垂直移动的显示列目标（-1 = 待定）
     int vscroll_ = 0; // render 维护：顶部可见逻辑行
     int hscroll_ = 0; // render 维护：左起显示列
+    const ThemeTokens* theme_ = &dark_theme();
 };
 
 } // namespace dagent::tui

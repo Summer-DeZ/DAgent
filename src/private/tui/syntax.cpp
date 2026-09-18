@@ -6,8 +6,7 @@
 // 有效行继续，流式追加只处理最后一行。
 //
 // 不引入 tree-sitter：语法覆盖以"轻量、够用"为界，未识别的语言按主题
-// 的 code 槽纯文本输出。样式取自现有 Theme 槽位与文本属性；§3.12 的
-// 语义令牌落地后只需替换这里的映射。
+// 的普通文本输出。样式全部取自 §3.12 的 syntax_* 语义令牌。
 #include "tui/document.hpp"
 
 #include "tui/grapheme.hpp"
@@ -751,23 +750,34 @@ void lex_row(Lang lang, const Spec& sp, std::string_view s, uint8_t& state,
 
 } // namespace
 
-size_t SyntaxRenderer::render(const Block& block, int width, const Theme& theme,
+WrapResult SyntaxRenderer::measure(std::string_view source, size_t from,
+                                   int width) const {
+    return wrap_measure_from(source, from, std::max(1, width - k_gutter));
+}
+
+size_t SyntaxRenderer::render(const Block& block, int width, const ThemeTokens& theme,
                               size_t from, size_t valid,
                               std::vector<Line>& out) const {
     const Lang lang = detect_lang(block.meta);
     const Spec sp = spec_of(lang);
 
+    // 代码块底色：令牌没设底色的样式叠上 background_element。
+    const Color bg = theme.background_element.bg;
+    const auto on_bg = [bg](Style s) {
+        if (s.bg.kind == Color::Kind::default_) s.bg = bg;
+        return s;
+    };
     LexStyles st;
-    st.text = theme.text;
-    st.keyword = theme.text;
-    st.keyword.attrs = st.keyword.attrs | Attr::bold;
-    st.type = theme.text;
-    st.type.attrs = st.type.attrs | Attr::italic;
-    st.function = theme.text;
-    st.function.attrs = st.function.attrs | Attr::underline;
-    st.string = theme.code;
-    st.comment = theme.dim;
-    st.number = theme.text;
+    st.text = on_bg(theme.text);
+    st.keyword = on_bg(theme.syntax_keyword);
+    st.type = on_bg(theme.syntax_type);
+    st.function = on_bg(theme.syntax_function);
+    st.string = on_bg(theme.syntax_string);
+    st.comment = on_bg(theme.syntax_comment);
+    st.number = on_bg(theme.syntax_number);
+    const Style gutter = on_bg(theme.border_active);
+    const Style pad = on_bg(Style{});
+    const int inner = std::max(1, width - k_gutter);
 
     const std::string_view src = block.source;
     const size_t limit = block.collapsed
@@ -798,12 +808,13 @@ size_t SyntaxRenderer::render(const Block& block, int width, const Theme& theme,
         if (lang != Lang::plain) lex_row(lang, sp, line, state, runs, st);
         const std::vector<LexRun>& rs = runs.runs();
         for (;;) {
-            const RowEdge row = wrap_next_row(src, pos, width);
+            const RowEdge row = wrap_next_row(src, pos, inner);
             Line& ln = ensure_line(out, n);
             w.reset(ln);
+            w.next(gutter, k_no_src) = "▎ ";
             if (lang == Lang::plain) {
                 expand_row(text, src, pos, row.end);
-                w.next(theme.code, pos) = text;
+                w.next(st.text, pos) = text;
             } else if (row.end > pos) {
                 const size_t b = pos - ls;
                 const size_t e = row.end - ls;
@@ -820,8 +831,11 @@ size_t SyntaxRenderer::render(const Block& block, int width, const Theme& theme,
                                     line.substr(rb, re - rb), col);
                 }
             }
+            if (row.width < inner) {
+                w.next(pad, k_no_src).assign(static_cast<size_t>(inner - row.width), ' ');
+            }
             w.finish();
-            ln.width = row.width;
+            ln.width = k_gutter + std::max(row.width, inner);
             ln.offset = pos;
             ln.lex = state; // 整条逻辑行结束时的状态：续扫总从行首开始
             ++n;

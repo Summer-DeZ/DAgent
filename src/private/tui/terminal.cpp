@@ -71,11 +71,13 @@ bool env_has(std::string_view value, std::string_view key) noexcept {
 
 // 离开界面模式的转义序列：严格逆序（可选上报模式 → 光标/换行 → 备用屏）。
 // restore 与 suspend 共用；传入的是"当前确实开着"的模式。
-std::string leave_screen_seq(bool mouse, bool focus, bool paste, bool kitty) {
+std::string leave_screen_seq(bool mouse, bool focus, bool paste, bool kitty,
+                             bool grapheme) {
     std::string seq;
     if (mouse) seq += "\x1b[?1006l\x1b[?1002l";
     if (focus) seq += "\x1b[?1004l";
     if (kitty) seq += "\x1b[<u"; // 弹出握手时推入的键盘 flag
+    if (grapheme) seq += "\x1b[?2027l";
     if (paste) seq += "\x1b[?2004l";
     seq += "\x1b[?25h";   // 显示光标
     seq += "\x1b[?7h";    // 恢复自动换行
@@ -269,6 +271,15 @@ void Terminal::set_kitty_keyboard(bool on) {
     write(on ? "\x1b[>1u" : "\x1b[<u");
 }
 
+void Terminal::set_grapheme_width(bool on) {
+    if (!screen_active_.load(std::memory_order_acquire) ||
+        !caps_.grapheme_width ||
+        grapheme_.exchange(on, std::memory_order_acq_rel) == on) {
+        return;
+    }
+    write(on ? "\x1b[?2027h" : "\x1b[?2027l");
+}
+
 // 还原 = 进入序列的严格逆序，只关自己开过的模式。
 // restored_ 先行置位保证：析构 / atexit / 信号路径并发叠加时只执行一次。
 // screen_active_ 门控：stdout 是管道时从未进入过界面模式，不得写出转义。
@@ -286,7 +297,8 @@ void Terminal::restore() noexcept {
             mouse_.exchange(false, std::memory_order_acq_rel),
             focus_.exchange(false, std::memory_order_acq_rel),
             paste_.exchange(false, std::memory_order_acq_rel),
-            kitty_.exchange(false, std::memory_order_acq_rel)));
+            kitty_.exchange(false, std::memory_order_acq_rel),
+            grapheme_.exchange(false, std::memory_order_acq_rel)));
         screen_active_.store(false, std::memory_order_release);
     }
 
@@ -311,8 +323,10 @@ void Terminal::suspend() noexcept {
         suspended_focus_ = focus_.exchange(false, std::memory_order_acq_rel);
         suspended_paste_ = paste_.exchange(false, std::memory_order_acq_rel);
         suspended_kitty_ = kitty_.exchange(false, std::memory_order_acq_rel);
+        suspended_grapheme_ = grapheme_.exchange(false, std::memory_order_acq_rel);
         write(leave_screen_seq(suspended_mouse_, suspended_focus_,
-                               suspended_paste_, suspended_kitty_));
+                               suspended_paste_, suspended_kitty_,
+                               suspended_grapheme_));
         screen_active_.store(false, std::memory_order_release);
     }
 
@@ -359,6 +373,10 @@ void Terminal::resume() {
         if (suspended_kitty_) {
             seq += "\x1b[>1u";
             kitty_.store(true, std::memory_order_release);
+        }
+        if (suspended_grapheme_) {
+            seq += "\x1b[?2027h";
+            grapheme_.store(true, std::memory_order_release);
         }
         write(seq);
         screen_active_.store(true, std::memory_order_release);

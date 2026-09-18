@@ -118,6 +118,13 @@ public:
                           Widget* cursor_source = nullptr);
     void close_overlay(uint32_t id);
 
+    // 终端能力确定时回调（§3.3/§3.12；run() 之前或渲染线程注册，回调在
+    // 渲染线程执行）：握手收到 DA1 提交能力、1 秒超时保持初始值、或不握手
+    // （非交互终端）时各回调一次。应用据此选主题，例如
+    // set_theme(default_theme(caps.background))。能力已确定后才注册的，
+    // 注册时立即回调。
+    void on_caps(std::function<void(const Terminal::Caps&)> fn);
+
     // ---- 定时器（§3.9；run() 之前或渲染线程，回调在渲染线程执行）----
     // after：delay 后执行一次。every：每 period 执行一次，回调返回 false
     // 即取消（动画）。cancel 对已执行/已取消的 id 是空操作；回调里可以
@@ -181,6 +188,7 @@ private:
     void start_handshake();                 // 发查询 + 打开应答窗口 + 起 1s 超时
     bool handle_handshake_reply(const Event& e); // 返回 true = 已消费
     void finish_handshake(bool commit);     // DA1 提交能力；超时不提交
+    void report_caps();                     // 能力确定：回调 on_caps
 
     // ---- 挂起/恢复（§3.10）：只在渲染线程上 ----
     void resume_after_suspend();            // resume + 作废 front + 整屏重画
@@ -220,6 +228,8 @@ private:
 
     // 握手（§3.3）：窗口期间累积 pending_caps_，DA1 到达才提交。
     bool handshake_active_ = false;
+    bool caps_final_ = false; // 本次 run() 的能力已确定（on_caps 已回调）
+    std::function<void(const Terminal::Caps&)> caps_fn_;
     Terminal::Caps pending_caps_{};
     std::optional<Clock::time_point> reply_due_; // 1 秒未收到 DA1 的截止时刻
 

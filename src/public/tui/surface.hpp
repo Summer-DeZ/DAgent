@@ -171,4 +171,13 @@ void render_frame(std::string& out, const Surface& back, const Surface& front,
 void present(Terminal& term, Surface& back, Surface& front, std::string& out,
              std::optional<Point> cursor = std::nullopt);
 
+// 超长字素 intern 表（§3.13）：表项数超过 k_intern_max 时置位溢出标志。
+// 清表只能在帧间做 —— 缓冲区里已有的单元格持有旧索引；L7 在写出一帧后
+// 调用 intern_reset()，作废双缓冲并整树补画，下一帧全量重写后旧索引
+// 自然消失。渲染线程专用。
+inline constexpr std::size_t k_intern_max = 4096;
+bool intern_overflowed() noexcept;
+void intern_reset() noexcept;
+std::size_t intern_size() noexcept;
+
 } // namespace dagent::tui

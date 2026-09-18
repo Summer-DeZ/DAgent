@@ -197,6 +197,9 @@ BOOST_AUTO_TEST_CASE(timers_fire_in_due_order_and_respect_cancel) {
         Terminal term;
         Runtime rt{term, root};
 
+        int caps_calls = 0; // 非交互终端不握手：run() 开始即回调一次
+        rt.on_caps([&](const Terminal::Caps&) { ++caps_calls; });
+
         std::string order;
         int ticks = 0;
         int self_cancel_runs = 0;
@@ -224,6 +227,7 @@ BOOST_AUTO_TEST_CASE(timers_fire_in_due_order_and_respect_cancel) {
         if (order != "abBcd") ::_exit(3);
         if (ticks != 3) ::_exit(4);
         if (self_cancel_runs != 1) ::_exit(5);
+        if (caps_calls != 1) ::_exit(6);
         ::_exit(0);
     });
     BOOST_TEST(wait_exit_code(c.pid) == 0);
@@ -441,6 +445,29 @@ BOOST_AUTO_TEST_CASE(keymap_leader_executes_and_timeout_falls_through) {
     ::close(c.fd);
 }
 
+// §3.13：握手确认支持 mode 2027 后开启 \e[?2027h，环境变量猜测不开启。
+BOOST_AUTO_TEST_CASE(handshake_enables_grapheme_width_mode_2027) {
+    Child c = spawn_pty_child(
+        [] {
+            Container root{Container::Direction::vertical};
+            Terminal term;
+            Runtime rt{term, root};
+            rt.after(200ms, [&] { rt.quit(); });
+            rt.run();
+            ::_exit(0);
+        },
+        40, 10);
+
+    std::string out;
+    BOOST_REQUIRE(read_until(c, out, "\x1b[?2027$p") != std::string::npos);
+    const std::string replies = "\x1b[?2027;2$y" // DECRQM：已复位 = 支持
+                                "\x1b[?62;22c";  // DA1 哨兵
+    BOOST_REQUIRE(::write(c.fd, replies.data(), replies.size()) ==
+                  static_cast<ssize_t>(replies.size()));
+    BOOST_REQUIRE(read_until(c, out, "\x1b[?2027h") != std::string::npos);
+    BOOST_TEST(drain_pty_until_exit(c, out) == 0);
+}
+
 BOOST_AUTO_TEST_CASE(run_external_suspends_and_resumes_with_full_repaint) {
     Child c = spawn_pty_child(
         [] {
@@ -490,6 +517,44 @@ BOOST_AUTO_TEST_CASE(run_external_suspends_and_resumes_with_full_repaint) {
     BOOST_TEST(leave_at < ext);                  // 外部文本在界面模式之外
     BOOST_TEST(ext < enter_at);
     BOOST_TEST(enter_at < alpha_at);             // 恢复后整行写出 alpha/bravo
+    BOOST_TEST(drain_pty_until_exit(c, out) == 0);
+}
+
+// §3.3/§3.12：握手确定能力后回调 on_caps 恰好一次，应用据背景色选主题；
+// 能力确定后才注册的立即回调。
+BOOST_AUTO_TEST_CASE(on_caps_reports_handshake_result_for_theme_choice) {
+    Child c = spawn_pty_child(
+        [] {
+            Container root{Container::Direction::vertical};
+            root.add({Sizing::flex, 1}, std::make_unique<Text>());
+            Terminal term;
+            Runtime rt{term, root};
+            QuitOnEnter quit;
+            quit.rt = &rt;
+            rt.set_global(quit);
+            int calls = 0;
+            const ThemeTokens* chosen = nullptr;
+            rt.on_caps([&](const Terminal::Caps& caps) {
+                ++calls;
+                chosen = &default_theme(caps.background);
+            });
+            rt.run();
+            if (calls != 1) ::_exit(3);
+            if (chosen != &light_theme()) ::_exit(4); // 白底 → light
+            int late = 0;
+            rt.on_caps([&](const Terminal::Caps&) { ++late; });
+            if (late != 1) ::_exit(5);
+            ::_exit(0);
+        },
+        40, 10);
+
+    std::string out;
+    BOOST_REQUIRE(read_until(c, out, "\x1b[c") != std::string::npos);
+    const std::string replies = "\x1b]11;rgb:ffff/ffff/ffff\x1b\\\x1b[?62;22c";
+    BOOST_REQUIRE(::write(c.fd, replies.data(), replies.size()) ==
+                  static_cast<ssize_t>(replies.size()));
+    std::this_thread::sleep_for(50ms);
+    BOOST_REQUIRE(::write(c.fd, "\r", 1) == 1);
     BOOST_TEST(drain_pty_until_exit(c, out) == 0);
 }
 

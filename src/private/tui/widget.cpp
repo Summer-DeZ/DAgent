@@ -20,11 +20,12 @@ constexpr std::string_view k_spinner[10] = {
 // 制表符展开到 tab stop，'\n'/'\r' 终止（返回 -1 作信号），其余
 // 控制符跳过，零宽簇不计宽。
 int advance(int col, const unicode::Grapheme& g) noexcept {
+    const unsigned char b0 = static_cast<unsigned char>(g.bytes[0]);
+    // GB3 把 CRLF 聚成一个簇：终止判断看首字节，不看簇长度。
+    if (b0 == '\n' || b0 == '\r') return -1;
     if (g.bytes.size() == 1) {
-        const unsigned char b = static_cast<unsigned char>(g.bytes[0]);
-        if (b == '\t') return (col / k_tab_stop + 1) * k_tab_stop;
-        if (b == '\n' || b == '\r') return -1;
-        if (b < 0x20 || b == 0x7F) return col;
+        if (b0 == '\t') return (col / k_tab_stop + 1) * k_tab_stop;
+        if (b0 < 0x20 || b0 == 0x7F) return col;
     }
     return col + g.width;
 }
@@ -151,7 +152,7 @@ void Text::resplit() {
 Size Text::measure(Size) const { return {width_, static_cast<int>(lines_.size())}; }
 
 void Text::render(Surface& s) {
-    s.fill({0, 0, s.cols(), s.rows()}, U' ', Style{});
+    s.fill({0, 0, s.cols(), s.rows()}, U' ', theme_->background);
     const int rows = std::min(static_cast<int>(lines_.size()), s.rows());
     for (int y = 0; y < rows; ++y) {
         s.text(0, y, lines_[static_cast<std::size_t>(y)], style_);
@@ -176,24 +177,24 @@ Size Activity::measure(Size) const {
 }
 
 void Activity::render(Surface& s) {
-    s.fill({0, 0, s.cols(), s.rows()}, U' ', Style{});
+    s.fill({0, 0, s.cols(), s.rows()}, U' ', theme_->background);
     if (action_.empty()) return;
-    s.put(0, 0, k_spinner[frame_], Style{});
-    s.text(2, 0, action_, Style{});
+    s.put(0, 0, k_spinner[frame_], theme_->primary);
+    s.text(2, 0, action_, theme_->text_muted);
 }
 
 // ---- Notice ----
 
-Style Notice::style_of(Severity sev) noexcept {
+Style Notice::style_of(Severity sev) const noexcept {
     switch (sev) {
     case Severity::warn:
-        return Style{Color::indexed(3), Color{}, Attr::none};
+        return theme_->warning;
     case Severity::error:
-        return Style{Color::indexed(1), Color{}, Attr::bold};
+        return theme_->error;
     case Severity::info:
         break;
     }
-    return Style{};
+    return theme_->info;
 }
 
 void Notice::show(Severity sev, std::string text) {
@@ -208,7 +209,7 @@ Size Notice::measure(Size) const {
 }
 
 void Notice::render(Surface& s) {
-    s.fill({0, 0, s.cols(), s.rows()}, U' ', Style{});
+    s.fill({0, 0, s.cols(), s.rows()}, U' ', theme_->background);
     if (text_.empty()) return;
     s.text(0, 0, text_, style_of(sev_));
 }
@@ -430,10 +431,10 @@ Size InputBox::measure(Size) const {
 void InputBox::render(Surface& s) {
     const int w = s.cols();
     const int h = s.rows();
-    s.fill({0, 0, w, h}, U' ', Style{});
+    s.fill({0, 0, w, h}, U' ', theme_->background);
     if (w < 3 || h < 3) return; // 放不下边框：只剩清底
 
-    const Style edge{};
+    const Style edge = theme_->border;
     s.fill({0, 0, w, 1}, U'─', edge);
     s.fill({0, h - 1, w, 1}, U'─', edge);
     s.fill({0, 0, 1, h}, U'│', edge);
@@ -461,7 +462,8 @@ void InputBox::render(Surface& s) {
     // 整行从 -hscroll_ 起写：制表符与宽字符按真实显示列展开，
     // 左侧裁剪与跨边界宽字符的半格由 Surface::text 处理。
     for (int i = vscroll_; i < last; ++i) {
-        inner.text(-hscroll_, i - vscroll_, lines_[static_cast<std::size_t>(i)], Style{});
+        inner.text(-hscroll_, i - vscroll_, lines_[static_cast<std::size_t>(i)],
+                   theme_->text);
     }
 }
 

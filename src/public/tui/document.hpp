@@ -92,16 +92,9 @@ struct Block {
     std::vector<Line> rows;   // 物化结果；被驱逐/失效时 rows_valid 归零
 };
 
-// 主题：默认渲染器用到的样式槽 + 纪元。任何样式字段变更后必须递增 epoch，
-// 否则块的物化缓存（cache_key 含 epoch）不会失效。
-struct Theme {
-    Style text{};
-    Style dim{};
-    Style code{};
-    Style add{}; // diff '+'
-    Style del{}; // diff '-'
-    uint32_t epoch = 0;
-};
+// 语义主题令牌（§3.12）定义在 L4 的 widget.hpp：控件与渲染器共用同一套
+// 令牌，任何样式字段变更后必须递增 epoch，否则块的物化缓存（cache_key
+// 含 epoch）不会失效。
 
 // 滚动锚点（§8.4）。贴底是独立状态而不是「偏移量为 0」：新内容到达时
 // 贴底则跟随，不贴底则保持锚点不动。位置用块内字节偏移而不是块内行号：
@@ -175,28 +168,29 @@ public:
     // 从 source[from] 起折行/上色，覆盖写入 out[valid...]；out 的
     // [0, valid) 前缀由调用方保证仍然有效。返回写入后的有效行数。
     // 折叠块只产出 min(collapsed_rows, row_count) 行。
-    virtual size_t render(const Block& block, int width, const Theme& theme,
+    virtual size_t render(const Block& block, int width, const ThemeTokens& theme,
                           size_t from, size_t valid,
                           std::vector<Line>& out) const = 0;
 };
 
-// 文本渲染器：每行一段，样式取自 Theme 的指定槽位（成员指针）。
+// 文本渲染器：每行一段，样式取自 ThemeTokens 的指定槽位（成员指针）。
 class TextRenderer final : public BlockRenderer {
 public:
-    explicit TextRenderer(Style Theme::*slot = &Theme::text) noexcept
+    explicit TextRenderer(Style ThemeTokens::*slot = &ThemeTokens::text) noexcept
         : slot_(slot) {}
 
-    size_t render(const Block& block, int width, const Theme& theme, size_t from,
+    size_t render(const Block& block, int width, const ThemeTokens& theme, size_t from,
                   size_t valid, std::vector<Line>& out) const override;
 
 private:
-    Style Theme::*slot_;
+    Style ThemeTokens::*slot_;
 };
 
-// 差异渲染器：'+' / '-' / '@' 开头的行分别用 add/del/dim 槽位，其余正文。
+// 差异渲染器：'+' / '-' / '@' 开头的行分别用 diff_added / diff_removed /
+// diff_hunk 令牌，其余正文。
 class DiffRenderer final : public BlockRenderer {
 public:
-    size_t render(const Block& block, int width, const Theme& theme, size_t from,
+    size_t render(const Block& block, int width, const ThemeTokens& theme, size_t from,
                   size_t valid, std::vector<Line>& out) const override;
 };
 
@@ -209,7 +203,7 @@ class MarkdownRenderer final : public BlockRenderer {
 public:
     WrapResult measure(std::string_view source, size_t from,
                        int width) const override;
-    size_t render(const Block& block, int width, const Theme& theme, size_t from,
+    size_t render(const Block& block, int width, const ThemeTokens& theme, size_t from,
                   size_t valid, std::vector<Line>& out) const override;
 };
 
@@ -219,7 +213,7 @@ class TableRenderer final : public BlockRenderer {
 public:
     WrapResult measure(std::string_view source, size_t from,
                        int width) const override;
-    size_t render(const Block& block, int width, const Theme& theme, size_t from,
+    size_t render(const Block& block, int width, const ThemeTokens& theme, size_t from,
                   size_t valid, std::vector<Line>& out) const override;
 };
 
@@ -228,9 +222,14 @@ public:
 // 主题 code 槽纯文本。按整条逻辑行做词法分析、再按折行切片（行注释与
 // 字符串不会被折行打断），跨行词法状态写进 Line::lex，已定行保持增量：
 // 流式追加后只重扫最后一条逻辑行（§3.7.2）。不引入 tree-sitter。
+// 视觉区分：每行左侧一道竖条（border_active）+ 整行铺 background_element
+// 底色；竖条占 2 列，计数与物化都按「宽度 − 2」折行。
 class SyntaxRenderer final : public BlockRenderer {
 public:
-    size_t render(const Block& block, int width, const Theme& theme, size_t from,
+    static constexpr int k_gutter = 2;
+
+    WrapResult measure(std::string_view source, size_t from, int width) const override;
+    size_t render(const Block& block, int width, const ThemeTokens& theme, size_t from,
                   size_t valid, std::vector<Line>& out) const override;
 };
 
@@ -292,12 +291,12 @@ public:
     // 锚点解析：包含该字节的行（块被头部裁剪后返回 nullopt）。
     // 两者都会物化所在块 —— 锚点所在块就是可见块，本来就要物化。
     std::optional<size_t> row_of(uint64_t block_id, size_t byte_in_block,
-                                 const Theme& theme);
+                                 const ThemeTokens& theme);
     // 调用者保证 row < total_rows()。边距行没有内容，返回其所在块的块首
     // （即边距下方的第一行内容）。
-    Location location_of(size_t row, const Theme& theme);
+    Location location_of(size_t row, const ThemeTokens& theme);
     // 物化与 [first, first+count) 相交的块。
-    void materialize_range(size_t first, size_t count, const Theme& theme);
+    void materialize_range(size_t first, size_t count, const ThemeTokens& theme);
     // 未物化返回 nullptr；边距行返回一个空行。
     const Line* line_at(size_t row) const noexcept;
     // 释放可见窗口 ± count 行以外块的 rows（open 块除外，见 .cpp）。
@@ -307,7 +306,7 @@ public:
     // 屏幕位置 → 逻辑位置：第 row 行第 col 列处字素的源字节。装饰（列表
     // 符号等）归属于其后的内容；行尾之后在硬换行/块尾处取行尾（含换行），
     // 在软折行处取行内最后一个字素。边距行取块首。调用者保证 row < total_rows()。
-    Location location_at(size_t row, int col, const Theme& theme);
+    Location location_at(size_t row, int col, const ThemeTokens& theme);
     // [a, b] 之间的源文本（Markdown 原文，含 b 处的字素；a、b 次序任意）。
     // 软折行不插入换行；跨块时补齐块间换行，有上边距的块前空一行。
     // 任一端的块已不存在时返回空串。
@@ -325,7 +324,7 @@ private:
     void count_full(Block& b);
     void count_incremental(Block& b);
     void rebuild_prefix(size_t from);
-    void ensure_rows(Block& b, const Theme& theme);
+    void ensure_rows(Block& b, const ThemeTokens& theme);
     std::optional<size_t> index_of(uint64_t id) const noexcept;
 
     std::deque<Block> blocks_;
@@ -412,12 +411,12 @@ public:
     Document& document() noexcept { return doc_; }
     const Document& document() const noexcept { return doc_; }
 
-    // 主题样式变化后必须递增 Theme::epoch，块的物化缓存随之失效。
-    void set_theme(Theme theme) {
+    // 主题样式变化后必须递增 ThemeTokens::epoch，块的物化缓存随之失效。
+    void set_theme(ThemeTokens theme) {
         theme_ = std::move(theme);
         invalidate();
     }
-    const Theme& theme() const noexcept { return theme_; }
+    const ThemeTokens& theme() const noexcept { return theme_; }
 
     // ---- 滚动（L6 事件路由调用；正数 = 向下/新内容方向） ----
     void scroll_lines(int lines);
@@ -455,7 +454,7 @@ private:
     void anchor_to(size_t row, int dir);
 
     Document doc_;
-    Theme theme_{};
+    ThemeTokens theme_ = dark_theme();
     uint64_t rendered_rev_ = 0; // 已渲染到的内容版本
     size_t total_ = 0;          // 上次渲染的文档总行数
     size_t top_ = 0;            // 上次渲染的视口顶行

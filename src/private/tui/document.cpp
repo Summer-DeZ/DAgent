@@ -122,13 +122,13 @@ size_t grapheme_len_at(std::string_view s, size_t p) noexcept {
 
 Document::Document() {
     renderers_[static_cast<size_t>(BlockKind::text)] =
-        std::make_unique<TextRenderer>(&Theme::text);
+        std::make_unique<TextRenderer>(&ThemeTokens::text);
     renderers_[static_cast<size_t>(BlockKind::code)] =
         std::make_unique<SyntaxRenderer>();
     renderers_[static_cast<size_t>(BlockKind::diff)] =
         std::make_unique<DiffRenderer>();
     renderers_[static_cast<size_t>(BlockKind::output)] =
-        std::make_unique<TextRenderer>(&Theme::dim);
+        std::make_unique<TextRenderer>(&ThemeTokens::text_muted);
     renderers_[static_cast<size_t>(BlockKind::markdown)] =
         std::make_unique<MarkdownRenderer>();
     renderers_[static_cast<size_t>(BlockKind::table)] =
@@ -383,7 +383,7 @@ void Document::rebuild_prefix(size_t from) {
 // 行首偏移随行号单调递增：二分找最后一个行首 <= byte 的行。
 // 折叠块只物化了前 collapsed_rows 行，更靠后的字节夹到末行。
 std::optional<size_t> Document::row_of(uint64_t block_id, size_t byte_in_block,
-                                       const Theme& theme) {
+                                       const ThemeTokens& theme) {
     const auto idx = index_of(block_id);
     if (!idx) return std::nullopt; // 块已被头部裁剪
     Block& b = blocks_[*idx];
@@ -397,7 +397,7 @@ std::optional<size_t> Document::row_of(uint64_t block_id, size_t byte_in_block,
     return base + (it == first ? 0 : static_cast<size_t>(it - first) - 1);
 }
 
-Location Document::location_of(size_t row, const Theme& theme) {
+Location Document::location_of(size_t row, const ThemeTokens& theme) {
     const size_t abs = row + base_rows_;
     size_t i = static_cast<size_t>(
         std::upper_bound(prefix_.begin(), prefix_.end(), abs) -
@@ -412,7 +412,7 @@ Location Document::location_of(size_t row, const Theme& theme) {
 }
 
 void Document::materialize_range(size_t first, size_t count,
-                                 const Theme& theme) {
+                                 const ThemeTokens& theme) {
     if (count == 0 || blocks_.empty()) return;
     const size_t first_abs = first + base_rows_;
     const size_t last_abs = first_abs + count;
@@ -429,7 +429,7 @@ void Document::materialize_range(size_t first, size_t count,
 //   * 已完整物化 → 什么都不做；
 //   * 否则从 rows_bytes（有效前缀之后）继续画到末尾；
 //     被驱逐时 rows_valid/rows_bytes 已归零，等价于从头物化。
-void Document::ensure_rows(Block& b, const Theme& theme) {
+void Document::ensure_rows(Block& b, const ThemeTokens& theme) {
     const size_t want = content_rows(b);
     if (b.rows_valid == want) return;
     b.rows_valid = renderer(b.kind).render(b, width_, theme, b.rows_bytes,
@@ -476,7 +476,7 @@ void Document::evict_outside(size_t first, size_t count) noexcept {
 
 // ---- 选择（§3.8） ----
 
-Location Document::location_at(size_t row, int col, const Theme& theme) {
+Location Document::location_at(size_t row, int col, const ThemeTokens& theme) {
     const size_t abs = row + base_rows_;
     size_t i = static_cast<size_t>(
         std::upper_bound(prefix_.begin(), prefix_.end(), abs) -
@@ -651,7 +651,7 @@ void Scrollback::render(Surface& s) {
 
     doc_.materialize_range(top, view, theme_);
 
-    s.fill({0, 0, w, h}, U' ', Style{});
+    s.fill({0, 0, w, h}, U' ', theme_.background);
     for (int y = 0; y < h; ++y) {
         const size_t row = top + static_cast<size_t>(y);
         const Line* ln = doc_.line_at(row);
@@ -687,14 +687,29 @@ void Scrollback::draw_row(Surface& s, int y, size_t row, const Line& ln) {
                       const Location at{blk->id, byte};
                       Style st = sp.style;
                       if (!(at < lo) && !(hi < at)) {
-                          st.attrs = any(st.attrs & Attr::reverse)
-                                         ? st.attrs & ~Attr::reverse
-                                         : st.attrs | Attr::reverse;
+                          // 选区令牌（§3.12）：设了 fg/bg 就覆盖，反色翻转，
+                          // 其余属性取并集。只叠加在绘制上，不进缓存。
+                          if (theme_.selection.fg.kind != Color::Kind::default_) {
+                              st.fg = theme_.selection.fg;
+                          }
+                          if (theme_.selection.bg.kind != Color::Kind::default_) {
+                              st.bg = theme_.selection.bg;
+                          }
+                          // 反色取翻转而不是并集：原样式已是反色时并集
+                          // 看不出选区。
+                          if (any(theme_.selection.attrs & Attr::reverse)) {
+                              st.attrs = any(st.attrs & Attr::reverse)
+                                             ? st.attrs & ~Attr::reverse
+                                             : st.attrs | Attr::reverse;
+                          }
+                          st.attrs = st.attrs | (theme_.selection.attrs & ~Attr::reverse);
                       }
                       col = s.text(col, y, g, st);
                   });
     }
-    if (col < s.cols()) s.fill({col, y, s.cols() - col, 1}, U' ', Style{});
+    if (col < s.cols()) {
+        s.fill({col, y, s.cols() - col, 1}, U' ', theme_.background);
+    }
 }
 
 std::optional<Location> Scrollback::hit(Point p) {

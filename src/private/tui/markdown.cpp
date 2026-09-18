@@ -206,8 +206,7 @@ private:
 // ---- 表格 ----
 
 struct TableCell {
-    std::string text; // tab 已展开
-    int width = 0;
+    std::string text; // 原文（tab 已展开、已去首尾空白），行内标记在渲染时解析
 };
 
 struct TableRow {
@@ -259,7 +258,6 @@ void parse_table_row(std::string_view line, size_t offset,
         TableCell tc;
         expand_row(tc.text, cell, 0, cell.size());
         tc.text = std::string(trim_spaces(tc.text));
-        tc.width = display_width(tc.text);
         row.cells.push_back(std::move(tc));
         cell.clear();
     };
@@ -376,6 +374,7 @@ struct MdSegment {
     std::string cont;     // 续行前缀
     int prefix_w = 0;
     int cont_w = 0;
+    Style prefix_style{}; // 块级前缀（#、•、│、分行符）的样式
     Style base{};
     std::string comb;     // 合并原文：去块级前缀，续行去前导空白，tab → 空格
     std::vector<MdPiece> pieces;
@@ -389,6 +388,7 @@ struct MdSegment {
         cont.clear();
         prefix_w = 0;
         cont_w = 0;
+        prefix_style = Style{};
         base = Style{};
         comb.clear();
         pieces.clear();
@@ -451,7 +451,7 @@ bool inline_special(char c) noexcept {
 // 不在词内生效；配不上对的标记按字面输出。嵌套深度受限。
 class InlineParser {
 public:
-    InlineParser(MdSegment& seg, const Theme& theme) noexcept
+    InlineParser(MdSegment& seg, const ThemeTokens& theme) noexcept
         : seg_(seg), theme_(theme) {}
 
     void parse(size_t lo, size_t hi, const Style& base, int depth) {
@@ -468,7 +468,7 @@ public:
                 const size_t n = run_length(i, hi, '`');
                 const size_t close = find_backticks(i + n, hi, n);
                 if (close != k_npos) {
-                    add(i + n, close - i - n, theme_.code);
+                    add(i + n, close - i - n, theme_.markdown_code);
                     i = close + n;
                 } else {
                     add(i, n, base); // 没有等长的闭合反引号：按字面
@@ -507,9 +507,8 @@ public:
                 if (j != std::string_view::npos && j + 1 < hi && s[j + 1] == '(') {
                     const size_t k = s.find(')', j + 2);
                     if (k != std::string_view::npos && k < hi && k > j + 2) {
-                        Style st = base;
-                        st.attrs = st.attrs | Attr::underline;
-                        parse(i + 1, j, st, depth + 1); // 地址隐藏，只显示链接文本
+                        // 地址隐藏，只显示链接文本；样式取链接令牌。
+                        parse(i + 1, j, theme_.markdown_link, depth + 1);
                         i = k + 1;
                         continue;
                     }
@@ -587,7 +586,7 @@ private:
     }
 
     MdSegment& seg_;
-    const Theme& theme_;
+    const ThemeTokens& theme_;
 };
 
 // 引用行的层数与正文起点（"> > x" 为 2 层）。
@@ -608,7 +607,7 @@ size_t quote_depth(std::string_view t, size_t& content) noexcept {
 std::string spaces(int n) { return std::string(static_cast<size_t>(std::max(n, 0)), ' '); }
 
 // 从 pos 起建一个段，返回下一段的起点。
-size_t build_segment(std::string_view src, size_t pos, const Theme& theme,
+size_t build_segment(std::string_view src, size_t pos, const ThemeTokens& theme,
                      MdSegment& seg) {
     seg.reset(pos);
     const SrcLine first = read_line(src, pos);
@@ -617,6 +616,7 @@ size_t build_segment(std::string_view src, size_t pos, const Theme& theme,
     size_t content = 0; // 首行正文在 t 中的起点
     size_t levels = 0;  // 引用层数
     seg.base = theme.text;
+    seg.prefix_style = theme.text_muted;
 
     switch (k) {
     case LineClass::blank:
@@ -632,7 +632,8 @@ size_t build_segment(std::string_view src, size_t pos, const Theme& theme,
         seg.prefix.assign(t.substr(i, j - i));
         seg.prefix += ' ';
         seg.cont = spaces(display_width(seg.prefix));
-        seg.base.attrs = seg.base.attrs | Attr::bold;
+        seg.prefix_style = theme.markdown_heading;
+        seg.base = theme.markdown_heading;
         content = j < t.size() ? j + 1 : j;
         break;
     }
@@ -651,6 +652,7 @@ size_t build_segment(std::string_view src, size_t pos, const Theme& theme,
         }
         seg.prefix += ' ';
         seg.cont = spaces(display_width(seg.prefix));
+        seg.prefix_style = theme.text_muted;
         content = j < t.size() ? j + 1 : j;
         break;
     }
@@ -659,7 +661,8 @@ size_t build_segment(std::string_view src, size_t pos, const Theme& theme,
         levels = quote_depth(t, content);
         for (size_t i = 0; i < levels; ++i) seg.prefix += "│ ";
         seg.cont = seg.prefix;
-        seg.base = theme.dim;
+        seg.prefix_style = theme.markdown_quote;
+        seg.base = theme.markdown_quote;
         break;
     default:
         content = skip_spaces(t, 0);
@@ -697,7 +700,7 @@ size_t build_segment(std::string_view src, size_t pos, const Theme& theme,
 
 // 逐段排版，每个显示行回调一次 row(段, 是否段首行, 显示起点, 显示终点, 行宽)。
 template <class Row>
-void layout_markdown(std::string_view src, int width, const Theme& theme,
+void layout_markdown(std::string_view src, int width, const ThemeTokens& theme,
                      MdSegment& seg, Row&& row) {
     size_t pos = 0;
     while (pos < src.size()) {
@@ -1061,6 +1064,57 @@ void MarkdownStream::finish() {
     started_ = false; // 下一条消息重新从第一块开始
 }
 
+// ---- 表格单元格的行内样式 ----
+
+// 单元格与段落走同一个行内解析器：标记隐藏，列宽按显示文本计算。
+struct CellPiece {
+    std::string text;
+    Style style;
+};
+struct CellView {
+    std::vector<CellPiece> pieces;
+    int width = 0;
+};
+
+CellView layout_cell(const std::string& text, const Style& base,
+                     const ThemeTokens& theme, MdSegment& seg) {
+    seg.reset(0);
+    seg.base = base;
+    seg.add_piece(0, text);
+    InlineParser(seg, theme).parse(0, seg.comb.size(), base, 0);
+    CellView v;
+    for (size_t i = 0; i < seg.runs.size(); ++i) {
+        const size_t b = seg.runs[i].disp;
+        const size_t e = i + 1 < seg.runs.size() ? seg.runs[i + 1].disp : seg.disp.size();
+        v.pieces.push_back({seg.disp.substr(b, e - b), seg.runs[i].style});
+    }
+    v.width = display_width(seg.disp);
+    return v;
+}
+
+// 把单元格写成恰好 cols 列：放得下补空格，放不下按显示文本截断加 "…"。
+void emit_cell(SpanBuilder& w, const CellView& v, int cols, const Style& base) {
+    int used = 0;
+    if (v.width <= cols) {
+        for (const CellPiece& p : v.pieces) w.add(p.text, p.style);
+        used = v.width;
+    } else {
+        int room = cols - 1;
+        for (const CellPiece& p : v.pieces) {
+            if (room <= 0) break;
+            const std::string_view part = take_cols(p.text, room);
+            w.add(part, p.style);
+            const int pw = display_width(part);
+            room -= pw;
+            used += pw;
+            if (part.size() < p.text.size()) break;
+        }
+        w.add("…", base);
+        ++used;
+    }
+    if (used < cols) w.add(std::string(static_cast<size_t>(cols - used), ' '), base);
+}
+
 // ---- MarkdownRenderer ----
 
 // 行内标记隐藏后行数取决于整段解析，而强调可跨软换行：stable_rows = 0，
@@ -1070,14 +1124,14 @@ WrapResult MarkdownRenderer::measure(std::string_view source, size_t from,
                                      int width) const {
     if (from >= source.size()) return {};
     thread_local MdSegment seg; // 复用容量：流式帧路径不反复分配
-    static const Theme theme{};  // 计数只看显示文本，与样式无关
+    static const ThemeTokens theme{};  // 计数只看显示文本，与样式无关
     size_t rows = 0;
     layout_markdown(source.substr(from), width, theme, seg,
                     [&](const MdSegment&, bool, size_t, size_t, int) { ++rows; });
     return {rows, 0, 0};
 }
 
-size_t MarkdownRenderer::render(const Block& block, int width, const Theme& theme,
+size_t MarkdownRenderer::render(const Block& block, int width, const ThemeTokens& theme,
                                 size_t from, size_t valid,
                                 std::vector<Line>& out) const {
     (void)from; // stable_rows = 0：总是整块重排
@@ -1096,9 +1150,9 @@ size_t MarkdownRenderer::render(const Block& block, int width, const Theme& them
             if (sg.kind == RenderKind::hr) {
                 std::string rule;
                 for (int i = 0; i < w; ++i) rule += "─";
-                sb.add(rule, theme.dim);
+                sb.add(rule, theme.text_muted);
             } else {
-                sb.add(first ? sg.prefix : sg.cont, theme.dim);
+                sb.add(first ? sg.prefix : sg.cont, sg.prefix_style);
                 if (b < e) {
                     auto r = std::upper_bound(
                         sg.runs.begin(), sg.runs.end(), b,
@@ -1133,7 +1187,7 @@ WrapResult TableRenderer::measure(std::string_view source, size_t from,
     return {count_table_lines(source, from), 0, 0};
 }
 
-size_t TableRenderer::render(const Block& block, int width, const Theme& theme,
+size_t TableRenderer::render(const Block& block, int width, const ThemeTokens& theme,
                              size_t from, size_t valid,
                              std::vector<Line>& out) const {
     (void)from;
@@ -1143,13 +1197,25 @@ size_t TableRenderer::render(const Block& block, int width, const Theme& theme,
                              ? std::min<size_t>(block.collapsed_rows, block.row_count)
                              : block.row_count;
 
+    const Style border = theme.border;
+    const Style body = theme.text;
+    const Style header = theme.primary;
+
+    // 先解析每个单元格的行内样式：列宽取决于隐藏标记后的显示宽度。
+    thread_local MdSegment seg;
     size_t cols = 0;
     for (const TableRow& r : rows) cols = std::max(cols, r.cells.size());
+    std::vector<std::vector<CellView>> views(rows.size());
     std::vector<int> natural(cols, 1);
-    for (const TableRow& r : rows) {
-        if (r.separator) continue;
-        for (size_t j = 0; j < r.cells.size(); ++j) {
-            natural[j] = std::max(natural[j], r.cells[j].width);
+    bool first_row = true;
+    for (size_t i = 0; i < rows.size(); ++i) {
+        if (rows[i].separator) continue;
+        const Style& base = first_row ? header : body;
+        first_row = false;
+        for (const TableCell& c : rows[i].cells) {
+            views[i].push_back(layout_cell(c.text, base, theme, seg));
+            const size_t j = views[i].size() - 1;
+            natural[j] = std::max(natural[j], views[i][j].width);
         }
     }
 
@@ -1175,15 +1241,10 @@ size_t TableRenderer::render(const Block& block, int width, const Theme& theme,
     int total_w = 1 + 3 * static_cast<int>(cols);
     for (int w : colw) total_w += w;
 
-    const Style border = theme.dim;
-    const Style body = theme.text;
-    Style header = theme.text;
-    header.attrs = header.attrs | Attr::bold;
-
     size_t n = 0;
     bool first_content = true;
-    std::string buf;
-    for (const TableRow& r : rows) {
+    for (size_t i = 0; i < rows.size(); ++i) {
+        const TableRow& r = rows[i];
         if (n >= limit) break;
         Line& ln = ensure_line(out, n);
         SpanBuilder w(ln);
@@ -1199,21 +1260,12 @@ size_t TableRenderer::render(const Block& block, int width, const Theme& theme,
             first_content = false;
             w.add("│", border);
             for (size_t j = 0; j < cols; ++j) {
-                buf.clear();
-                if (j < r.cells.size()) {
-                    const TableCell& c = r.cells[j];
-                    if (c.width <= colw[j]) {
-                        buf = c.text;
-                        buf.append(static_cast<size_t>(colw[j] - c.width), ' ');
-                    } else {
-                        buf = take_cols(c.text, colw[j] - 1);
-                        buf += "…";
-                    }
-                } else {
-                    buf.append(static_cast<size_t>(colw[j]), ' ');
-                }
                 w.add(" ", border);
-                w.add(buf, st);
+                if (j < views[i].size()) {
+                    emit_cell(w, views[i][j], colw[j], st);
+                } else {
+                    w.add(std::string(static_cast<size_t>(colw[j]), ' '), st);
+                }
                 w.add(" ", border);
                 w.add("│", border);
             }

@@ -109,15 +109,47 @@ size_t materialize_rows(const Block& b, int width, size_t from, size_t valid,
     return n;
 }
 
+// 断行禁则（简化的 UAX #14 / JIS X 4051）：闭合标点不出现在行首，开启
+// 标点不出现在行尾。只列常用的中日文与 ASCII 标点。
+bool no_line_start(std::string_view g) noexcept {
+    static constexpr std::string_view k_closing[] = {
+        "，", "。", "、", "；", "：", "！", "？", "）", "」", "』", "】", "》",
+        "〉", "’", "”", "…", "～", "·", "％", "．", "］", "｝", "〕",
+        ",",  ".",  ";",  ":",  "!",  "?",  ")",  "]",  "}",  "%",
+    };
+    for (std::string_view c : k_closing) {
+        if (g == c) return true;
+    }
+    return false;
+}
+
+bool no_line_end(std::string_view g) noexcept {
+    static constexpr std::string_view k_opening[] = {
+        "（", "「", "『", "【", "《", "〈", "‘", "“", "［", "｛", "〔",
+        "(",  "[",  "{",
+    };
+    for (std::string_view c : k_opening) {
+        if (g == c) return true;
+    }
+    return false;
+}
+
 } // namespace
 
-// 扫一行：宽度到顶就回退到最后一个空格断点（没有则按字素硬断，
-// 长单词/URL 不丢内容），换行符结束本行。
+// 扫一行：宽度到顶就回退到最后一个断点（没有则按字素硬断，长单词/URL
+// 不丢内容），换行符结束本行。断点候选：
+//   * 空格之后；
+//   * 宽字符（CJK）的前后 —— 中文句子没有空格，只认空格会退回到很靠前
+//     的英文空格，或在行宽处把标点硬断到行首；
+// 两者都受禁则约束：候选位置之后的字素不能是闭合标点，之前的不能是开启
+// 标点。断点只由已扫过的字素决定，流式追加不改变已定行（§8.5）。
 RowEdge wrap_next_row(std::string_view s, size_t from, int width) noexcept {
     int col = 0;
     int brk_col = 0;
     size_t pos = from;
-    size_t brk = from; // 断点候选：空格之后
+    size_t brk = from; // 断点候选：下一行的起点
+    std::string_view prev;  // 上一个字素
+    int prev_width = 0;
     while (pos < s.size()) {
         std::string_view rest = s.substr(pos);
         unicode::Grapheme g;
@@ -128,6 +160,12 @@ RowEdge wrap_next_row(std::string_view s, size_t from, int width) noexcept {
         if (b == '\r') {
             return {pos, (next < s.size() && s[next] == '\n') ? next + 1 : next,
                     col, pos};
+        }
+        // 宽字符前后的断点：先登记，本字素溢出时可以断在它前面。
+        if (pos > from && (g.width == 2 || prev_width == 2) &&
+            !no_line_start(g.bytes) && !no_line_end(prev)) {
+            brk = pos;
+            brk_col = col;
         }
         const int nc = advance(col, g);
         if (nc > width && col > 0) {
@@ -141,6 +179,8 @@ RowEdge wrap_next_row(std::string_view s, size_t from, int width) noexcept {
             brk = next;
             brk_col = col;
         }
+        prev = g.bytes;
+        prev_width = g.width;
         pos = next;
     }
     return {pos, pos, col, pos};
@@ -181,7 +221,7 @@ size_t count_rows(std::string_view source, int width) noexcept {
 
 // ---- 默认渲染器 ----
 
-size_t TextRenderer::render(const Block& block, int width, const Theme& theme,
+size_t TextRenderer::render(const Block& block, int width, const ThemeTokens& theme,
                             size_t from, size_t valid,
                             std::vector<Line>& out) const {
     return materialize_rows(block, width, from, valid, out,
@@ -190,19 +230,19 @@ size_t TextRenderer::render(const Block& block, int width, const Theme& theme,
                             });
 }
 
-size_t DiffRenderer::render(const Block& block, int width, const Theme& theme,
-                            size_t from, size_t valid,
+size_t DiffRenderer::render(const Block& block, int width,
+                            const ThemeTokens& theme, size_t from, size_t valid,
                             std::vector<Line>& out) const {
     return materialize_rows(
         block, width, from, valid, out,
         [&theme](std::string_view src, size_t pos) {
             switch (src[line_start_of(src, pos)]) {
             case '+':
-                return theme.add;
+                return theme.diff_added;
             case '-':
-                return theme.del;
+                return theme.diff_removed;
             case '@':
-                return theme.dim;
+                return theme.diff_hunk;
             default:
                 return theme.text;
             }
