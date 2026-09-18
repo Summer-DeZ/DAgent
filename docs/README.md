@@ -8,7 +8,7 @@ DAgent 是一个使用 C++23 和 CMake 构建的终端 Agent，仅支持 Linux�
 | --- | --- | --- |
 | TUI 框架 | `src/*/tui`，库 `dagent_tui` | 已完成并冻结（2026-09-18）：只修缺陷，不增删原语 |
 | 应用层界面 | `src/*/ui`，库 `dagent_ui` | 起步：JSON 主题加载（`ui::load_theme`），默认主题 `config/themes/dagent.json` |
-| Agent 运行时 | `src/*/agent` | 未开始 |
+| Agent 运行时 | `src/*/agent`，库 `dagent_agent` | 进行中：LLM 编解码已完成（中立消息模型、OpenAI Chat Completions），agent 循环等其余部分未开始 |
 | 基础库 | `src/*/base`，库 `dagent_base` | 已完成：日志、`.env` 密钥、文本工具、JSON 脱敏 |
 | 子进程与沙箱 | `src/*/exec`，库 `dagent_exec` | 已完成：命令执行与进程组清理、长期子进程、bash 只读分析、Landlock + seccomp 沙箱 |
 | 网络 | `src/*/net`，库 `dagent_net` | 已完成：libcurl 薄封装（整包/流式、stop_token 取消、超时分类）与 SSE 解析 |
@@ -34,6 +34,7 @@ session、mcp、app（配置、命令行），按里程碑 M1–M5 推进。模�
 | [net：HTTP 客户端与 SSE 解析](design/net.md) | 整包与流式请求、三种超时、错误分类、即时取消、连接复用与线程约束、SSE 解析规则 |
 | [exec：子进程与沙箱](design/exec.md) | `run` 的行为与子进程运行环境、`Child`、只读判定白名单、沙箱模式与已知限制；exec 会让整个进程忽略 SIGPIPE |
 | [workspace：文件、搜索、diff、项目上下文](design/workspace.md) | 路径解析与原子写入、ripgrep 调用与 fzy 模糊匹配、unified diff 的 hunk 合并、git 信息与 AGENTS.md 收集、inja 模板渲染 |
+| [LLM 编解码：消息模型与厂商协议翻译](design/llm.md) | 中立消息模型与 StreamEvent、Codec 接口、OpenAI Chat Completions 的编解码规则、错误分类与重试、token 估算 |
 | [终端 UI 框架](design/tui-framework.md) | 框架能做什么、分层与对象关系、应用怎样接入、各模块的职责。源码注释中的 `§N` 指这份文档的章节 |
 
 ## 构建与测试

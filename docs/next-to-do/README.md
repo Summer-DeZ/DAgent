@@ -24,7 +24,7 @@
 
 判断标准：**换一个完全不同的 agent 设计，这个模块还能原样复用吗？** 能复用的就是外围。比如「执行一条命令，
 带超时并截断输出」是外围；「bash 工具返回给模型的文本长什么样」是 tools 层。tools 层的设计以后另行讨论。
-LLM 编解码（中立消息模型与厂商协议之间的翻译）归核心，实现参考见 [04-llm](04-llm.md)。
+LLM 编解码（中立消息模型与厂商协议之间的翻译）归核心，已完成，设计文档见 [docs/design/llm.md](../design/llm.md)。
 
 ---
 
@@ -61,7 +61,7 @@ exec, workspace, net, session, mcp ──► base
 | --- | --- | --- |
 | **M1 基础设施** | base 全部（已完成）· app（config、cli） | 你可以开始写 agent 循环：读配置、打日志、解析参数、用 net 调模型 |
 | **M2 工具底座** | exec 的 process（已完成）· workspace 的 files、search、diff（已完成） | 能实现 bash/read/write/edit/grep/glob 工具，跑通第一个真正的编码任务 |
-| **M3 持久化与上下文** | session · workspace 的 context（已完成；LLM 编解码归核心，参考 [04-llm](04-llm.md)） | 会话可以恢复；system prompt 带上项目信息 |
+| **M3 持久化与上下文** | session · workspace 的 context（已完成；LLM 编解码归核心，已完成，见 [docs/design/llm.md](../design/llm.md)） | 会话可以恢复；system prompt 带上项目信息 |
 | **M4 扩展** | mcp · exec 的 Child（已完成） | 接入外部 MCP 工具 |
 | **M5 安全** | exec 的命令分析和沙箱（已完成） | bash 命令在受限环境里执行，只读命令自动放行 |
 
