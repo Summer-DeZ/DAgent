@@ -24,7 +24,7 @@ struct Args {
     std::optional<std::string> resume_id;
     bool continue_last = false;
     std::optional<std::string> log_level;
-    std::string permissions = "auto";
+    std::optional<std::string> permissions; ///< --permissions 显式给了才有值；否则用配置（06-permission §7）
     OutputFormat output = OutputFormat::text;
 };
 

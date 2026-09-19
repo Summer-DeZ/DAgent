@@ -6,6 +6,7 @@
 
 #include <atomic>
 #include <filesystem>
+#include <optional>
 #include <string>
 #include <string_view>
 #include <vector>
@@ -56,7 +57,8 @@ private:
 
     PathClass classify(const workspace::Resolved&) const;
     bool inside_dir(const std::filesystem::path&, const std::filesystem::path&) const;
-    bool matches_session(const Approval&, const tools::Intent&) const;
+    /// 命中会话授权时返回 allow_network（exec 之外恒为 false），未命中返回 nullopt。
+    std::optional<bool> matches_session(const Approval&, const tools::Intent&) const;
     tools::Grant grant_for_exec() const;
 
     std::atomic<PermissionMode> mode_;

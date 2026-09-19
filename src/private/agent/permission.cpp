@@ -51,10 +51,28 @@ std::optional<std::string> command_prefix(const exec::SimpleCommand& command) {
     return prefix;
 }
 
+// 会话授权匹配时不需要规则的命令：单独看是已知只读的，以及 cd——它只改变这条命令里后续命令的
+// 工作目录，后续命令仍要各自命中规则；提示词让模型用 `cd dir && …` 换目录，不忽略它规则就永远匹配不上。
 bool single_readonly(const exec::SimpleCommand& command) {
+    if (!command.argv.empty() && command.argv.front() == "cd") return true;
     exec::Analysis analysis;
     analysis.commands.push_back(command);
     return exec::is_known_readonly(analysis);
+}
+
+// 选「本会话允许」时会记住的前缀：每条不是已知只读的简单命令一个，去重、保持顺序。
+// 含无法静态判断的结构时不提供会话授权，返回空（06-permission §6.1）。
+std::vector<std::string> session_prefixes(const std::string& command) {
+    const exec::Analysis analysis = exec::analyze(command);
+    if (analysis.has_opaque) return {};
+    std::vector<std::string> prefixes;
+    for (const auto& simple : analysis.commands) {
+        if (single_readonly(simple)) continue;
+        const auto prefix = command_prefix(simple);
+        if (!prefix) return {};
+        if (std::find(prefixes.begin(), prefixes.end(), *prefix) == prefixes.end()) prefixes.push_back(*prefix);
+    }
+    return prefixes;
 }
 
 } // namespace
@@ -90,39 +108,47 @@ Policy::PathClass Policy::classify(const workspace::Resolved& resolved) const {
     return PathClass::normal;
 }
 
-bool Policy::matches_session(const Approval& approval, const tools::Intent& intent) const {
+std::optional<bool> Policy::matches_session(const Approval& approval, const tools::Intent& intent) const {
     switch (intent.kind) {
     case tools::Intent::Kind::write:
-        if (!session_edits_) return false;
+        if (!session_edits_) return std::nullopt;
         // 会话授权只覆盖工作区内的普通文件；受保护文件与工作区外永远要用户亲自确认。
-        return std::all_of(intent.paths.begin(), intent.paths.end(), [&](const workspace::Resolved& path) {
-            return classify(path) == PathClass::normal;
-        });
+        if (std::all_of(intent.paths.begin(), intent.paths.end(), [&](const workspace::Resolved& path) {
+                return classify(path) == PathClass::normal;
+            })) {
+            return false;
+        }
+        return std::nullopt;
     case tools::Intent::Kind::read:
         for (const auto& path : intent.paths) {
             for (const auto& dir : read_dirs_) {
-                if (is_relative_to(path.path, dir)) return true;
+                if (is_relative_to(path.path, dir)) return false;
             }
         }
-        return false;
+        return std::nullopt;
     case tools::Intent::Kind::external:
-        return std::find(external_rules_.begin(), external_rules_.end(), approval.tool) !=
-               external_rules_.end();
+        if (std::find(external_rules_.begin(), external_rules_.end(), approval.tool) !=
+            external_rules_.end()) {
+            return false;
+        }
+        return std::nullopt;
     case tools::Intent::Kind::exec: {
         const exec::Analysis analysis = exec::analyze(intent.command);
-        if (analysis.has_opaque) return false;
+        if (analysis.has_opaque) return std::nullopt;
+        bool network = false;
         for (const auto& command : analysis.commands) {
             if (single_readonly(command)) continue;
             const auto prefix = command_prefix(command);
-            if (!prefix) return false;
-            const bool known = std::any_of(exec_rules_.begin(), exec_rules_.end(),
-                                           [&](const ExecRule& rule) { return rule.prefix == *prefix; });
-            if (!known) return false;
+            if (!prefix) return std::nullopt;
+            const auto rule = std::find_if(exec_rules_.begin(), exec_rules_.end(),
+                                           [&](const ExecRule& r) { return r.prefix == *prefix; });
+            if (rule == exec_rules_.end()) return std::nullopt;
+            network = network || rule->network;
         }
-        return true;
+        return network;
     }
     }
-    return false;
+    return std::nullopt;
 }
 
 Verdict Policy::evaluate(const ToolCall& call, const tools::Intent& intent) const {
@@ -186,7 +212,12 @@ Verdict Policy::evaluate(const ToolCall& call, const tools::Intent& intent) cons
         } else {
             verdict.approval.reason = "运行命令";
             verdict.approval.can_network = true;
-            verdict.approval.session_rule = "本会话内运行相同的命令不再询问";
+            const std::vector<std::string> prefixes = session_prefixes(intent.command);
+            if (!prefixes.empty()) {
+                std::string list;
+                for (const auto& prefix : prefixes) list += (list.empty() ? "`" : "、`") + prefix + "`";
+                verdict.approval.session_rule = std::format("以后 {} 不再询问", list);
+            }
             verdict.kind = Verdict::Kind::ask;
         }
         break;
@@ -200,8 +231,15 @@ Verdict Policy::evaluate(const ToolCall& call, const tools::Intent& intent) cons
 
     if (verdict.kind != Verdict::Kind::ask) return verdict;
 
-    // 步骤 3：本会话授权。
-    if (matches_session(verdict.approval, intent)) return answer(Verdict::Kind::allow);
+    // 步骤 3：本会话授权。放行的 exec 命令用 workspace_write 沙箱；当初授权时勾了联网的记住联网
+    // （06-permission §6.1）。
+    if (const std::optional<bool> session = matches_session(verdict.approval, intent)) {
+        if (intent.kind == tools::Intent::Kind::exec) {
+            verdict.grant = grant_for_exec(); // 沙箱不可用时降级为 full_access
+            verdict.grant.allow_network = *session;
+        }
+        return answer(Verdict::Kind::allow);
+    }
 
     // 步骤 4：按模式转换剩下的 ask。
     switch (mode()) {
@@ -265,19 +303,15 @@ void Policy::remember(const Approval& approval, const Decision& decision) {
     case tools::Intent::Kind::external:
         external_rules_.push_back(approval.tool);
         return;
-    case tools::Intent::Kind::exec: {
-        const exec::Analysis analysis = exec::analyze(approval.intent.command);
-        if (analysis.has_opaque) return;
-        for (const auto& command : analysis.commands) {
-            if (single_readonly(command)) continue;
-            const auto prefix = command_prefix(command);
-            if (!prefix) continue;
-            const bool known = std::any_of(exec_rules_.begin(), exec_rules_.end(),
-                                           [&](const ExecRule& rule) { return rule.prefix == *prefix; });
-            if (!known) exec_rules_.push_back({*prefix, decision.network});
+    case tools::Intent::Kind::exec:
+        // 和 session_rule 里展示给用户的前缀是同一份（session_prefixes）。
+        for (const std::string& prefix : session_prefixes(approval.intent.command)) {
+            const auto rule = std::find_if(exec_rules_.begin(), exec_rules_.end(),
+                                           [&](const ExecRule& r) { return r.prefix == prefix; });
+            if (rule == exec_rules_.end()) exec_rules_.push_back({prefix, decision.network});
+            else rule->network = rule->network || decision.network;
         }
         return;
-    }
     }
 }
 

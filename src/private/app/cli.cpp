@@ -113,10 +113,9 @@ std::variant<Args, int> parse_args(int argc, char** argv) {
     run->fallthrough(); // 通用选项写在子命令后面也认
     std::vector<std::string> run_words;
     run->add_option("run_prompt", run_words, "提示词（也可以从 stdin 传入）")->type_name("提示词");
-    std::string permissions = "auto";
-    run->add_option("--permissions", permissions, "没有人审批时的策略")
-        ->check(CLI::IsMember({"auto", "deny"}))
-        ->default_str("auto");
+    std::string permissions;
+    run->add_option("--permissions", permissions, "没有人审批时的策略：auto / deny")
+        ->check(CLI::IsMember({"auto", "deny"}));
     std::string output = "text";
     run->add_option("--output", output, "输出格式")
         ->check(CLI::IsMember({"text", "json", "jsonl"}))
@@ -168,7 +167,7 @@ std::variant<Args, int> parse_args(int argc, char** argv) {
         args.mode = Mode::interactive;
         args.prompt = join_words(prompt_words);
     }
-    args.permissions = permissions;
+    if (!permissions.empty()) args.permissions = permissions;
     if (output == "json") args.output = OutputFormat::json;
     else if (output == "jsonl") args.output = OutputFormat::jsonl;
 

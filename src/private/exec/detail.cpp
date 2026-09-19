@@ -124,6 +124,11 @@ int setup_child(const Prepared* sandbox, const char* cwd) noexcept {
     struct sigaction dfl {};
     dfl.sa_handler = SIG_DFL;
     if (::sigaction(SIGPIPE, &dfl, nullptr) == -1) return errno;
+    // 信号屏蔽会经 fork、exec 原样继承：父进程为 sigwait 屏蔽的 SIGINT/SIGTERM 不能带进子进程，
+    // 否则 `timeout`、SIGTERM 清理都会失效。
+    sigset_t none;
+    sigemptyset(&none);
+    if (::sigprocmask(SIG_SETMASK, &none, nullptr) == -1) return errno;
     if (cwd != nullptr && ::chdir(cwd) == -1) return errno;
     if (sandbox != nullptr) return apply_in_child(*sandbox);
     return 0;

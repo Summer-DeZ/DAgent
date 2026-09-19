@@ -1,5 +1,6 @@
 #include <algorithm>
 #include <chrono>
+#include <csignal>
 #include <cstddef>
 #include <filesystem>
 #include <iostream>
@@ -8,6 +9,8 @@
 #include <system_error>
 #include <utility>
 #include <variant>
+
+#include <signal.h>
 
 #include "agent/headless.hpp"
 #include "agent/options.hpp"
@@ -22,9 +25,18 @@ namespace {
 namespace fs = std::filesystem;
 using dagent::app::Mode;
 
-dagent::agent::PermissionMode parse_permission_mode(std::string_view value) {
-    if (value == "deny") return dagent::agent::PermissionMode::deny;
-    return dagent::agent::PermissionMode::automatic;
+// 11-entry §4.3：整个进程忽略 SIGPIPE，写关闭的管道得到 EPIPE 而不是被信号杀死。
+// exec 层只会在 SIGPIPE 仍是默认处理时设置它，两者不冲突。
+void ignore_sigpipe() { ::signal(SIGPIPE, SIG_IGN); }
+
+dagent::agent::PermissionMode
+permission_mode(const dagent::app::Config& config, const dagent::app::Args& args) {
+    // 优先级：--permissions → 配置的 permissions → automatic（06-permission §7）。
+    if (args.permissions) {
+        return *args.permissions == "deny" ? dagent::agent::PermissionMode::deny
+                                           : dagent::agent::PermissionMode::automatic;
+    }
+    return config.agent.permissions;
 }
 
 dagent::agent::Setup make_setup(const dagent::app::Config& config, const dagent::app::Args& args) {
@@ -61,7 +73,7 @@ dagent::agent::Setup make_setup(const dagent::app::Config& config, const dagent:
     setup.mcp_servers = config.mcp_servers;
 
     setup.sandbox = dagent::exec::probe();
-    setup.permission_mode = parse_permission_mode(args.permissions);
+    setup.permission_mode = permission_mode(config, args);
     if (!config.gateway.system_prompt_file.empty()) {
         dagent::workspace::TextFile file =
             dagent::workspace::read_text(config.gateway.system_prompt_file, config.files);
@@ -73,6 +85,10 @@ dagent::agent::Setup make_setup(const dagent::app::Config& config, const dagent:
 } // namespace
 
 int main(int argc, char** argv) {
+    // 必须在创建任何线程之前（spdlog、stdin 读取都会建线程）：之后创建的线程都继承这个屏蔽。
+    dagent::agent::Interrupts& interrupts = dagent::agent::install_interrupts();
+    ignore_sigpipe();
+
     const std::variant<dagent::app::Args, int> parsed = dagent::app::parse_args(argc, argv);
     if (const int* code = std::get_if<int>(&parsed)) return *code;
     const dagent::app::Args& args = std::get<dagent::app::Args>(parsed);
@@ -116,7 +132,7 @@ int main(int argc, char** argv) {
             case dagent::app::OutputFormat::jsonl: options.output = dagent::agent::HeadlessOptions::Output::jsonl; break;
             case dagent::app::OutputFormat::text: options.output = dagent::agent::HeadlessOptions::Output::text; break;
             }
-            return dagent::agent::run_headless(make_setup(config, args), options);
+            return dagent::agent::run_headless(make_setup(config, args), options, interrupts);
         }
         }
     } catch (const dagent::app::ConfigError& error) {
