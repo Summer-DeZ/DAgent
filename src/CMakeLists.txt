@@ -169,6 +169,7 @@ add_library(dagent_agent STATIC
     private/agent/events.cpp
     private/agent/model.cpp
     private/agent/conversation.cpp
+    private/agent/compaction.cpp
     private/agent/prompt.cpp
     private/agent/record.cpp
     private/agent/permission.cpp

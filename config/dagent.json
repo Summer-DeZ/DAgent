@@ -1,14 +1,14 @@
 {
   "gateway": {
-    "base_url": "https://api.deepseek.com/v1",
-    "model": "deepseek-chat",
+    "base_url": "http://127.0.0.1:10009/v1",
+    "model": "Qwen3.8-Flash-Next",
     "max_tokens": 4096,
     "temperature": 0,
     "send_reasoning_content": false,
     "include_usage": true,
-    "extra_body": {},
+    "extra_body": {"chat_template_kwargs": {"enable_thinking": false}},
     "system_prompt_file": "../prompts/system.md",
-    "api_key_env": "DEEPSEEK_API_KEY"
+    "api_key_env": ""
   },
   "http": {
     "timeout_seconds": 300,

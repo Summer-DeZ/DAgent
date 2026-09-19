@@ -226,8 +226,22 @@ private:
             "Enter 发送；忙时排队；空输入 ↑ 取回排队消息\n"
             "Shift/Alt+Enter 换行；Esc 中断；Ctrl+C 清空/中断，空闲连按两次退出\n"
             "Shift+Tab 切换权限；Ctrl+O 展开工具；PgUp/PgDn 滚动；拖选复制\n"
-            "/new 新会话 · /compact 压缩（C5） · /help 帮助 · /exit 退出");
-        else if (text == "/compact") notice("上下文压缩尚未实现（C5）");
+            "/new 新会话 · /compact 压缩上下文 · /help 帮助 · /exit 退出");
+        else if (text == "/compact") {
+            busy(true); phase_ = "压缩上下文"; activity();
+            turn_stop_ = std::stop_source{};
+            const auto token = turn_stop_.get_token();
+            jobs_.push([this, token] {
+                const auto status = agent_->compact([this](const agent::Event& event) {
+                    rt_.post([this, event] { if (!exiting_) apply(event); });
+                }, token);
+                rt_.post([this, status] {
+                    if (exiting_) return;
+                    if (status == agent::TurnStatus::interrupted) notice("上下文压缩已取消");
+                    busy(false); drain();
+                });
+            });
+        }
         else if (text == "/new") {
             busy(true);
             jobs_.push([this] {

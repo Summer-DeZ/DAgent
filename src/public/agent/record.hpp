@@ -32,6 +32,8 @@ public:
     void assistant(std::int64_t n, const Reply&);
     void tool(std::int64_t n, const ToolCall&, std::string_view summary, const tools::Result&);
     void permission(std::string_view call_id, const Decision&, std::string_view rule);
+    void prune(const std::vector<std::int64_t>& ordinals);
+    void compaction(std::int64_t keep_from, std::string_view summary);
     void turn_end(TurnStatus, std::string_view error, int steps, int tool_calls, const Usage& total);
     void turn_end_crashed();
     void sync();

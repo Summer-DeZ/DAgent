@@ -50,6 +50,8 @@ Agent::Agent(Setup setup, std::string system_prompt, Recorder recorder, Conversa
              RetryOptions{setup_.options.run.max_model_retries}),
       conversation_(std::move(conversation)),
       estimator_(),
+      compactor_(setup_.options.context, setup_.model.max_tokens,
+                 workspace::render(builtin_compact_prompt(), nlohmann::json::object())),
       system_prompt_(std::move(system_prompt)) {
     tools::add_builtin(registry_);
 }
@@ -97,6 +99,9 @@ std::unique_ptr<Agent> Agent::resume(Setup setup, std::string_view session_id,
         log_agent()->error("会话记录写入失败：{}", agent->recorder_.error());
     }
     log_agent()->info("会话已恢复：id={} model={}", agent->meta().id, agent->setup_.model.model);
+    replay_sink(ContextUpdate{{}, agent->estimator_.estimate(agent->conversation_.build(
+                                      agent->system_prompt_, agent->tool_defs(), agent->setup_.model)),
+                               agent->compactor_.budget().limit});
     return agent;
 }
 
@@ -190,11 +195,7 @@ TurnStatus Agent::run_turn(std::string input, const Sink& sink, const Approver& 
 
     const int max_model_calls = setup_.options.run.max_model_calls;
     const int max_tool_calls = setup_.options.run.max_tool_calls;
-    const std::size_t context_limit = [&] {
-        const ContextOptions& context = setup_.options.context;
-        const std::size_t overhead = context.safety_margin_tokens + setup_.model.max_tokens;
-        return context.window_tokens > overhead ? context.window_tokens - overhead : context.window_tokens;
-    }();
+    const std::size_t context_limit = compactor_.budget().limit;
 
     int steps = 0, calls = 0;
     bool grace = false;
@@ -208,14 +209,30 @@ TurnStatus Agent::run_turn(std::string input, const Sink& sink, const Approver& 
             return finish(TurnStatus::limit, "本轮模型调用次数已达上限", steps, calls, total, sink);
         }
         ++steps;
-        sink(StepStarted{steps});
 
-        const Request request = conversation_.build(system_prompt_, tool_defs(), setup_.model);
-        const std::size_t estimated = estimator_.estimate(request);
-
+        const RequestShape shape{system_prompt_, tool_defs(), setup_.model};
+        std::size_t estimated = 0;
         Reply reply;
         try {
-            reply = model_.complete(request, on_stream, on_retry, stop);
+            // 自动压缩在 StepStarted 之前（01-events §3）：界面在一步开始后作废的内容不含压缩提示。
+            compactor_.maybe_compact(conversation_, shape, model_, estimator_, recorder_, sink, stop);
+            check_broken(sink);
+            sink(StepStarted{steps});
+            for (int attempt = 0; ; ++attempt) {
+                const Request request = conversation_.build(shape.system, shape.tools, shape.params);
+                estimated = estimator_.estimate(request);
+                sink(ContextUpdate{{}, estimated, context_limit});
+                try {
+                    reply = model_.complete(request, on_stream, on_retry, stop);
+                    break;
+                } catch (const ModelError& error) {
+                    if (error.kind() != ModelError::Kind::context_too_long || attempt != 0) throw;
+                    log_agent()->warn("服务端报上下文超长（估算 {} tokens），强制压缩后重发：{}", estimated,
+                                      error.what());
+                    compactor_.force(conversation_, shape, model_, estimator_, recorder_, sink, stop);
+                    check_broken(sink);
+                }
+            }
         } catch (const ModelError& error) {
             switch (error.kind()) {
             case ModelError::Kind::cancelled:
@@ -230,15 +247,6 @@ TurnStatus Agent::run_turn(std::string input, const Sink& sink, const Approver& 
             }
         }
 
-        if (reply.message.content.empty() && reply.message.tool_calls.empty()) {
-            sink(Notice{Notice::Level::warn, "模型返回了空回复"});
-            return finish(TurnStatus::done, "", steps, calls, total, sink);
-        }
-
-        const std::int64_t assistant_ordinal = conversation_.add_assistant(reply.message);
-        recorder_.assistant(assistant_ordinal, reply);
-        check_broken(sink);
-
         if (reply.usage) {
             estimator_.observe_prompt_tokens(reply.usage->prompt);
             total.prompt += reply.usage->prompt;
@@ -249,6 +257,15 @@ TurnStatus Agent::run_turn(std::string input, const Sink& sink, const Approver& 
             reply.usage ? static_cast<std::size_t>(reply.usage->prompt + reply.usage->completion)
                         : estimated;
         sink(ContextUpdate{reply.usage.value_or(Usage{}), used, context_limit});
+
+        if (reply.message.content.empty() && reply.message.tool_calls.empty()) {
+            sink(Notice{Notice::Level::warn, "模型返回了空回复"});
+            return finish(TurnStatus::done, "", steps, calls, total, sink);
+        }
+
+        const std::int64_t assistant_ordinal = conversation_.add_assistant(reply.message);
+        recorder_.assistant(assistant_ordinal, reply);
+        check_broken(sink);
 
         if (reply.message.tool_calls.empty()) {
             if (grace) return finish(TurnStatus::limit, "", steps, calls, total, sink);
@@ -274,6 +291,23 @@ TurnStatus Agent::run_turn(std::string input, const Sink& sink, const Approver& 
             break;
         }
     }
+}
+
+TurnStatus Agent::compact(const Sink& sink, std::stop_token stop) {
+    TurnStatus status = TurnStatus::done;
+    try {
+        compactor_.summarize(conversation_, {system_prompt_, tool_defs(), setup_.model}, model_,
+                             estimator_, recorder_, sink, stop);
+        sink(ContextUpdate{{}, estimator_.estimate(conversation_.build(system_prompt_, tool_defs(),
+                                                                       setup_.model)),
+                            compactor_.budget().limit});
+    } catch (const ModelError& error) {
+        status = error.kind() == ModelError::Kind::cancelled ? TurnStatus::interrupted : TurnStatus::failed;
+        if (status == TurnStatus::failed) sink(Notice{Notice::Level::error, error.what()});
+    }
+    recorder_.sync();
+    check_broken(sink);
+    return status;
 }
 
 void Agent::set_permission_mode(PermissionMode mode) { policy_.set_mode(mode); }

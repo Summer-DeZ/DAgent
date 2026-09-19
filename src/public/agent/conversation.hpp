@@ -25,8 +25,7 @@ struct Entry {
     std::size_t tokens = 0;    ///< estimate_tokens 的缓存，加入或修改时算一次
 };
 
-/// @brief 核心自己生成、会进入历史给模型看的文字（03-conversation §5 的标准文本 T1–T9）。
-/// 参数化的文本用 std::format 填。T10 / T11 属于上下文管理（07-context），C5 再加。
+/// @brief 核心自己生成、会进入历史给模型看的文字（T1–T9；T10 / T11 见 compaction.hpp）。
 namespace texts {
 inline constexpr std::string_view kInterrupted = "\n\n[回复被用户中断]";
 inline constexpr std::string_view kInterruptedCall = "用户中断了本轮，这个调用没有执行。";
@@ -69,6 +68,7 @@ public:
     std::vector<std::size_t> safe_cuts() const; ///< 可以切开的下标，升序
     void prune(std::size_t tool_entry, std::string placeholder);
     void replace_prefix(std::size_t cut, std::string summary_message);
+    void discard_prefix(std::size_t cut); ///< 保留已有摘要；调用方保证尾部满足 I4
 
     // ---- 恢复（09-record）----
     void restore(Entry entry); ///< 按记录原样放回，不重新分配 ordinal

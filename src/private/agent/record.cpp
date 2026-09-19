@@ -1,4 +1,5 @@
 #include "agent/record.hpp"
+#include "agent/compaction.hpp"
 
 #include <algorithm>
 #include <cstdint>
@@ -161,6 +162,14 @@ void Recorder::turn_end(TurnStatus status, std::string_view error, int steps, in
                             {"usage", usage_json(total)}});
 }
 
+void Recorder::prune(const std::vector<std::int64_t>& ordinals) {
+    append("prune", json{{"ordinals", ordinals}});
+}
+
+void Recorder::compaction(std::int64_t keep_from, std::string_view summary) {
+    append("compaction", json{{"keep_from", keep_from}, {"summary", summary}});
+}
+
 void Recorder::turn_end_crashed() {
     append("turn_end", json{{"status", "crashed"},
                             {"error", ""},
@@ -265,6 +274,38 @@ Restored replay_into(const session::Options& options, std::string_view id, const
             conversation.restore(std::move(entry));
             ++next_ordinal;
             sink(ToolFinished{call_id, name, summary, std::move(result)});
+            return;
+        }
+        if (type == "prune") {
+            const auto ordinals = payload.find("ordinals");
+            if (ordinals == payload.end() || !ordinals->is_array()) corrupt(type, "字段 ordinals 应为数组");
+            for (const auto& value : *ordinals) {
+                if (!value.is_number_integer()) corrupt(type, "消息序号应为整数");
+                const auto n = value.get<std::int64_t>();
+                const auto& entries = conversation.entries();
+                const auto found = std::find_if(entries.begin(), entries.end(),
+                                                [n](const Entry& e) { return e.ordinal == n; });
+                if (found == entries.end() || found->message.role != Role::tool) {
+                    corrupt(type, "裁剪序号没有对应的 tool 消息");
+                }
+                conversation.prune(static_cast<std::size_t>(found - entries.begin()),
+                                   texts::pruned_output(found->summary));
+            }
+            return;
+        }
+        if (type == "compaction") {
+            const auto keep_from = integer_field(type, payload, "keep_from");
+            const auto summary = string_field(type, payload, "summary");
+            const auto& entries = conversation.entries();
+            const auto found = std::find_if(entries.begin(), entries.end(),
+                                            [keep_from](const Entry& e) { return e.ordinal == keep_from; });
+            if (keep_from < 0 || found == entries.end()) corrupt(type, "摘要切点不存在");
+            const auto cut = static_cast<std::size_t>(found - entries.begin());
+            const auto cuts = conversation.safe_cuts();
+            if (std::find(cuts.begin(), cuts.end(), cut) == cuts.end()) corrupt(type, "摘要切点不安全");
+            if (summary.empty()) conversation.discard_prefix(cut);
+            else conversation.replace_prefix(cut, texts::summary_message(summary));
+            if (const auto invalid = conversation.validate()) corrupt(type, *invalid);
             return;
         }
         if (type == "permission") {

@@ -12,6 +12,7 @@
 #include <vector>
 
 #include "agent/conversation.hpp"
+#include "agent/compaction.hpp"
 #include "agent/events.hpp"
 #include "agent/model.hpp"
 #include "agent/options.hpp"
@@ -38,6 +39,9 @@ public:
     /// @brief 一轮。阻塞到结束；除编程错误外不抛异常。
     TurnStatus run_turn(std::string input, const Sink& sink, const Approver& approver,
                         std::stop_token stop);
+
+    /// @brief 手动摘要；不追加用户消息或 turn_end，通过返回值报告完成状态。
+    TurnStatus compact(const Sink&, std::stop_token);
 
     /// @brief 权限模式（交互界面的 Shift+Tab）。线程安全，下一次决策生效；调用方保证对象仍存活。
     void set_permission_mode(PermissionMode mode);
@@ -73,6 +77,7 @@ private:
     Model model_;
     Conversation conversation_;
     TokenEstimator estimator_;
+    Compactor compactor_;
     std::string system_prompt_;
     bool broken_notified_ = false;
 };

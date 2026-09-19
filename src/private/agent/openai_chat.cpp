@@ -105,6 +105,7 @@ bool looks_like_context_overflow(std::string_view detail) {
     static constexpr std::string_view needles[] = {
         "context length", "context_length", "maximum context", "max context",
         "too many tokens", "token limit",    "exceeds the maximum", "reduce the length",
+        "exceeds the available context size", // llama-server 的超长请求
     };
     return std::any_of(std::begin(needles), std::end(needles),
                        [&](std::string_view needle) { return lower.find(needle) != std::string::npos; });

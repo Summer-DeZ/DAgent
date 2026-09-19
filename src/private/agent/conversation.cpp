@@ -157,6 +157,12 @@ void Conversation::restore(Entry entry) {
     entries_.push_back(std::move(entry));
 }
 
+void Conversation::discard_prefix(std::size_t cut) {
+    const bool summary = !entries_.empty() && entries_.front().ordinal == -1;
+    entries_.erase(entries_.begin() + (summary ? 1 : 0),
+                   entries_.begin() + static_cast<std::ptrdiff_t>(cut));
+}
+
 void Conversation::set_next_ordinal(std::int64_t next) { next_ordinal_ = next; }
 
 } // namespace dagent::agent
