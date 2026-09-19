@@ -130,7 +130,8 @@ std::unique_ptr<Codec> make_openai_chat_codec(OpenAiChatOptions);
 - 429、408 视为可重试；5xx 可重试；其余（包括 400、401）不可重试。
 - `Retry-After` 响应头：纯数字按秒解析；否则按 HTTP-date（`Wed, 21 Oct 2015 07:28:00 GMT`）手工解析，不
   依赖 locale。header 缺失或解析失败时 `retry_after` 为 0。
-- 400 且响应体里出现「context length」「too many tokens」等几个英文短语（大小写不敏感）时标记
+- 400 且响应体里出现「context length」「too many tokens」或 llama-server 的「exceeds the available context size」
+  等英文短语（大小写不敏感）时标记
   `context_too_long = true`，供核心决定要不要触发上下文压缩后重试。这是关键词启发式，不追求完全覆盖
   所有厂商的措辞。
 - 错误信息优先取响应体 `error.message`（`error.code` 不同于 message 时附在后面），没有就截取原始 body

@@ -195,7 +195,8 @@ finish(status, error = ""):
 ## 9. compact()
 
 `/compact` 调用。直接做第二级摘要（[07-context §4](07-context.md)），不看是否超过触发线；历史太短（切点之前没有
-内容）时发 `Notice(info)`「对话太短，不需要压缩」。不产生 `TurnStarted` / `TurnEnded`，只发 `Compacted` 和 `Notice`。
+内容）时发 `Notice(info)`「没有可压缩的旧历史」。不产生 `TurnStarted` / `TurnEnded`，发 `Compacted`、`ContextUpdate` 和
+`Notice`；返回 `TurnStatus`，由调用方结束忙碌状态。记录在操作完成后同步，取消不提交历史修改。
 
 ---
 

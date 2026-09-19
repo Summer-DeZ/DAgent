@@ -92,7 +92,7 @@ user(n5) … [prune] … [compaction] … turn_end
 
 - `permission` 写在对应的 `tool` 之前（先决定、后执行、再提交）。
 - `prune` / `compaction` 写在它们发生的那一步的 `assistant` 之前。
-- `turn_end` 之后 `sync()`。除此之外只在 Agent 析构时 `sync()`，不是每条都刷盘（session 文档：调用节奏由核心决定）。
+- `turn_end` 之后、手动 `/compact` 完成后及 Agent 析构时 `sync()`，不是每条都刷盘（session 文档：调用节奏由核心决定）。
 
 ---
 
@@ -134,8 +134,11 @@ replay_into(id, sink):
 
 - 占位用和压缩时**同一个函数**生成（[07-context §4.2](07-context.md)），所以不需要把占位文本存下来。
 - 摘要 entry 的 ordinal 是 −1；T10 的包装文本也由同一个函数生成，`compaction` 里只存模型写的摘要本身。
+- 裁剪用 `texts::pruned_output`，摘要用 `texts::summary_message`，均在 `agent/compaction.*`，运行和回放共用。
+  回放校验裁剪对象确为 tool、摘要切点为安全切点，退化丢弃保留已有摘要并检查 I4；消息序号继续使用原来的递增计数。
 - 回放出来的事件只有 `TurnStarted`、`TextDelta`、`ReasoningDelta`、`ToolFinished`、`TurnEnded`（[01-events §3](01-events.md)
   保证 6），界面按同一套逻辑画历史。
+  `Agent::resume` 在重建完成后另发一次 `ContextUpdate`，按当前模型配置估算恢复出的有效上下文。
 
 ### 5.2 崩溃闭合
 

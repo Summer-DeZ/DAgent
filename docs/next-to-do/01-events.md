@@ -81,7 +81,10 @@ std::string_view to_string(TurnStatus);  ///< "done" / "interrupted" / …
 
 ```
 Turn      := TurnStarted Step* TurnEnded
-Step      := Compacted? StepStarted Attempt+ ContextUpdate? Batch?
+Step      := Compaction? StepStarted Request ContextUpdate? Batch?
+Compaction:= Compacted ContextUpdate
+Request   := ContextUpdate Attempt+ (Compaction? ContextUpdate Attempt+)?
+                                         括号里是服务端报超长后的强制压缩与唯一一次重发
 Attempt   := (TextDelta | ReasoningDelta | ToolPending)* (Retrying StreamReset?)?
 Batch     := CallEvents+                 并行组内各调用的事件可以交错
 CallEvents:= ToolStarted ToolOutput* ToolFinished     执行了的调用
@@ -101,7 +104,9 @@ Notice 可以出现在 TurnStarted 之后、TurnEnded 之前的任何位置
 5. 除 `ToolOutput` 外，所有事件都在 agent 线程上发出；`ToolOutput` 可能来自工具工作线程。同一个调用的
    `ToolOutput` 之间保持顺序。
 6. 会话恢复时回放出来的历史也用这套事件（[09-record §5](09-record.md)），只是不含 `StepStarted`、`Retrying`、
-   `StreamReset`、`ToolPending`、`ToolOutput`、`ContextUpdate`。
+   `StreamReset`、`ToolPending`、`ToolOutput`、`Compacted`、`ContextUpdate`；回放结束后 `Agent::resume` 另发一次
+   `ContextUpdate`，给出恢复后的整请求估算。
+7. 自动压缩发生在 `StepStarted` 之前，所以一步开始后因 `StreamReset` 作废的内容不包含压缩提示。
 
 ---
 
@@ -114,11 +119,11 @@ Notice 可以出现在 TurnStarted 之后、TurnEnded 之前的任何位置
 | `TextDelta` / `ReasoningDelta` | Model 的 `on_event` | 流式 Markdown / 折叠的思考块 |
 | `ToolPending` | Model 的 `on_event` 收到 `ToolCallBegin` | 「准备调用 edit…」 |
 | `Retrying` | Model 的 `on_retry` | Notice「连接断开，2 秒后重试（1/2）」 |
-| `ContextUpdate` | 一步结束、拿到 usage 后 | 状态栏的上下文百分比 |
+| `ContextUpdate` | 每次请求前（整请求估算）、拿到 usage 后、压缩提交后、恢复会话后 | 状态栏的上下文百分比 |
 | `ToolStarted` | 权限通过、`Call::run` 之前 | 工具块的标题行 |
 | `ToolOutput` | `Call::run` 的 `on_output` | bash 输出块实时追加 |
 | `ToolFinished` | 调用结果写入历史之后 | 工具块定稿：状态、diff、折叠 |
-| `Compacted` | 压缩完成后 | Notice「上下文已压缩：180k → 90k」 |
+| `Compacted` | 压缩提交后：自动压缩在 `StepStarted` 之前；强制压缩在同一步内、重发之前；`/compact` 不在轮内 | Notice「上下文已压缩：180k → 90k」 |
 | `Notice` | 各处 | Notice 条 / stderr |
 | `TurnEnded` | 一轮收尾：历史闭合、`turn_end` 已落盘之后 | 恢复空闲状态、发送排队的输入 |
 

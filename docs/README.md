@@ -8,7 +8,7 @@ DAgent 是一个使用 C++23 和 CMake 构建的终端 Agent，仅支持 Linux�
 | --- | --- | --- |
 | TUI 框架 | `src/*/tui`，库 `dagent_tui` | 已完成并冻结（2026-09-18）：只修缺陷，不增删原语 |
 | 应用层界面 | `src/*/ui`，库 `dagent_ui` | 起步：JSON 主题加载（`ui::load_theme`），默认主题 `config/themes/dagent.json` |
-| Agent 运行时 | `src/*/agent`，库 `dagent_agent`，可执行 `dagent` | 进行中：LLM 编解码已完成；C1 最小循环、C2 调度与权限已完成（模型调用与重试、消息历史、并行与串行工具调度、权限策略与会话授权、提示词嵌入、会话写入、`dagent run` 的 text / json / jsonl 输出与信号处理）；C3–C6 见 next-to-do |
+| Agent 运行时 | `src/*/agent`，库 `dagent_agent`，可执行 `dagent` | C1–C5 已完成：模型循环、调度与权限、会话恢复、交互界面、上下文预算与两级压缩、超长恢复及 `/compact`；C6 MCP 接入见 next-to-do |
 | 基础库 | `src/*/base`，库 `dagent_base` | 已完成：日志、`.env` 密钥、文本工具、JSON 脱敏 |
 | 子进程与沙箱 | `src/*/exec`，库 `dagent_exec` | 已完成：命令执行与进程组清理、长期子进程、bash 只读分析、Landlock + seccomp 沙箱 |
 | 网络 | `src/*/net`，库 `dagent_net` | 已完成：libcurl 薄封装（整包/流式、stop_token 取消、超时分类）与 SSE 解析 |
@@ -19,6 +19,10 @@ DAgent 是一个使用 C++23 和 CMake 构建的终端 Agent，仅支持 Linux�
 | 入口层 | `src/*/app`，库 `dagent_app` | 已完成：分层配置加载与项目信任、用户级与项目级密钥、`.mcp.json`、命令行解析；可执行入口 `main` 属于核心（`src/private/agent/main.cpp`） |
 
 `config/dagent.json` 是开发期配置（用 `--config` 显式指定），由 app 模块加载；配置文件、工作区与项目信任的约定见 [app 设计文档](design/app.md)。
+当前开发网关为本机 `http://127.0.0.1:10009/v1` 的 Qwen3.8-Flash-Next，无需密钥；通过
+`chat_template_kwargs.enable_thinking=false` 关闭思考输出。服务需先启动。
+本地服务预填充十几万 token 时可能几分钟不返回字节，超过 `http.idle_timeout_seconds`（120 秒）会按超时失败；
+做超长上下文实验时临时加 `--set http.idle_timeout_seconds=900`，不改默认配置。
 
 ## 后续工作
 
