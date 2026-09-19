@@ -167,7 +167,8 @@ void resolve_path_fields(json& layer, const fs::path& base) {
 const std::set<std::string>& known_keys() {
     static const std::set<std::string> keys = {
         "gateway.base_url", "gateway.model", "gateway.max_tokens", "gateway.temperature",
-        "gateway.enable_thinking", "gateway.system_prompt_file", "gateway.api_key_env",
+        "gateway.send_reasoning_content", "gateway.include_usage", "gateway.system_prompt_file",
+        "gateway.api_key_env",
         "http.timeout_seconds", "http.connect_timeout_seconds", "http.idle_timeout_seconds",
         "http.max_body_bytes", "http.max_error_body_bytes", "http.verify_peer", "http.verify_host",
         "context.window_tokens", "context.safety_margin_tokens", "context.compaction_trigger_percent",
@@ -191,11 +192,12 @@ const std::set<std::string>& known_keys() {
 
 bool known_key(std::string_view key) {
     if (known_keys().contains(std::string(key))) return true;
-    // flatten() 会把数组拆成 key.0、key.1；空对象则原样保留。
-    static constexpr std::string_view kArrayKeys[] = {"session.redact_fields", "process.env_deny"};
-    for (const std::string_view array_key : kArrayKeys) {
-        if (key == array_key || (key.size() > array_key.size() && key.starts_with(array_key) &&
-                                 key[array_key.size()] == '.'))
+    // flatten() 会把数组拆成 key.0、key.1，对象拆成 key.子键；这些前缀下的键都算已知。
+    static constexpr std::string_view kPrefixKeys[] = {"session.redact_fields", "process.env_deny",
+                                                       "gateway.extra_body"};
+    for (const std::string_view prefix : kPrefixKeys) {
+        if (key == prefix ||
+            (key.size() > prefix.size() && key.starts_with(prefix) && key[prefix.size()] == '.'))
             return true;
     }
     constexpr std::string_view kCredentials = "network.credentials";
@@ -256,7 +258,13 @@ Gateway map_gateway(const Node& node, const base::Secrets& secrets) {
     if (const Node v = node.child("model"); v.has()) gateway.model = v.str();
     if (const Node v = node.child("max_tokens"); v.has()) gateway.max_tokens = v.integer(gateway.max_tokens);
     if (const Node v = node.child("temperature"); v.has()) gateway.temperature = v.real();
-    if (const Node v = node.child("enable_thinking"); v.has()) gateway.enable_thinking = v.flag();
+    if (const Node v = node.child("send_reasoning_content"); v.has())
+        gateway.send_reasoning_content = v.flag(gateway.send_reasoning_content);
+    if (const Node v = node.child("include_usage"); v.has()) gateway.include_usage = v.flag(gateway.include_usage);
+    if (const Node v = node.child("extra_body"); v.has()) {
+        if (!v.raw().is_object()) fail(ConfigError::Kind::type, v.pointer() + " 应为对象");
+        gateway.extra_body = v.raw();
+    }
     if (const Node v = node.child("system_prompt_file"); v.has())
         gateway.system_prompt_file = v.str();
     if (const Node v = node.child("api_key_env"); v.has()) {
@@ -334,11 +342,11 @@ base::LogOptions map_log(const Node& node) {
     return opt;
 }
 
-ContextOptions map_context(const Node& node) {
-    ContextOptions opt;
-    if (const Node v = node.child("window_tokens"); v.has()) opt.window_tokens = v.integer(opt.window_tokens);
+agent::ContextOptions map_context(const Node& node) {
+    agent::ContextOptions opt;
+    if (const Node v = node.child("window_tokens"); v.has()) opt.window_tokens = v.usize(opt.window_tokens);
     if (const Node v = node.child("safety_margin_tokens"); v.has())
-        opt.safety_margin_tokens = v.integer(opt.safety_margin_tokens);
+        opt.safety_margin_tokens = v.usize(opt.safety_margin_tokens);
     if (const Node v = node.child("compaction_trigger_percent"); v.has())
         opt.compaction_trigger_percent = v.integer(opt.compaction_trigger_percent);
     if (const Node v = node.child("compaction_target_percent"); v.has())
@@ -346,8 +354,8 @@ ContextOptions map_context(const Node& node) {
     return opt;
 }
 
-RunOptions map_run(const Node& node) {
-    RunOptions opt;
+agent::Limits map_run(const Node& node) {
+    agent::Limits opt;
     if (const Node v = node.child("max_model_calls"); v.has())
         opt.max_model_calls = v.integer(opt.max_model_calls);
     if (const Node v = node.child("max_tool_calls"); v.has())
@@ -357,8 +365,8 @@ RunOptions map_run(const Node& node) {
     return opt;
 }
 
-ProgressOptions map_progress(const Node& node) {
-    ProgressOptions opt;
+agent::ProgressOptions map_progress(const Node& node) {
+    agent::ProgressOptions opt;
     if (const Node v = node.child("interval_ms"); v.has())
         opt.interval = std::chrono::milliseconds{v.integer()};
     return opt;
@@ -675,10 +683,15 @@ Config load_config(const LoadOptions& opt, const base::Secrets& secrets) {
     config.log = map_log(node.child("log"));
     config.mcp = map_mcp(node.child("mcp"));
     config.tools = map_tools(node.child("tools"));
-    config.context = map_context(node.child("context"));
-    config.run = map_run(node.child("run"));
-    config.progress = map_progress(node.child("progress"));
-    if (const Node v = node.child("permissions"); v.has()) config.permissions = v.str(config.permissions);
+    config.agent.context = map_context(node.child("context"));
+    config.agent.run = map_run(node.child("run"));
+    config.agent.progress = map_progress(node.child("progress"));
+    if (const Node v = node.child("permissions"); v.has()) {
+        const std::string value = v.str();
+        if (value == "auto") config.agent.permissions = agent::PermissionMode::automatic;
+        else if (value == "deny") config.agent.permissions = agent::PermissionMode::deny;
+        else fail(ConfigError::Kind::type, v.pointer() + " 应为 \"auto\" 或 \"deny\"");
+    }
     config.credentials = map_credentials(node.child("network"), secrets);
     config.mcp_servers = load_mcp_servers(root, trusted, secrets, untrusted);
     config.sources = std::move(sources);

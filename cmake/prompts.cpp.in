@@ -1,0 +1,13 @@
+#include "agent/prompt.hpp"
+
+namespace dagent::agent {
+
+std::string_view builtin_system_prompt() {
+    return R"DAGENT_PROMPT(@DAGENT_PROMPT_SYSTEM@)DAGENT_PROMPT";
+}
+
+std::string_view builtin_compact_prompt() {
+    return R"DAGENT_PROMPT(@DAGENT_PROMPT_COMPACT@)DAGENT_PROMPT";
+}
+
+} // namespace dagent::agent

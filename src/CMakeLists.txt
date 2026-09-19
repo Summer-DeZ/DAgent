@@ -147,19 +147,42 @@ target_compile_features(dagent_app PUBLIC cxx_std_23)
 target_compile_options(dagent_app PRIVATE -Wall -Wextra)
 target_compile_definitions(dagent_app PRIVATE DAGENT_VERSION="${PROJECT_VERSION}")
 target_link_libraries(dagent_app
-    PUBLIC dagent_base dagent_exec dagent_workspace dagent_net dagent_session dagent_mcp tools
+    PUBLIC dagent_agent dagent_base dagent_exec dagent_workspace dagent_net dagent_session dagent_mcp tools
     PRIVATE CLI11::CLI11
 )
 
-# 核心 agent：中立消息模型与各厂商协议的 LLM 编解码。
+# 核心 agent：中立消息模型、LLM 编解码、事件接口与一轮循环。
+file(READ ${CMAKE_SOURCE_DIR}/prompts/system.md DAGENT_PROMPT_SYSTEM)
+file(READ ${CMAKE_SOURCE_DIR}/prompts/compact.md DAGENT_PROMPT_COMPACT)
+configure_file(${CMAKE_SOURCE_DIR}/cmake/prompts.cpp.in ${CMAKE_BINARY_DIR}/generated/prompts.cpp @ONLY)
+set_property(DIRECTORY APPEND PROPERTY CMAKE_CONFIGURE_DEPENDS
+             ${CMAKE_SOURCE_DIR}/prompts/system.md ${CMAKE_SOURCE_DIR}/prompts/compact.md)
+
 add_library(dagent_agent STATIC
     private/agent/llm.cpp
     private/agent/openai_chat.cpp
+    private/agent/events.cpp
+    private/agent/model.cpp
+    private/agent/conversation.cpp
+    private/agent/prompt.cpp
+    private/agent/record.cpp
+    private/agent/permission.cpp
+    private/agent/agent.cpp
+    private/agent/dispatch.cpp
+    private/agent/headless.cpp
+    ${CMAKE_BINARY_DIR}/generated/prompts.cpp
 )
 
 target_include_directories(dagent_agent PUBLIC ${CMAKE_SOURCE_DIR}/src/public)
 target_compile_features(dagent_agent PUBLIC cxx_std_23)
 target_compile_options(dagent_agent PRIVATE -Wall -Wextra)
 target_link_libraries(dagent_agent
-    PUBLIC dagent_base dagent_net
+    PUBLIC dagent_base dagent_net dagent_exec dagent_workspace dagent_session dagent_mcp tools
 )
+
+# 可执行文件：只编 main.cpp，其余代码都在库里（README §2）。
+add_executable(dagent private/agent/main.cpp)
+
+target_compile_features(dagent PRIVATE cxx_std_23)
+target_compile_options(dagent PRIVATE -Wall -Wextra)
+target_link_libraries(dagent PRIVATE dagent_app)

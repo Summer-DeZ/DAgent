@@ -1,15 +1,19 @@
 {
   "gateway": {
-    "base_url": "http://127.0.0.1:10009/v1",
-    "model": "ling-3.0-flash-int4",
+    "base_url": "https://api.deepseek.com/v1",
+    "model": "deepseek-chat",
     "max_tokens": 4096,
     "temperature": 0,
-    "enable_thinking": false,
-    "system_prompt_file": "../prompts/file_agent.txt"
+    "send_reasoning_content": false,
+    "include_usage": true,
+    "extra_body": {},
+    "system_prompt_file": "../prompts/system.md",
+    "api_key_env": "DEEPSEEK_API_KEY"
   },
   "http": {
     "timeout_seconds": 300,
     "connect_timeout_seconds": 30,
+    "idle_timeout_seconds": 120,
     "max_body_bytes": 2097152,
     "max_error_body_bytes": 4096,
     "verify_peer": true,
@@ -50,7 +54,7 @@
   },
   "run": {
     "max_model_calls": 24,
-    "max_tool_calls": 20,
+    "max_tool_calls": 35,
     "max_model_retries": 2
   },
   "session": {

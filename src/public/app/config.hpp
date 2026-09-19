@@ -17,6 +17,7 @@
 #include <string>
 #include <vector>
 
+#include "agent/options.hpp"
 #include "base/dotenv.hpp"
 #include "base/log.hpp"
 #include "exec/process.hpp"
@@ -35,29 +36,11 @@ struct Gateway {
     std::string base_url, model;
     int max_tokens = 4096;
     std::optional<double> temperature;
-    bool enable_thinking = false;
+    bool send_reasoning_content = false; ///< DeepSeek：历史里的 reasoning_content 要不要回传
+    bool include_usage = true;           ///< 请求 stream_options.include_usage
+    nlohmann::json extra_body = nlohmann::json::object(); ///< 原样透传的厂商专属字段
     std::filesystem::path system_prompt_file; ///< 已解析成绝对路径
     std::string api_key;
-};
-
-/// @brief 上下文预算，对应 "context" 段。核心落地前先在这里定义并校验。
-struct ContextOptions {
-    int window_tokens = 262144;
-    int safety_margin_tokens = 8192;
-    int compaction_trigger_percent = 80;
-    int compaction_target_percent = 60;
-};
-
-/// @brief 一轮运行的调用上限，对应 "run" 段。
-struct RunOptions {
-    int max_model_calls = 24;
-    int max_tool_calls = 20;
-    int max_model_retries = 2;
-};
-
-/// @brief 进度提示间隔，对应 "progress" 段。
-struct ProgressOptions {
-    std::chrono::milliseconds interval{1000};
 };
 
 struct Config {
@@ -70,10 +53,7 @@ struct Config {
     base::LogOptions log;
     mcp::Options mcp;
     tools::Options tools;
-    ContextOptions context;
-    RunOptions run;
-    ProgressOptions progress;
-    std::string permissions = "auto";
+    agent::Options agent; ///< context / run / progress / permissions
     std::map<std::string, std::string> credentials; ///< network.credentials：主机名 → 密钥值
     std::vector<mcp::ServerConfig> mcp_servers;      ///< 用户级 mcp.json + 项目级 .mcp.json（受信任时）
     std::vector<std::filesystem::path> sources;      ///< 实际参与合并的 dagent 配置文件，优先级低到高
