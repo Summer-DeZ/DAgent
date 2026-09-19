@@ -120,6 +120,8 @@ return {stop_reason, handled, hit_limit}
 commit():
     while committed < slots.size() and slots[committed].result 有值:
         s = slots[committed]
+        if s.result.display 是 McpView 且 disconnected:
+            s.result.text += hub.mark_disconnected(server, s.result.text)   # T12 / T13（10-mcp §3）
         ordinal = conversation.add_tool_result(s.call.id, s.result.text, s.summary)
         recorder.tool(ordinal, s.call, s.result)
         sink(ToolFinished{s.call.id, s.call.name, s.summary, s.result})

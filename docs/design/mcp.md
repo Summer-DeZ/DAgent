@@ -35,6 +35,10 @@ mcp::CallResult r = client->call("mcp__fs__read_text_file", {{"path", "a.txt"}},
   安全的，互不排队。
 - 一个 Client 对应一个 server；**一个 server 起不来不影响其他 Client**，由核心决定是否提示用户。
 
+Agent 已通过 `agent::McpHub` 接入这些接口：后台连接每个 server，只在模型请求之间注册或刷新工具；工具结果标记
+disconnected 后自动重连一次，失败警告不影响其他服务。状态可在交互界面查看；核心生命周期细节见
+[McpHub](../next-to-do/10-mcp.md)。
+
 ---
 
 ## 2. 协议版本与握手

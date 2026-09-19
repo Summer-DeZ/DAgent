@@ -8,7 +8,7 @@ DAgent 是一个使用 C++23 和 CMake 构建的终端 Agent，仅支持 Linux�
 | --- | --- | --- |
 | TUI 框架 | `src/*/tui`，库 `dagent_tui` | 已完成并冻结（2026-09-18）：只修缺陷，不增删原语 |
 | 应用层界面 | `src/*/ui`，库 `dagent_ui` | 起步：JSON 主题加载（`ui::load_theme`），默认主题 `config/themes/dagent.json` |
-| Agent 运行时 | `src/*/agent`，库 `dagent_agent`，可执行 `dagent` | C1–C5 已完成：模型循环、调度与权限、会话恢复、交互界面、上下文预算与两级压缩、超长恢复及 `/compact`；C6 MCP 接入见 next-to-do |
+| Agent 运行时 | `src/*/agent`，库 `dagent_agent`，可执行 `dagent` | C1–C6 已完成：模型循环、调度与权限、会话恢复、交互界面、上下文管理、MCP 接入（后台连接、首次请求前等待、动态工具刷新、单次重连）。设计与验收见 next-to-do |
 | 基础库 | `src/*/base`，库 `dagent_base` | 已完成：日志、`.env` 密钥、文本工具、JSON 脱敏 |
 | 子进程与沙箱 | `src/*/exec`，库 `dagent_exec` | 已完成：命令执行与进程组清理、长期子进程、bash 只读分析、Landlock + seccomp 沙箱 |
 | 网络 | `src/*/net`，库 `dagent_net` | 已完成：libcurl 薄封装（整包/流式、stop_token 取消、超时分类）与 SSE 解析 |

@@ -136,6 +136,7 @@ temp/                             临时验收材料（小项目、故障注入�
 
 1. **`Agent` 不是线程安全的**，所有方法都在 agent 线程上调。`session::Writer` 单写入者、`net::HttpClient` 不能跨线程
    并发、`tools::Registry` 没有锁，这三条都由这一条规则满足。
+   例外是原子权限设置 `set_permission_mode` 和加锁复制的 `mcp_states`；Shell 在换会话时保护对象寿命。
 2. **`Sink` 必须线程安全**：`ToolOutput` 可能在工具工作线程上发出。交互界面的实现只做 `Runtime::post`；run 模式的
    实现加一把锁写 stdout。
 3. **`Approver` 只在 agent 线程上调**，同一时刻至多一个；stop 请求后必须尽快返回（100 ms 内）。
@@ -208,7 +209,7 @@ temp/                             临时验收材料（小项目、故障注入�
 | **C3 会话** | 回放重建、崩溃闭合、`--resume` / `--continue`、`sessions` / `trust` 子命令 | 会话中断后能接着做 |
 | **C4 交互界面** | Shell、Transcript、StatusLine、ApprovalDialog、输入排队、信任询问、恢复时重画 | 日常使用 |
 | **C5 上下文管理** | 预算、裁剪、摘要、超长恢复、`/compact` | 长任务不会撞上窗口 |
-| **C6 MCP** | McpHub：后台连接、list_changed、断线重连 | 接入外部工具 |
+| **C6 MCP** | McpHub：后台连接、list_changed、单次断线重连与状态显示 | 接入外部工具 |
 
 任务拆分、依赖顺序和 20 个验收场景见 [plan.md](plan.md)。C4 和 C5 可以互换：C3 之后如果 run 模式的长任务已经
 撞窗口，先做 C5。

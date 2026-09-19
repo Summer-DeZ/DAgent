@@ -186,7 +186,7 @@ run_headless(setup, opt):
 | --- | --- | --- |
 | `text` | **结束时**打印最后一条回复的正文 | 进度：每个工具一行 `→ <summary>`，结束时 `✓` / `✗`；`Notice`；`Retrying`；等待模型超过 `progress.interval` 后每个 interval 一行「等待模型… 12s」 |
 | `json` | 结束时一个对象（下面） | 同 text |
-| `jsonl` | 第一行 `{"type":"session","id":…,"resumed":false}`，之后每个 Event 一行（[01-events §6](01-events.md)） | 只有启动失败的错误 |
+| `jsonl` | 第一行 `{"type":"session","id":…,"resumed":false}`，之后每个 Event 一行（[01-events §6](01-events.md)） | 启动失败的错误；warn / error 级 `Notice` 另打一行 `[warn] …`（如 MCP 连接失败），info 只在 jsonl 里 |
 
 `json` 的对象：
 
