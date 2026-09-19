@@ -25,7 +25,7 @@ struct Entry {
     std::size_t tokens = 0;    ///< estimate_tokens 的缓存，加入或修改时算一次
 };
 
-/// @brief 核心自己生成、会进入历史给模型看的文字（T1–T9；T10 / T11 见 compaction.hpp）。
+/// @brief 核心自己生成、会进入历史给模型看的文字（T1–T9、T12 / T13；T10 / T11 见 compaction.hpp）。
 namespace texts {
 inline constexpr std::string_view kInterrupted = "\n\n[回复被用户中断]";
 inline constexpr std::string_view kInterruptedCall = "用户中断了本轮，这个调用没有执行。";
@@ -39,6 +39,10 @@ inline constexpr std::string_view kPolicyDenied =
 inline constexpr std::string_view kUnknownTool = "未知工具 {}。可用的工具：{}";
 inline constexpr std::string_view kToolLimit =
     "本轮工具调用已达上限（{} 次），这个调用没有执行。请总结目前的进展，并告诉用户还有什么没做完。";
+inline constexpr std::string_view kMcpReconnecting =
+    "\n\nMCP 服务 {} 已断开。下一步开始前会自动重连一次，成功后它的工具会重新出现。";
+inline constexpr std::string_view kMcpUnavailable =
+    "\n\nMCP 服务 {} 已不可用，本次会话不再重连，它的工具已移除。不要再尝试调用这些工具，改用其他办法或向用户说明。";
 inline constexpr std::string_view kCrashed =
     "会话在执行这个调用时意外中断，结果未知。如果它会修改文件或状态，请先检查当前状态再继续。";
 } // namespace texts

@@ -75,6 +75,11 @@ Agent::DispatchOutcome Agent::dispatch(const std::vector<ToolCall>& calls, int b
     const auto commit = [&] {
         while (committed < slots.size() && slots[committed].result.has_value()) {
             Slot& slot = slots[committed];
+            if (const auto* view = std::get_if<tools::McpView>(&slot.result->display);
+                view && view->disconnected) {
+                // 告诉模型这个 server 会重连还是已不可用（T12 / T13），免得它在工具消失后反复寻找。
+                slot.result->text += hub_.mark_disconnected(view->server, slot.result->text);
+            }
             const std::int64_t ordinal =
                 conversation_.add_tool_result(slot.call->id, slot.result->text, slot.summary);
             recorder_.tool(ordinal, *slot.call, slot.summary, *slot.result);

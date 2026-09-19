@@ -88,6 +88,7 @@ public:
             } catch (const std::exception& e) { worker_failed(e.what()); }
             catch (...) { worker_failed("agent 线程发生未知异常"); }
         });
+        watch_mcp();
     }
 
     ~Shell() {
@@ -154,12 +155,37 @@ private:
         const auto seconds = std::chrono::duration_cast<std::chrono::seconds>(Clock::now() - begin).count();
         activity_->set_action(std::format("{} {}s", label, seconds));
     }
+    bool update_mcp() {
+        std::vector<agent::ServerState> states;
+        {
+            std::lock_guard lock(agent_mutex_);
+            states = agent_->mcp_states();
+        }
+        status_->mcp(states);
+        for (const auto& state : states) {
+            using Status = agent::ServerState::Status;
+            if (state.status == Status::connecting || state.status == Status::reconnecting) return true;
+        }
+        return false;
+    }
+    void watch_mcp() {
+        if (setup_.mcp_servers.empty() || mcp_timer_) return;
+        const bool pending = update_mcp();
+        if (!pending && !busy_) return;
+        mcp_timer_ = rt_.every(200ms, [this] {
+            const bool pending = update_mcp();
+            if (pending || busy_) return true;
+            mcp_timer_ = 0;
+            return false;
+        });
+    }
     void busy(bool value) {
         busy_ = value; rt_.cancel(activity_timer_); activity_timer_ = 0;
         if (value) {
             step_begin_ = Clock::now(); phase_ = "思考中";
             activity_timer_ = rt_.every(100ms, [this] { activity(); activity_->tick(); return true; });
         } else running_.clear();
+        watch_mcp();
         activity();
     }
     void apply(const agent::Event& event) {
@@ -253,9 +279,9 @@ private:
                 auto next = agent::Agent::create(std::move(setup));
                 std::string id = next->meta().id;
                 {
-                    // set_permission_mode 是 Agent 唯一允许跨线程的方法；换会话时保护对象寿命。
+                    // 权限设置和 MCP 状态读取可跨线程；换会话时保护对象寿命。
                     std::lock_guard lock(agent_mutex_);
-                    next->set_permission_mode(mode_); agent_ = std::move(next);
+                    next->set_permission_mode(mode_); agent_.swap(next);
                 }
                 rt_.post([this, id = std::move(id)] {
                     id_ = id; reset_transcript(); status_->session(setup_.model.model, id_);
@@ -311,7 +337,7 @@ private:
     std::vector<Running> running_;
     Clock::time_point step_begin_{};
     std::optional<Clock::time_point> last_cancel_;
-    tui::TimerId activity_timer_ = 0, notice_timer_ = 0;
+    tui::TimerId activity_timer_ = 0, notice_timer_ = 0, mcp_timer_ = 0;
     bool busy_ = false, exiting_ = false, signal_exit_ = false;
 };
 } // namespace

@@ -187,6 +187,10 @@ struct JsonlOutput {
             if (!data.empty()) write_locked(to_json(ToolOutput{output->id, std::move(data)}));
             return;
         }
+        if (const auto* notice = std::get_if<Notice>(&event);
+            notice && notice->level != Notice::Level::info) {
+            std::cerr << "[" << level_name(notice->level) << "] " << notice->text << '\n';
+        }
         if (const auto* finished = std::get_if<ToolFinished>(&event)) {
             // 调用结束时还剩的字节确实不完整，交给 to_json 替换成 U+FFFD。
             if (const auto it = pending.find(finished->id); it != pending.end()) {

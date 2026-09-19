@@ -15,6 +15,7 @@
 #include "agent/compaction.hpp"
 #include "agent/events.hpp"
 #include "agent/model.hpp"
+#include "agent/mcp_hub.hpp"
 #include "agent/options.hpp"
 #include "agent/permission.hpp"
 #include "agent/record.hpp"
@@ -46,6 +47,9 @@ public:
     /// @brief 权限模式（交互界面的 Shift+Tab）。线程安全，下一次决策生效；调用方保证对象仍存活。
     void set_permission_mode(PermissionMode mode);
 
+    /// @brief MCP 连接状态快照。线程安全，调用方保证 Agent 仍存活。
+    std::vector<ServerState> mcp_states() const { return hub_.states(); }
+
     const session::Meta& meta() const { return recorder_.meta(); }
 
 private:
@@ -71,6 +75,7 @@ private:
     // 成员声明顺序即构造顺序，析构倒序：registry_ 先于任何持有 Client 的部件析构（04-turn §3）。
     Setup setup_;
     Recorder recorder_;
+    McpHub hub_; ///< registry_ 先析构，确保 MCP 工具不再引用 Client
     tools::Registry registry_;
     tools::Context tool_ctx_;
     Policy policy_;

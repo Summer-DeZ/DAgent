@@ -43,6 +43,7 @@ Overloaded(Ts...) -> Overloaded<Ts...>;
 Agent::Agent(Setup setup, std::string system_prompt, Recorder recorder, Conversation conversation)
     : setup_(std::move(setup)),
       recorder_(std::move(recorder)),
+      hub_(setup_.mcp_servers, setup_.mcp),
       registry_(),
       tool_ctx_(setup_.cwd, setup_.tools, setup_.files, setup_.search, setup_.process),
       policy_(setup_.permission_mode, setup_.sandbox, setup_.cwd, setup_.project_root),
@@ -181,6 +182,7 @@ TurnStatus Agent::finish(TurnStatus status, std::string error, int steps, int ca
     recorder_.sync();
     log_agent()->info("本轮结束：status={} steps={} tool_calls={} prompt={} completion={}",
                       to_string(status), steps, calls, total.prompt, total.completion);
+    hub_.report_pending(sink);
     sink(TurnEnded{status, error, steps, calls, total});
     return status;
 }
@@ -210,10 +212,11 @@ TurnStatus Agent::run_turn(std::string input, const Sink& sink, const Approver& 
         }
         ++steps;
 
-        const RequestShape shape{system_prompt_, tool_defs(), setup_.model};
         std::size_t estimated = 0;
         Reply reply;
         try {
+            hub_.apply_pending(registry_, sink, stop);
+            const RequestShape shape{system_prompt_, tool_defs(), setup_.model};
             // 自动压缩在 StepStarted 之前（01-events §3）：界面在一步开始后作废的内容不含压缩提示。
             compactor_.maybe_compact(conversation_, shape, model_, estimator_, recorder_, sink, stop);
             check_broken(sink);
@@ -245,6 +248,11 @@ TurnStatus Agent::run_turn(std::string input, const Sink& sink, const Approver& 
             case ModelError::Kind::exhausted:
                 return finish(TurnStatus::failed, error.what(), steps, calls, total, sink);
             }
+        } catch (const mcp::McpError& error) {
+            return finish(error.kind() == mcp::McpError::Kind::cancelled ? TurnStatus::interrupted
+                                                                       : TurnStatus::failed,
+                          error.kind() == mcp::McpError::Kind::cancelled ? "" : error.what(),
+                          steps, calls, total, sink);
         }
 
         if (reply.usage) {
