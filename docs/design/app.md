@@ -1,15 +1,16 @@
 # app：配置与命令行（入口层）
 
 头文件在 `src/public/app/`，实现在 `src/private/app/`，构建为静态库 `dagent_app`，命名空间 `dagent::app`。
-**位于最顶层**：它认识所有模块的 Options，所以依赖全部外围模块，但没有任何模块反过来依赖它。
+**位于最顶层**：它认识所有模块的 Options，所以依赖全部外围模块和核心库 `dagent_agent`（核心的 Options 由它映射），
+但没有任何模块反过来依赖它。
 
 | 能力 | 头文件 | 主要接口 |
 | --- | --- | --- |
 | 配置加载、密钥、项目信任 | `app/config.hpp` | `load_config`、`load_secrets`、`project_root`、`is_trusted`、`trust_project`、`parse_mcp_servers` |
 | 命令行解析 | `app/cli.hpp` | `parse_args` |
 
-程序入口（可执行目标 `dagent` 的 `main`）还没有：拿到 `Args` 和 `Config` 之后怎样组装界面、agent 和各模块，
-属于核心，见第 5 节列出的约定。
+程序入口（可执行目标 `dagent` 的 `main`）属于核心，在 `src/private/agent/main.cpp`：拿到 `Args` 和 `Config` 之后
+组装 agent 与各模块，遵守第 5 节列出的约定；装配方式见 [next-to-do/11-entry.md](../next-to-do/11-entry.md)。
 
 ---
 
@@ -66,13 +67,13 @@
 
 | 配置段 | 映射到 |
 | --- | --- |
-| `gateway` | `Gateway`（`api_key_env` 指向的变量经 Secrets 取值，本地网关可以为空） |
+| `gateway` | `Gateway`（`api_key_env` 指向的变量经 Secrets 取值，本地网关可以为空）；`send_reasoning_content`、`include_usage`、`extra_body`（对象，原样透传给编解码器）对应 `agent::OpenAiChatOptions` 的同名字段 |
 | `http` | `net::HttpOptions` |
 | `process` | `exec::Options` |
 | `files`、`search` | `workspace::FileOptions`、`workspace::SearchOptions` |
 | `session`、`log`、`mcp` | `session::Options`、`base::LogOptions`、`mcp::Options` |
 | `tools` | `tools::Options` |
-| `context`、`run`、`progress`、`permissions` | 暂时定义在 app 里（`ContextOptions` 等）；核心有了自己的类型后改为映射到核心 |
+| `context`、`run`、`progress`、`permissions` | `Config::agent`（`agent::Options`）；`permissions` 只接受 `"auto"`、`"deny"` |
 | `network.credentials` | `Config::credentials`：主机名 → 密钥值 |
 
 键名到字段逐项手写映射（单位不同，如 `timeout_seconds` → `std::chrono::seconds`）。`api_key` 和任何密钥值

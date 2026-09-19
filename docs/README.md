@@ -8,7 +8,7 @@ DAgent 是一个使用 C++23 和 CMake 构建的终端 Agent，仅支持 Linux�
 | --- | --- | --- |
 | TUI 框架 | `src/*/tui`，库 `dagent_tui` | 已完成并冻结（2026-09-18）：只修缺陷，不增删原语 |
 | 应用层界面 | `src/*/ui`，库 `dagent_ui` | 起步：JSON 主题加载（`ui::load_theme`），默认主题 `config/themes/dagent.json` |
-| Agent 运行时 | `src/*/agent`，库 `dagent_agent` | 进行中：LLM 编解码已完成（中立消息模型、OpenAI Chat Completions），agent 循环等其余部分未开始 |
+| Agent 运行时 | `src/*/agent`，库 `dagent_agent`，可执行 `dagent` | 进行中：LLM 编解码已完成；C1 最小循环已完成（模型调用与重试、消息历史、串行工具调度、auto / deny 权限、提示词嵌入、会话写入、`dagent run` 的 text 输出）；C2–C6 见 next-to-do |
 | 基础库 | `src/*/base`，库 `dagent_base` | 已完成：日志、`.env` 密钥、文本工具、JSON 脱敏 |
 | 子进程与沙箱 | `src/*/exec`，库 `dagent_exec` | 已完成：命令执行与进程组清理、长期子进程、bash 只读分析、Landlock + seccomp 沙箱 |
 | 网络 | `src/*/net`，库 `dagent_net` | 已完成：libcurl 薄封装（整包/流式、stop_token 取消、超时分类）与 SSE 解析 |
@@ -16,16 +16,16 @@ DAgent 是一个使用 C++23 和 CMake 构建的终端 Agent，仅支持 Linux�
 | 会话存储 | `src/*/session`，库 `dagent_session` | 已完成：JSONL 追加写入、UUIDv7、blob 外置、写入前脱敏、崩溃恢复、按项目过滤的 list |
 | MCP 客户端 | `src/*/mcp`，库 `dagent_mcp` | 已完成：stdio 与 Streamable HTTP、现代（2026-07-28）与经典协议自动识别、取消/超时/断连、经典会话过期恢复；只做 tools |
 | 工具层 | `src/*/tools`，库 `tools` | 已完成：read / write / edit / bash / grep / glob 与 MCP 工具包装；两阶段 prepare/run、Intent 供权限决策、FileTracker 做 stale 检测、按工具定义的 View |
-| 入口层 | `src/*/app`，库 `dagent_app` | 已完成：分层配置加载与项目信任、用户级与项目级密钥、`.mcp.json`、命令行解析；可执行入口 `main` 待核心组装 |
+| 入口层 | `src/*/app`，库 `dagent_app` | 已完成：分层配置加载与项目信任、用户级与项目级密钥、`.mcp.json`、命令行解析；可执行入口 `main` 属于核心（`src/private/agent/main.cpp`） |
 
 `config/dagent.json` 是开发期配置（用 `--config` 显式指定），由 app 模块加载；配置文件、工作区与项目信任的约定见 [app 设计文档](design/app.md)。
 
 ## 后续工作
 
-[next-to-do/](next-to-do/README.md)：外围模块的设计、技术路线与验收标准，共七个库——base（日志、密钥、
-文本工具）、exec（子进程、沙箱）、workspace（文件、搜索、diff、项目上下文）、net（HTTP/SSE）、
-session、mcp、app（配置、命令行），按里程碑 M1–M5 推进。模块完成并审核通过后，对应文档改写成 `design/`
-下的设计文档，并从 next-to-do 删除。七个外围模块和 tools 层已全部完成，next-to-do 里保留的是统一约定与审核流程。
+[next-to-do/](next-to-do/README.md)：Agent 核心的设计与执行计划。README 是总览（范围、分层、线程模型、统一约定），
+01–12 每篇讲一个部件（事件接口、模型调用、消息历史、一轮循环、工具调度、权限、上下文管理、提示词、会话记录与恢复、
+MCP、入口、交互界面），[plan.md](next-to-do/plan.md) 把里程碑 C0–C6 拆成任务并列出验收场景。七个外围模块和 tools
+层已全部完成，设计文档见下表。核心完成并审核通过后，改写成 `design/` 下的设计文档，并删除 next-to-do。
 
 ## 设计文档
 
@@ -75,7 +75,7 @@ ctest --test-dir build/dev         # 运行 test/tui（tui_tests）
 docs/
 ├── README.md    本索引
 ├── design/      设计文档：描述当前实现
-└── next-to-do/  待实现模块的设计与技术路线（完成后迁入 design/）
+└── next-to-do/  待实现部分的设计与执行计划（完成后迁入 design/）
 ```
 
 - 目录名不含空格，避免 Markdown 链接需要转义。
