@@ -1,9 +1,13 @@
 #include "agent/record.hpp"
 
+#include <algorithm>
+#include <cstdint>
 #include <format>
+#include <stdexcept>
 #include <utility>
 
 #include "base/log.hpp"
+#include "base/text.hpp"
 
 namespace dagent::agent {
 namespace {
@@ -24,6 +28,66 @@ const char* answer_name(Decision::Answer answer) {
 
 json usage_json(const Usage& usage) {
     return json{{"prompt", usage.prompt}, {"completion", usage.completion}, {"cached", usage.cached}};
+}
+
+[[noreturn]] void corrupt(std::string_view type, std::string_view message) {
+    throw session::SessionError(session::SessionError::Kind::corrupt,
+                                std::format("会话记录 {} 损坏：{}", type, message));
+}
+
+void require_object(std::string_view type, const json& payload) {
+    if (!payload.is_object()) corrupt(type, "缺少 payload；这个会话可能关闭了 record_payloads");
+}
+
+std::string string_field(std::string_view type, const json& object, const char* key) {
+    const auto it = object.find(key);
+    if (it == object.end() || !it->is_string()) corrupt(type, std::format("字段 {} 应为字符串", key));
+    return it->get<std::string>();
+}
+
+std::int64_t integer_field(std::string_view type, const json& object, const char* key) {
+    const auto it = object.find(key);
+    if (it == object.end() || (!it->is_number_integer() && !it->is_number_unsigned())) {
+        corrupt(type, std::format("字段 {} 应为整数", key));
+    }
+    try {
+        return it->get<std::int64_t>();
+    } catch (const json::exception&) {
+        corrupt(type, std::format("字段 {} 超出范围", key));
+    }
+}
+
+bool bool_field(std::string_view type, const json& object, const char* key) {
+    const auto it = object.find(key);
+    if (it == object.end() || !it->is_boolean()) corrupt(type, std::format("字段 {} 应为布尔值", key));
+    return it->get<bool>();
+}
+
+Usage parse_usage(std::string_view type, const json& value) {
+    if (!value.is_object()) corrupt(type, "字段 usage 应为对象");
+    Usage usage;
+    usage.prompt = integer_field(type, value, "prompt");
+    usage.completion = integer_field(type, value, "completion");
+    usage.cached = integer_field(type, value, "cached");
+    return usage;
+}
+
+TurnStatus parse_status(std::string_view value) {
+    if (value == "done") return TurnStatus::done;
+    if (value == "interrupted") return TurnStatus::interrupted;
+    if (value == "denied") return TurnStatus::denied;
+    if (value == "limit") return TurnStatus::limit;
+    if (value == "failed" || value == "crashed") return TurnStatus::failed;
+    corrupt("turn_end", std::format("未知 status {}", value));
+}
+
+std::size_t utf8_prefix_chars(std::string_view text, std::size_t characters) {
+    std::size_t pos = 0;
+    for (std::size_t count = 0; pos < text.size() && count < characters; ++count) {
+        const auto lead = static_cast<unsigned char>(text[pos]);
+        pos += lead < 0x80 ? 1 : lead < 0xE0 ? 2 : lead < 0xF0 ? 3 : 4;
+    }
+    return std::min(pos, text.size());
 }
 
 } // namespace
@@ -117,5 +181,186 @@ void Recorder::sync() {
 }
 
 const session::Meta& Recorder::meta() const { return writer_->meta(); }
+
+Restored replay_into(const session::Options& options, std::string_view id, const Sink& sink) {
+    Conversation conversation;
+    bool saw_system = false;
+    bool open_turn = false;
+    std::int64_t next_ordinal = 0;
+
+    session::replay(options, id, [&](std::string_view type, const json& payload) {
+        require_object(type, payload);
+        if (!saw_system && type != "system") corrupt(type, "第一条核心记录不是 system");
+
+        if (type == "system") {
+            const std::int64_t schema = integer_field(type, payload, "schema");
+            if (schema != 1) corrupt(type, std::format("不认识的会话格式版本 {}", schema));
+            (void)string_field(type, payload, "text");
+            saw_system = true;
+            return;
+        }
+        if (type == "user") {
+            const std::int64_t n = integer_field(type, payload, "n");
+            if (n != next_ordinal) corrupt(type, std::format("消息序号应为 {}，实际为 {}", next_ordinal, n));
+            std::string text = string_field(type, payload, "text");
+            Entry entry;
+            entry.message.role = Role::user;
+            entry.message.content = text;
+            entry.ordinal = n;
+            conversation.restore(std::move(entry));
+            ++next_ordinal;
+            open_turn = true;
+            sink(TurnStarted{std::move(text)});
+            return;
+        }
+        if (type == "assistant") {
+            const std::int64_t n = integer_field(type, payload, "n");
+            if (n != next_ordinal) corrupt(type, std::format("消息序号应为 {}，实际为 {}", next_ordinal, n));
+            Message message;
+            message.role = Role::assistant;
+            message.content = string_field(type, payload, "content");
+            message.reasoning_content = string_field(type, payload, "reasoning");
+            const auto calls = payload.find("tool_calls");
+            if (calls == payload.end() || !calls->is_array()) corrupt(type, "字段 tool_calls 应为数组");
+            for (const json& item : *calls) {
+                if (!item.is_object()) corrupt(type, "tool_calls 的元素应为对象");
+                message.tool_calls.push_back(ToolCall{string_field(type, item, "id"),
+                                                      string_field(type, item, "name"),
+                                                      string_field(type, item, "arguments")});
+            }
+            (void)string_field(type, payload, "finish");
+            if (const auto usage = payload.find("usage"); usage != payload.end()) {
+                (void)parse_usage(type, *usage);
+            }
+            if (!message.reasoning_content.empty()) sink(ReasoningDelta{message.reasoning_content});
+            if (!message.content.empty()) sink(TextDelta{message.content});
+            Entry entry;
+            entry.message = std::move(message);
+            entry.ordinal = n;
+            conversation.restore(std::move(entry));
+            ++next_ordinal;
+            return;
+        }
+        if (type == "tool") {
+            const std::int64_t n = integer_field(type, payload, "n");
+            if (n != next_ordinal) corrupt(type, std::format("消息序号应为 {}，实际为 {}", next_ordinal, n));
+            const std::string call_id = string_field(type, payload, "call_id");
+            const std::string name = string_field(type, payload, "name");
+            const std::string summary = string_field(type, payload, "summary");
+            const std::string text = string_field(type, payload, "text");
+            tools::Result result;
+            result.text = text;
+            result.is_error = bool_field(type, payload, "is_error");
+            result.interrupted = bool_field(type, payload, "interrupted");
+            const auto view = payload.find("view");
+            if (view == payload.end() || !view->is_object()) corrupt(type, "字段 view 应为对象");
+            result.display = tools::view_from_json(*view);
+
+            Entry entry;
+            entry.message.role = Role::tool;
+            entry.message.tool_call_id = call_id;
+            entry.message.content = text;
+            entry.ordinal = n;
+            entry.summary = summary;
+            conversation.restore(std::move(entry));
+            ++next_ordinal;
+            sink(ToolFinished{call_id, name, summary, std::move(result)});
+            return;
+        }
+        if (type == "permission") {
+            (void)string_field(type, payload, "call_id");
+            (void)string_field(type, payload, "answer");
+            (void)string_field(type, payload, "rule");
+            (void)bool_field(type, payload, "network");
+            return;
+        }
+        if (type == "turn_end") {
+            const std::string status_name = string_field(type, payload, "status");
+            const std::string stored_error = string_field(type, payload, "error");
+            const std::int64_t steps = integer_field(type, payload, "steps");
+            const std::int64_t tool_calls = integer_field(type, payload, "tool_calls");
+            const auto usage = payload.find("usage");
+            if (usage == payload.end()) corrupt(type, "缺少字段 usage");
+            const Usage total = parse_usage(type, *usage);
+            const TurnStatus status = parse_status(status_name);
+            const std::string error = status_name == "crashed" && stored_error.empty()
+                                          ? "会话意外中断"
+                                          : stored_error;
+            open_turn = false;
+            sink(TurnEnded{status, error, static_cast<int>(steps), static_cast<int>(tool_calls), total});
+            return;
+        }
+        corrupt(type, "未知记录类型");
+    });
+
+    if (!saw_system) {
+        throw session::SessionError(session::SessionError::Kind::corrupt,
+                                    "会话记录缺少 system；这个会话可能关闭了 record_payloads");
+    }
+    conversation.set_next_ordinal(next_ordinal);
+
+    // 未闭合历史只允许缺少最后一批工具结果。先在内存副本上投影崩溃闭合并验证，
+    // 确认记录前缀本身合法后，Agent::resume 才会打开 Writer 把 T9 写回 JSONL。
+    const std::vector<ToolCall> open_calls = open_turn ? conversation.open_calls()
+                                                       : std::vector<ToolCall>{};
+    Conversation checked = conversation;
+    for (const ToolCall& call : open_calls) {
+        checked.add_tool_result(call.id, std::string(texts::kCrashed), "恢复意外中断");
+    }
+    if (const std::optional<std::string> invalid = checked.validate()) {
+        throw session::SessionError(session::SessionError::Kind::corrupt,
+                                    "会话历史不一致：" + *invalid);
+    }
+
+    Restored restored;
+    restored.conversation = std::move(conversation);
+    restored.unfinished = open_turn;
+    restored.open_calls = open_calls;
+    return restored;
+}
+
+std::string session_title(const nlohmann::json& first_events) {
+    if (!first_events.is_array()) return {};
+    for (const json& event : first_events) {
+        if (!event.is_object() || event.value("type", "") != "user") continue;
+        const auto payload = event.find("payload");
+        if (payload == event.end() || !payload->is_object()) return {};
+        const auto text = payload->find("text");
+        if (text == payload->end() || !text->is_string()) return {};
+        std::string title = base::to_valid_utf8(text->get<std::string>());
+        if (const std::size_t newline = title.find_first_of("\r\n"); newline != std::string::npos) {
+            title.resize(newline);
+        }
+        title.resize(utf8_prefix_chars(title, 60));
+        return title;
+    }
+    return {};
+}
+
+std::string resolve_session_id(const session::Options& options,
+                               const std::filesystem::path& project_root,
+                               std::optional<std::string_view> prefix) {
+    const std::vector<session::Summary> sessions =
+        session::list(options, project_root, 0, session_title);
+    if (!prefix) {
+        if (sessions.empty()) throw std::runtime_error("这个项目还没有会话");
+        return sessions.front().meta.id;
+    }
+
+    std::vector<const session::Summary*> matches;
+    for (const session::Summary& summary : sessions) {
+        if (summary.meta.id == *prefix) return summary.meta.id;
+        if (summary.meta.id.starts_with(*prefix)) matches.push_back(&summary);
+    }
+    if (matches.empty()) throw std::runtime_error("这个项目里找不到会话 " + std::string(*prefix));
+    if (matches.size() == 1) return matches.front()->meta.id;
+
+    std::string message = "会话 id 前缀有歧义，请使用更长的前缀：";
+    for (const session::Summary* match : matches) {
+        message += "\n  " + match->meta.id;
+        if (!match->title.empty()) message += "  " + match->title;
+    }
+    throw std::runtime_error(message);
+}
 
 } // namespace dagent::agent

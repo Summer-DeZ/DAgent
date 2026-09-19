@@ -253,7 +253,8 @@ private:
     std::uint64_t next_index_;
 };
 
-void restore_blobs(nlohmann::json& value, const fs::path& session_dir) {
+void restore_blobs(nlohmann::json& value, const fs::path& session_dir,
+                   std::optional<std::size_t> max_bytes = std::nullopt) {
     if (value.is_object()) {
         if (const auto it = value.find("$blob"); it != value.end() && it->is_string()) {
             const std::string rel = it->get<std::string>();
@@ -263,12 +264,22 @@ void restore_blobs(nlohmann::json& value, const fs::path& session_dir) {
             const fs::path file = session_dir / rel;
             std::ifstream in(file, std::ios::binary);
             if (!in) fail(SessionError::Kind::io, std::format("cannot read blob {}", file.string()));
-            value = std::string((std::istreambuf_iterator<char>(in)), std::istreambuf_iterator<char>());
+            if (max_bytes) {
+                std::string prefix(*max_bytes, '\0');
+                in.read(prefix.data(), static_cast<std::streamsize>(prefix.size()));
+                prefix.resize(static_cast<std::size_t>(in.gcount()));
+                value = std::move(prefix);
+            } else {
+                value = std::string((std::istreambuf_iterator<char>(in)),
+                                    std::istreambuf_iterator<char>());
+            }
             return;
         }
-        for (auto it = value.begin(); it != value.end(); ++it) restore_blobs(it.value(), session_dir);
+        for (auto it = value.begin(); it != value.end(); ++it) {
+            restore_blobs(it.value(), session_dir, max_bytes);
+        }
     } else if (value.is_array()) {
-        for (nlohmann::json& item : value) restore_blobs(item, session_dir);
+        for (nlohmann::json& item : value) restore_blobs(item, session_dir, max_bytes);
     }
 }
 
@@ -486,9 +497,13 @@ std::vector<Summary> list(const Options& options, const std::optional<fs::path>&
             nlohmann::json events = nlohmann::json::array();
             std::istringstream lines(head);
             for (std::string line; std::getline(lines, line);) {
-                const nlohmann::json parsed = nlohmann::json::parse(line, nullptr, false);
+                nlohmann::json parsed = nlohmann::json::parse(line, nullptr, false);
                 if (parsed.is_discarded() || !parsed.is_object()) continue;
                 if (string_field(parsed, "type") == "meta") continue;
+                if (auto payload = parsed.find("payload"); payload != parsed.end()) {
+                    // 标题最多只需要一小段文本；有界恢复 blob，避免 list 因超长输入读取大文件。
+                    restore_blobs(*payload, dir, kTitleReadBytes);
+                }
                 events.push_back(parsed);
                 if (events.size() >= kTitleEvents) break;
             }

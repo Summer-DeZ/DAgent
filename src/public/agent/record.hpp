@@ -5,12 +5,14 @@
 #pragma once
 
 #include <cstdint>
+#include <filesystem>
 #include <optional>
 #include <string>
 #include <string_view>
 #include <vector>
 
 #include "agent/events.hpp"
+#include "agent/conversation.hpp"
 #include "agent/model.hpp"
 #include "agent/message.hpp"
 #include "lib/nlohmann/json.hpp"
@@ -47,5 +49,21 @@ private:
     bool broken_ = false;
     std::string error_;
 };
+
+struct Restored {
+    Conversation conversation;
+    bool unfinished = false;          ///< 最后一轮没有 turn_end（崩溃或被杀）
+    std::vector<ToolCall> open_calls; ///< unfinished 时还没有结果的调用
+};
+
+/// @brief 从记录重建消息历史，并把可显示的历史事件交给 sink。
+Restored replay_into(const session::Options&, std::string_view id, const Sink& sink);
+
+/// @brief session::list 的标题提取器：第一条 user 的第一行，最多 60 个 UTF-8 字符。
+std::string session_title(const nlohmann::json& first_events);
+
+/// @brief 在当前项目的会话中解析完整 id 或唯一前缀；prefix 为空时选择最近会话。
+std::string resolve_session_id(const session::Options&, const std::filesystem::path& project_root,
+                               std::optional<std::string_view> prefix);
 
 } // namespace dagent::agent

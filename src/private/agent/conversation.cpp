@@ -152,7 +152,10 @@ void Conversation::replace_prefix(std::size_t cut, std::string summary_message) 
     entries_.push_front(std::move(entry));
 }
 
-void Conversation::restore(Entry entry) { entries_.push_back(std::move(entry)); }
+void Conversation::restore(Entry entry) {
+    entry.tokens = compute_tokens(entry.message);
+    entries_.push_back(std::move(entry));
+}
 
 void Conversation::set_next_ordinal(std::int64_t next) { next_ordinal_ = next; }
 

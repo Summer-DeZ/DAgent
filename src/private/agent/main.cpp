@@ -3,7 +3,9 @@
 #include <csignal>
 #include <cstddef>
 #include <filesystem>
+#include <iomanip>
 #include <iostream>
+#include <sstream>
 #include <string>
 #include <string_view>
 #include <system_error>
@@ -14,10 +16,12 @@
 
 #include "agent/headless.hpp"
 #include "agent/options.hpp"
+#include "agent/record.hpp"
 #include "app/cli.hpp"
 #include "app/config.hpp"
 #include "base/log.hpp"
 #include "exec/sandbox.hpp"
+#include "tui/grapheme.hpp"
 #include "workspace/files.hpp"
 
 namespace {
@@ -82,6 +86,42 @@ dagent::agent::Setup make_setup(const dagent::app::Config& config, const dagent:
     return setup;
 }
 
+std::pair<std::string, int> fit_title(std::string_view title, int columns) {
+    std::string out;
+    int width = 0;
+    dagent::tui::unicode::Grapheme grapheme;
+    while (dagent::tui::unicode::next_grapheme(title, grapheme)) {
+        if (width + grapheme.width > columns) break;
+        out.append(grapheme.bytes);
+        width += grapheme.width;
+    }
+    return {std::move(out), width};
+}
+
+std::string local_minute(std::chrono::system_clock::time_point time) {
+    const std::time_t raw = std::chrono::system_clock::to_time_t(time);
+    std::tm local{};
+    if (::localtime_r(&raw, &local) == nullptr) return "0000-00-00 00:00";
+    std::ostringstream out;
+    out << std::put_time(&local, "%Y-%m-%d %H:%M");
+    return out.str();
+}
+
+void print_sessions(const dagent::app::Config& config) {
+    const std::vector<dagent::session::Summary> sessions = dagent::session::list(
+        config.session, config.project_root, 20, dagent::agent::session_title);
+    if (sessions.empty()) {
+        std::cout << "这个项目还没有会话\n";
+        return;
+    }
+    for (const dagent::session::Summary& summary : sessions) {
+        auto [title, width] = fit_title(summary.title, 50);
+        std::cout << local_minute(summary.updated) << "   " << title
+                  << std::string(static_cast<std::size_t>(50 - width), ' ') << "   "
+                  << summary.meta.id << '\n';
+    }
+}
+
 } // namespace
 
 int main(int argc, char** argv) {
@@ -115,8 +155,8 @@ int main(int argc, char** argv) {
 
         switch (args.mode) {
         case Mode::sessions:
-            std::cerr << "sessions 子命令尚未实现\n";
-            return 2;
+            print_sessions(config);
+            return 0;
         case Mode::interactive:
             std::cerr << "交互界面尚未实现；请使用 dagent run\n";
             return 2;

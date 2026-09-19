@@ -100,9 +100,10 @@ std::variant<Args, int> parse_args(int argc, char** argv) {
     std::vector<std::string> model_values;
     app.add_option("-m,--model", model_values, "等价于 --set gateway.model=<模型>")->allow_extra_args(false);
     std::string resume;
-    app.add_option("-r,--resume", resume, "恢复指定会话");
+    CLI::Option* resume_option = app.add_option("-r,--resume", resume, "恢复指定会话");
     bool continue_last = false;
-    app.add_flag("--continue", continue_last, "恢复本项目最近的一次会话");
+    CLI::Option* continue_option = app.add_flag("--continue", continue_last, "恢复本项目最近的一次会话");
+    resume_option->excludes(continue_option);
     std::string log_level;
     app.add_option("--log-level", log_level, "日志级别");
     std::vector<std::string> prompt_words;
@@ -178,6 +179,12 @@ std::variant<Args, int> parse_args(int argc, char** argv) {
     if (!resume.empty()) args.resume_id = resume;
     args.continue_last = continue_last;
     if (!log_level.empty()) args.log_level = log_level;
+
+    if ((args.mode == Mode::sessions || args.mode == Mode::trust) &&
+        (args.resume_id || args.continue_last)) {
+        std::cerr << "sessions / trust 不能和 --resume / --continue 一起使用\n";
+        return 2;
+    }
 
     const bool stdin_tty = ::isatty(STDIN_FILENO) != 0;
     if (args.mode == Mode::interactive) {

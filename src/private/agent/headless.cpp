@@ -17,6 +17,7 @@
 
 #include "agent/agent.hpp"
 #include "agent/conversation.hpp"
+#include "agent/record.hpp"
 
 namespace dagent::agent {
 namespace {
@@ -224,15 +225,21 @@ Interrupts& install_interrupts() {
 }
 
 int run_headless(Setup setup, const HeadlessOptions& options, Interrupts& interrupts) {
-    if (options.resume_id || options.continue_last) {
-        std::cerr << "会话恢复尚未实现\n";
-        return 2;
-    }
     const auto heartbeat_interval = setup.options.progress.interval;
+    const bool resumed = options.resume_id.has_value() || options.continue_last;
 
     std::unique_ptr<Agent> agent;
     try {
-        agent = Agent::create(std::move(setup));
+        if (resumed) {
+            const std::optional<std::string_view> prefix = options.resume_id
+                                                               ? std::optional<std::string_view>(*options.resume_id)
+                                                               : std::nullopt;
+            const std::string session_id =
+                resolve_session_id(setup.session, setup.project_root, prefix);
+            agent = Agent::resume(std::move(setup), session_id, [](const Event&) {});
+        } else {
+            agent = Agent::create(std::move(setup));
+        }
     } catch (const std::exception& error) {
         std::cerr << "启动失败：" << error.what() << "\n";
         return 1;
@@ -248,7 +255,7 @@ int run_headless(Setup setup, const HeadlessOptions& options, Interrupts& interr
         JsonlOutput output;
         output.stop = &interrupts.stop;
         output.write_line(
-            nlohmann::json{{"type", "session"}, {"id", session_id}, {"resumed", false}});
+            nlohmann::json{{"type", "session"}, {"id", session_id}, {"resumed", resumed}});
         const Sink sink = [&output](const Event& event) { output(event); };
         interrupts.graceful = true;
         status = agent->run_turn(options.prompt, sink, Approver{}, interrupts.stop.get_token());

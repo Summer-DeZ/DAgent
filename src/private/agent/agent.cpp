@@ -40,7 +40,7 @@ Overloaded(Ts...) -> Overloaded<Ts...>;
 
 } // namespace
 
-Agent::Agent(Setup setup, std::string system_prompt, Recorder recorder)
+Agent::Agent(Setup setup, std::string system_prompt, Recorder recorder, Conversation conversation)
     : setup_(std::move(setup)),
       recorder_(std::move(recorder)),
       registry_(),
@@ -48,10 +48,56 @@ Agent::Agent(Setup setup, std::string system_prompt, Recorder recorder)
       policy_(setup_.permission_mode, setup_.sandbox, setup_.cwd, setup_.project_root),
       model_([codec = setup_.codec] { return make_openai_chat_codec(codec); }, setup_.http,
              RetryOptions{setup_.options.run.max_model_retries}),
-      conversation_(),
+      conversation_(std::move(conversation)),
       estimator_(),
       system_prompt_(std::move(system_prompt)) {
     tools::add_builtin(registry_);
+}
+
+std::unique_ptr<Agent> Agent::resume(Setup setup, std::string_view session_id,
+                                     const Sink& replay_sink) {
+    Restored restored = replay_into(setup.session, session_id, replay_sink);
+    Recorder recorder = Recorder::resume(setup.session, session_id);
+    const std::string previous_model = recorder.meta().model;
+    std::string system_prompt = render_prompt(setup);
+
+    auto agent = std::unique_ptr<Agent>(new Agent(std::move(setup), std::move(system_prompt),
+                                                  std::move(recorder),
+                                                  std::move(restored.conversation)));
+    if (restored.unfinished) {
+        for (const ToolCall& call : restored.open_calls) {
+            const std::string text(texts::kCrashed);
+            const std::string summary = "恢复意外中断的 " + call.name;
+            const std::int64_t ordinal =
+                agent->conversation_.add_tool_result(call.id, text, summary);
+            tools::Result result;
+            result.text = text;
+            result.is_error = true;
+            result.interrupted = true;
+            agent->recorder_.tool(ordinal, call, summary, result);
+            replay_sink(ToolFinished{call.id, call.name, summary, result});
+        }
+        agent->recorder_.turn_end_crashed();
+        agent->recorder_.sync();
+        replay_sink(TurnEnded{TurnStatus::failed, "会话意外中断", 0, 0, {}});
+    }
+
+    if (const std::optional<std::string> invalid = agent->conversation_.validate()) {
+        throw session::SessionError(session::SessionError::Kind::corrupt,
+                                    "会话历史不一致：" + *invalid);
+    }
+
+    agent->recorder_.system(agent->system_prompt_);
+    if (previous_model != agent->setup_.model.model) {
+        replay_sink(Notice{Notice::Level::info,
+                           std::format("这个会话原来用的是 {}，现在用 {} 继续", previous_model,
+                                       agent->setup_.model.model)});
+    }
+    if (agent->recorder_.broken()) {
+        log_agent()->error("会话记录写入失败：{}", agent->recorder_.error());
+    }
+    log_agent()->info("会话已恢复：id={} model={}", agent->meta().id, agent->setup_.model.model);
+    return agent;
 }
 
 std::unique_ptr<Agent> Agent::create(Setup setup) {

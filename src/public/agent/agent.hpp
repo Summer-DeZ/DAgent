@@ -27,6 +27,10 @@ public:
     /// @brief 新会话：渲染 system prompt、创建会话记录、注册内置工具。失败时抛外围异常。
     static std::unique_ptr<Agent> create(Setup setup);
 
+    /// @brief 恢复会话：回放历史、闭合崩溃中的一轮，再按当前环境重新渲染 system prompt。
+    static std::unique_ptr<Agent> resume(Setup setup, std::string_view session_id,
+                                         const Sink& replay_sink);
+
     ~Agent() = default;
     Agent(const Agent&) = delete;
     Agent& operator=(const Agent&) = delete;
@@ -47,7 +51,8 @@ private:
         bool hit_limit = false; ///< 有调用因为超额拿到了 T8
     };
 
-    Agent(Setup setup, std::string system_prompt, Recorder recorder);
+    Agent(Setup setup, std::string system_prompt, Recorder recorder,
+          Conversation conversation = {});
 
     std::vector<ToolDef> tool_defs() const;
     DispatchOutcome dispatch(const std::vector<ToolCall>& calls, int budget, const Sink&,

@@ -185,4 +185,4 @@ add_executable(dagent private/agent/main.cpp)
 
 target_compile_features(dagent PRIVATE cxx_std_23)
 target_compile_options(dagent PRIVATE -Wall -Wextra)
-target_link_libraries(dagent PRIVATE dagent_app)
+target_link_libraries(dagent PRIVATE dagent_app dagent_tui)
