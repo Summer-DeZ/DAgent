@@ -8,7 +8,7 @@ DAgent 是一个使用 C++23 和 CMake 构建的终端 Agent，仅支持 Linux�
 | --- | --- | --- |
 | TUI 框架 | `src/*/tui`，库 `dagent_tui` | 已完成并冻结（2026-09-18）：只修缺陷，不增删原语 |
 | 应用层界面 | `src/*/ui`，库 `dagent_ui` | 起步：JSON 主题加载（`ui::load_theme`），默认主题 `config/themes/dagent.json` |
-| Agent 运行时 | `src/*/agent`，库 `dagent_agent`，可执行 `dagent` | 进行中：LLM 编解码已完成；C1 最小循环已完成（模型调用与重试、消息历史、串行工具调度、auto / deny 权限、提示词嵌入、会话写入、`dagent run` 的 text 输出）；C2–C6 见 next-to-do |
+| Agent 运行时 | `src/*/agent`，库 `dagent_agent`，可执行 `dagent` | 进行中：LLM 编解码已完成；C1 最小循环、C2 调度与权限已完成（模型调用与重试、消息历史、并行与串行工具调度、权限策略与会话授权、提示词嵌入、会话写入、`dagent run` 的 text / json / jsonl 输出与信号处理）；C3–C6 见 next-to-do |
 | 基础库 | `src/*/base`，库 `dagent_base` | 已完成：日志、`.env` 密钥、文本工具、JSON 脱敏 |
 | 子进程与沙箱 | `src/*/exec`，库 `dagent_exec` | 已完成：命令执行与进程组清理、长期子进程、bash 只读分析、Landlock + seccomp 沙箱 |
 | 网络 | `src/*/net`，库 `dagent_net` | 已完成：libcurl 薄封装（整包/流式、stop_token 取消、超时分类）与 SSE 解析 |

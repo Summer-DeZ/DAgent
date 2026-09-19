@@ -16,8 +16,8 @@ C0 准备 ──► C1 最小循环 ──► C2 调度与权限 ──► C3 �
 | --- | --- | --- | --- | --- |
 | C0 准备 | 3 | — | 知道用哪个网关验收；提示词第一版；验收材料就位 | **已完成** |
 | C1 最小循环 | 10 | 1–4 | `dagent run "修好这个 bug"` 真的能改代码 | **已完成**（2026-09-19 审核通过） |
-| C2 调度与权限 | 7 | 5–9 | 能放进 CI；读多的任务明显变快 | 下一步 |
-| C3 会话 | 5 | 10–12 | 会话中断后能接着做 | |
+| C2 调度与权限 | 7 | 5–9 | 能放进 CI；读多的任务明显变快 | **已完成**（2026-09-19 审核通过） |
+| C3 会话 | 5 | 10–12 | 会话中断后能接着做 | 下一步 |
 | C4 交互界面 | 7 | 13–15 | 日常使用 | |
 | C5 上下文管理 | 6 | 16–18 | 长任务不会撞上窗口 | |
 | C6 MCP | 3 | 19–20 | 接入外部工具 | |
@@ -124,6 +124,8 @@ C0.1 的结论：`127.0.0.1:10009` 已关闭，本地网关不再可用；验收
    沙箱提示，模型没有反复重试（不超过 2 次）。
 8. **中断**：让它执行 `sleep 60`，5 秒后发 SIGINT。期望：1 秒内退出，退出码 130；会话记录里这次调用 `interrupted: true`，
    最后一条是 `turn_end`（`status: interrupted`）。再在模型流式输出长文时发 SIGINT：记录里 assistant 的 content 以 T1 结尾。
+   另外两项（C2 审核补充）：`--set run.max_model_calls=1` 时中断唯一的 `sleep 30` 调用，以 interrupted 结束、steps=1；
+   bash 里 `grep SigBlk /proc/self/status` 为全 0，`timeout 1 sleep 5` 在 2 秒内结束（子进程收得到信号）。
 9. **输出与上限**：
    - `--output jsonl`：每行都能被 `jq` 解析；第一行 `session`，最后一行 `turn_ended`；每个 tool_call id 恰好一个 `tool_finished`。
    - `--output json`：对象字段齐全（[11-entry §4.2](11-entry.md)）。
@@ -131,13 +133,23 @@ C0.1 的结论：`127.0.0.1:10009` 已关闭，本地网关不再可用；验收
 
 ### C2 审核清单
 
-- [ ] 并行组只含 [05-dispatch §3](05-dispatch.md) 规则 1 允许的调用
-- [ ] 需要询问之前挂起组已经跑完
-- [ ] 结果按原顺序提交；尽早提交
-- [ ] 工作线程全部 join 后才返回
-- [ ] Sink 的 run 模式实现加了锁
-- [ ] 受保护文件的写入在 auto 模式下拒绝、在 ask 模式下不提供会话授权
-- [ ] 沙箱不可用时只读 bash 也询问（交互）/ full_access + warn（auto）
+- [x] 并行组只含 [05-dispatch §3](05-dispatch.md) 规则 1 允许的调用
+- [x] 需要询问之前挂起组已经跑完
+- [x] 结果按原顺序提交；尽早提交
+- [x] 工作线程全部 join 后才返回
+- [x] Sink 的 run 模式实现加了锁
+- [x] 受保护文件的写入在 auto 模式下拒绝、在 ask 模式下不提供会话授权
+- [x] 沙箱不可用时只读 bash 也询问（交互）/ full_access + warn（auto）
+
+审核（2026-09-19）修复：
+- 子进程继承了 main 为 sigwait 屏蔽的 SIGINT/SIGTERM：`timeout 1 sleep 5` 要 5 秒，取消时 SIGTERM 无效、只能等
+  `kill_grace` 后的 SIGKILL。exec 的 `setup_child` 现在清空信号屏蔽；取消路径恢复「SIGTERM → kill_grace → SIGKILL」
+  （实现时一度改成立即 SIGKILL 来满足 1 秒目标，根因修掉后撤回，场景 8 实测 0.02 秒退出）。
+- 信号线程从 `run_headless` 提前到 main 第一行（`install_interrupts`）；轮外收到信号直接以 130 退出，
+  阻塞在 stdin 读取上时也能停下。
+- 会话授权：bash 规则的提示文字列出实际记住的前缀；匹配时忽略 `cd`；沙箱不可用时放行降级为 full_access。
+- jsonl 的 `tool_output` 不再把多字节字符切成两半；`events.cpp` 不再 include `tools/detail.hpp`。
+- `c2.sh`：每次运行都带 `-C`、输出放 `temp/core_check/out/`、并行组按事件顺序验证、修掉被管道吞掉和被重定向的检查。
 
 ---
 

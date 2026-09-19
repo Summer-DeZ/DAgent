@@ -169,12 +169,16 @@ prefix(simple_command):
 | 已记住 | 新命令 | 结果 |
 | --- | --- | --- |
 | `npm test` | `npm test -- --watch=false` | 放行 |
-| `npm test` | `cd web && npm test` | 放行（`cd` 单独看是只读） |
+| `npm test` | `cd web && npm test` | 放行（匹配时忽略 `cd`：它只改变后续命令的目录） |
 | `npm test` | `npm test && rm -rf dist` | 询问（`rm` 没记住） |
 | `make` | `make $(nproc)` | 询问（`has_opaque`） |
 | `git commit` | `git push` | 询问（前缀不同） |
 
-「单独看是否只读」：用只含这一条简单命令、`has_opaque = false` 的 `exec::Analysis` 调 `is_known_readonly`。
+「单独看是否只读」：用只含这一条简单命令、`has_opaque = false` 的 `exec::Analysis` 调 `is_known_readonly`。`cd`
+不在 exec 的只读白名单里，但匹配时同样忽略：提示词让模型用 `cd dir && …` 换目录，不忽略它，`make` 这样的规则就永远匹配
+不上 `cd build && make`；后续命令仍要各自命中规则。
+
+前缀取「命令名 + 第一个非选项参数」，所以 `curl https://a` 记住的是 `curl https://a`，换一个 URL 仍会询问。
 
 放行的命令用 `workspace_write` 沙箱、不联网；当初授权时如果勾了联网，这条规则也记住联网。
 

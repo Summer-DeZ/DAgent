@@ -160,7 +160,8 @@ Notice 可以出现在 TurnStarted 之后、TurnEnded 之前的任何位置
 | `TurnEnded` | `{"type":"turn_ended","status":"done","error":"","steps":3,"tool_calls":7,"usage":{…}}` |
 
 - `view` 用 `tools::to_json`。
-- `ToolOutput.chunk` 是原始字节，先 `base::to_valid_utf8` 再放进 JSON。
+- `ToolOutput.chunk` 是原始字节，管道读出来的块可能把多字节字符切成两半。jsonl 输出按调用 id 留住末尾不完整的
+  字节，拼到下一块前面；调用结束时还剩的字节才经 `base::to_valid_utf8` 替换成 U+FFFD。
 - 流式 `TextDelta` 很碎；jsonl 不合并，保持一对一，调用方需要的话自己拼。
 
 ---

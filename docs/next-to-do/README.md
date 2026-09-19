@@ -203,7 +203,7 @@ temp/core_check/                  验收用的小项目、假服务、脚本（�
 | --- | --- | --- |
 | **C0 准备**（已完成） | 网关实测、验收材料、提示词第一版 | 知道用哪个网关验收 |
 | **C1 最小循环**（已完成） | Options 迁移、Model、Conversation、Agent 串行调度、auto/deny 权限、提示词、会话写入、Event、`main` + run 模式 text 输出 | `dagent run "修好这个 bug"` 真的能改代码 |
-| **C2 调度与权限** | 并行组、调用上限、完整的 Policy 与会话授权、沙箱降级、json/jsonl 输出、退出码、Ctrl+C | 能放进 CI；读多的任务明显变快 |
+| **C2 调度与权限**（已完成） | 并行组、调用上限、完整的 Policy 与会话授权、沙箱降级、json/jsonl 输出、退出码、Ctrl+C | 能放进 CI；读多的任务明显变快 |
 | **C3 会话** | 回放重建、崩溃闭合、`--resume` / `--continue`、`sessions` / `trust` 子命令 | 会话中断后能接着做 |
 | **C4 交互界面** | Shell、Transcript、StatusLine、ApprovalDialog、输入排队、信任询问、恢复时重画 | 日常使用 |
 | **C5 上下文管理** | 预算、裁剪、摘要、超长恢复、`/compact` | 长任务不会撞上窗口 |

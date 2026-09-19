@@ -158,7 +158,7 @@ struct HeadlessOptions {
     bool continue_last = false;
 };
 
-int run_headless(Setup, const HeadlessOptions&);   ///< 返回退出码
+int run_headless(Setup, const HeadlessOptions&, Interrupts&);   ///< 返回退出码
 
 } // namespace dagent::agent
 ```
@@ -208,26 +208,28 @@ jsonl 模式写失败时 `request_stop()`，结束本轮，退出码 1；text / 
 
 ### 4.4 Ctrl+C
 
-`request_stop()` 不是 async-signal-safe，不能在 signal handler 里调：
+`request_stop()` 不是 async-signal-safe，不能在 signal handler 里调。改用 sigwait 线程（`agent/headless.hpp`）：
 
 ```cpp
-// main 最开头，任何线程创建之前
-sigset_t set; sigemptyset(&set); sigaddset(&set, SIGINT); sigaddset(&set, SIGTERM);
-pthread_sigmask(SIG_BLOCK, &set, nullptr);          // 之后创建的线程都继承这个屏蔽
-
-// run_headless 里
-std::thread([&stop_source, set] {
-    int sig;
-    sigwait(&set, &sig);  stop_source.request_stop();   // 第一次：优雅中断
-    sigwait(&set, &sig);  _exit(130);                  // 第二次：立即退出
-}).detach();
+struct Interrupts {
+    std::stop_source stop;
+    std::atomic<bool> graceful{false};   // run_turn 期间为 true
+};
+Interrupts& install_interrupts();        // main 第一行调用：屏蔽 SIGINT/SIGTERM，并启动 sigwait 线程
 ```
 
-优雅中断的目标：**1 秒内退出**，会话记录闭合（[04-turn §6](04-turn.md)）。
+- **必须在创建任何线程之前调用**（spdlog、stdin 读取都会建线程）：之后创建的线程都继承这个屏蔽。
+- 一轮运行中（`graceful`）：第一次信号 `request_stop()`，第二次 `_Exit(130)`。
+- 轮外（加载配置、读 stdin、创建会话、收尾）：收到信号直接 `_Exit(130)`——这时没有需要闭合的历史，而阻塞在 stdin
+  读取上的进程只能这样才停得下来。
+- **子进程不继承屏蔽**：信号屏蔽会经 fork、exec 原样继承，exec 在子进程里把它清空（exec 设计文档「子进程运行环境」）。
+  否则 bash 工具里的 `timeout`、取消时发给进程组的 SIGTERM 全都不生效。
 
-交互模式不需要这个：终端处于 raw 模式，Ctrl+C 是一个按键事件，由界面处理（[12-ui §5](12-ui.md)）。但 SIGTERM
-在交互模式下也被屏蔽了，所以 `ui::run_interactive` 同样起一个 sigwait 线程，收到 SIGTERM 时 `request_stop()` 并
-`Runtime::quit()`。
+优雅中断的目标：**1 秒内退出**，会话记录闭合（[04-turn §6](04-turn.md)）。取消时 exec 先发 SIGTERM、`kill_grace` 后
+再 SIGKILL（exec 设计文档）；普通程序收到 SIGTERM 立刻退出，捕获 SIGTERM 的程序最多多等 `kill_grace`。
+
+交互模式下终端处于 raw 模式，Ctrl+C 是一个按键事件，由界面处理（[12-ui §5](12-ui.md)）；SIGTERM 仍由同一个 sigwait
+线程接收。C4 要在一轮运行时设 `graceful`，并让界面在 stop 之后 `Runtime::quit()`。
 
 ---
 
