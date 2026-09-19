@@ -43,6 +43,7 @@ exec::Result r = exec::run(cmd, options,
 | 环境变量 | 继承 agent 的环境，但名字匹配 `env_deny` 的变量会被过滤掉（默认是 `*KEY*`、`*TOKEN*`、`*SECRET*`、`*PASSWORD*`，不区分大小写）；然后注入 `PAGER=cat`、`GIT_PAGER=cat`、`GIT_TERMINAL_PROMPT=0`、`TERM=dumb`、`NO_COLOR=1`；再应用 `env_unset`，最后叠加 `env_set`（`env_set` 不受过滤影响） |
 | 查找程序 | argv[0] 带 `/` 时直接使用，相对路径**相对 `Command::cwd`**；否则按**子进程将看到的 PATH**（也就是叠加 `env_set` 之后的值）查找 |
 | 信号 | SIGPIPE 在子进程里恢复为默认行为，所以 `yes \| head` 这类管道能正常结束 |
+| exec 前失败 | fork 之后 chdir、应用沙箱或 `execve` 失败时，错误码经管道交回父进程，子进程直接 `_exit(127)`：不执行 agent 的 atexit 与静态析构，也不会把 fork 时复制来的 stdio 缓冲再写一遍 |
 
 ### 进程组的清理
 

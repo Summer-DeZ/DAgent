@@ -81,6 +81,8 @@ public:
   并用静态局部变量缓存。都找不到时抛 `tool_missing`，信息里带 `apt install ripgrep`。
 - `grep` 固定加 `--json --no-messages --color=never --max-columns 500 --max-columns-preview`；
   `case_insensitive` 不设时用 `--smart-case`；模式串前面加 `--`，不会被解析成选项。
+- `GrepQuery::root` 是普通文件时只搜这一个文件：rg 的 cwd 换成它所在的目录，文件名作为路径参数传入
+  （显式给出的路径 rg 不做忽略规则过滤），`Match::path` 相对这个目录。
 - **退出码**：0/1（有/无匹配）都当正常结果处理；2 且 stderr 非空时抛 `bad_pattern`（带上 rg 的报错），
   否则抛 `io`。
 - **`--json` 事件流**：按行解析，`type` 为 `match`/`context` 时取 `data.path`、`data.lines`

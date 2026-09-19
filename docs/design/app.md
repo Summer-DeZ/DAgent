@@ -71,6 +71,7 @@
 | `process` | `exec::Options` |
 | `files`、`search` | `workspace::FileOptions`、`workspace::SearchOptions` |
 | `session`、`log`、`mcp` | `session::Options`、`base::LogOptions`、`mcp::Options` |
+| `tools` | `tools::Options` |
 | `context`、`run`、`progress`、`permissions` | 暂时定义在 app 里（`ContextOptions` 等）；核心有了自己的类型后改为映射到核心 |
 | `network.credentials` | `Config::credentials`：主机名 → 密钥值 |
 

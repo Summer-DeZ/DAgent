@@ -15,6 +15,7 @@ DAgent 是一个使用 C++23 和 CMake 构建的终端 Agent，仅支持 Linux�
 | 工作区 | `src/*/workspace`，库 `dagent_workspace` | 已完成：文件原语（原子写入、stale 检测）、ripgrep 搜索与模糊匹配、unified diff、项目上下文（git、AGENTS.md、模板渲染） |
 | 会话存储 | `src/*/session`，库 `dagent_session` | 已完成：JSONL 追加写入、UUIDv7、blob 外置、写入前脱敏、崩溃恢复、按项目过滤的 list |
 | MCP 客户端 | `src/*/mcp`，库 `dagent_mcp` | 已完成：stdio 与 Streamable HTTP、现代（2026-07-28）与经典协议自动识别、取消/超时/断连、经典会话过期恢复；只做 tools |
+| 工具层 | `src/*/tools`，库 `tools` | 已完成：read / write / edit / bash / grep / glob 与 MCP 工具包装；两阶段 prepare/run、Intent 供权限决策、FileTracker 做 stale 检测、按工具定义的 View |
 | 入口层 | `src/*/app`，库 `dagent_app` | 已完成：分层配置加载与项目信任、用户级与项目级密钥、`.mcp.json`、命令行解析；可执行入口 `main` 待核心组装 |
 
 `config/dagent.json` 是开发期配置（用 `--config` 显式指定），由 app 模块加载；配置文件、工作区与项目信任的约定见 [app 设计文档](design/app.md)。
@@ -24,7 +25,7 @@ DAgent 是一个使用 C++23 和 CMake 构建的终端 Agent，仅支持 Linux�
 [next-to-do/](next-to-do/README.md)：外围模块的设计、技术路线与验收标准，共七个库——base（日志、密钥、
 文本工具）、exec（子进程、沙箱）、workspace（文件、搜索、diff、项目上下文）、net（HTTP/SSE）、
 session、mcp、app（配置、命令行），按里程碑 M1–M5 推进。模块完成并审核通过后，对应文档改写成 `design/`
-下的设计文档，并从 next-to-do 删除。七个外围模块已全部完成，next-to-do 里保留的是统一约定与审核流程。
+下的设计文档，并从 next-to-do 删除。七个外围模块和 tools 层已全部完成，next-to-do 里保留的是统一约定与审核流程。
 
 ## 设计文档
 
@@ -41,6 +42,7 @@ session、mcp、app（配置、命令行），按里程碑 M1–M5 推进。模�
 | [session：会话存储](design/session.md) | 存储布局、Writer 的写入与恢复、崩溃后的截断与续写、list/replay 的边界、UUIDv7 |
 | [app：配置与命令行](design/app.md) | 工作区根与项目根、配置文件布局与分层合并、项目信任、密钥优先级、`.mcp.json` 规则、命令行与入口约定 |
 | [mcp：MCP 客户端](design/mcp.md) | 现代与经典协议的识别规则、stdio / Streamable HTTP 传输、请求头与 x-mcp-header、会话过期恢复、超时取消断连、错误分类与已知限制 |
+| [tools：工具层](design/tools.md) | 两阶段 prepare/run 与核心的边界、参数与路径约定、FileTracker、各工具给模型的文本与报错、View 与会话序列化、对核心的要求 |
 | [终端 UI 框架](design/tui-framework.md) | 框架能做什么、分层与对象关系、应用怎样接入、各模块的职责。源码注释中的 `§N` 指这份文档的章节 |
 
 ## 构建与测试
