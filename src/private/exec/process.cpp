@@ -63,7 +63,17 @@ struct ExecSetup {
     boost::system::error_code on_exec_setup(bp::posix::default_launcher&, const bp::filesystem::path&,
                                           const char* const*) const {
         const int err = detail::setup_child(sandbox, cwd);
+        if (err != 0) errno = err; // 失败时 launcher 把 errno（而不是返回的 ec）写回父进程
         return {err, boost::system::system_category()};
+    }
+
+    /// exec 前失败（chdir、沙箱、execve）时 launcher 在子进程里调用 ::exit，它会执行父进程的
+    /// atexit 与静态析构，并把 fork 时复制来的 stdio 缓冲再刷一遍（父进程没 flush 的输出重复出现）。
+    /// 这里抢先 _exit；错误码此时已经写回父进程。Boost 1.83 探测这个钩子时用的参数表
+    /// (launcher, ec, exe, argv, ec) 和实际调用 (launcher, exe, argv, ec) 不一致，只能写成变参。
+    template <class... Args>
+    [[noreturn]] void on_exec_error(Args&&...) const noexcept {
+        ::_exit(127);
     }
 };
 
