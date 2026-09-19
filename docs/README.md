@@ -69,6 +69,23 @@ ctest --test-dir build/dev         # 运行 test/tui（tui_tests）
 首次配置需要联网；exec 的沙箱另需系统库 libseccomp（`apt install libseccomp-dev`）；workspace 的搜索与
 项目上下文另需运行时程序 ripgrep 与 git。
 
+### 临时检测程序
+
+AGENTS.md 不允许为测试加构建目标，真实功能检测都是放在 `temp/` 下、在 CMake 之外链接的临时程序。`temp/` 随时可能
+清空，实现、持久化测试和文档都不能依赖它。链接写法（先 `cmake --build --preset dev`，库按依赖从上到下排列，用到
+哪些就链哪些）：
+
+```bash
+b=build/dev
+g++ -std=c++23 -Wall -Wextra -DSPDLOG_COMPILED_LIB -DSPDLOG_USE_STD_FORMAT \
+    -I src/public -I $b/_deps/spdlog-src/include check.cpp \
+    $b/src/libdagent_app.a $b/src/libdagent_agent.a $b/src/libtools.a $b/src/libdagent_session.a \
+    $b/src/libdagent_mcp.a $b/src/libdagent_workspace.a $b/src/libdagent_net.a $b/src/libdagent_exec.a \
+    $b/src/libdagent_base.a $b/_deps/spdlog-build/libspdlogd.a \
+    $b/_deps/tree-sitter-build/libtree-sitter.a $b/libtree-sitter-bash.a \
+    -lcurl -lseccomp -pthread -o check
+```
+
 ## 目录约定
 
 ```
@@ -82,5 +99,5 @@ docs/
 - 设计文档描述现状，不描述目标能力，也不写实现细节。
 - 代码改动后，同步更新对应的设计文档。
 - 使用说明、问题清单、归档等目录在有内容时再建（`guide/`、`known-bugs/`、`archive/`），并在本索引登记。
-- 遵循 [AGENTS.md](../AGENTS.md)：不创建模拟模型或演示入口；功能修改通过构建和真实运行验证，
-  验证材料只放在 `temp/`。
+- 遵循 [AGENTS.md](../AGENTS.md)：不创建模拟模型或演示入口；功能修改通过构建和真实运行验证。
+  `temp/` 只放临时的验证材料，随时可能清空；实现、持久化测试和文档都不能依赖其中的内容。

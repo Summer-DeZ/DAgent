@@ -169,4 +169,3 @@ inja 抛 `InjaError` 时，转成 `bad_template`，如果错误带了行号就�
   找不到 `rg` 时 `search.rg_path`（`config/dagent.json`）可以覆盖自动探测的路径。
 - `dagent_workspace` 对外公开链接 `dagent_base`，`dagent_exec` 和 `inja` 只是私有依赖（不出现在
   workspace 的公开头文件里）。
-- 在 CMake 之外链接的检测程序，写法可以参照 `temp/workspace_check/build.sh`。

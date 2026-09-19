@@ -138,4 +138,3 @@ Landlock + seccomp 这套方案。
 - Boost.Process v2 以 header-only 方式使用，需要定义 `BOOST_PROCESS_USE_STD_FS=1`（已在 `dagent_exec` 上设置）。
 - `cmake/deps.cmake` 里：tree-sitter v0.27.0 通过 FetchContent 构建；tree-sitter-bash v0.25.1 只拉取源码，直接编译发布包里自带的 `parser.c`/`scanner.c`，不需要 tree-sitter CLI；libseccomp 通过 pkg-config 查找（`apt install libseccomp-dev`）。
 - 根项目启用了 C 语言，用来编译 tree-sitter。
-- 在 CMake 之外链接的检测程序，写法可以参照 `temp/exec_check/build.sh`。

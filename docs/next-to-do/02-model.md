@@ -223,7 +223,7 @@ for attempt in 0 .. max_retries:
 
 ## 10. 验收
 
-AGENTS.md 不允许模拟模型，所以不写假网关。`temp/core_check/fault_proxy.py` 是一个**故障注入代理**：把请求原样转发给
+AGENTS.md 不允许模拟模型，所以不写假网关，而是写一个临时的**故障注入代理**（放在 `temp/` 下）：把请求原样转发给
 真实网关（DeepSeek），回复内容都是真的，代理只在网络层注入故障。`gateway.base_url` 指向代理，代理的上游和故障模式
 用命令行参数指定：
 

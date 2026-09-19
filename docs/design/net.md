@@ -122,4 +122,3 @@ parser.feed(chunk, [](const net::SseEvent& e) { … });  // 每解析出一个�
 ## 4. 依赖与构建
 
 - libcurl：`find_package(CURL)`，私有链接 `CURL::libcurl`。本机的版本是 8.5.0，`curl_multi_wakeup` 需要 7.68 及以上。
-- 在 CMake 之外链接的检测程序需要加 `-lcurl`，写法可以参照 `temp/net_check`。

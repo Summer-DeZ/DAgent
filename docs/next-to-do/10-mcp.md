@@ -157,6 +157,6 @@ Client（stdio server 子进程由 exec 清理进程组）。
 
 ## 9. 验收
 
-- plan 场景 19：`temp/tools_check/tools_server.py` 作 stdio server，给它加一个启动延迟（`sleep 5`）——启动后立即能输入；
+- plan 场景 19：一个最小的 stdio MCP server（官方 Python SDK 写，临时放在 `temp/` 下），给它加一个启动延迟（`sleep 5`）——启动后立即能输入；
   5 秒后下一步请求里出现它的工具，模型能调用；`kill` 掉 server 进程后调用得到断连提示，下一步前自动重连，再调用成功。
 - plan 场景 20：配置一个命令不存在的 server——只有一条警告，其余工具正常；状态栏显示它 failed。

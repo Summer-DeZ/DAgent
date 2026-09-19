@@ -49,6 +49,7 @@
 dagent（可执行，只有 src/private/agent/main.cpp）
   ├─► dagent_app   ──► dagent_agent + 全部外围 + tools   配置、命令行；把配置映射成 agent::Options
   ├─► dagent_ui    ──► dagent_agent + dagent_tui + tools 只认 agent::Event、agent::Approval 和 tools::View
+  ├─► dagent_tui                                         sessions 子命令按字素宽度排版标题（tui/grapheme.hpp）
   └─► dagent_agent ──► tools, session, mcp, workspace, exec, net, base
 ```
 
@@ -93,7 +94,7 @@ src/public/ui/                             src/private/ui/
 
 prompts/   system.md  compact.md
 cmake/     prompts.cpp.in          把 prompts/ 编进二进制的模板
-temp/core_check/                  验收用的小项目、假服务、脚本（不进仓库）
+temp/                             临时验收材料（小项目、故障注入代理、脚本）：随时可能清空，按需重建
 ```
 
 ---
@@ -225,6 +226,6 @@ temp/core_check/                  验收用的小项目、假服务、脚本（�
    - 正确性缺陷。
 
    结果按严重程度排序给你。
-3. 我跑一遍 `temp/core_check` 和这个里程碑的验收场景，补上文档里有、检测没覆盖到的。
+3. 我复用或重建临时验收材料，跑一遍这个里程碑的验收场景，补上文档里有、检测没覆盖到的。
 4. 全部完成后写 `docs/design/agent.md`、`docs/design/ui.md`，更新 `docs/design/app.md` 里「入口待核心组装」的说法和
    [docs/README.md](../README.md) 的状态表，删掉本目录。

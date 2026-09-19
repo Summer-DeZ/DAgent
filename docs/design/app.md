@@ -153,5 +153,4 @@ run 专用：--permissions <auto|deny>  --output <text|json|jsonl>
 
 - CLI11 v2.7.2（header-only），在 `cmake/deps.cmake` 里通过 FetchContent 引入，带 `FIND_PACKAGE_ARGS`。
 - `--version` 的版本号取编译宏 `DAGENT_VERSION`（根 `CMakeLists.txt` 的 `PROJECT_VERSION`）。
-- 在 CMake 之外链接的检测程序，写法可以参照 `temp/app_check/build.sh`；它把 `XDG_CONFIG_HOME` 指到
-  临时目录，不会碰真实的用户配置和信任列表。
+- 检测配置加载与信任列表时，把 `XDG_CONFIG_HOME` 指到临时目录，就不会碰真实的用户配置和信任列表。

@@ -160,5 +160,4 @@ std::unique_ptr<Codec> make_openai_chat_codec(OpenAiChatOptions);
 ## 6. 依赖与构建
 
 - 只依赖 base（token 估算用不到任何三方库）和 net（`HttpRequest`/`HttpResponse`/`SseEvent`）。
-- 在 CMake 之外链接的检测程序，写法可以参照 `temp/llm_check/build.sh`；里面既有不联网的 encode/decode/
-  classify 纯逻辑检查，也有对 DeepSeek 和本地网关的真实请求。
+- 需要真实请求的检测用 DeepSeek；本地网关的实测行为见 §5。

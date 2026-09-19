@@ -181,7 +181,7 @@ T9 说「结果未知，请先检查当前状态」而不是「没有执行」�
 
 | 参数 | 做法 |
 | --- | --- |
-| `--resume <id>` | 直接用；也接受 id 的唯一前缀（在这个项目全部会话的 `list` 结果里匹配，不唯一时报错并列出候选） |
+| `--resume <id>` | 在这个项目全部会话的 `list` 结果里匹配完整 id 或唯一前缀；不唯一时报错并列出候选。**完整 id 也只在当前项目里找**：别的项目的会话在这里恢复会报「找不到」，避免在错误的工作区里继续一段对话 |
 | `--continue` | `session::list(project_root, 1, session_title)` 的第一个；没有就报错「这个项目还没有会话」 |
 | `dagent sessions` | `list(project_root, 20, session_title)`，格式见 [11-entry §5](11-entry.md) |
 

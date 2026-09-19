@@ -121,4 +121,4 @@ std::optional<std::string> key = secrets.get("DEEPSEEK_API_KEY");
 ## 6. 依赖与构建
 
 - spdlog v1.17.0，在 `cmake/deps.cmake` 里通过 FetchContent 从源码构建，并开启 `SPDLOG_USE_STD_FORMAT`（使用 std::format，不依赖 fmt）。不使用系统的 spdlog 包，因为它是基于 fmt 构建的，与这个选项不兼容。
-- 在 CMake 之外链接 spdlog 的检测程序，需要加上 `-DSPDLOG_COMPILED_LIB -DSPDLOG_USE_STD_FORMAT`，写法可以参照 `temp/base_check/build.sh`。
+- 在 CMake 之外链接 spdlog 的程序，需要加上 `-DSPDLOG_COMPILED_LIB -DSPDLOG_USE_STD_FORMAT`（完整的链接写法见 [docs/README.md](../README.md) 的「临时检测程序」）。

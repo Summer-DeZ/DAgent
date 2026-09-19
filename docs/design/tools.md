@@ -252,5 +252,4 @@ tools::Result result = (*prepared)->run(grant, on_output, stop);
   `read_default_lines`（2000）、`read_max_line_bytes`（2000）、`grep_max_matches`（200）、`glob_max_files`（200）、
   `bash_max_timeout_ms`（600000）、`mcp_call_timeout_ms`（120000），由 app 映射。文件读写上限沿用 `files` 段：
   `max_read_bytes` 是 read 能翻页的最大文件（8 MiB），`max_write_bytes` 是写入上限（1 MiB）。
-- 在 CMake 之外链接的检测程序，写法可以参照 `temp/tools_check/build.sh`：`tools_check` 直接调用各工具，
-  `tools_e2e` 用 DeepSeek 跑一个只在 temp 里存在的最小循环（本地 qwen 网关会丢 `tools` 字段）。
+- 需要模型的真实检测用 DeepSeek：本地 qwen 网关会丢掉 `tools` 字段，测不了工具调用。

@@ -93,7 +93,8 @@ $XDG_DATA_HOME/dagent/sessions/（默认 ~/.local/share/dagent/sessions，Option
 - **`list`**：只读每个会话的 meta 行、文件开头 8 KiB（给 `title_of` 用，最多喂 20 个非 meta 事件）和
   `mtime`，不会把整个文件读进来。按 `updated`（`mtime`）倒序；`project_root` 给定时，优先用
   `weakly_canonical` 后的 `git_root` 比对，`git_root` 为空时退回比对 `cwd`。读取某个会话的 meta 失败时
-  跳过并打 warn，不影响其余会话。
+  跳过并打 warn，不影响其余会话。交给 `title_of` 的事件里如果有 blob 引用（比如超长的首条输入），会还原成
+  原文的前 8 KiB（按字节截断，可能切在多字节字符中间），标题照样取得到，又不会为了列表去读整个大文件。
 - **`replay`**：跳过 meta 行（它是信封，不是核心定义的事件；结构上也没有 `payload` 字段，回调签名
   `(type, payload)` 装不下它）。需要 meta 信息时，用 `Writer::meta()`（写入路径）或
   `Summary::meta`（`list` 路径）。`payload` 里的 `{"$blob": "...", "bytes": N}` 引用会被还原成原始字符串；
@@ -115,4 +116,3 @@ $XDG_DATA_HOME/dagent/sessions/（默认 ~/.local/share/dagent/sessions，Option
   `DAGENT_VERSION`（取自根 `CMakeLists.txt` 的 `PROJECT_VERSION`），写进每个会话的 meta 行。
 - **以后才加 SQLite**：会话数量多到需要按标题或内容搜索时，引入 `sqlite3` + SQLiteCpp 做**索引**；
   JSONL 始终是事实来源，索引坏了可以随时从 JSONL 重建。
-- 在 CMake 之外链接的检测程序，写法可以参照 `temp/session_check/build.sh`。
