@@ -24,7 +24,7 @@ struct SearchOptions {
 
 struct GrepQuery {
     std::string pattern;
-    std::filesystem::path root;
+    std::filesystem::path root;          ///< 目录；是普通文件时只搜这个文件，Match::path 相对它所在的目录
     std::vector<std::string> globs;      ///< --glob，可以写 "!*.lock" 表示排除
     std::optional<std::string> type;     ///< --type cpp
     bool fixed_strings = false;
@@ -36,7 +36,7 @@ struct GrepQuery {
 };
 
 struct Match {
-    std::string path; ///< 相对 root
+    std::string path; ///< 相对 root（root 是文件时相对它所在的目录）
     std::uint64_t line = 0;
     std::string text; ///< 已去掉行尾换行
     std::vector<std::pair<std::size_t, std::size_t>> spans; ///< 匹配位置（字节偏移），给 UI 高亮用

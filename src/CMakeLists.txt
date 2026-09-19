@@ -113,6 +113,29 @@ target_link_libraries(dagent_mcp
     PUBLIC dagent_base dagent_exec dagent_net
 )
 
+# 工具层：把外围模块包装成模型能调用的工具（read/write/edit/bash/grep/glob + MCP）。
+# 依赖 base、exec、workspace、mcp；不依赖 agent（核心反过来依赖它，会成环）。
+add_library(tools STATIC
+    private/tools/context.cpp
+    private/tools/detail.cpp
+    private/tools/registry.cpp
+    private/tools/view.cpp
+    private/tools/read.cpp
+    private/tools/write.cpp
+    private/tools/edit.cpp
+    private/tools/bash.cpp
+    private/tools/grep.cpp
+    private/tools/glob.cpp
+    private/tools/mcp.cpp
+)
+
+target_include_directories(tools PUBLIC ${CMAKE_SOURCE_DIR}/src/public)
+target_compile_features(tools PUBLIC cxx_std_23)
+target_compile_options(tools PRIVATE -Wall -Wextra)
+target_link_libraries(tools
+    PUBLIC dagent_base dagent_exec dagent_workspace dagent_mcp
+)
+
 # 入口层：配置加载与命令行解析。认识所有模块的 Options，其他模块都不依赖它。
 add_library(dagent_app STATIC
     private/app/config.cpp
@@ -124,7 +147,7 @@ target_compile_features(dagent_app PUBLIC cxx_std_23)
 target_compile_options(dagent_app PRIVATE -Wall -Wextra)
 target_compile_definitions(dagent_app PRIVATE DAGENT_VERSION="${PROJECT_VERSION}")
 target_link_libraries(dagent_app
-    PUBLIC dagent_base dagent_exec dagent_workspace dagent_net dagent_session dagent_mcp
+    PUBLIC dagent_base dagent_exec dagent_workspace dagent_net dagent_session dagent_mcp tools
     PRIVATE CLI11::CLI11
 )
 

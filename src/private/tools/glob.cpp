@@ -1,0 +1,132 @@
+#include <format>
+#include <utility>
+
+#include "base/text.hpp"
+#include "tools/detail.hpp"
+
+namespace dagent::tools {
+using detail::error_result;
+using detail::require_string;
+using detail::resolve_arg;
+
+namespace {
+
+constexpr std::string_view kDescription = R"(按 gitignore 语义的 glob 模式列举工作区里的文件。
+
+- 模式匹配任意深度：*.cpp 能命中 src/a/b.cpp；用 src/**/*.hpp 这类写法限定范围。
+- 按「最近修改的在前」排序；被 .gitignore 忽略的文件和隐藏文件不会出现。
+- 结果有上限，被截断时请用更具体的模式缩小范围。)";
+
+class GlobCall final : public Call {
+public:
+    GlobCall(const Context& ctx, workspace::Resolved root, std::string pattern)
+        : root_(std::move(root)), search_options_(ctx.search()), pattern_(std::move(pattern)),
+          max_files_(ctx.options().glob_max_files), max_result_bytes_(ctx.options().max_result_bytes) {
+        // workspace::files 返回的路径相对查询根；拼上前缀才是相对工作区根、模型能直接 read 的路径
+        path_prefix_ = detail::relative_prefix(root_.path, ctx.root());
+        intent_.kind = Intent::Kind::read;
+        intent_.paths = {root_};
+        intent_.summary = std::format("列举 {}", pattern_);
+    }
+
+private:
+    Result do_run(const Grant&, const std::function<void(std::string_view)>&, std::stop_token stop) override {
+        workspace::FilesQuery query;
+        query.root = root_.path;
+        query.globs = {pattern_};
+        query.sort_by_mtime = true;
+        query.max_files = max_files_;
+        std::vector<std::string> found;
+        try {
+            found = workspace::files(query, search_options_, stop);
+        } catch (const workspace::WorkspaceError& e) {
+            if (e.kind() == workspace::WorkspaceError::Kind::cancelled) {
+                Result result;
+                result.text = "已被用户中断";
+                result.interrupted = true;
+                return result;
+            }
+            if (e.kind() == workspace::WorkspaceError::Kind::bad_pattern) // 模型的输入错误，不记 warn
+                return error_result(std::format("glob 模式有问题：{}", e.what()));
+            throw;
+        }
+        for (std::string& file : found) file = path_prefix_ + file;
+
+        const bool truncated = found.size() >= max_files_;
+        std::string text;
+        for (const std::string& file : found) {
+            if (text.size() + file.size() + 1 + 64 > max_result_bytes_) {
+                text += "[结果已截断，请用更具体的模式]\n";
+                break;
+            }
+            text += file;
+            text += '\n';
+        }
+        if (truncated && text.size() + 64 + 64 <= max_result_bytes_)
+            text += "[结果可能不完整，已达到数量上限]\n";
+        if (text.empty()) text = "（没有匹配的文件）\n";
+
+        GlobView view;
+        view.pattern = pattern_;
+        view.files = found;
+        view.truncated = truncated;
+        Result result;
+        result.text = base::to_valid_utf8(std::move(text));
+        result.display = std::move(view);
+        return result;
+    }
+
+    workspace::Resolved root_;
+    workspace::SearchOptions search_options_;
+    std::string pattern_;
+    std::size_t max_files_ = 0, max_result_bytes_ = 0;
+    std::string path_prefix_;
+};
+
+class GlobTool final : public Tool {
+public:
+    GlobTool() {
+        spec_.name = "glob";
+        spec_.description = std::string(kDescription);
+        spec_.parameters = {
+            {"type", "object"},
+            {"properties",
+             {{"pattern", {{"type", "string"}, {"description", "gitignore 语义的 glob 模式，如 src/**/*.hpp"}}},
+              {"path", {{"type", "string"}, {"description", "从哪个目录开始匹配，默认工作区根"}}}}},
+            {"required", std::vector<std::string>{"pattern"}},
+        };
+    }
+
+    const Spec& spec() const override { return spec_; }
+
+    std::expected<std::unique_ptr<Call>, Result> prepare(std::string_view arguments,
+                                                         Context& ctx) const override {
+        auto args = detail::parse_arguments(arguments);
+        if (!args) return std::unexpected(error_result(args.error()));
+        std::string err;
+        const std::string pattern = require_string(*args, "pattern", err);
+        const auto path = detail::get_string(*args, "path", err);
+        if (!err.empty()) return std::unexpected(error_result(err));
+
+        workspace::Resolved root = resolve_arg(ctx, path.value_or("."));
+        switch (workspace::probe(root.path)) {
+        case workspace::FileKind::directory: break;
+        case workspace::FileKind::missing:
+            return std::unexpected(
+                error_result(std::format("路径不存在：{}", detail::display_path(ctx, root))));
+        default:
+            return std::unexpected(error_result(std::format(
+                "path 应为目录，{} 是文件；要看文件内容请用 read", detail::display_path(ctx, root))));
+        }
+        return std::make_unique<GlobCall>(ctx, std::move(root), pattern);
+    }
+
+private:
+    Spec spec_;
+};
+
+} // namespace
+
+std::unique_ptr<Tool> detail::make_glob_tool() { return std::make_unique<GlobTool>(); }
+
+} // namespace dagent::tools

@@ -180,8 +180,16 @@ GrepResult grep(const GrepQuery& q, const SearchOptions& opt, std::stop_token st
     argv.push_back(q.pattern);
 
     exec::Command cmd;
+    // root 是普通文件时只搜这一个文件：cwd 换成它所在的目录，文件名作为 rg 的路径参数
+    // （显式给出的路径 rg 不做忽略规则过滤，被 .gitignore 忽略的文件也能搜）。
+    std::error_code ec;
+    if (fs::is_regular_file(q.root, ec)) {
+        argv.push_back(q.root.filename().string());
+        cmd.cwd = q.root.parent_path();
+    } else {
+        cmd.cwd = q.root;
+    }
     cmd.argv = std::move(argv);
-    cmd.cwd = q.root;
 
     GrepResult result;
     std::string pending;

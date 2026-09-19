@@ -14,8 +14,8 @@ namespace dagent::workspace {
 
 /// @brief 文件选项，对应 config/dagent.json 的 "files" 段。
 struct FileOptions {
-    std::size_t max_read_bytes = 64 << 10;   ///< 读取上限，超出部分丢弃并置 truncated
-    std::size_t max_write_bytes = 128 << 10; ///< 写入上限，超出抛 too_large
+    std::size_t max_read_bytes = 8 << 20;   ///< read 工具能翻页读取的最大文件，超出截断并置 truncated
+    std::size_t max_write_bytes = 1 << 20;  ///< 写入上限，超出抛 too_large；edit 要先把整个文件读进来
 };
 
 struct Resolved {

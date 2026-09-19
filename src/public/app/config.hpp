@@ -24,6 +24,7 @@
 #include "mcp/client.hpp"
 #include "net/http.hpp"
 #include "session/session.hpp"
+#include "tools/tools.hpp"
 #include "workspace/files.hpp"
 #include "workspace/search.hpp"
 
@@ -68,6 +69,7 @@ struct Config {
     session::Options session;
     base::LogOptions log;
     mcp::Options mcp;
+    tools::Options tools;
     ContextOptions context;
     RunOptions run;
     ProgressOptions progress;

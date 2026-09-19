@@ -25,11 +25,20 @@
     "compaction_target_percent": 60
   },
   "files": {
-    "max_read_bytes": 65536,
-    "max_write_bytes": 131072
+    "max_read_bytes": 8388608,
+    "max_write_bytes": 1048576
   },
   "search": {
     "rg_path": ""
+  },
+  "tools": {
+    "max_result_bytes": 32768,
+    "read_default_lines": 2000,
+    "read_max_line_bytes": 2000,
+    "grep_max_matches": 200,
+    "glob_max_files": 200,
+    "bash_max_timeout_ms": 600000,
+    "mcp_call_timeout_ms": 120000
   },
   "mcp": {
     "connect_timeout_ms": 60000,

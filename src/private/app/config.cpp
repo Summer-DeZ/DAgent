@@ -182,6 +182,9 @@ const std::set<std::string>& known_keys() {
         "log.file", "log.max_file_bytes", "log.max_files", "log.level", "log.also_stderr",
         "progress.interval_ms", "permissions",
         "mcp.connect_timeout_ms", "mcp.probe_timeout_ms",
+        "tools.max_result_bytes", "tools.read_default_lines", "tools.read_max_line_bytes",
+        "tools.grep_max_matches", "tools.glob_max_files", "tools.bash_max_timeout_ms",
+        "tools.mcp_call_timeout_ms",
     };
     return keys;
 }
@@ -367,6 +370,22 @@ mcp::Options map_mcp(const Node& node) {
         opt.connect_timeout = std::chrono::milliseconds{v.integer()};
     if (const Node v = node.child("probe_timeout_ms"); v.has())
         opt.probe_timeout = std::chrono::milliseconds{v.integer()};
+    return opt;
+}
+
+tools::Options map_tools(const Node& node) {
+    tools::Options opt;
+    if (const Node v = node.child("max_result_bytes"); v.has()) opt.max_result_bytes = v.usize(opt.max_result_bytes);
+    if (const Node v = node.child("read_default_lines"); v.has())
+        opt.read_default_lines = v.integer(opt.read_default_lines);
+    if (const Node v = node.child("read_max_line_bytes"); v.has())
+        opt.read_max_line_bytes = v.usize(opt.read_max_line_bytes);
+    if (const Node v = node.child("grep_max_matches"); v.has()) opt.grep_max_matches = v.usize(opt.grep_max_matches);
+    if (const Node v = node.child("glob_max_files"); v.has()) opt.glob_max_files = v.usize(opt.glob_max_files);
+    if (const Node v = node.child("bash_max_timeout_ms"); v.has())
+        opt.bash_max_timeout = std::chrono::milliseconds{v.integer()};
+    if (const Node v = node.child("mcp_call_timeout_ms"); v.has())
+        opt.mcp_call_timeout = std::chrono::milliseconds{v.integer()};
     return opt;
 }
 
@@ -655,6 +674,7 @@ Config load_config(const LoadOptions& opt, const base::Secrets& secrets) {
     config.session = map_session(node.child("session"));
     config.log = map_log(node.child("log"));
     config.mcp = map_mcp(node.child("mcp"));
+    config.tools = map_tools(node.child("tools"));
     config.context = map_context(node.child("context"));
     config.run = map_run(node.child("run"));
     config.progress = map_progress(node.child("progress"));
