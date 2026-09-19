@@ -208,7 +208,7 @@ tools::Result result = (*prepared)->run(grant, on_output, stop);
 | --- | --- |
 | `ReadView` | `path`、`start_line`、`end_line`、`total_lines`、`truncated`、`directory` |
 | `FileChangeView` | `path`、`diff`（unified diff 文本）、`added`、`removed`、`created`；edit 和 write 共用 |
-| `BashView` | `command`、`output`、`exit_code`、`signal`、`timed_out`、`interrupted`、`sandbox`（`read_only` / `workspace_write` / `full_access`）、`elapsed_ms` |
+| `BashView` | `command`、`output`、`exit_code`、`signal`、`timed_out`、`interrupted`、`sandbox`（`read_only` / `workspace_write` / `full_access`）、`allow_network`、`elapsed_ms` |
 | `GrepView` | `pattern`、`lines`（`GrepLine`：`path`、`text`、`line`、`spans`、`is_context`）、`truncated` |
 | `GlobView` | `pattern`、`files`、`truncated` |
 | `McpView` | `server`、`tool`、`content`、`structured`、`disconnected` |

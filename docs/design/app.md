@@ -74,6 +74,7 @@
 | `session`、`log`、`mcp` | `session::Options`、`base::LogOptions`、`mcp::Options` |
 | `tools` | `tools::Options` |
 | `context`、`run`、`progress`、`permissions` | `Config::agent`（`agent::Options`）；`permissions` 只接受 `"auto"`、`"deny"` |
+| `ui.theme_file` | `Config::ui.theme_file`；相对配置文件解析，交互入口加载，未设置时按终端背景使用内置主题 |
 | `network.credentials` | `Config::credentials`：主机名 → 密钥值 |
 
 键名到字段逐项手写映射（单位不同，如 `timeout_seconds` → `std::chrono::seconds`）。`api_key` 和任何密钥值

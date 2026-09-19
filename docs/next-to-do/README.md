@@ -174,7 +174,7 @@ temp/                             临时验收材料（小项目、故障注入�
 - warn：重试、会话写入失败、工具环境问题、压缩失败退化。
 - debug：每个工具调用的名字、摘要、耗时、决策。
 - **不记**：请求体、api key、工具输出全文、用户输入全文（可能含密钥）。
-- 交互模式下日志不能写 stderr（会弄花界面）：`LogOptions::also_stderr` 只在 run 模式按需打开。
+- 交互模式下日志不能写 stderr（会弄花界面）：交互模式强制关闭 `LogOptions::also_stderr`，run 模式按配置 `log.also_stderr`。
 
 ### 6.4 命名
 

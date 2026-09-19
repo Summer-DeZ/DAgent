@@ -112,12 +112,12 @@ main(argc, argv):
     其余：
         secrets = app::load_secrets(app::project_root(args.cwd))
         config  = app::load_config({cwd, config_file, overrides}, secrets)   # ConfigError → stderr，退出 2
-        base::init_log(config.log，level ← args.log_level，also_stderr = false)
+        base::init_log(config.log，level ← args.log_level，交互模式 also_stderr = false)
         sessions → 打印列表（§5）→ 0
         run      → return run_headless(make_setup(…, run 的权限), headless 选项)
         interactive:
             if config.untrusted_files 非空: 询问是否信任（§3.1）；是 → trust_project + 重新 load_config
-            return ui::run_interactive(make_setup(…, ask), 交互选项)
+            return ui::run_interactive(make_setup(…, ask), 交互选项, interrupts)
 ```
 
 ### 3.1 信任询问
@@ -229,7 +229,8 @@ Interrupts& install_interrupts();        // main 第一行调用：屏蔽 SIGINT
 再 SIGKILL（exec 设计文档）；普通程序收到 SIGTERM 立刻退出，捕获 SIGTERM 的程序最多多等 `kill_grace`。
 
 交互模式下终端处于 raw 模式，Ctrl+C 是一个按键事件，由界面处理（[12-ui §5](12-ui.md)）；SIGTERM 仍由同一个 sigwait
-线程接收。C4 要在一轮运行时设 `graceful`，并让界面在 stop 之后 `Runtime::quit()`。
+线程接收。C4 在整个全屏期间设 `graceful`，包含空闲与等待审批；stop 回调向渲染线程投递退出操作，
+取消当前轮并调用 `Runtime::quit()`。离开全屏后先还原终端，再 join agent 线程。
 
 ---
 
