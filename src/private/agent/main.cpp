@@ -22,6 +22,7 @@
 #include "base/log.hpp"
 #include "exec/sandbox.hpp"
 #include "tui/grapheme.hpp"
+#include "ui/shell.hpp"
 #include "workspace/files.hpp"
 
 namespace {
@@ -151,15 +152,38 @@ int main(int argc, char** argv) {
         dagent::app::Config config =
             dagent::app::load_config({args.cwd, args.config_file, args.overrides, std::nullopt}, secrets);
         if (args.log_level) config.log.level = *args.log_level;
+        // 全屏界面下写 stderr 会弄花画面；run 模式按 log.also_stderr 配置。
+        if (args.mode == Mode::interactive) config.log.also_stderr = false;
         dagent::base::init_log(config.log);
 
         switch (args.mode) {
         case Mode::sessions:
             print_sessions(config);
             return 0;
-        case Mode::interactive:
-            std::cerr << "交互界面尚未实现；请使用 dagent run\n";
-            return 2;
+        case Mode::interactive: {
+            if (!config.untrusted_files.empty()) {
+                std::cout << "这个项目的以下配置尚未受信任，因此没有生效：\n";
+                for (const auto& file : config.untrusted_files) std::cout << "  " << file.string() << '\n';
+                std::cout << "这些文件可以更改模型网关地址、启动任意命令。只有确认来源可靠时才信任它。\n"
+                          << "信任 " << config.project_root.string() << " 吗？[y/N] " << std::flush;
+                std::string answer;
+                std::getline(std::cin, answer);
+                if (answer == "y" || answer == "Y") {
+                    dagent::app::trust_project(config.project_root);
+                    config = dagent::app::load_config(
+                        {args.cwd, args.config_file, args.overrides, std::nullopt}, secrets);
+                    if (args.log_level) config.log.level = *args.log_level;
+                    config.log.also_stderr = false;
+                    dagent::base::init_log(config.log);
+                }
+            }
+            dagent::ui::InteractiveOptions options;
+            options.initial_prompt = args.prompt;
+            options.resume_id = args.resume_id;
+            options.continue_last = args.continue_last;
+            if (!config.ui.theme_file.empty()) options.theme_file = config.ui.theme_file;
+            return dagent::ui::run_interactive(make_setup(config, args), options, interrupts);
+        }
         case Mode::trust:
             break; // 上面已经处理
         case Mode::run: {

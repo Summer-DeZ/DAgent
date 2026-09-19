@@ -278,4 +278,6 @@ TurnStatus Agent::run_turn(std::string input, const Sink& sink, const Approver& 
 
 void Agent::set_permission_mode(PermissionMode mode) { policy_.set_mode(mode); }
 
+Agent::~Agent() { recorder_.sync(); }
+
 } // namespace dagent::agent

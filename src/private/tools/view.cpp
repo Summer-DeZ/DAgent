@@ -44,6 +44,7 @@ inline void to_json(nlohmann::json& j, const BashView& v) {
     j["timed_out"] = v.timed_out;
     j["interrupted"] = v.interrupted;
     j["sandbox"] = v.sandbox;
+    j["allow_network"] = v.allow_network;
     j["elapsed_ms"] = v.elapsed_ms;
 }
 
@@ -58,6 +59,7 @@ inline void from_json(const nlohmann::json& j, BashView& v) {
     v.timed_out = j.value("timed_out", d.timed_out);
     v.interrupted = j.value("interrupted", d.interrupted);
     v.sandbox = j.value("sandbox", d.sandbox);
+    v.allow_network = j.value("allow_network", d.allow_network);
     v.elapsed_ms = j.value("elapsed_ms", d.elapsed_ms);
 }
 

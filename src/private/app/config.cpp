@@ -159,6 +159,7 @@ void resolve_path_fields(json& layer, const fs::path& base) {
         *node = absolute_under(base, value).string();
     };
     resolve({"gateway", "system_prompt_file"});
+    resolve({"ui", "theme_file"});
     resolve({"session", "directory"});
     resolve({"search", "rg_path"}, /*command_like=*/true);
     resolve({"log", "file"});
@@ -181,7 +182,7 @@ const std::set<std::string>& known_keys() {
         "session.directory", "session.record_payloads", "session.max_inline_payload_bytes",
         "session.redact_fields",
         "log.file", "log.max_file_bytes", "log.max_files", "log.level", "log.also_stderr",
-        "progress.interval_ms", "permissions",
+        "progress.interval_ms", "permissions", "ui.theme_file",
         "mcp.connect_timeout_ms", "mcp.probe_timeout_ms",
         "tools.max_result_bytes", "tools.read_default_lines", "tools.read_max_line_bytes",
         "tools.grep_max_matches", "tools.glob_max_files", "tools.bash_max_timeout_ms",
@@ -674,6 +675,7 @@ Config load_config(const LoadOptions& opt, const base::Secrets& secrets) {
 
     const Node node(merged, "");
     Config config;
+    if (const Node v = node.child("ui").child("theme_file"); v.has()) config.ui.theme_file = v.str();
     config.gateway = map_gateway(node.child("gateway"), secrets);
     config.http = map_http(node.child("http"));
     config.process = map_process(node.child("process"));

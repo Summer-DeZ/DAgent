@@ -66,5 +66,8 @@
   "progress": {
     "interval_ms": 1000
   },
-  "permissions": "auto"
+  "permissions": "auto",
+  "ui": {
+    "theme_file": "themes/dagent.json"
+  }
 }

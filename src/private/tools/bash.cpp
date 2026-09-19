@@ -104,6 +104,7 @@ private:
         BashView view;
         view.command = command_;
         view.sandbox = std::string(detail::sandbox_name(grant.sandbox));
+        view.allow_network = grant.allow_network;
         view.elapsed_ms = elapsed.count();
 
         std::string raw; // 给视图的「完整输出」（exec 已按上限保留头尾）

@@ -31,7 +31,7 @@ public:
     static std::unique_ptr<Agent> resume(Setup setup, std::string_view session_id,
                                          const Sink& replay_sink);
 
-    ~Agent() = default;
+    ~Agent();
     Agent(const Agent&) = delete;
     Agent& operator=(const Agent&) = delete;
 
@@ -39,7 +39,7 @@ public:
     TurnStatus run_turn(std::string input, const Sink& sink, const Approver& approver,
                         std::stop_token stop);
 
-    /// @brief 权限模式（交互界面的 Shift+Tab）。下一次决策生效。
+    /// @brief 权限模式（交互界面的 Shift+Tab）。线程安全，下一次决策生效；调用方保证对象仍存活。
     void set_permission_mode(PermissionMode mode);
 
     const session::Meta& meta() const { return recorder_.meta(); }

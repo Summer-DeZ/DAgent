@@ -44,6 +44,7 @@ struct Gateway {
 };
 
 struct Config {
+    struct Ui { std::filesystem::path theme_file; } ui;
     Gateway gateway;
     net::HttpOptions http;
     exec::Options process;
