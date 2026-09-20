@@ -16,8 +16,8 @@ Result Call::run(const Grant& grant, const std::function<void(std::string_view)>
     try {
         return do_run(grant, on_output, std::move(stop));
     } catch (const std::exception& e) {
-        base::logger("tools")->warn("工具调用失败：{}", e.what());
-        return detail::error_result(std::format("工具执行失败：{}", e.what()));
+        base::logger("tools")->warn("tool call failed: {}", e.what());
+        return detail::error_result(std::format("tool failed: {}", e.what()));
     }
 }
 
@@ -60,6 +60,7 @@ void add_builtin(Registry& registry) {
     registry.add(detail::make_bash_tool());
     registry.add(detail::make_grep_tool());
     registry.add(detail::make_glob_tool());
+    registry.add(detail::make_todo_tool());
 }
 
 void add_mcp(Registry& registry, mcp::Client& client) {

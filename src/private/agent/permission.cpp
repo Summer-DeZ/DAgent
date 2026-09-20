@@ -170,17 +170,17 @@ Verdict Policy::evaluate(const ToolCall& call, const tools::Intent& intent) cons
     switch (intent.kind) {
     case tools::Intent::Kind::read:
         if (has(PathClass::sensitive)) {
-            verdict.approval.reason = "读取可能含密钥的文件";
+            verdict.approval.reason = "Read a file that may contain secrets";
             verdict.kind = Verdict::Kind::ask;
         } else if (has(PathClass::outside)) {
-            verdict.approval.reason = "读取工作区外的文件";
+            verdict.approval.reason = "Read a file outside the workspace";
             const auto outside = std::find_if(intent.paths.begin(), intent.paths.end(),
                                               [&](const workspace::Resolved& path) {
                                                   return classify(path) == PathClass::outside;
                                               });
             if (outside != intent.paths.end()) {
                 verdict.approval.session_rule =
-                    std::format("本会话内读取 {} 下的文件不再询问", outside->path.parent_path().string());
+                    std::format("Allow reads under {} for this session", outside->path.parent_path().string());
             }
             verdict.kind = Verdict::Kind::ask;
         } else {
@@ -189,42 +189,42 @@ Verdict Policy::evaluate(const ToolCall& call, const tools::Intent& intent) cons
         break;
     case tools::Intent::Kind::write:
         if (has(PathClass::guarded)) {
-            verdict.approval.reason = "修改 agent 配置 / git 内部文件";
+            verdict.approval.reason = "Modify agent config or git internals";
             verdict.kind = Verdict::Kind::ask;
         } else if (has(PathClass::outside)) {
-            verdict.approval.reason = "修改工作区外的文件";
+            verdict.approval.reason = "Modify a file outside the workspace";
             verdict.kind = Verdict::Kind::ask;
         } else {
-            verdict.approval.reason = "修改文件";
-            verdict.approval.session_rule = "本会话内修改工作区文件不再询问";
+            verdict.approval.reason = "Modify a file";
+            verdict.approval.session_rule = "Allow edits inside the workspace for this session";
             verdict.kind = Verdict::Kind::ask;
         }
         break;
     case tools::Intent::Kind::exec: {
         const bool sandbox = sandbox_.landlock_abi > 0 && sandbox_.seccomp;
         if (!sandbox) {
-            verdict.approval.reason = "当前系统不支持沙箱，命令会不受限制地运行";
+            verdict.approval.reason = "No sandbox on this system - the command runs unrestricted";
             verdict.kind = Verdict::Kind::ask;
         } else if (intent.known_readonly) {
             verdict.grant.sandbox = exec::Mode::read_only;
             verdict.grant.allow_network = false;
             return answer(Verdict::Kind::allow);
         } else {
-            verdict.approval.reason = "运行命令";
+            verdict.approval.reason = "Run a command";
             verdict.approval.can_network = true;
             const std::vector<std::string> prefixes = session_prefixes(intent.command);
             if (!prefixes.empty()) {
                 std::string list;
                 for (const auto& prefix : prefixes) list += (list.empty() ? "`" : "、`") + prefix + "`";
-                verdict.approval.session_rule = std::format("以后 {} 不再询问", list);
+                verdict.approval.session_rule = std::format("Allow {} for this session", list);
             }
             verdict.kind = Verdict::Kind::ask;
         }
         break;
     }
     case tools::Intent::Kind::external:
-        verdict.approval.reason = std::format("调用外部工具 {}", call.name);
-        verdict.approval.session_rule = std::format("本会话内调用 {} 不再询问", call.name);
+        verdict.approval.reason = std::format("Call external tool {}", call.name);
+        verdict.approval.session_rule = std::format("Allow {} for this session", call.name);
         verdict.kind = Verdict::Kind::ask;
         break;
     }
@@ -265,7 +265,7 @@ Verdict Policy::evaluate(const ToolCall& call, const tools::Intent& intent) cons
         return answer(Verdict::Kind::allow);
     case PermissionMode::deny:
         verdict.kind = Verdict::Kind::deny;
-        verdict.reason = "只读模式";
+        verdict.reason = "read-only mode";
         return verdict;
     }
     return verdict;

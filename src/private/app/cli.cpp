@@ -85,52 +85,52 @@ std::vector<std::string> collect_overrides(int argc, char** argv) {
 } // namespace
 
 std::variant<Args, int> parse_args(int argc, char** argv) {
-    CLI::App app{"DAgent —— 终端 Agent", "dagent"};
-    app.footer("退出码：0 成功；1 运行失败；2 参数错误；130 被 Ctrl+C 中断。");
-    app.set_version_flag("--version", DAGENT_VERSION, "显示版本并退出");
+    CLI::App app{"DAgent - a terminal coding agent", "dagent"};
+    app.footer("Exit codes: 0 ok, 1 failed, 2 bad usage, 130 interrupted.");
+    app.set_version_flag("--version", DAGENT_VERSION, "print version and exit");
 
     std::string cwd;
-    app.add_option("-C,--cwd", cwd, "工作目录（默认当前目录）")->check(CLI::ExistingDirectory);
+    app.add_option("-C,--cwd", cwd, "working directory (default: current)")->check(CLI::ExistingDirectory);
     std::string config_file;
-    app.add_option("-c,--config", config_file, "显式配置文件")->check(CLI::ExistingFile);
+    app.add_option("-c,--config", config_file, "explicit config file")->check(CLI::ExistingFile);
     std::vector<std::string> set_values;
     // allow_extra_args(false)：每次出现只取一个值、可以重复；否则后面的提示词会被当成它的值吞掉。
-    app.add_option("--set", set_values, "覆盖配置：键=值，可重复；键按 . 分段，不能指定本身含 . 的键名")
+    app.add_option("--set", set_values, "override config: key=value, repeatable; keys are dot-separated (literal dots in keys are unsupported)")
         ->allow_extra_args(false);
     std::vector<std::string> model_values;
-    app.add_option("-m,--model", model_values, "等价于 --set gateway.model=<模型>")->allow_extra_args(false);
+    app.add_option("-m,--model", model_values, "shorthand for --set gateway.model=<model>")->allow_extra_args(false);
     std::string resume;
-    CLI::Option* resume_option = app.add_option("-r,--resume", resume, "恢复指定会话");
+    CLI::Option* resume_option = app.add_option("-r,--resume", resume, "resume a session by id");
     bool continue_last = false;
-    CLI::Option* continue_option = app.add_flag("--continue", continue_last, "恢复本项目最近的一次会话");
+    CLI::Option* continue_option = app.add_flag("--continue", continue_last, "resume the latest session in this project");
     resume_option->excludes(continue_option);
     std::string log_level;
-    app.add_option("--log-level", log_level, "日志级别");
+    app.add_option("--log-level", log_level, "log level");
     std::vector<std::string> prompt_words;
-    app.add_option("prompt", prompt_words, "进入交互界面；给了提示词就把它作为第一条消息")
-        ->type_name("提示词");
+    app.add_option("prompt", prompt_words, "open the interactive interface; use the optional prompt as the first message")
+        ->type_name("PROMPT");
 
-    CLI::App* run = app.add_subcommand("run", "非交互：跑完一轮后退出");
+    CLI::App* run = app.add_subcommand("run", "non-interactive: run one turn and exit");
     run->fallthrough(); // 通用选项写在子命令后面也认
     std::vector<std::string> run_words;
-    run->add_option("run_prompt", run_words, "提示词（也可以从 stdin 传入）")->type_name("提示词");
+    run->add_option("run_prompt", run_words, "prompt (also accepted via stdin)")->type_name("PROMPT");
     std::string permissions;
-    run->add_option("--permissions", permissions, "没有人审批时的策略：auto / deny")
+    run->add_option("--permissions", permissions, "policy without interactive approval: auto / deny")
         ->check(CLI::IsMember({"auto", "deny"}));
     std::string output = "text";
-    run->add_option("--output", output, "输出格式")
+    run->add_option("--output", output, "output format")
         ->check(CLI::IsMember({"text", "json", "jsonl"}))
         ->default_str("text");
 
-    CLI::App* sessions = app.add_subcommand("sessions", "列出最近的会话");
+    CLI::App* sessions = app.add_subcommand("sessions", "list recent sessions");
     sessions->fallthrough();
 
-    CLI::App* trust = app.add_subcommand("trust", "信任这个目录所在的项目：读取它的 .dagent/config.json 与 .mcp.json");
+    CLI::App* trust = app.add_subcommand("trust", "trust this directory's project: load its .dagent/config.json and .mcp.json");
     trust->fallthrough();
     std::string trust_dir;
-    trust->add_option("dir", trust_dir, "要信任的目录（默认当前目录；按它所在的 git 根记录）")
+    trust->add_option("dir", trust_dir, "directory to trust (default: current; stored by its git root)")
         ->check(CLI::ExistingDirectory)
-        ->type_name("目录");
+        ->type_name("DIR");
 
     // 最多一个子命令：进入子命令之后，提示词里再出现 run/sessions/trust 也只是普通的词。
     app.require_subcommand(0, 1);
@@ -144,14 +144,14 @@ std::variant<Args, int> parse_args(int argc, char** argv) {
         std::cout << "dagent " << app.version() << "\n";
         return 0;
     } catch (const CLI::ParseError& e) {
-        std::cerr << "参数错误：" << e.what() << "\n用 --help 查看用法。\n";
+        std::cerr << "usage error: " << e.what() << "\nUse --help for usage.\n";
         return 2;
     }
 
     // `dagent 修一下 run 的测试` 这种没加引号的提示词里带了子命令名：CLI11 会切进子命令、丢掉前面的词，
     // 意图说不清，直接报错让用户加引号。
     if (!prompt_words.empty() && (run->parsed() || sessions->parsed() || trust->parsed())) {
-        std::cerr << "提示词里出现了子命令名；请给提示词加引号，例如 dagent \"" << join_words(prompt_words)
+        std::cerr << "prompt contains a subcommand name; quote the prompt, e.g. dagent \"" << join_words(prompt_words)
                   << " …\"\n";
         return 2;
     }
@@ -182,14 +182,14 @@ std::variant<Args, int> parse_args(int argc, char** argv) {
 
     if ((args.mode == Mode::sessions || args.mode == Mode::trust) &&
         (args.resume_id || args.continue_last)) {
-        std::cerr << "sessions / trust 不能和 --resume / --continue 一起使用\n";
+        std::cerr << "sessions / trust cannot be combined with --resume / --continue\n";
         return 2;
     }
 
     const bool stdin_tty = ::isatty(STDIN_FILENO) != 0;
     if (args.mode == Mode::interactive) {
         if (!stdin_tty) {
-            std::cerr << "交互模式需要终端；非交互场景请使用 dagent run\n";
+            std::cerr << "interactive mode requires a terminal; use dagent run for non-interactive use\n";
             return 2;
         }
     } else if (args.mode == Mode::run && !stdin_tty) {
@@ -201,7 +201,7 @@ std::variant<Args, int> parse_args(int argc, char** argv) {
         }
     }
     if (args.mode == Mode::run && args.prompt.empty()) {
-        std::cerr << "run 需要提示词：dagent run \"<提示词>\"，或者从 stdin 传入\n";
+        std::cerr << "run requires a prompt: dagent run \"<prompt>\", or provide it via stdin\n";
         return 2;
     }
     return args;

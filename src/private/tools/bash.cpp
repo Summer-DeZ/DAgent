@@ -13,14 +13,13 @@ using detail::require_string;
 
 namespace {
 
-constexpr std::string_view kDescription = R"(在工作区根目录里用 bash 执行一条命令。
+constexpr std::string_view kDescription = R"(Run a bash command in the workspace root.
 
-- 每次调用都是新进程：cd、export、环境变量都不会保留。需要换目录就写成 cd dir && …。
-- stdout 和 stderr 合并返回；超时上限 10 分钟，超过会被终止（timeout_ms 单位毫秒）。
-- 默认在沙箱里执行：不能写工作区外（/tmp 除外）、不能联网。被沙箱拦截时结果里会说明，
-  这时换一种做法或向用户说明，不要反复重试。
-- 不支持后台常驻进程（如 server &）：主进程结束后它们会被一并清理。
-- 只读命令（如 git status、ls）会被自动放行，不需要用户确认。)";
+- Every call starts a fresh process: cd, export and environment changes do not persist. Use cd dir && ... when changing directories.
+- stdout and stderr are returned together. Commands are terminated on timeout; timeout_ms is in milliseconds and capped at 10 minutes.
+- Commands run in a sandbox by default: no writes outside the workspace (except /tmp) and no network access. Sandbox restrictions are reported in the result. Use another approach or explain the restriction to the user; do not keep retrying.
+- Background daemons (such as server &) are not supported; they are cleaned up when the main process exits.
+- Read-only commands (such as git status and ls) are allowed automatically without approval.)";
 
 constexpr std::size_t kCollectCap = 4 << 20; // 内部收集上限：状态行提示与中断输出够用
 
@@ -46,7 +45,7 @@ public:
         auto line = command_;
         if (const auto nl = line.find('\n'); nl != std::string::npos) line = line.substr(0, nl);
         if (line.size() > 100) line = line.substr(0, 100);
-        intent_.summary = std::format("执行 {}", line);
+        intent_.summary = std::format("Run {}", line);
     }
 
 private:
@@ -62,7 +61,7 @@ private:
             try {
                 prepared = exec::prepare(policy);
             } catch (const exec::ExecError& e) {
-                return error_result(std::format("沙箱准备失败，命令没有执行：{}", e.what()));
+                return error_result(std::format("sandbox setup failed; command not executed: {}", e.what()));
             }
         }
 
@@ -124,7 +123,7 @@ private:
         const std::size_t body_budget =
             max_result_bytes_ > kStatusRoom ? max_result_bytes_ - kStatusRoom : max_result_bytes_ / 2;
         std::string body = base::truncate_middle(raw, body_budget).text;
-        std::string text = body.empty() ? "（无输出）" : body;
+        std::string text = body.empty() ? "(no output)" : body;
 
         // 沙箱提示按文档只在失败时给；退出码 0 时输出里偶然出现这些字样不代表被拦截
         const bool failed =
@@ -137,25 +136,25 @@ private:
         view.output = raw;
         Result result;
         if (interrupted) {
-            text += "\n[已被用户中断]";
+            text += "\n[interrupted by the user]";
             view.interrupted = true;
         } else if (spawn_failed || run_failed) {
-            text += std::format("\n[{}：{}]", spawn_failed ? "无法执行命令" : "执行失败", failure);
+            text += std::format("\n[{}: {}]", spawn_failed ? "command could not be executed" : "command failed", failure);
             result.text = std::move(text);
             result.is_error = true;
             result.display = std::move(view);
             return result;
         } else if (outcome) {
             if (outcome->timed_out)
-                text += std::format("\n[超时，已在 {}s 后终止]",
+                text += std::format("\n[timed out after {}s]",
                                     std::chrono::duration_cast<std::chrono::seconds>(elapsed).count());
             if (outcome->signal)
-                text += std::format("\n[被信号 {} 终止]", *outcome->signal);
+                text += std::format("\n[terminated by signal {}]", *outcome->signal);
             else if (outcome->exit_code && *outcome->exit_code != 0)
-                text += std::format("\n[退出码 {}]", *outcome->exit_code);
+                text += std::format("\n[exit code {}]", *outcome->exit_code);
         }
         if (sandboxed && failed && looks_like_sandbox_denial(collected))
-            text += "\n[命令在沙箱中执行：不能写工作区外、不能联网；换一种做法，或向用户说明需要放开限制]";
+            text += "\n[The command ran in a sandbox: no writes outside the workspace and no network access. Use another approach, or explain which restrictions the user needs to relax.]";
 
         result.text = std::move(text);
         result.is_error = !interrupted && outcome.has_value() &&
@@ -181,9 +180,9 @@ public:
         spec_.parameters = {
             {"type", "object"},
             {"properties",
-             {{"command", {{"type", "string"}, {"description", "要执行的 bash 命令"}}},
+             {{"command", {{"type", "string"}, {"description", "Bash command to execute"}}},
               {"timeout_ms",
-               {{"type", "integer"}, {"description", "超时毫秒数，上限 600000（10 分钟），默认 300000"}}}}},
+               {{"type", "integer"}, {"description", "Timeout in milliseconds; maximum 600000 (10 minutes), default 300000"}}}}},
             {"required", std::vector<std::string>{"command"}},
         };
     }

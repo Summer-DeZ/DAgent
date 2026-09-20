@@ -106,14 +106,14 @@ std::optional<GitInfo> collect_git(const fs::path& cwd, const ContextOptions& op
     }
 
     std::vector<std::string> parts;
-    if (changed > 0) parts.push_back(std::format("{} 个文件已修改", changed));
-    if (untracked > 0) parts.push_back(std::format("{} 个未跟踪", untracked));
-    if (unmerged > 0) parts.push_back(std::format("{} 个冲突", unmerged));
-    info.status_summary = "工作区干净";
+    if (changed > 0) parts.push_back(std::format("{} modified files", changed));
+    if (untracked > 0) parts.push_back(std::format("{} untracked files", untracked));
+    if (unmerged > 0) parts.push_back(std::format("{} conflicts", unmerged));
+    info.status_summary = "working tree clean";
     if (!parts.empty()) {
         info.status_summary.clear();
         for (std::size_t i = 0; i < parts.size(); ++i) {
-            if (i > 0) info.status_summary += "，";
+            if (i > 0) info.status_summary += ", ";
             info.status_summary += parts[i];
         }
     }

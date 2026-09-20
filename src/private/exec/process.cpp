@@ -106,7 +106,7 @@ public:
         const std::size_t omitted = total_ - head_end - (tail_.size() - tail_skip);
 
         std::string text = head_.substr(0, head_end);
-        text += "\n…省略 " + std::to_string(omitted) + " 字节…\n";
+        text += "\n... " + std::to_string(omitted) + " bytes omitted ...\n";
         text += tail_.substr(tail_skip);
         return {std::move(text), total_, true};
     }

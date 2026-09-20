@@ -17,7 +17,7 @@ namespace {
 
 using nlohmann::json;
 
-std::string where(std::string_view key) { return std::format("参数 {}", key); }
+std::string where(std::string_view key) { return std::format("argument {}", key); }
 
 /// 字符串字段收到数字时的宽容处理（模型偶尔把路径写成数字的情况不管，只接常见形态）。
 std::optional<std::string> string_from(const json& value) {
@@ -42,26 +42,26 @@ std::expected<json, std::string> parse_arguments(std::string_view arguments) {
     try {
         parsed = json::parse(trimmed);
     } catch (const json::parse_error& e) {
-        return std::unexpected(std::format("参数不是合法 JSON：{}", e.what()));
+        return std::unexpected(std::format("arguments are not valid JSON: {}", e.what()));
     }
-    if (!parsed.is_object()) return std::unexpected("参数应为 JSON 对象");
+    if (!parsed.is_object()) return std::unexpected("arguments must be a JSON object");
     return parsed;
 }
 
 std::string require_string(const json& args, std::string_view key, std::string& err) {
     const auto it = args.find(key);
     if (it == args.end() || it->is_null()) {
-        err = std::format("{} 缺失（必填）", where(key));
+        err = std::format("{} is required", where(key));
         return {};
     }
     if (const auto text = string_from(*it)) {
         if (text->empty()) {
-            err = std::format("{} 不能为空", where(key));
+            err = std::format("{} must not be empty", where(key));
             return {};
         }
         return *text;
     }
-    err = std::format("{} 应为字符串", where(key));
+    err = std::format("{} must be a string", where(key));
     return {};
 }
 
@@ -69,7 +69,7 @@ std::optional<std::string> get_string(const json& args, std::string_view key, st
     const auto it = args.find(key);
     if (it == args.end() || it->is_null()) return std::nullopt;
     if (const auto text = string_from(*it)) return *text;
-    err = std::format("{} 应为字符串", where(key));
+    err = std::format("{} must be a string", where(key));
     return std::nullopt;
 }
 
@@ -91,7 +91,7 @@ std::optional<std::int64_t> get_int(const json& args, std::string_view key, std:
         const auto [ptr, ec] = std::from_chars(first, last, value);
         if (ec == std::errc{} && ptr == last) return value;
     }
-    err = std::format("{} 应为整数", where(key));
+    err = std::format("{} must be an integer", where(key));
     return std::nullopt;
 }
 
@@ -104,7 +104,7 @@ std::optional<bool> get_bool(const json& args, std::string_view key, std::string
         if (text == "true") return true;
         if (text == "false") return false;
     }
-    err = std::format("{} 应为布尔值", where(key));
+    err = std::format("{} must be a boolean", where(key));
     return std::nullopt;
 }
 

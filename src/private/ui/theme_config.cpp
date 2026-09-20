@@ -1,6 +1,7 @@
 #include "ui/theme_config.hpp"
 
 #include <fstream>
+#include <algorithm>
 #include <stdexcept>
 #include <string_view>
 
@@ -62,7 +63,7 @@ int hex(char c) {
     if (c >= '0' && c <= '9') return c - '0';
     if (c >= 'a' && c <= 'f') return c - 'a' + 10;
     if (c >= 'A' && c <= 'F') return c - 'A' + 10;
-    throw std::runtime_error("主题颜色含非法十六进制字符");
+    throw std::runtime_error("invalid hex color in theme");
 }
 
 Color parse_color(const json& v, const json& defs) {
@@ -70,7 +71,7 @@ Color parse_color(const json& v, const json& defs) {
     const std::string s = v.get<std::string>();
     if (s == "default") return {};
     if (const auto it = defs.find(s); it != defs.end()) return parse_color(*it, json::object());
-    if (s.size() != 7 || s[0] != '#') throw std::runtime_error("无法识别的主题颜色：" + s);
+    if (s.size() != 7 || s[0] != '#') throw std::runtime_error("unknown theme color: " + s);
     return Color::rgb(static_cast<uint8_t>(hex(s[1]) * 16 + hex(s[2])),
                       static_cast<uint8_t>(hex(s[3]) * 16 + hex(s[4])),
                       static_cast<uint8_t>(hex(s[5]) * 16 + hex(s[6])));
@@ -108,13 +109,45 @@ const tui::ThemeTokens& ThemeSet::pick(const std::optional<tui::Color>& backgrou
 
 ThemeSet load_theme(const std::filesystem::path& file) {
     std::ifstream in(file);
-    if (!in) throw std::runtime_error("无法打开主题文件：" + file.string());
+    if (!in) throw std::runtime_error("cannot open theme file: " + file.string());
     const json j = json::parse(in);
     const json defs = j.value("defs", json::object());
-    ThemeSet set{j.value("name", file.stem().string()), tui::dark_theme(), tui::light_theme()};
+    ThemeSet set{j.value("name", file.stem().string()), builtin_theme(false), builtin_theme(true)};
     if (const auto it = j.find("dark"); it != j.end()) apply(*it, defs, set.dark);
     if (const auto it = j.find("light"); it != j.end()) apply(*it, defs, set.light);
     return set;
+}
+
+tui::ThemeTokens builtin_theme(bool light) {
+    auto theme = light ? tui::light_theme() : tui::dark_theme();
+    theme.text.fg = light ? Color::rgb(52, 59, 88) : Color::rgb(212, 216, 227);
+    theme.background.bg = light ? Color::rgb(255, 255, 255) : Color::rgb(26, 27, 38);
+    return theme;
+}
+
+tui::ThemeTokens resolve_theme(tui::ThemeTokens theme) {
+    for (const auto& token : k_tokens) {
+        if (token.field == &ThemeTokens::selection) continue;
+        auto& style = theme.*token.field;
+        if (style.bg.kind == Color::Kind::default_) style.bg = theme.background.bg;
+        if (style.fg.kind == Color::Kind::default_) style.fg = theme.text.fg;
+    }
+    return theme;
+}
+
+std::vector<ThemeInfo> list_themes(const std::filesystem::path& directory) {
+    std::vector<ThemeInfo> result;
+    std::error_code error;
+    for (const auto& entry : std::filesystem::directory_iterator(directory, error)) {
+        if (!entry.is_regular_file(error) || entry.path().extension() != ".json") continue;
+        ThemeInfo info;
+        info.path = entry.path();
+        try { info.loaded = load_theme(info.path); info.name = info.loaded->name; }
+        catch (...) { info.name = info.path.stem().string(); info.available = false; }
+        result.push_back(std::move(info));
+    }
+    std::ranges::sort(result, {}, &ThemeInfo::name);
+    return result;
 }
 
 } // namespace dagent::ui

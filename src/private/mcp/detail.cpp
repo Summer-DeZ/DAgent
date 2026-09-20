@@ -98,22 +98,22 @@ bool walk_properties(const json& schema, std::vector<std::string>& path, std::ve
         path.push_back(name);
         if (const auto annotation = prop.find("x-mcp-header"); annotation != prop.end()) {
             if (!annotation->is_string() || annotation->get<std::string>().empty()) {
-                reason = "参数 " + name + " 的 x-mcp-header 必须是非空字符串";
+                reason = "argument " + name + ": x-mcp-header must be a non-empty string";
                 return false;
             }
             const std::string header = annotation->get<std::string>();
             if (!std::ranges::all_of(header, [](unsigned char c) { return is_tchar(c); })) {
-                reason = "参数 " + name + " 的 x-mcp-header 不是合法的 HTTP 头名字";
+                reason = "argument " + name + ": x-mcp-header must be a valid HTTP header name";
                 return false;
             }
             if (!seen.insert(lower(header)).second) {
-                reason = "x-mcp-header 重名：" + header;
+                reason = "duplicate x-mcp-header: " + header;
                 return false;
             }
             const auto type = prop.find("type");
             if (type == prop.end() || !type->is_string() ||
                 (*type != "string" && *type != "integer" && *type != "boolean")) {
-                reason = "参数 " + name + " 带 x-mcp-header，类型只能是 string/integer/boolean";
+                reason = "argument " + name + " uses x-mcp-header; type must be string/integer/boolean";
                 return false;
             }
             out.push_back({header, path});
@@ -187,7 +187,7 @@ bool collect_header_params(const json& schema, std::vector<HeaderParam>& out, st
     std::vector<std::string> path;
     if (!walk_properties(schema, path, out, seen, reason)) return false;
     if (contains_stray_annotation(schema)) {
-        reason = "x-mcp-header 只能出现在 properties 链上的原始类型参数上";
+        reason = "x-mcp-header is only allowed on primitive parameters in the properties chain";
         return false;
     }
     return true;

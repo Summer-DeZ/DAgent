@@ -149,7 +149,8 @@ std::unique_ptr<Codec> make_openai_chat_codec(OpenAiChatOptions);
 [开发配置](../../config/dagent.json) 使用 `http://127.0.0.1:10009/v1` 的 `Qwen3.8-Flash-Next`，无需 API key，
 使用原生工具调用与流式 usage。模型服务须另行启动；这些是开发配置，不是 Codec 内置的地址或模型限制。
 
-通过 `extra_body.chat_template_kwargs.enable_thinking=false` 关闭思考，`send_reasoning_content=false` 不回传历史思考。
+开发配置用 `extra_body.chat_template_kwargs.enable_thinking=true` 打开思考；`send_reasoning_content=false`
+不回传历史思考（部分网关回传会 400，且白白占 prompt 预算）。思考 token 计入输出预算，打开时要把 `max_tokens` 留够。
 需要接收思考的网关使用 `delta.reasoning_content` 时，仍由现有 decoder 处理。
 llama-server 返回的 `exceeds the available context size` 会被分类为上下文超长，由 Agent 强制压缩后重发一次。
 

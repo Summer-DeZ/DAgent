@@ -70,7 +70,7 @@ std::unique_ptr<Agent> Agent::resume(Setup setup, std::string_view session_id,
     if (restored.unfinished) {
         for (const ToolCall& call : restored.open_calls) {
             const std::string text(texts::kCrashed);
-            const std::string summary = "恢复意外中断的 " + call.name;
+            const std::string summary = "Recover interrupted " + call.name;
             const std::int64_t ordinal =
                 agent->conversation_.add_tool_result(call.id, text, summary);
             tools::Result result;
@@ -82,22 +82,22 @@ std::unique_ptr<Agent> Agent::resume(Setup setup, std::string_view session_id,
         }
         agent->recorder_.turn_end_crashed();
         agent->recorder_.sync();
-        replay_sink(TurnEnded{TurnStatus::failed, "会话意外中断", 0, 0, {}});
+        replay_sink(TurnEnded{TurnStatus::failed, "session unexpectedly interrupted", 0, 0, {}});
     }
 
     if (const std::optional<std::string> invalid = agent->conversation_.validate()) {
         throw session::SessionError(session::SessionError::Kind::corrupt,
-                                    "会话历史不一致：" + *invalid);
+                                    "inconsistent session history: " + *invalid);
     }
 
     agent->recorder_.system(agent->system_prompt_);
     if (previous_model != agent->setup_.model.model) {
         replay_sink(Notice{Notice::Level::info,
-                           std::format("这个会话原来用的是 {}，现在用 {} 继续", previous_model,
+                           std::format("This session used {}; continuing with {}", previous_model,
                                        agent->setup_.model.model)});
     }
     if (agent->recorder_.broken()) {
-        log_agent()->error("会话记录写入失败：{}", agent->recorder_.error());
+        log_agent()->error("Failed to write the session record: {}", agent->recorder_.error());
     }
     log_agent()->info("会话已恢复：id={} model={}", agent->meta().id, agent->setup_.model.model);
     replay_sink(ContextUpdate{{}, agent->estimator_.estimate(agent->conversation_.build(
@@ -119,7 +119,7 @@ std::unique_ptr<Agent> Agent::create(Setup setup) {
     auto agent =
         std::unique_ptr<Agent>(new Agent(std::move(setup), std::move(system_prompt), std::move(recorder)));
     agent->recorder_.system(agent->system_prompt_);
-    if (agent->recorder_.broken()) log_agent()->error("会话记录写入失败：{}", agent->recorder_.error());
+    if (agent->recorder_.broken()) log_agent()->error("Failed to write the session record: {}", agent->recorder_.error());
     log_agent()->info("会话已创建：id={} model={}", agent->meta().id, agent->meta().model);
     return agent;
 }
@@ -151,7 +151,7 @@ void Agent::check_broken(const Sink& sink) {
     if (!recorder_.broken() || broken_notified_) return;
     broken_notified_ = true;
     sink(Notice{Notice::Level::error,
-                std::format("会话记录写入失败，之后的内容不会保存：{}", recorder_.error())});
+                std::format("Failed to write the session record; subsequent content will not be saved: {}", recorder_.error())});
 }
 
 void Agent::keep_partial(const Reply& partial, const Sink& sink) {
@@ -171,11 +171,11 @@ TurnStatus Agent::finish(TurnStatus status, std::string error, int steps, int ca
                          const Sink& sink) {
     for (const ToolCall& call : conversation_.open_calls()) {
         const std::string text(texts::kInterruptedCall);
-        const std::int64_t ordinal = conversation_.add_tool_result(call.id, text, "中断");
+        const std::int64_t ordinal = conversation_.add_tool_result(call.id, text, "interrupted");
         tools::Result result;
         result.text = text;
         result.interrupted = true;
-        recorder_.tool(ordinal, call, "中断", result);
+        recorder_.tool(ordinal, call, "interrupted", result);
     }
     check_broken(sink);
     recorder_.turn_end(status, error, steps, calls, total);
@@ -208,7 +208,7 @@ TurnStatus Agent::run_turn(std::string input, const Sink& sink, const Approver& 
 
     for (;;) {
         if (steps >= max_model_calls) {
-            return finish(TurnStatus::limit, "本轮模型调用次数已达上限", steps, calls, total, sink);
+            return finish(TurnStatus::limit, "model call limit reached for this turn", steps, calls, total, sink);
         }
         ++steps;
 
@@ -242,7 +242,7 @@ TurnStatus Agent::run_turn(std::string input, const Sink& sink, const Approver& 
                 keep_partial(error.partial(), sink);
                 return finish(TurnStatus::interrupted, "", steps, calls, total, sink);
             case ModelError::Kind::context_too_long:
-                return finish(TurnStatus::failed, "上下文超出模型窗口，请用 /new 开始新会话", steps,
+                return finish(TurnStatus::failed, "Context exceeds the model window - start a new session with /new", steps,
                               calls, total, sink);
             case ModelError::Kind::rejected:
             case ModelError::Kind::exhausted:
@@ -267,7 +267,7 @@ TurnStatus Agent::run_turn(std::string input, const Sink& sink, const Approver& 
         sink(ContextUpdate{reply.usage.value_or(Usage{}), used, context_limit});
 
         if (reply.message.content.empty() && reply.message.tool_calls.empty()) {
-            sink(Notice{Notice::Level::warn, "模型返回了空回复"});
+            sink(Notice{Notice::Level::warn, "The model returned an empty reply"});
             return finish(TurnStatus::done, "", steps, calls, total, sink);
         }
 
@@ -278,9 +278,9 @@ TurnStatus Agent::run_turn(std::string input, const Sink& sink, const Approver& 
         if (reply.message.tool_calls.empty()) {
             if (grace) return finish(TurnStatus::limit, "", steps, calls, total, sink);
             if (reply.finish.reason == Finish::Reason::length) {
-                sink(Notice{Notice::Level::warn, "回复达到 max_tokens 上限被截断，可以输入“继续”"});
+                sink(Notice{Notice::Level::warn, "Reply hit max_tokens and was cut off - send \"continue\" to resume"});
             } else if (reply.finish.reason == Finish::Reason::content_filter) {
-                sink(Notice{Notice::Level::warn, "回复被服务端的内容过滤截断"});
+                sink(Notice{Notice::Level::warn, "Reply was cut off by the provider's content filter"});
             }
             return finish(TurnStatus::done, "", steps, calls, total, sink);
         }

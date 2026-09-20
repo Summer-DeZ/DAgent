@@ -40,7 +40,7 @@
 
 ```cpp
 tools::Registry registry;
-tools::add_builtin(registry);                       // read / write / edit / bash / grep / glob
+tools::add_builtin(registry);                       // read / write / edit / bash / grep / glob / todo
 tools::add_mcp(registry, *client);                  // 每个 MCP server 一次
 tools::Context ctx(root, config.tools, config.files, config.search, config.process);
 
@@ -185,6 +185,14 @@ tools::Result result = (*prepared)->run(grant, on_output, stop);
 - `path` 不存在或不是目录时在 prepare 里报错（文件请用 read）。
 - display：`GlobView`。
 
+### todo
+
+参数 `items` 是当前整份计划，每项包含非空 `text` 与 `todo / doing / done / dropped` 状态。
+它是纯内存工具，Intent 为只读，不访问文件或进程；模型应在多步任务开始时建立计划，并在开始、完成或放弃一项后
+立即提交更新后的整份列表。多步骤工作即使用户已经列好步骤，也应在其他工具之前先调用 todo；不能用正文清单代替。
+内置工具 description、参数说明和结果/错误固定英文，不进入 UI 文案表。给模型只返回 `Plan updated: M/N done.`，避免把整表回灌上下文；display 为 `TodoView`，
+供界面侧栏和会话回放使用。
+
 ### MCP 工具
 
 `add_mcp` 把 `mcp::Client::tools()` 里的每一项包成一个 Tool：名字用 `qualified_name`，Schema 用
@@ -214,12 +222,13 @@ tools::Result result = (*prepared)->run(grant, on_output, stop);
 | `GrepView` | `pattern`、`lines`（`GrepLine`：`path`、`text`、`line`、`spans`、`is_context`）、`truncated` |
 | `GlobView` | `pattern`、`files`、`truncated` |
 | `McpView` | `server`、`tool`、`content`、`structured`、`disconnected` |
+| `TodoView` | `items` 整份列表；`TodoItem` 含 `text` 与四态 `state` |
 
-- `View = std::variant<std::monostate, ReadView, FileChangeView, BashView, GrepView, GlobView, McpView>`；
+- `View = std::variant<std::monostate, ReadView, FileChangeView, BashView, GrepView, GlobView, McpView, TodoView>`；
   `monostate` 表示 prepare 阶段就失败的调用（参数错误等），界面只显示 `text`。界面用 `std::visit` 处理，
   漏掉哪种 View 编译时就能发现。
 - `to_json(view)` 输出 `{"kind": ..., 各字段}`，给 `session::Writer::append`；`kind` 为 `read`、`change`、
-  `bash`、`grep`、`glob`、`mcp`，`monostate` 为 `null`。`view_from_json` 在 `kind` 不认识或条目损坏时返回
+  `bash`、`grep`、`glob`、`mcp`、`todo`，`monostate` 为 `null`。`view_from_json` 在 `kind` 不认识或条目损坏时返回
   `monostate`。
 - 反序列化时缺字段取默认值：以后给结构体加字段，旧会话照样读得出来。
 

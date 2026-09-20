@@ -12,11 +12,11 @@ using detail::resolve_arg;
 
 namespace {
 
-constexpr std::string_view kDescription = R"(新建文件，或整体覆盖一个已读过的文件。
+constexpr std::string_view kDescription = R"(Create a file or completely overwrite a file that has already been read.
 
-- 新文件直接创建，父目录自动建立，内容按 UTF-8（LF 换行、无 BOM）写入。
-- 覆盖已有文件之前必须先用 read 读过它，并保留原有的换行符风格与 BOM；没读过会被拒绝。
-- 内容不要带 read 输出的行号前缀。要改文件的一部分请优先用 edit。)";
+- New files and parent directories are created automatically, using UTF-8 with LF newlines and no BOM.
+- Before overwriting an existing file, you must read it. Its newline style and BOM are preserved; overwriting an unread file is denied.
+- Do not include read output's line number prefixes. Prefer edit when changing only part of a file.)";
 
 class WriteCall final : public Call {
 public:
@@ -29,7 +29,7 @@ public:
         intent_.kind = Intent::Kind::write;
         intent_.paths = {target_};
         intent_.preview = view_.diff;
-        intent_.summary = std::format("{} {}（+{} −{}）", view_.created ? "创建" : "覆盖", path_,
+        intent_.summary = std::format("{} {} (+{} -{})", view_.created ? "Create" : "Overwrite", path_,
                                       view_.added, view_.removed);
     }
 
@@ -40,7 +40,7 @@ private:
         } catch (const workspace::WorkspaceError& e) {
             if (e.kind() == workspace::WorkspaceError::Kind::stale)
                 return error_result(std::format(
-                    "文件 {} 在你上次读取后被修改过（可能是 bash 或用户改的），请重新 read", path_));
+                    "{} is stale - it changed since your last read (possibly by bash or the user); read it again before editing", path_));
             throw;
         }
         if (const auto stamp = workspace::stamp_of(target_.path)) ctx_.track(target_, *stamp);
@@ -69,8 +69,8 @@ public:
         spec_.parameters = {
             {"type", "object"},
             {"properties",
-             {{"path", {{"type", "string"}, {"description", "目标文件路径，相对工作区根，支持 ~/ 开头"}}},
-              {"content", {{"type", "string"}, {"description", "写入的完整内容"}}}}},
+             {{"path", {{"type", "string"}, {"description", "Target file path relative to the workspace root; supports ~/"}}},
+              {"content", {{"type", "string"}, {"description", "Complete content to write"}}}}},
             {"required", std::vector<std::string>{"path", "content"}},
         };
     }
@@ -85,19 +85,19 @@ public:
         const std::string path = require_string(*args, "path", err);
         const auto content = detail::get_string(*args, "content", err);
         if (!err.empty()) return std::unexpected(error_result(err));
-        if (!content) return std::unexpected(error_result("参数 content 缺失（必填）"));
+        if (!content) return std::unexpected(error_result("content is required"));
 
         const std::string new_content = detail::to_lf(*content);
         const workspace::FileOptions& files = ctx.files();
         if (new_content.size() > files.max_write_bytes)
             return std::unexpected(error_result(std::format(
-                "内容有 {} 字节，超过 write 上限（{} 字节）", new_content.size(), files.max_write_bytes)));
+                "content is {} bytes; write size limit reached ({} bytes)", new_content.size(), files.max_write_bytes)));
 
         const workspace::Resolved resolved = resolve_arg(ctx, path);
         const std::string display = detail::display_path(ctx, resolved);
         const workspace::FileKind kind = workspace::probe(resolved.path);
         if (kind == workspace::FileKind::directory)
-            return std::unexpected(error_result(std::format("{} 是目录，不能写入", display)));
+            return std::unexpected(error_result(std::format("{} is a directory and cannot be written", display)));
 
         workspace::Eol eol = workspace::Eol::lf;
         bool bom = false;
@@ -109,18 +109,18 @@ public:
             const auto tracked = ctx.tracked_stamp(resolved);
             if (!tracked)
                 return std::unexpected(error_result(std::format(
-                    "文件 {} 已存在：必须先用 read 读过才能覆盖（新建文件不需要）", display)));
+                    "{} already exists; use read before overwriting it (not required for new files)", display)));
             if (const auto current = workspace::stamp_of(resolved.path);
                 !current || !(*current == *tracked))
                 return std::unexpected(error_result(std::format(
-                    "文件 {} 在你上次读取后被修改过（可能是 bash 或用户改的），请重新 read", display)));
+                    "{} is stale - it changed since your last read (possibly by bash or the user); read it again before editing", display)));
             workspace::TextFile file;
             try {
                 file = workspace::read_text(resolved.path, files);
             } catch (const workspace::WorkspaceError& e) {
                 if (e.kind() == workspace::WorkspaceError::Kind::not_text)
                     return std::unexpected(
-                        error_result(std::format("{} 是二进制文件，拒绝用 write 覆盖", display)));
+                        error_result(std::format("{} is binary; write cannot overwrite it", display)));
                 throw;
             }
             eol = file.eol;
@@ -139,8 +139,8 @@ public:
         view.created = !existed;
 
         const std::string success =
-            existed ? std::format("已覆盖 {}（+{} −{}）", display, diff.stat.added, diff.stat.removed)
-                    : std::format("已创建 {}（{} 行）", display, count_lines(new_content));
+            existed ? std::format("Overwrote {} (+{} -{}).", display, diff.stat.added, diff.stat.removed)
+                    : std::format("Created {} ({} lines).", display, count_lines(new_content));
         return std::make_unique<WriteCall>(ctx, resolved, display, new_content, eol, bom, expect,
                                            success, std::move(view));
     }

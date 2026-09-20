@@ -55,7 +55,7 @@ void McpHub::connect(Server& server) {
             std::lock_guard lock(mutex_);
             server.state = {server.config.name, ServerState::Status::failed, 0, error.what()};
             notices_.push_back({Notice::Level::warn,
-                                std::format("MCP {} 连接失败：{}", server.config.name, error.what())});
+                                std::format("MCP {} failed to connect: {}", server.config.name, error.what())});
         }
         settled_.notify_all();
     });
@@ -87,8 +87,8 @@ std::string McpHub::mark_disconnected(std::string_view name, std::string reason)
         server->state.tools = 0;
         server->state.error = std::move(reason);
         notices_.push_back({Notice::Level::warn,
-                            std::format("MCP {} 连接断开{}：{}", name,
-                                        server->retried ? "，不再自动重连" : "，下一步重连",
+                            std::format("MCP {} disconnected{}: {}", name,
+                                        server->retried ? ", not reconnecting" : ", reconnecting next step",
                                         server->state.error)});
         if (server->retried) return std::format(texts::kMcpUnavailable, name);
         return std::format(texts::kMcpReconnecting, name);
@@ -146,20 +146,20 @@ void McpHub::wait_connecting(const Sink& sink, std::stop_token stop) {
         names += server->state.name;
     }
     lock.unlock();
-    sink(Notice{Notice::Level::info, std::format("等待 MCP 服务连接：{}", names)});
+    sink(Notice{Notice::Level::info, std::format("Waiting for MCP servers: {}", names)});
     lock.lock();
     // 连接线程自己有超时；这里再以 connect_timeout 兜底，超时就先不带这些工具继续，连上后下一步出现。
     const auto deadline = std::chrono::steady_clock::now() + options_.connect_timeout;
     settled_.wait_until(lock, stop, deadline, [&] { return !pending(); });
     lock.unlock();
-    if (stop.stop_requested()) throw mcp::McpError(mcp::McpError::Kind::cancelled, "等待 MCP 连接已取消");
+    if (stop.stop_requested()) throw mcp::McpError(mcp::McpError::Kind::cancelled, "MCP connection wait interrupted");
 }
 
 bool McpHub::merge(tools::Registry& registry, std::stop_token stop) {
     bool changed = false;
     for (auto& pointer : servers_) {
         if (stop.stop_requested()) {
-            throw mcp::McpError(mcp::McpError::Kind::cancelled, "MCP 更新已取消");
+            throw mcp::McpError(mcp::McpError::Kind::cancelled, "MCP update interrupted");
         }
         Server& server = *pointer;
         const std::string prefix = "mcp__" + server.config.name + "__";

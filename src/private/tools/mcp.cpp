@@ -32,20 +32,20 @@ std::string blocks_to_text(const std::vector<nlohmann::json>& content) {
                     bytes = data->get<std::string>().size();
                 }
             }
-            append(std::format("[{} {}，{} 字节，未展示]", type == "image" ? "图片" : "音频",
+            append(std::format("[{} {}, {} bytes, not displayed]", type == "image" ? "image" : "audio",
                                block.value("mimeType", "application/octet-stream"), bytes));
         } else if (type == "resource") {
             const nlohmann::json& resource = block.contains("resource") ? block.at("resource") : block;
-            std::string piece = std::format("资源 {}", resource.value("uri", "(无 uri)"));
+            std::string piece = std::format("Resource {}", resource.value("uri", "(no URI)"));
             if (const auto it = resource.find("text"); it != resource.end() && it->is_string())
-                piece += "：" + base::to_valid_utf8(it->get<std::string>());
+                piece += ": " + base::to_valid_utf8(it->get<std::string>());
             else if (const auto blob = resource.find("blob"); blob != resource.end() && blob->is_string())
-                piece += std::format("（二进制内容 {} 字节，未展示）", blob->get<std::string>().size());
+                piece += std::format(" (binary content: {} bytes, not displayed)", blob->get<std::string>().size());
             append(std::move(piece));
         } else if (type == "resource_link") {
-            append(std::format("资源链接 {}（{}）", block.value("name", ""), block.value("uri", "")));
+            append(std::format("Resource link {} ({})", block.value("name", ""), block.value("uri", "")));
         } else {
-            append(std::format("[未知内容块 {}]", type.empty() ? "(无类型)" : type));
+            append(std::format("[unknown content block {}]", type.empty() ? "(no type)" : type));
         }
     }
     return text;
@@ -58,7 +58,7 @@ public:
         : client_(client), tool_(tool), args_(std::move(args)), timeout_(timeout),
           max_result_bytes_(max_result_bytes) {
         intent_.kind = Intent::Kind::external;
-        intent_.summary = std::format("调用 MCP 工具 {}", tool_.qualified_name);
+        intent_.summary = std::format("Call MCP tool {}", tool_.qualified_name);
     }
 
 private:
@@ -69,7 +69,7 @@ private:
         } catch (const mcp::McpError& e) {
             if (e.kind() == mcp::McpError::Kind::cancelled) {
                 Result result;
-                result.text = "已被用户中断";
+                result.text = "interrupted by the user";
                 result.interrupted = true;
                 McpView view;
                 view.server = tool_.server;
@@ -78,12 +78,12 @@ private:
                 result.display = std::move(view);
                 return result;
             }
-            base::logger("tools")->warn("MCP 工具 {} 失败：{}", tool_.qualified_name, e.what());
+            base::logger("tools")->warn("MCP tool {} failed: {}", tool_.qualified_name, e.what());
             McpView view;
             view.server = tool_.server;
             view.tool = tool_.qualified_name;
             view.disconnected = e.kind() == mcp::McpError::Kind::disconnected;
-            return error_result(std::format("MCP 工具调用失败（{}）：{}", tool_.qualified_name, e.what()),
+            return error_result(std::format("MCP tool call failed ({}): {}", tool_.qualified_name, e.what()),
                                 std::move(view));
         }
 
@@ -97,7 +97,7 @@ private:
         std::string text = blocks_to_text(outcome.content);
         if (text.empty() && !outcome.structured.is_null())
             text = outcome.structured.dump(); // 只给结构化结果的 server
-        if (text.empty()) text = "（无结果）";
+        if (text.empty()) text = "(no result)";
         text = base::truncate_middle(base::to_valid_utf8(std::move(text)), max_result_bytes_).text;
 
         Result result;
@@ -122,7 +122,7 @@ public:
               Spec spec;
               spec.name = tool.qualified_name;
               spec.description = tool.description.empty()
-                                     ? std::format("MCP server「{}」提供的工具 {}", tool.server, tool.name)
+                                     ? std::format("MCP server {} provides tool {}", tool.server, tool.name)
                                      : tool.description;
               spec.parameters = tool.input_schema.is_object() ? tool.input_schema
                                                               : nlohmann::json::object();

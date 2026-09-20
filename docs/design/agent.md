@@ -320,7 +320,7 @@ ContextOptions 默认窗口 262144、安全余量 8192、触发 80%、目标 60%
 第一级按从旧到新顺序，把保护区外、尚未裁剪且缓存大于 256 tokens 的工具结果换成固定占位：
 
 ```text
-[旧的工具输出已省略：{工具摘要}。需要时请重新调用。]
+[Old tool output omitted: {tool summary}. Call the tool again if needed.]
 ```
 
 自动模式到 target 即停止；强制模式遍历所有符合条件的旧输出。只替换内容，不删除 tool 消息。
@@ -368,10 +368,13 @@ system 在创建或恢复时渲染一次，之后不随日期、git 状态或权
 | `instructions` | 全局到当前目录的 AGENTS.md，包含来源、内容和截断标记 |
 | `model, project_root, sandbox, permission_mode` | Setup 与启动环境 |
 
-system 描述先读后改、独立读取可并行、bash 不保留 cwd、权限拒绝后停下等跨工具规则。
+内置 system / compact 模板与核心给模型的文本固定英文，不随界面语言切换。
+主模板明确 `Reply in the user's language.`，即界面英文、模型回复跟随用户语言。
+system 描述先读后改、多步骤工作先调用 todo 并及时提交完整计划、独立读取可并行、bash 不保留 cwd、权限拒绝后停下等跨工具规则。
 上下文部分要求模型先在正文记录后续所需事实，再继续调用工具；看到省略占位而无明确事实记录时重新调用。
 
-compact 模板要求六项：用户原始请求及补充、已做决定、改过文件、当前进度、剩余工作、未解决报错。
+compact 模板保留六段结构，标题为 `User requests`、`Decisions made`、`Files changed`、
+`Current progress`、`Remaining work`、`Unresolved issues`；用户原文（包括中文）不翻译。
 用户原话和路径逐字保留，优先于 1500 字的建议长度；从可见工具原文提取任务所需事实，省略占位不代表调用失败。
 渲染后的 system 写进会话记录供排查，恢复时仍按当前环境重新渲染。
 

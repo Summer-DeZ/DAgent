@@ -1,4 +1,6 @@
 #include "ui/approval.hpp"
+#include "ui/strings.hpp"
+#include "ui/display.hpp"
 
 #include <algorithm>
 #include <atomic>
@@ -26,6 +28,8 @@ public:
     FeedbackInput* feedback;
     std::unique_ptr<tui::InputBoxHandler> edit;
     std::unique_ptr<tui::ScrollbackMouse> mouse;
+    const tui::ThemeTokens* current_theme = &tui::dark_theme();
+    std::string tool;
 
     explicit Panel(tui::Runtime& rt) {
         auto add_text = [&] {
@@ -38,6 +42,8 @@ public:
         choices = add_text();
         auto input = std::make_unique<FeedbackInput>(); feedback = input.get();
         add({tui::Sizing::content, 0, 0, 6}, std::move(input));
+        // 为底边提示保留一行，不能覆盖审批选项或反馈输入。
+        add({tui::Sizing::fixed, 1}, std::make_unique<tui::Text>());
         edit = std::make_unique<tui::InputBoxHandler>(*feedback);
         mouse = std::make_unique<tui::ScrollbackMouse>(rt, *preview);
         rt.bind_mouse(*preview, *mouse);
@@ -46,7 +52,33 @@ public:
         return {std::min(100, std::max(1, available.cols - 4)),
                 std::min(available.rows, std::max(8, available.rows * 3 / 5))};
     }
+    void layout(tui::Rect area) override {
+        tui::Container::layout(area);
+        // 预览和输入不能借用边框列；长权限说明在预览区自然折行。
+        for (tui::Widget* child : {static_cast<tui::Widget*>(preview),
+                                   static_cast<tui::Widget*>(feedback)}) {
+            const auto r = child->rect();
+            child->layout({2, r.y, std::max(0, area.w - 4), r.h});
+        }
+    }
+    void render(tui::Surface& surface) override {
+        surface.fill({0, 0, surface.cols(), surface.rows()}, U' ', current_theme->background_panel);
+        tui::Container::render(surface);
+        const int w = surface.cols(), h = surface.rows();
+        if (w < 4 || h < 3) return;
+        surface.fill({1, 0, w - 2, 1}, U'─', current_theme->border_active);
+        surface.fill({1, h - 1, w - 2, 1}, U'─', current_theme->border_active);
+        surface.fill({0, 1, 1, h - 2}, U'│', current_theme->border_active);
+        surface.fill({w - 1, 1, 1, h - 2}, U'│', current_theme->border_active);
+        surface.put(0, 0, "╭", current_theme->border_active);
+        surface.put(w - 1, 0, "╮", current_theme->border_active);
+        surface.put(0, h - 1, "╰", current_theme->border_active);
+        surface.put(w - 1, h - 1, "╯", current_theme->border_active);
+        surface.text(2, 0, std::string(ui::text().approve_title) + tool + " ", current_theme->text);
+        surface.text(std::max(2, (w - display_width(ui::text().approve_cancel)) / 2), h - 1, std::string(ui::text().approve_cancel), current_theme->text_muted);
+    }
     void theme(const tui::ThemeTokens& theme) {
+        current_theme = &theme;
         heading->set_theme(theme); heading->set_style(theme.warning);
         summary->set_theme(theme); summary->set_style(theme.text);
         choices->set_theme(theme); choices->set_style(theme.accent);
@@ -62,13 +94,14 @@ void ApprovalDialog::open(const agent::Approval& approval,
                            std::function<void(agent::Decision)> answer) {
     close(); approval_ = approval; answer_ = std::move(answer);
     auto panel = std::make_unique<Panel>(rt_); panel_ = panel.get();
+    panel_->tool = approval.tool;
     panel_->theme(theme_);
-    panel_->heading->set_text("── " + approval.reason + " ──");
-    panel_->summary->set_text(approval.intent.summary);
-    std::string keys = "y 允许   n 拒绝   e 拒绝并说明";
-    if (!approval.session_rule.empty()) keys += "\na " + approval.session_rule;
-    if (approval.can_network) keys += "\nw 允许并联网";
-    keys += "\nEsc 拒绝 · Ctrl+C 中断本轮";
+    panel_->heading->set_text(" ");
+    panel_->summary->set_text("  " + approval.reason);
+    std::string keys = std::string(ui::text().approve_allow);
+    if (!approval.session_rule.empty()) keys += std::string(ui::text().approve_session);
+    if (approval.can_network) keys += std::string(ui::text().approve_network);
+    keys += std::string(ui::text().approve_deny);
     panel_->choices->set_text(keys);
     auto kind = tui::BlockKind::text;
     std::string preview = approval.intent.preview;
@@ -80,6 +113,8 @@ void ApprovalDialog::open(const agent::Approval& approval,
         break;
     case tools::Intent::Kind::external: kind = tui::BlockKind::code; break;
     }
+    panel_->preview->document().append_block(tui::BlockKind::text, approval.intent.summary +
+        (approval.session_rule.empty() ? "" : "\n[a] " + approval.session_rule));
     panel_->preview->document().append_block(kind, preview);
     overlay_ = rt_.open_overlay(std::move(panel), tui::Placement::center, {}, this, panel_->feedback);
 }

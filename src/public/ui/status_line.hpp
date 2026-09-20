@@ -1,27 +1,30 @@
 #pragma once
+#include <string>
+
 #include "agent/events.hpp"
-#include "agent/mcp_hub.hpp"
-#include "agent/permission.hpp"
 #include "tui/widget.hpp"
 
 namespace dagent::ui {
+
+/// 底部一行：左边项目路径，右边上下文用量与命令面板提示。
+/// 模型、模式、MCP 与会话信息在右侧 SidePanel 与输入框尾行里显示。
 class StatusLine final : public tui::Widget {
 public:
-    void session(std::string model, std::string id);
+    void project(std::string path);
     void context(const agent::ContextUpdate& update);
-    void permission(agent::PermissionMode mode);
-    void mcp(const std::vector<agent::ServerState>&);
+    void todo(int done, int total, bool shown);
     void set_theme(const tui::ThemeTokens& theme) { theme_ = &theme; invalidate(); }
     void set_trigger(int percent) { trigger_ = percent; }
     tui::Size measure(tui::Size available) const override { return {available.cols, 1}; }
     void render(tui::Surface&) override;
+
 private:
     const tui::ThemeTokens* theme_ = &tui::dark_theme();
-    std::string model_, id_;
-    std::string mcp_text_;
-    bool mcp_warning_ = false;
+    std::string path_;
     std::size_t used_ = 0, limit_ = 0;
     int trigger_ = 80;
-    agent::PermissionMode mode_ = agent::PermissionMode::ask;
+    int todo_done_ = 0, todo_total_ = 0;
+    bool todo_shown_ = false;
 };
+
 } // namespace dagent::ui

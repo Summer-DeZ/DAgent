@@ -10,7 +10,7 @@ namespace dagent::agent {
 namespace {
 
 void check_stop(std::stop_token stop) {
-    if (stop.stop_requested()) throw ModelError(ModelError::Kind::cancelled, {}, "压缩已取消");
+    if (stop.stop_requested()) throw ModelError(ModelError::Kind::cancelled, {}, "compaction cancelled");
 }
 
 std::size_t protected_begin(const Conversation& conversation, std::size_t target) {
@@ -66,7 +66,7 @@ Request summary_request(const Conversation& conversation, std::size_t cut,
     }
     Message instruction;
     instruction.role = Role::user;
-    instruction.content = "请按要求总结以上对话。";
+    instruction.content = "Summarize the conversation above as instructed.";
     request.messages.push_back(std::move(instruction));
 
     // 先保留原文；只有摘要请求超预算时，才从最旧的工具输出开始换成占位。
@@ -85,12 +85,12 @@ Request summary_request(const Conversation& conversation, std::size_t cut,
         auto end = begin + 1;
         while (end != request.messages.end() - 1 && end->role == Role::tool) ++end;
         request.messages.erase(begin, end);
-        request.messages.back().content = "更早的对话已丢弃。请按要求总结以上保留的对话。";
+        request.messages.back().content = "Earlier conversation was discarded. Summarize the retained conversation above as instructed.";
         estimated = estimator.estimate(request);
     }
     if (estimated > limit || std::none_of(request.messages.begin(), request.messages.end(),
                                           [](const Message& m) { return m.role == Role::assistant; })) {
-        throw ModelError(ModelError::Kind::rejected, {}, "摘要预算不足以保留有进展的历史");
+        throw ModelError(ModelError::Kind::rejected, {}, "summary budget is too small to retain meaningful progress");
     }
     return request;
 }
@@ -111,12 +111,12 @@ Budget Budget::from(const ContextOptions& options, std::size_t max_tokens) {
 }
 
 std::string texts::pruned_output(std::string_view summary) {
-    return std::format("[旧的工具输出已省略：{}。需要时请重新调用。]", summary);
+    return std::format("[Old tool output omitted: {}. Call the tool again if needed.]", summary);
 }
 
 std::string texts::summary_message(std::string_view summary) {
-    return std::format("<summary>\n{}\n</summary>\n以上是之前对话的摘要，原始消息已被压缩。"
-                       "请继续完成用户的任务；需要文件内容时重新读取，不要凭摘要猜测文件内容。", summary);
+    return std::format("<summary>\n{}\n</summary>\nThe text above is a summary of the previous conversation; the original messages were compacted. "
+                       "Continue the user's task. Read files again when their contents are needed; do not guess file contents from the summary.", summary);
 }
 
 Compactor::Compactor(ContextOptions options, std::size_t max_tokens, std::string compact_prompt)
@@ -147,7 +147,7 @@ void Compactor::compact(Mode mode, Conversation& conversation, const RequestShap
     const auto before = estimate(conversation);
     if (budget_.limit == 0 && !conversation.entries().empty()) {
         throw ModelError(ModelError::Kind::context_too_long, {},
-                         "上下文预算为零，请增大 context.window_tokens 或减小预留量");
+                         "context budget is zero; increase context.window_tokens or reduce reserved tokens");
     }
     if (mode == Mode::automatic && before <= budget_.trigger) return;
 
@@ -193,13 +193,13 @@ void Compactor::compact(Mode mode, Conversation& conversation, const RequestShap
                 if (reply.usage) estimator.observe_prompt_tokens(reply.usage->prompt);
                 check_stop(stop);
                 summary = reply.message.content;
-                if (summary.empty()) throw ModelError(ModelError::Kind::rejected, {}, "摘要为空");
+                if (summary.empty()) throw ModelError(ModelError::Kind::rejected, {}, "summary is empty");
                 keep_from = pending.entries()[cut].ordinal;
                 pending.replace_prefix(cut, texts::summary_message(summary));
             } catch (const ModelError& error) {
                 // 摘要的 partial 不能作为主对话的 assistant 保存。
                 if (error.kind() == ModelError::Kind::cancelled) {
-                    throw ModelError(ModelError::Kind::cancelled, {}, "压缩已取消");
+                    throw ModelError(ModelError::Kind::cancelled, {}, "compaction cancelled");
                 }
                 base::logger("agent")->warn("摘要失败，退化为丢弃旧历史：{}", error.what());
                 const bool has_summary = pending.entries().front().ordinal == -1;
@@ -218,18 +218,18 @@ void Compactor::compact(Mode mode, Conversation& conversation, const RequestShap
                     discarded = drop - (has_summary ? 1 : 0);
                     pending.discard_prefix(drop);
                 } else {
-                    sink(Notice{Notice::Level::warn, "摘要失败，没有可安全丢弃的历史，请用 /new 开始新会话"});
+                    sink(Notice{Notice::Level::warn, "Summary failed and no history can be safely discarded; start a new session with /new"});
                 }
             }
         } else if (mode == Mode::manual) {
-            sink(Notice{Notice::Level::info, "没有可压缩的旧历史"});
+            sink(Notice{Notice::Level::info, "No older history to compact"});
         }
     }
     check_stop(stop);
     if (pruned.empty() && keep_from < 0) {
         if (after > budget_.limit) {
             throw ModelError(ModelError::Kind::context_too_long, {},
-                             "没有可安全压缩的历史，请用 /new 开始新会话");
+                             "No history can be safely compacted; start a new session with /new");
         }
         return;
     }
@@ -245,7 +245,7 @@ void Compactor::compact(Mode mode, Conversation& conversation, const RequestShap
                                                  : std::string("未摘要"));
     if (discarded > 0) {
         sink(Notice{Notice::Level::warn,
-                    std::format("摘要失败，已丢弃最早的 {} 条消息", discarded)});
+                    std::format("Summary failed; discarded the earliest {} messages", discarded)});
     }
     sink(Compacted{before, after, !summary.empty()});
     sink(ContextUpdate{{}, after, budget_.limit});

@@ -136,7 +136,7 @@ Agent::DispatchOutcome Agent::dispatch(const std::vector<ToolCall>& calls, int b
             continue;
         }
         if (outcome.handled == budget) {
-            slot.result = make_result(std::format(texts::kToolLimit, budget), true, false);
+            slot.result = make_result(std::format(texts::kToolLimit, setup_.options.run.max_tool_calls), true, false);
             outcome.hit_limit = true;
             continue;
         }

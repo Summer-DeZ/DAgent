@@ -20,6 +20,7 @@ constexpr std::string_view kBash = "bash";
 constexpr std::string_view kGrep = "grep";
 constexpr std::string_view kGlob = "glob";
 constexpr std::string_view kMcp = "mcp";
+constexpr std::string_view kTodo = "todo";
 
 } // namespace
 
@@ -33,6 +34,22 @@ NLOHMANN_DEFINE_TYPE_NON_INTRUSIVE_WITH_DEFAULT(GrepView, pattern, lines, trunca
 NLOHMANN_DEFINE_TYPE_NON_INTRUSIVE_WITH_DEFAULT(GlobView, pattern, files, truncated)
 NLOHMANN_DEFINE_TYPE_NON_INTRUSIVE_WITH_DEFAULT(McpView, server, tool, content, structured,
                                                 disconnected)
+
+inline void to_json(nlohmann::json& j, const TodoItem& item) {
+    constexpr std::string_view names[] = {"todo", "doing", "done", "dropped"};
+    j = {{"text", item.text}, {"state", names[static_cast<std::size_t>(item.state)]}};
+}
+
+inline void from_json(const nlohmann::json& j, TodoItem& item) {
+    item.text = j.value("text", "");
+    const std::string state = j.value("state", "todo");
+    item.state = state == "doing" ? TodoItem::State::doing
+               : state == "done" ? TodoItem::State::done
+               : state == "dropped" ? TodoItem::State::dropped
+                                     : TodoItem::State::todo;
+}
+
+NLOHMANN_DEFINE_TYPE_NON_INTRUSIVE_WITH_DEFAULT(TodoView, items)
 
 // BashView 的 exit_code / signal 是 std::optional<int>：本项目用的 nlohmann 开着隐式转换，
 // 这份配置不提供 optional 的序列化，BashView 手写（缺字段取默认值，null 表示没有）。
@@ -73,6 +90,7 @@ json to_json(const View& view) {
                    [&](const GrepView& v) { out = json{{"kind", kGrep}}; out.update(json(v)); },
                    [&](const GlobView& v) { out = json{{"kind", kGlob}}; out.update(json(v)); },
                    [&](const McpView& v) { out = json{{"kind", kMcp}}; out.update(json(v)); },
+                   [&](const TodoView& v) { out = json{{"kind", kTodo}}; out.update(json(v)); },
                },
                view);
     return out;
@@ -90,6 +108,7 @@ View view_from_json(const json& data) {
         if (name == kGrep) return data.get<GrepView>();
         if (name == kGlob) return data.get<GlobView>();
         if (name == kMcp) return data.get<McpView>();
+        if (name == kTodo) return data.get<TodoView>();
     } catch (const json::exception&) {
         return {}; // 会话文件损坏的条目按 monostate 显示
     }

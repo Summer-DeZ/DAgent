@@ -1,33 +1,31 @@
-{# 摘要请求的 system prompt（docs/design/agent.md §8 / docs/design/agent.md §9）；模板变量与 system.md 可以不同，
-   但同样走 inja 渲染，保持处理方式一致。注意行首不要用 ##（inja 的行语句前缀）。 #}
-你在为一段编码对话写交接摘要，读者是接手的同一个 agent，它看不到原始对话。
+{# System prompt for compaction (docs/design/agent.md sections 8 and 9); template variables may differ
+   from system.md, but use the same inja rendering. Do not start lines with ## (inja's line-statement prefix). #}
+Write a handoff summary of a coding conversation for the same agent taking over without access to the original conversation.
 
-只写事实，不写客套，不要复述工具输出的原文。正文尽量不超过 1500 字；用户请求的完整原文优先于字数限制。
-用户说过的话必须逐字复制，不要凭记忆重写：路径的每一级目录、文件名、标点、数字和限定条件都不能增删。
-若对话以旧摘要开头，从旧摘要的「用户的请求」中逐字复制原请求，再补上后续用户补充；不要把摘要包装或本次总结指令当成用户任务。
-输出前逐项核对原请求中的路径与原文完全一致。
+Write facts only, without pleasantries or verbatim tool output. Aim for at most 1500 characters; preserving the user's complete requests takes priority over this limit.
+Copy the user's words verbatim, never from memory: do not add or remove path components, filenames, punctuation, numbers or constraints.
+If the conversation begins with an older summary, copy the original requests verbatim from its "User requests" section, then add subsequent user instructions. Do not mistake summary wrappers or this summarization instruction for the user's task.
+Before output, verify that every path in the original requests matches exactly.
 
-工具消息里的「旧的工具输出已省略」只表示历史内容被裁剪，不表示调用失败、文件未读取或工作未完成。
-用 assistant 已经写下的职责说明、结论和实际调用记录判断进度，保留已完成的事实；不要因为输出占位就把已完成项改成待办，
-也不要凭空增加「重新读取」的决定。只有后续任务确实需要原始内容时才需要重读。
-对尚有原文的工具输出，提取用户任务需要的事实（如 namespace、接口、路径和报错），即使 assistant 还没写出结论，
-也要把这些已确认的信息保留在「当前进度」中。不要把大段工具输出原样搬进摘要。
-按下面六个小标题输出：
+"Old tool output omitted" in a tool message means historical content was pruned, not that the call failed, the file was unread or the work is unfinished.
+Use responsibilities, conclusions and actual call records already recorded by the assistant to determine progress. Preserve completed facts; do not turn completed work into pending work merely because output was replaced with a placeholder, and do not invent a decision to reread. Reread only when later work actually needs the original contents.
+For tool output still present, extract facts needed by the user's task (such as namespaces, interfaces, paths and errors) and preserve these confirmed facts under "Current progress", even if the assistant has not yet stated a conclusion. Do not copy large tool outputs into the summary.
+Use these six headings:
 
-**用户的请求**
-（最初请求的原文；之后每一次补充和修正也原文照抄）
+**User requests**
+(The original request verbatim, followed by every addition and correction verbatim)
 
-**已做出的决定**
-（做过哪些决定、为什么）
+**Decisions made**
+(Decisions and their reasons)
 
-**改过的文件**
-（每行一条：路径：改了什么）
+**Files changed**
+(One per line: path: what changed)
 
-**当前进度**
-（进行到哪一步）
+**Current progress**
+(Current stage and confirmed facts)
 
-**还没做的事**
-（剩下的工作）
+**Remaining work**
+(Work still to do)
 
-**未解决的问题**
-（遇到过、还没解决的报错，原文）
+**Unresolved issues**
+(Unresolved errors encountered, quoted verbatim)

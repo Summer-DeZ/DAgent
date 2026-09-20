@@ -122,7 +122,7 @@ Model::AttemptOutcome Model::attempt(const Request& request,
         response = http_.stream(codec->encode(request), on_data, stop);
     } catch (const net::HttpError& e) {
         if (e.kind() == net::HttpError::Kind::cancelled || stop.stop_requested()) {
-            return finish_outcome(AttemptOutcome::Kind::cancelled, "已中断");
+            return finish_outcome(AttemptOutcome::Kind::cancelled, "interrupted");
         }
         switch (e.kind()) {
         case net::HttpError::Kind::connect:
@@ -137,7 +137,7 @@ Model::AttemptOutcome Model::attempt(const Request& request,
         return finish_outcome(AttemptOutcome::Kind::rejected, e.what());
     }
 
-    if (stop.stop_requested()) return finish_outcome(AttemptOutcome::Kind::cancelled, "已中断");
+    if (stop.stop_requested()) return finish_outcome(AttemptOutcome::Kind::cancelled, "interrupted");
 
     if (response.status < 200 || response.status >= 300) {
         const Error error = codec->classify(response);
@@ -147,14 +147,14 @@ Model::AttemptOutcome Model::attempt(const Request& request,
         return finish_outcome(AttemptOutcome::Kind::rejected, error.message);
     }
     if (!state.any_sse) {
-        return finish_outcome(AttemptOutcome::Kind::rejected, "网关没有返回 SSE 流，可能不支持 stream=true");
+        return finish_outcome(AttemptOutcome::Kind::rejected, "The gateway returned no SSE stream - it may not support stream=true");
     }
     if (state.finish_seen && state.reply.finish.reason == Finish::Reason::error) {
-        const std::string detail = state.reply.finish.raw.empty() ? "服务端返回错误" : state.reply.finish.raw;
-        return finish_outcome(AttemptOutcome::Kind::retryable, "流没有正常结束：" + detail);
+        const std::string detail = state.reply.finish.raw.empty() ? "provider returned an error" : state.reply.finish.raw;
+        return finish_outcome(AttemptOutcome::Kind::retryable, "stream did not finish normally: " + detail);
     }
     if (!state.finish_seen) {
-        return finish_outcome(AttemptOutcome::Kind::retryable, "流没有正常结束（连接关闭前没有收到 finish_reason）");
+        return finish_outcome(AttemptOutcome::Kind::retryable, "stream ended without finish_reason before the connection closed");
     }
 
     out.kind = AttemptOutcome::Kind::success;
@@ -203,7 +203,7 @@ Reply Model::complete(const Request& request, const std::function<void(const Str
         }
         if (out.retry_after > retry_.max_retry_after) {
             throw ModelError(ModelError::Kind::exhausted, std::move(out.reply),
-                             std::format("服务端要求 {} 秒后重试，等待过久：{}",
+                             std::format("provider requested a retry in {} seconds, which is too long: {}",
                                          std::chrono::duration_cast<std::chrono::seconds>(out.retry_after).count(),
                                          out.message));
         }
@@ -225,7 +225,7 @@ Reply Model::complete(const Request& request, const std::function<void(const Str
         std::condition_variable_any cv;
         std::unique_lock lock(mutex);
         cv.wait_for(lock, stop, wait, [] { return false; });
-        if (stop.stop_requested()) throw ModelError(ModelError::Kind::cancelled, Reply{}, "已中断");
+        if (stop.stop_requested()) throw ModelError(ModelError::Kind::cancelled, Reply{}, "interrupted");
     }
 }
 

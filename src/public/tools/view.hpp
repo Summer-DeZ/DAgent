@@ -61,8 +61,23 @@ struct McpView {
     bool disconnected = false;
 };
 
+struct TodoItem {
+    enum class State : std::uint8_t { todo, doing, done, dropped };
+
+    std::string text;
+    State state = State::todo;
+    bool operator==(const TodoItem&) const = default;
+};
+
+/// @brief AI 当前的整份计划；每次工具调用都完整替换上一份。
+struct TodoView {
+    std::vector<TodoItem> items;
+    bool operator==(const TodoView&) const = default;
+};
+
 /// monostate：prepare 阶段就失败的调用（参数错误等），界面只显示 text。
-using View = std::variant<std::monostate, ReadView, FileChangeView, BashView, GrepView, GlobView, McpView>;
+using View = std::variant<std::monostate, ReadView, FileChangeView, BashView, GrepView, GlobView,
+                          McpView, TodoView>;
 
 /// 序列化成 {"kind": "read", ...}，给 session::Writer::append；kind 区分各分支。
 nlohmann::json to_json(const View&);

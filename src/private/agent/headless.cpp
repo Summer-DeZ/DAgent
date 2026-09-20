@@ -81,7 +81,7 @@ struct TextOutput {
                        [&](const StreamReset&) {
                            step_text.clear();
                            step_had_call = false;
-                           std::cerr << "… 丢弃这一步已显示的部分输出\n";
+                           std::cerr << "... discarding partial output from this step\n";
                        },
                        [&](const ToolPending&) {
                            step_had_call = true;
@@ -95,11 +95,11 @@ struct TextOutput {
                        },
                        [&](const ToolOutput&) {},
                        [&](const Retrying& retrying) {
-                           std::cerr << "重试 " << retrying.attempt << "/" << retrying.max_attempts << "："
+                           std::cerr << "retry " << retrying.attempt << "/" << retrying.max_attempts << ": "
                                      << retrying.reason << "\n";
                        },
                        [&](const Compacted& compacted) {
-                           std::cerr << "上下文已压缩：" << compacted.before << " → " << compacted.after
+                           std::cerr << "compacted: " << compacted.before << " → " << compacted.after
                                      << "\n";
                        },
                        [&](const ContextUpdate&) {},
@@ -124,7 +124,7 @@ struct TextOutput {
             std::chrono::duration_cast<std::chrono::seconds>(std::chrono::steady_clock::now() - step_begin)
                 .count();
         if (seconds < 1) return;
-        std::cerr << "等待模型… " << seconds << "s\n";
+        std::cerr << "waiting for the model... " << seconds << "s\n";
     }
 
     std::string result() {
@@ -245,7 +245,7 @@ int run_headless(Setup setup, const HeadlessOptions& options, Interrupts& interr
             agent = Agent::create(std::move(setup));
         }
     } catch (const std::exception& error) {
-        std::cerr << "启动失败：" << error.what() << "\n";
+        std::cerr << "startup failed: " << error.what() << "\n";
         return 1;
     }
     const std::string session_id = agent->meta().id;

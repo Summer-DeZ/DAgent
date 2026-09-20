@@ -11,11 +11,11 @@ using detail::resolve_arg;
 
 namespace {
 
-constexpr std::string_view kDescription = R"(按 gitignore 语义的 glob 模式列举工作区里的文件。
+constexpr std::string_view kDescription = R"(List workspace files using a glob pattern with gitignore semantics.
 
-- 模式匹配任意深度：*.cpp 能命中 src/a/b.cpp；用 src/**/*.hpp 这类写法限定范围。
-- 按「最近修改的在前」排序；被 .gitignore 忽略的文件和隐藏文件不会出现。
-- 结果有上限，被截断时请用更具体的模式缩小范围。)";
+- Patterns match at any depth: *.cpp can match src/a/b.cpp. Use patterns such as src/**/*.hpp to narrow the scope.
+- Results are sorted with the most recently modified first. Hidden files and files ignored by .gitignore are excluded.
+- Results are bounded. If truncated, use a more specific pattern.)";
 
 class GlobCall final : public Call {
 public:
@@ -26,7 +26,7 @@ public:
         path_prefix_ = detail::relative_prefix(root_.path, ctx.root());
         intent_.kind = Intent::Kind::read;
         intent_.paths = {root_};
-        intent_.summary = std::format("列举 {}", pattern_);
+        intent_.summary = std::format("List {}", pattern_);
     }
 
 private:
@@ -42,12 +42,12 @@ private:
         } catch (const workspace::WorkspaceError& e) {
             if (e.kind() == workspace::WorkspaceError::Kind::cancelled) {
                 Result result;
-                result.text = "已被用户中断";
+                result.text = "interrupted by the user";
                 result.interrupted = true;
                 return result;
             }
             if (e.kind() == workspace::WorkspaceError::Kind::bad_pattern) // 模型的输入错误，不记 warn
-                return error_result(std::format("glob 模式有问题：{}", e.what()));
+                return error_result(std::format("invalid glob pattern: {}", e.what()));
             throw;
         }
         for (std::string& file : found) file = path_prefix_ + file;
@@ -56,15 +56,15 @@ private:
         std::string text;
         for (const std::string& file : found) {
             if (text.size() + file.size() + 1 + 64 > max_result_bytes_) {
-                text += "[结果已截断，请用更具体的模式]\n";
+                text += "[Results truncated. Use a more specific pattern.]\n";
                 break;
             }
             text += file;
             text += '\n';
         }
         if (truncated && text.size() + 64 + 64 <= max_result_bytes_)
-            text += "[结果可能不完整，已达到数量上限]\n";
-        if (text.empty()) text = "（没有匹配的文件）\n";
+            text += "[Result count limit reached; results may be incomplete.]\n";
+        if (text.empty()) text = "(no matching files)\n";
 
         GlobView view;
         view.pattern = pattern_;
@@ -91,8 +91,8 @@ public:
         spec_.parameters = {
             {"type", "object"},
             {"properties",
-             {{"pattern", {{"type", "string"}, {"description", "gitignore 语义的 glob 模式，如 src/**/*.hpp"}}},
-              {"path", {{"type", "string"}, {"description", "从哪个目录开始匹配，默认工作区根"}}}}},
+             {{"pattern", {{"type", "string"}, {"description", "Glob pattern with gitignore semantics, e.g. src/**/*.hpp"}}},
+              {"path", {{"type", "string"}, {"description", "Directory to search from; defaults to the workspace root"}}}}},
             {"required", std::vector<std::string>{"pattern"}},
         };
     }
@@ -113,10 +113,10 @@ public:
         case workspace::FileKind::directory: break;
         case workspace::FileKind::missing:
             return std::unexpected(
-                error_result(std::format("路径不存在：{}", detail::display_path(ctx, root))));
+                error_result(std::format("path does not exist: {}", detail::display_path(ctx, root))));
         default:
             return std::unexpected(error_result(std::format(
-                "path 应为目录，{} 是文件；要看文件内容请用 read", detail::display_path(ctx, root))));
+                "path must be a directory; {} is a file. Use read to see its contents", detail::display_path(ctx, root))));
         }
         return std::make_unique<GlobCall>(ctx, std::move(root), pattern);
     }

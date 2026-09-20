@@ -78,13 +78,13 @@ json member_or(const json& object, const char* key, json fallback) {
 }
 
 std::string rpc_text(std::string_view method, const json& error) {
-    std::string message = "未知错误";
+    std::string message = "unknown error";
     int code = 0;
     if (error.is_object()) {
         code = int_or(error, "code");
         message = string_or(error, "message", message);
     }
-    return std::format("{} 返回错误：{}（{}）", method, message, code);
+    return std::format("{} returned an error: {} ({})", method, message, code);
 }
 
 /// @brief 按 HTTP 状态码报错；401/403 是配置问题，5xx 可重试。error 是响应体里的 JSON-RPC error（可为
@@ -98,13 +98,13 @@ std::string rpc_text(std::string_view method, const json& error) {
     }
     if (status == 401 || status == 403)
         throw McpError{McpError::Kind::handshake,
-                       std::format("{}: {} 被拒绝（HTTP {}），检查 server 配置里的鉴权头{}", server, method,
+                       std::format("{}: {} denied (HTTP {}); check authentication headers in the server config{}", server, method,
                                    status, detail)};
     if (status >= 500)
         throw McpError{McpError::Kind::disconnected,
-                       std::format("{}: {} 失败（HTTP {}），server 侧错误{}", server, method, status, detail)};
+                       std::format("{}: {} failed (HTTP {}); server error{}", server, method, status, detail)};
     throw McpError{McpError::Kind::protocol,
-                   std::format("{}: {} 失败（HTTP {}），响应不是 JSON-RPC 消息{}", server, method, status,
+                   std::format("{}: {} failed (HTTP {}); response is not JSON-RPC{}", server, method, status,
                                detail)};
 }
 
@@ -203,15 +203,15 @@ struct Client::Impl {
 };
 
 void Client::Impl::start() {
-    if (config_.name.empty()) throw McpError{McpError::Kind::handshake, "server 名字为空"};
+    if (config_.name.empty()) throw McpError{McpError::Kind::handshake, "server name is empty"};
     if (config_.transport == Transport::http) {
         if (config_.url.empty())
-            throw McpError{McpError::Kind::handshake, config_.name + ": HTTP server 缺少 url"};
+            throw McpError{McpError::Kind::handshake, config_.name + ": HTTP server is missing url"};
         http_ = true;
         return;
     }
     if (config_.command.empty())
-        throw McpError{McpError::Kind::spawn, config_.name + ": stdio server 缺少 command"};
+        throw McpError{McpError::Kind::spawn, config_.name + ": stdio server is missing command"};
     exec::Command cmd;
     cmd.argv = config_.command;
     cmd.env_set = config_.env;
@@ -234,7 +234,7 @@ void Client::Impl::shutdown() {
             if (pending->done) continue;
             pending->done = true;
             pending->disconnected = true;
-            pending->error_text = config_.name + ": 客户端已关闭";
+            pending->error_text = config_.name + ": client is closed";
         }
     }
     cv_.notify_all();
@@ -284,8 +284,8 @@ void Client::Impl::on_line(std::string_view line) {
 
 void Client::Impl::on_exit(std::optional<int> code, std::optional<int> signal) {
     std::string reason;
-    if (signal.has_value()) reason = std::format("server 被信号 {} 终止", *signal);
-    else reason = std::format("server 退出（code={}）", code.value_or(-1));
+    if (signal.has_value()) reason = std::format("server terminated by signal {}", *signal);
+    else reason = std::format("server exited (code={})", code.value_or(-1));
     {
         std::lock_guard lock(mu_);
         disconnected_ = true;
@@ -403,7 +403,7 @@ Response Client::Impl::stdio_exchange(std::int64_t id, std::string_view method, 
     {
         std::lock_guard lock(mu_);
         if (closing_)
-            throw McpError{McpError::Kind::disconnected, config_.name + ": 客户端已关闭"};
+            throw McpError{McpError::Kind::disconnected, config_.name + ": client is closed"};
         if (disconnected_) throw McpError{McpError::Kind::disconnected, disconnect_reason_};
         pending_[id] = pending;
     }
@@ -420,11 +420,11 @@ Response Client::Impl::stdio_exchange(std::int64_t id, std::string_view method, 
             if (stop.stop_requested()) {
                 send_cancel(id, "cancelled by caller");
                 throw McpError{McpError::Kind::cancelled,
-                               std::format("{}: {} 已取消", config_.name, method)};
+                               std::format("{}: {} interrupted", config_.name, method)};
             }
             send_cancel(id, "timeout");
             throw McpError{McpError::Kind::timeout,
-                           std::format("{}: {} 等待超时（{}ms）", config_.name, method, timeout.count())};
+                           std::format("{}: {} timed out ({}ms)", config_.name, method, timeout.count())};
         }
         pending_.erase(id);
     }
@@ -528,7 +528,7 @@ Response Client::Impl::http_exchange(std::int64_t id, std::string_view method, j
         if (!got) {
             if (body_overflow)
                 throw McpError{McpError::Kind::protocol,
-                               std::format("{}: {} 的响应超过大小上限（{} 字节）", config_.name, method,
+                               std::format("{}: {} response size limit reached ({} bytes)", config_.name, method,
                                            opt_.http.max_body_bytes)};
             const json msg = json::parse(body, nullptr, false);
             if (!msg.is_discarded() && msg.is_object()) take(msg);
@@ -557,36 +557,36 @@ Response Client::Impl::http_exchange(std::int64_t id, std::string_view method, j
         }
         if (stop.stop_requested()) {
             send_cancel(id, "cancelled by caller");
-            throw McpError{McpError::Kind::cancelled, std::format("{}: {} 已取消", config_.name, method)};
+            throw McpError{McpError::Kind::cancelled, std::format("{}: {} interrupted", config_.name, method)};
         }
         // initialize 要读完流才拿得到响应头：响应到了但流没正常结束（server 不关 SSE 流而超时，或连接
         // 中断），就拿不到 Mcp-Session-Id，不能当成功，否则之后每个请求都会因为缺会话失败。
         if (got)
             throw McpError{McpError::Kind::handshake,
-                           std::format("{}: {} 的响应流没有正常结束，拿不到 Mcp-Session-Id（{}）", config_.name,
+                           std::format("{}: {} response stream did not finish normally; Mcp-Session-Id unavailable ({})", config_.name,
                                        method, e.what())};
         if (deadline_hit) {
             send_cancel(id, "timeout");
             throw McpError{McpError::Kind::timeout,
-                           std::format("{}: {} 等待超时（{}ms）", config_.name, method, timeout.count())};
+                           std::format("{}: {} timed out ({}ms)", config_.name, method, timeout.count())};
         }
         if (body_overflow)
             throw McpError{McpError::Kind::protocol,
-                           std::format("{}: {} 的响应超过大小上限（{} 字节）", config_.name, method,
+                           std::format("{}: {} response size limit reached ({} bytes)", config_.name, method,
                                        opt_.http.max_body_bytes)};
         switch (e.kind()) {
         case net::HttpError::Kind::timeout:
-            throw McpError{McpError::Kind::timeout, std::format("{}: {} 超时：{}", config_.name, method, e.what())};
+            throw McpError{McpError::Kind::timeout, std::format("{}: {} timed out: {}", config_.name, method, e.what())};
         case net::HttpError::Kind::cancelled:
-            throw McpError{McpError::Kind::cancelled, std::format("{}: {} 已取消", config_.name, method)};
+            throw McpError{McpError::Kind::cancelled, std::format("{}: {} interrupted", config_.name, method)};
         case net::HttpError::Kind::too_large:
             throw McpError{McpError::Kind::protocol,
-                           std::format("{}: {} 的响应超过大小上限：{}", config_.name, method, e.what())};
+                           std::format("{}: {} response size limit reached: {}", config_.name, method, e.what())};
         case net::HttpError::Kind::connect:
         case net::HttpError::Kind::tls:
         case net::HttpError::Kind::transport:
             throw McpError{McpError::Kind::disconnected,
-                           std::format("{}: {} 传输失败：{}", config_.name, method, e.what())};
+                           std::format("{}: {} transport failed: {}", config_.name, method, e.what())};
         }
         throw McpError{McpError::Kind::disconnected, e.what()}; // 枚举已经列全，这里到不了
     }
@@ -608,7 +608,7 @@ json Client::Impl::request(std::string_view method, json params, milliseconds ti
     if (!response.ok) {
         if (response.status >= 400) throw_http_status(config_.name, method, response.status);
         throw McpError{McpError::Kind::protocol,
-                       std::format("{}: {} 的响应里既没有 result 也没有 error", config_.name, method)};
+                       std::format("{}: {} response contains neither result nor error", config_.name, method)};
     }
     return std::move(response.result);
 }
@@ -637,10 +637,10 @@ void Client::Impl::http_post(const json& message, milliseconds timeout, const st
     } catch (const net::HttpError& e) {
         const auto kind = e.kind() == net::HttpError::Kind::timeout ? McpError::Kind::timeout
                                                                     : McpError::Kind::disconnected;
-        throw McpError{kind, std::format("{}: POST 通知失败：{}", config_.name, e.what())};
+        throw McpError{kind, std::format("{}: POST notification failed: {}", config_.name, e.what())};
     }
     if (resp.status < 200 || resp.status >= 300)
-        throw_http_status(config_.name, "POST 通知", resp.status);
+        throw_http_status(config_.name, "POST notification", resp.status);
 }
 
 void Client::Impl::send_cancel(std::int64_t id, std::string_view reason) {
@@ -669,7 +669,7 @@ bool Client::Impl::select_modern(const json& supported) {
             if (item.is_string() && detail::is_known_legacy_version(item.get<std::string>())) return false;
     }
     throw McpError{McpError::Kind::handshake,
-                   std::format("{}: server 支持的协议版本 {} 里没有本客户端能用的", config_.name,
+                   std::format("{}: none of the server protocol versions {} is supported by this client", config_.name,
                                supported.dump())};
 }
 
@@ -714,7 +714,7 @@ bool Client::Impl::http_probe_modern(std::stop_token stop) {
     if (response.status == 400 || response.status == 404 || response.status == 405) return false;
     if (response.status >= 400) throw_http_status(config_.name, "server/discover", response.status);
     throw McpError{McpError::Kind::protocol,
-                   std::format("{}: server/discover 的响应无法识别（HTTP {}）", config_.name, response.status)};
+                   std::format("{}: unrecognized server/discover response (HTTP {})", config_.name, response.status)};
 }
 
 // 发送 initialize。新会话在 response.session_id 里，由调用方决定什么时候装上；不碰 version_ / modern_。
@@ -747,19 +747,19 @@ void Client::Impl::legacy_handshake(std::stop_token stop) {
     if (!response.ok) {
         if (response.status >= 400) throw_http_status(config_.name, "initialize", response.status);
         throw McpError{McpError::Kind::protocol,
-                       std::format("{}: initialize 的响应里既没有 result 也没有 error", config_.name)};
+                       std::format("{}: initialize response contains neither result nor error", config_.name)};
     }
     const std::string version = string_or(response.result, "protocolVersion");
     if (!detail::is_known_legacy_version(version))
         throw McpError{McpError::Kind::handshake,
-                       std::format("{}: server 协商的协议版本不受支持：'{}'", config_.name, version)};
+                       std::format("{}: negotiated server protocol version is unsupported: '{}'", config_.name, version)};
     version_ = version;
     if (http_) set_session_id(response.session_id); // connect 期间只有这一个线程，先装上再发通知
     try {
         notify("notifications/initialized", json::object());
     } catch (const McpError& e) {
         throw McpError{McpError::Kind::handshake,
-                       std::format("{}: 发送 notifications/initialized 失败：{}", config_.name, e.what())};
+                       std::format("{}: failed to send notifications/initialized: {}", config_.name, e.what())};
     }
 }
 
@@ -776,18 +776,18 @@ void Client::Impl::recover_session(const std::string& used_session, std::stop_to
     if (response.rpc_error) {
         if (int_or(response.error, "code") == kUnsupportedProtocolVersion)
             throw McpError{McpError::Kind::handshake,
-                           config_.name + ": server 重启后不再支持经典协议，需要重新连接"};
+                           config_.name + ": server no longer supports the classic protocol after restart; reconnect required"};
         throw McpError{McpError::Kind::rpc, config_.name + ": " + rpc_text("initialize", response.error)};
     }
     if (!response.ok) {
         if (response.status >= 400) throw_http_status(config_.name, "initialize", response.status);
         throw McpError{McpError::Kind::protocol,
-                       std::format("{}: initialize 的响应里既没有 result 也没有 error", config_.name)};
+                       std::format("{}: initialize response contains neither result nor error", config_.name)};
     }
     const std::string version = string_or(response.result, "protocolVersion");
     if (version != version_)
         throw McpError{McpError::Kind::handshake,
-                       std::format("{}: server 重启后协商的协议版本变了（{} → {}），需要重新连接",
+                       std::format("{}: negotiated protocol changed after server restart ({} -> {}); reconnect required",
                                    config_.name, version_, version)};
     // 通知显式带新会话发出，成功后才装进共享状态：其他线程不会拿到还没初始化完的会话。
     try {
@@ -795,7 +795,7 @@ void Client::Impl::recover_session(const std::string& used_session, std::stop_to
                   &response.session_id);
     } catch (const McpError& e) {
         throw McpError{McpError::Kind::handshake,
-                       std::format("{}: 发送 notifications/initialized 失败：{}", config_.name, e.what())};
+                       std::format("{}: failed to send notifications/initialized: {}", config_.name, e.what())};
     }
     set_session_id(response.session_id);
 }
@@ -824,7 +824,7 @@ void Client::Impl::fetch_tools(milliseconds timeout, std::stop_token stop) {
         const json result = request("tools/list", std::move(params), timeout, stop);
         const auto list = result.find("tools");
         if (!result.is_object() || list == result.end() || !list->is_array())
-            throw McpError{McpError::Kind::protocol, config_.name + ": tools/list 缺少 tools 数组"};
+            throw McpError{McpError::Kind::protocol, config_.name + ": tools/list is missing the tools array"};
         for (const auto& item : *list) {
             if (!item.is_object() || !item.contains("name") || !item["name"].is_string()) {
                 log_mcp()->warn("{}: 忽略没有名字的工具", config_.name);
@@ -892,7 +892,7 @@ std::unique_ptr<Client> Client::connect(const ServerConfig& config, const Option
     try {
         client->impl_->start();
         if (stop.stop_requested())
-            throw McpError{McpError::Kind::cancelled, config.name + ": 连接已取消"};
+            throw McpError{McpError::Kind::cancelled, config.name + ": connection interrupted"};
         client->impl_->handshake(stop);
         client->impl_->fetch_tools(opt.connect_timeout, stop);
     } catch (...) {
@@ -917,14 +917,14 @@ CallResult Client::call(std::string_view tool, const json& args, milliseconds ti
         });
         if (it == impl_->tools_.end())
             throw McpError{McpError::Kind::protocol,
-                           std::format("{}: 未知工具 {}", impl_->config_.name, tool)};
+                           std::format("{}: unknown tool {}", impl_->config_.name, tool)};
         name = it->name;
     }
     json params = {{"name", name}, {"arguments", args.is_object() ? args : json::object()}};
     const json result = impl_->request("tools/call", std::move(params), timeout, stop);
     if (string_or(result, "resultType", "complete") == "input_required")
         throw McpError{McpError::Kind::protocol,
-                       impl_->config_.name + ": server 要求补充输入（input_required），当前版本不支持"};
+                       impl_->config_.name + ": server requested input (input_required), which this version does not support"};
     CallResult out;
     if (const auto content = result.find("content");
         content != result.end() && content->is_array()) {

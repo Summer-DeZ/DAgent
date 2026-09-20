@@ -25,13 +25,12 @@ using detail::split_lines;
 
 namespace {
 
-constexpr std::string_view kDescription = R"(精确替换文件里的一段文本。修改已有文件的首选方式。
+constexpr std::string_view kDescription = R"(Replace an exact span of text in a file. Prefer this tool for changes to existing files.
 
-- old_string 必须与文件内容逐字一致（不含 read 输出的行号前缀），且必须在文件中唯一匹配；
-  出现多处会直接报错，请扩大片段使其唯一，或传 replace_all=true 替换所有出现。
-- 修改前必须先用 read 读过这个文件；文件在读取后被其他人改过时本工具会报错，重新 read 即可。
-- 保留文件原有的换行符风格与 BOM。
-- 成功后返回改动统计和改动处前后各 4 行；连续多次编辑不需要每次重新 read。)";
+- old_string must match the file exactly, without read output's line number prefixes, and must occur exactly once. Multiple matches return an error: expand the span to make it unique, or use replace_all=true.
+- You must read the file before editing it. If someone changes it after your read, this tool reports it as stale; read it again.
+- The original newline style and BOM are preserved.
+- Success returns change statistics and four context lines around each change. Consecutive edits do not require a fresh read each time.)";
 
 /// old_string 的每一行是不是都带着 read 输出的「行号 + Tab」前缀。
 bool looks_like_numbered(std::string_view text) {
@@ -88,7 +87,7 @@ public:
         intent_.kind = Intent::Kind::write;
         intent_.paths = {target_};
         intent_.preview = view_.diff;
-        intent_.summary = std::format("编辑 {}（+{} −{}）", path_, view_.added, view_.removed);
+        intent_.summary = std::format("Edit {} (+{} -{})", path_, view_.added, view_.removed);
     }
 
 private:
@@ -98,7 +97,7 @@ private:
         } catch (const workspace::WorkspaceError& e) {
             if (e.kind() == workspace::WorkspaceError::Kind::stale)
                 return error_result(std::format(
-                    "文件 {} 在你上次读取后被修改过（可能是 bash 或用户改的），请重新 read", path_));
+                    "{} is stale - it changed since your last read (possibly by bash or the user); read it again before editing", path_));
             throw;
         }
         if (const auto stamp = workspace::stamp_of(target_.path)) ctx_.track(target_, *stamp);
@@ -155,11 +154,11 @@ public:
         spec_.parameters = {
             {"type", "object"},
             {"properties",
-             {{"path", {{"type", "string"}, {"description", "要修改的文件路径，相对工作区根"}}},
-              {"old_string", {{"type", "string"}, {"description", "要被替换的原文，必须与文件内容逐字一致"}}},
-              {"new_string", {{"type", "string"}, {"description", "替换后的新文本"}}},
+             {{"path", {{"type", "string"}, {"description", "File path to edit, relative to the workspace root"}}},
+              {"old_string", {{"type", "string"}, {"description", "Original text to replace; must match file contents exactly"}}},
+              {"new_string", {{"type", "string"}, {"description", "Replacement text"}}},
               {"replace_all",
-               {{"type", "boolean"}, {"description", "替换所有出现；默认要求 old_string 唯一匹配，多处出现会报错"}}}}},
+               {{"type", "boolean"}, {"description", "Replace all occurrences; by default old_string must match exactly once, otherwise an error is returned"}}}}},
             {"required", std::vector<std::string>{"path", "old_string", "new_string"}},
         };
     }
@@ -176,8 +175,8 @@ public:
         const auto new_string = detail::get_string(*args, "new_string", err);
         const auto replace_all = get_bool(*args, "replace_all", err);
         if (!err.empty()) return std::unexpected(error_result(err));
-        if (!old_string) return std::unexpected(error_result("参数 old_string 缺失（必填）"));
-        if (!new_string) return std::unexpected(error_result("参数 new_string 缺失（必填）"));
+        if (!old_string) return std::unexpected(error_result("old_string is required"));
+        if (!new_string) return std::unexpected(error_result("new_string is required"));
 
         const workspace::Resolved resolved = resolve_arg(ctx, path);
         const std::string display = detail::display_path(ctx, resolved);
@@ -185,18 +184,18 @@ public:
         const auto tracked = ctx.tracked_stamp(resolved);
         if (!tracked)
             return std::unexpected(
-                error_result(std::format("还没读过 {}：请先用 read 读这个文件再编辑", display)));
+                error_result(std::format("{} has not been read; use read before editing this file", display)));
 
         const workspace::FileKind kind = workspace::probe(resolved.path);
         if (kind == workspace::FileKind::missing)
             return std::unexpected(error_result(std::format(
-                "文件 {} 已经不存在（在你读取后被删除或移动），请重新确认", display)));
+                "{} no longer exists (deleted or moved since your read); check its current location", display)));
         if (kind == workspace::FileKind::directory)
-            return std::unexpected(error_result(std::format("{} 是目录，不能编辑", display)));
+            return std::unexpected(error_result(std::format("{} is a directory and cannot be edited", display)));
 
         if (const auto current = workspace::stamp_of(resolved.path); !current || !(*current == *tracked))
             return std::unexpected(error_result(std::format(
-                "文件 {} 在你上次读取后被修改过（可能是 bash 或用户改的），请重新 read", display)));
+                "{} is stale - it changed since your last read (possibly by bash or the user); read it again before editing", display)));
 
         workspace::TextFile file;
         try {
@@ -204,36 +203,36 @@ public:
         } catch (const workspace::WorkspaceError& e) {
             if (e.kind() == workspace::WorkspaceError::Kind::not_text)
                 return std::unexpected(
-                    error_result(std::format("{} 是二进制文件，拒绝用 edit 修改", display)));
+                    error_result(std::format("{} is binary; edit cannot modify it", display)));
             throw;
         }
         if (file.lossy)
             return std::unexpected(error_result(std::format(
-                "文件 {} 含非法 UTF-8（读取时被替换成了 U+FFFD），拒绝编辑以免破坏原文件", display)));
+                "{} contains invalid UTF-8 (replaced with U+FFFD when read); editing is denied to avoid corrupting the original file", display)));
         if (file.truncated)
             return std::unexpected(error_result(std::format(
-                "文件 {} 超过单次读取上限，只能看到开头部分，拒绝编辑以免丢失后面的内容", display)));
+                "{} is larger than the per-read limit; only its beginning was read. Editing is denied to avoid losing the remaining content", display)));
 
         const std::string old_lf = detail::to_lf(*old_string);
         const std::string new_lf = detail::to_lf(*new_string);
-        if (old_lf.empty()) return std::unexpected(error_result("old_string 不能为空"));
-        if (old_lf == new_lf) return std::unexpected(error_result("old_string 和 new_string 相同"));
+        if (old_lf.empty()) return std::unexpected(error_result("old_string must not be empty"));
+        if (old_lf == new_lf) return std::unexpected(error_result("old_string and new_string are identical"));
 
         const std::string& content = file.content;
         const std::vector<std::size_t> positions = find_all(content, old_lf);
 
         if (positions.empty()) {
-            std::string text = std::format("old_string 在 {} 中不存在（必须逐字一致）", display);
+            std::string text = std::format("old_string was not found in {} (an exact match is required)", display);
             if (looks_like_numbered(old_lf))
-                text += "\n提示：old_string 每行都以「行号 + Tab」开头——那是 read 输出的格式，"
-                        "不要把行号前缀带进来。";
+                text += "\nHint: every line of old_string starts with a line number and Tab from read output; "
+                        "do not include line number prefixes.";
             else if (const auto line = unique_indent_insensitive(content, old_lf))
                 text += std::format(
-                    "\n提示：第 {} 行附近有一处内容一致但缩进不一致的匹配，请按文件原样的缩进重写 "
-                    "old_string（只提示，不自动应用）。",
+                    "\nHint: near line {} the text matches except for indentation. Rewrite "
+                    "old_string with the file's exact indentation (suggestion only; not applied automatically).",
                     *line);
             else
-                text += "\n提示：请重新 read 这段内容，注意空格、标点和换行都要完全一致。";
+                text += "\nHint: read this section again; spaces, punctuation and newlines must match exactly.";
             return std::unexpected(error_result(std::move(text)));
         }
         if (positions.size() > 1 && !replace_all.value_or(false)) {
@@ -242,8 +241,8 @@ public:
             for (std::size_t i = 0; i < shown; ++i)
                 lines += (i == 0 ? "" : "、") + std::to_string(line_at(content, positions[i]));
             return std::unexpected(error_result(std::format(
-                "old_string 在 {} 中出现 {} 处（行号：{}）。扩大 old_string 使其唯一，或传 "
-                "replace_all=true 替换全部。",
+                "old_string matches {} at {} locations (lines: {}). Expand old_string to make it unique, or pass "
+                "replace_all=true to replace all occurrences.",
                 display, positions.size(), lines)));
         }
 
@@ -257,11 +256,11 @@ public:
         }
         new_content.append(content, last, content.size() - last);
         if (new_content == content)
-            return std::unexpected(error_result("替换后内容没有变化（new_string 和原文一致）"));
+            return std::unexpected(error_result("replacement makes no change (new_string matches the original text)"));
         // 写入上限在 prepare 就拦下：注定失败的调用不应该先弹一次确认
         if (new_content.size() > ctx.files().max_write_bytes)
             return std::unexpected(error_result(std::format(
-                "编辑后的内容有 {} 字节，超过写入上限（{} 字节）", new_content.size(),
+                "edited content is {} bytes; write size limit reached ({} bytes)", new_content.size(),
                 ctx.files().max_write_bytes)));
 
         const workspace::Unified diff = workspace::unified_diff(content, new_content, display);
@@ -284,7 +283,7 @@ public:
         const std::size_t dropped = build_snippets(new_content, regions,
                                                    ctx.options().max_result_bytes - 128,
                                                    ctx.options().read_max_line_bytes, snippets);
-        if (dropped > 0) snippets += std::format("（另有 {} 处改动未展示）\n", dropped);
+        if (dropped > 0) snippets += std::format("({} additional changes not displayed)\n", dropped);
 
         FileChangeView view;
         view.path = display;
@@ -293,7 +292,7 @@ public:
         view.removed = static_cast<int>(diff.stat.removed);
         view.created = false;
 
-        std::string success = std::format("已编辑 {}（+{} −{}）\n", display, diff.stat.added,
+        std::string success = std::format("Edited {} (+{} -{}).\n", display, diff.stat.added,
                                           diff.stat.removed);
         success += snippets;
         return std::make_unique<EditCall>(ctx, resolved, display, std::move(new_content), file.eol,

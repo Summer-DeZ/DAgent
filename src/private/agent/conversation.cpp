@@ -97,27 +97,27 @@ Request Conversation::build(const std::string& system, const std::vector<ToolDef
 
 std::optional<std::string> Conversation::validate() const {
     if (entries_.empty()) return std::nullopt;
-    if (entries_.front().message.role != Role::user) return "I4：第一条不是 user 消息";
+    if (entries_.front().message.role != Role::user) return "I4: first message is not a user message";
 
     for (std::size_t i = 0; i < entries_.size(); ++i) {
         const Entry& entry = entries_[i];
         if (entry.message.role == Role::tool) {
-            return std::format("I3：第 {} 条 tool 消息没有对应的 assistant 调用", i);
+            return std::format("I3: tool message {} has no matching assistant call", i);
         }
         if (entry.message.role != Role::assistant) continue;
         if (entry.message.content.empty() && entry.message.tool_calls.empty()) {
-            return std::format("I2：第 {} 条 assistant 既没有内容也没有工具调用", i);
+            return std::format("I2: assistant message {} has neither content nor tool calls", i);
         }
         if (entry.message.tool_calls.empty()) continue;
 
         std::size_t next = i + 1;
         for (const ToolCall& call : entry.message.tool_calls) {
             if (next >= entries_.size() || entries_[next].message.role != Role::tool) {
-                return std::format("I1：第 {} 条 assistant 的调用 {} 没有对应的 tool 消息", i,
+                return std::format("I1: assistant message {} call {} has no matching tool message", i,
                                    call.name);
             }
             if (entries_[next].message.tool_call_id != call.id) {
-                return std::format("I1：第 {} 条 tool 消息的 id 与调用不一致", next);
+                return std::format("I1: tool message {} ID does not match the call", next);
             }
             ++next;
         }

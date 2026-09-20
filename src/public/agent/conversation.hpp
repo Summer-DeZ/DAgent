@@ -27,24 +27,24 @@ struct Entry {
 
 /// @brief 核心自己生成、会进入历史给模型看的文字（T1–T9、T12 / T13；T10 / T11 见 compaction.hpp）。
 namespace texts {
-inline constexpr std::string_view kInterrupted = "\n\n[回复被用户中断]";
-inline constexpr std::string_view kInterruptedCall = "用户中断了本轮，这个调用没有执行。";
+inline constexpr std::string_view kInterrupted = "\n\n[response interrupted by the user]";
+inline constexpr std::string_view kInterruptedCall = "The user interrupted this turn; this call was not executed.";
 inline constexpr std::string_view kDenied =
-    "用户拒绝了这次调用。不要换一种方式绕过它，等待用户的进一步指示。";
-inline constexpr std::string_view kDeniedWithFeedback = "用户拒绝了这次调用，并说明：{}";
-inline constexpr std::string_view kPriorDenied = "同一批里前面的调用被用户拒绝，这个调用没有执行。";
+    "The user denied this call. Do not work around it; wait for further instructions.";
+inline constexpr std::string_view kDeniedWithFeedback = "The user denied this call and said: {}";
+inline constexpr std::string_view kPriorDenied = "An earlier call in the same batch was denied; this call was not executed.";
 inline constexpr std::string_view kPolicyDenied =
-    "权限策略拒绝了这次调用：{}。当前是非交互模式，无法向用户确认；请换一种不需要这个权限的做法，"
-    "或在最终回复里说明需要用户做什么。";
-inline constexpr std::string_view kUnknownTool = "未知工具 {}。可用的工具：{}";
+    "The permission policy denied this call: {}. This run is non-interactive, so the user cannot be asked. Use an approach that does not need this permission, "
+    "or say in your final reply what the user must do.";
+inline constexpr std::string_view kUnknownTool = "Unknown tool {}. Available tools: {}";
 inline constexpr std::string_view kToolLimit =
-    "本轮工具调用已达上限（{} 次），这个调用没有执行。请总结目前的进展，并告诉用户还有什么没做完。";
+    "This turn hit the tool call limit ({} calls); this call was not executed. Summarize what you finished and tell the user what is left.";
 inline constexpr std::string_view kMcpReconnecting =
-    "\n\nMCP 服务 {} 已断开。下一步开始前会自动重连一次，成功后它的工具会重新出现。";
+    "\n\nMCP server {} disconnected. It reconnects once before the next step; its tools come back if that succeeds.";
 inline constexpr std::string_view kMcpUnavailable =
-    "\n\nMCP 服务 {} 已不可用，本次会话不再重连，它的工具已移除。不要再尝试调用这些工具，改用其他办法或向用户说明。";
+    "\n\nMCP server {} is unavailable and will not be retried this session; its tools were removed. Do not call them - use another approach or tell the user.";
 inline constexpr std::string_view kCrashed =
-    "会话在执行这个调用时意外中断，结果未知。如果它会修改文件或状态，请先检查当前状态再继续。";
+    "The session was interrupted while this call was running, so the result is unknown. If it may have changed files or state, check the current state before continuing.";
 } // namespace texts
 
 class Conversation {

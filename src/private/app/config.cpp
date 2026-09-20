@@ -52,7 +52,7 @@ public:
 
     Node child(std::string_view key) const {
         if (!exists()) return {};
-        if (!value_->is_object()) wrong("对象");
+        if (!value_->is_object()) wrong("an object");
         const auto it = value_->find(key);
         if (it == value_->end()) return {};
         return Node(*it, pointer_ + "/" + std::string(key));
@@ -63,13 +63,13 @@ public:
 
     std::string str(std::string fallback = {}) const {
         if (!has()) return fallback;
-        if (!value_->is_string()) wrong("字符串");
+        if (!value_->is_string()) wrong("a string");
         return value_->get<std::string>();
     }
 
     bool flag(bool fallback = false) const {
         if (!has()) return fallback;
-        if (!value_->is_boolean()) wrong("布尔值");
+        if (!value_->is_boolean()) wrong("a boolean");
         return value_->get<bool>();
     }
 
@@ -77,16 +77,16 @@ public:
         if (!has()) return fallback;
         if (value_->is_number_unsigned()) {
             const auto n = value_->get<std::uint64_t>();
-            if (n > static_cast<std::uint64_t>(std::numeric_limits<int>::max())) wrong("32 位整数");
+            if (n > static_cast<std::uint64_t>(std::numeric_limits<int>::max())) wrong("a 32-bit integer");
             return static_cast<int>(n);
         }
         if (value_->is_number_integer()) {
             const auto n = value_->get<std::int64_t>();
             if (n < std::numeric_limits<int>::min() || n > std::numeric_limits<int>::max())
-                wrong("32 位整数");
+                wrong("a 32-bit integer");
             return static_cast<int>(n);
         }
-        wrong("整数");
+        wrong("an integer");
     }
 
     std::size_t usize(std::size_t fallback = 0) const {
@@ -96,22 +96,22 @@ public:
             const auto n = value_->get<std::int64_t>();
             if (n >= 0) return static_cast<std::size_t>(n);
         }
-        wrong("非负整数");
+        wrong("a non-negative integer");
     }
 
     double real(double fallback = 0) const {
         if (!has()) return fallback;
-        if (!value_->is_number()) wrong("数字");
+        if (!value_->is_number()) wrong("a number");
         return value_->get<double>();
     }
 
     std::vector<std::string> strings() const {
         if (!has()) return {};
-        if (!value_->is_array()) wrong("字符串数组");
+        if (!value_->is_array()) wrong("an array of strings");
         std::vector<std::string> out;
         out.reserve(value_->size());
         for (const auto& item : *value_) {
-            if (!item.is_string()) wrong("字符串数组");
+            if (!item.is_string()) wrong("an array of strings");
             out.push_back(item.get<std::string>());
         }
         return out;
@@ -119,7 +119,7 @@ public:
 
 private:
     [[noreturn]] void wrong(std::string_view expected) const {
-        fail(ConfigError::Kind::type, std::format("{} 应为{}", pointer_, expected));
+        fail(ConfigError::Kind::type, std::format("{} must be {}", pointer_, expected));
     }
 
     const json* value_ = nullptr;
@@ -128,15 +128,15 @@ private:
 
 json parse_layer(const fs::path& file) {
     std::ifstream in(file, std::ios::binary);
-    if (!in) fail(ConfigError::Kind::io, "打不开配置文件：" + file.string());
+    if (!in) fail(ConfigError::Kind::io, "cannot open config file: " + file.string());
     const std::string text{std::istreambuf_iterator<char>(in), std::istreambuf_iterator<char>()};
     json layer;
     try {
         layer = json::parse(text, nullptr, true, /*ignore_comments=*/true);
     } catch (const json::parse_error& e) {
-        fail(ConfigError::Kind::parse, file.string() + "：" + e.what());
+        fail(ConfigError::Kind::parse, file.string() + ": " + e.what());
     }
-    if (!layer.is_object()) fail(ConfigError::Kind::parse, file.string() + "：顶层应为 JSON 对象");
+    if (!layer.is_object()) fail(ConfigError::Kind::parse, file.string() + ": top level must be a JSON object");
     return layer;
 }
 
@@ -215,7 +215,7 @@ void warn_unknown(const json& merged) {
             if (c == '/') c = '.';
         if (!key.empty() && key.front() == '.') key.erase(0, 1);
         if (known_key(key)) continue;
-        log_app()->warn("未知配置项 {}", key);
+        log_app()->warn("unknown config key {}", key);
     }
 }
 
@@ -224,7 +224,7 @@ json build_override_layer(const std::vector<std::string>& overrides, const fs::p
     for (const auto& entry : overrides) {
         const auto eq = entry.find('=');
         if (eq == std::string::npos || eq == 0)
-            fail(ConfigError::Kind::type, "无效的配置覆盖（应为 键=值）：" + entry);
+            fail(ConfigError::Kind::type, "invalid config override (expected key=value): " + entry);
         const std::string key = entry.substr(0, eq);
         const std::string raw = entry.substr(eq + 1);
         json value = json::parse(raw, nullptr, false);
@@ -263,7 +263,7 @@ Gateway map_gateway(const Node& node, const base::Secrets& secrets) {
         gateway.send_reasoning_content = v.flag(gateway.send_reasoning_content);
     if (const Node v = node.child("include_usage"); v.has()) gateway.include_usage = v.flag(gateway.include_usage);
     if (const Node v = node.child("extra_body"); v.has()) {
-        if (!v.raw().is_object()) fail(ConfigError::Kind::type, v.pointer() + " 应为对象");
+        if (!v.raw().is_object()) fail(ConfigError::Kind::type, v.pointer() + " must be an object");
         gateway.extra_body = v.raw();
     }
     if (const Node v = node.child("system_prompt_file"); v.has())
@@ -272,7 +272,7 @@ Gateway map_gateway(const Node& node, const base::Secrets& secrets) {
         const std::string name = v.str();
         if (!name.empty()) {
             if (const auto value = secrets.get(name)) gateway.api_key = *value;
-            else log_app()->warn("gateway.api_key_env 指向的变量 {} 没有值", name);
+            else log_app()->warn("environment variable {} referenced by gateway.api_key_env is unset", name);
         }
     }
     return gateway;
@@ -403,13 +403,13 @@ std::map<std::string, std::string> map_credentials(const Node& node, const base:
     const Node credentials = node.child("credentials");
     if (!credentials.has()) return out;
     if (!credentials.raw().is_object())
-        fail(ConfigError::Kind::type, credentials.pointer() + " 应为对象");
+        fail(ConfigError::Kind::type, credentials.pointer() + " must be an object");
     for (const auto& [host, value] : credentials.raw().items()) {
         if (!value.is_string())
-            fail(ConfigError::Kind::type, credentials.pointer() + "/" + host + " 应为字符串（变量名）");
+            fail(ConfigError::Kind::type, credentials.pointer() + "/" + host + " must be a string (environment variable name)");
         const std::string name = value.get<std::string>();
         if (const auto secret = secrets.get(name)) out[host] = *secret;
-        else log_app()->warn("network.credentials.{} 指向的变量 {} 没有值", host, name);
+        else log_app()->warn("network.credentials.{} references unset environment variable {}", host, name);
     }
     return out;
 }
@@ -427,7 +427,7 @@ std::string expand_placeholders(const std::string& text, const base::Secrets& se
                 const auto value = secrets.get(name);
                 if (!value)
                     fail(ConfigError::Kind::invalid,
-                         std::format("{} 引用的变量 {} 没有值（环境变量与 .env 里都找不到）", where, name));
+                         std::format("{} references unset variable {} (not found in the environment or .env)", where, name));
                 out += *value;
                 i = close + 1;
                 continue;
@@ -446,7 +446,7 @@ std::vector<mcp::ServerConfig> load_mcp_servers(const fs::path& root, bool trust
         const json layer = parse_layer(file);
         const auto list = layer.find("mcpServers");
         if (list == layer.end() || list->is_null()) return;
-        if (!list->is_object()) fail(ConfigError::Kind::type, file.string() + "：/mcpServers 应为对象");
+        if (!list->is_object()) fail(ConfigError::Kind::type, file.string() + ": /mcpServers must be an object");
         for (const auto& [name, entry] : list->items()) {
             if (entry.is_null()) servers.erase(name);
             else servers[name] = entry;
@@ -460,7 +460,7 @@ std::vector<mcp::ServerConfig> load_mcp_servers(const fs::path& root, bool trust
             add(project);
         } else {
             untrusted.push_back(project);
-            log_app()->warn("项目 {} 未受信任，忽略 {}", root.string(), project.string());
+            log_app()->warn("project {} is untrusted; ignoring {}", root.string(), project.string());
         }
     }
     if (servers.empty()) return {};
@@ -489,7 +489,7 @@ std::vector<std::string> read_trusted() {
                 if (item.is_string()) out.push_back(item.get<std::string>());
         return out;
     } catch (const ConfigError& e) {
-        log_app()->warn("信任列表读取失败，按空处理：{}", e.what());
+        log_app()->warn("failed to read trust list; using an empty list: {}", e.what());
         return {};
     }
 }
@@ -521,7 +521,7 @@ bool is_trusted(const std::filesystem::path& root) {
 
 void trust_project(const std::filesystem::path& root) {
     const fs::path file = trust_file();
-    if (file.empty()) fail(ConfigError::Kind::io, "HOME 与 XDG_CONFIG_HOME 都没有设置，无法保存信任列表");
+    if (file.empty()) fail(ConfigError::Kind::io, "cannot save trust list: neither HOME nor XDG_CONFIG_HOME is set");
     std::vector<std::string> trusted = read_trusted();
     const std::string key = trust_key(root);
     if (std::find(trusted.begin(), trusted.end(), key) != trusted.end()) return;
@@ -530,7 +530,7 @@ void trust_project(const std::filesystem::path& root) {
     try {
         workspace::write_text(file, out.dump(2) + "\n", workspace::Eol::lf, false);
     } catch (const workspace::WorkspaceError& e) {
-        fail(ConfigError::Kind::io, std::format("保存信任列表失败：{}", e.what()));
+        fail(ConfigError::Kind::io, std::format("failed to save trust list: {}", e.what()));
     }
 }
 
@@ -544,7 +544,7 @@ base::Secrets load_secrets(const std::filesystem::path& root) {
         if (!ec && fs::is_regular_file(status)) {
             const auto loose = fs::perms::group_all | fs::perms::others_all;
             if ((status.permissions() & loose) != fs::perms::none)
-                log_app()->warn("{} 的权限过宽（应为 0600），已忽略；执行 chmod 600 后重试", user_env.string());
+                log_app()->warn("{} has overly broad permissions (expected 0600); ignored. Run chmod 600 and retry", user_env.string());
             else
                 files.push_back(user_env);
         }
@@ -556,35 +556,35 @@ base::Secrets load_secrets(const std::filesystem::path& root) {
 
 std::vector<mcp::ServerConfig> parse_mcp_servers(const json& root, const base::Secrets& secrets) {
     std::vector<mcp::ServerConfig> servers;
-    if (!root.is_object()) fail(ConfigError::Kind::type, "/ 应为对象");
+    if (!root.is_object()) fail(ConfigError::Kind::type, "/ must be an object");
     const auto list = root.find("mcpServers");
     if (list == root.end() || list->is_null()) return servers;
-    if (!list->is_object()) fail(ConfigError::Kind::type, "/mcpServers 应为对象");
+    if (!list->is_object()) fail(ConfigError::Kind::type, "/mcpServers must be an object");
 
     // 工具名是 mcp__<server>__<tool>：清理后同名，或名字里带 "__"，不同 server 的工具就会撞名。
     std::map<std::string, std::string> cleaned_names; // 清理后的名字 → 原名
     for (const auto& [name, entry] : list->items()) {
         const std::string where = "/mcpServers/" + name;
-        if (!entry.is_object()) fail(ConfigError::Kind::type, where + " 应为对象");
+        if (!entry.is_object()) fail(ConfigError::Kind::type, where + " must be an object");
 
         std::string type = "stdio";
         if (const auto it = entry.find("type"); it != entry.end()) {
-            if (!it->is_string()) fail(ConfigError::Kind::type, where + "/type 应为字符串");
+            if (!it->is_string()) fail(ConfigError::Kind::type, where + "/type must be a string");
             type = it->get<std::string>();
         }
         if (type != "stdio" && type != "http") {
-            log_app()->warn("{} 的 type 是 {}，暂不支持，已跳过", where, type);
+            log_app()->warn("{} has unsupported type {}; ignored", where, type);
             continue;
         }
 
         const std::string cleaned = mcp::sanitize_name(name);
-        if (cleaned.empty()) fail(ConfigError::Kind::invalid, "/mcpServers 里有名字为空的 server");
+        if (cleaned.empty()) fail(ConfigError::Kind::invalid, "/mcpServers contains a server with an empty name");
         if (cleaned.find("__") != std::string::npos)
             fail(ConfigError::Kind::invalid,
-                 std::format("{}：server 名清理后是 {}，含 \"__\"，会和其他 server 的工具名混淆", where, cleaned));
+                 std::format("{}: normalized server name {} contains \"__\" and would conflict with other servers", where, cleaned));
         if (const auto [it, inserted] = cleaned_names.emplace(cleaned, name); !inserted)
             fail(ConfigError::Kind::invalid,
-                 std::format("MCP server {} 和 {} 清理后都是 {}，工具名会冲突，请改名", it->second, name, cleaned));
+                 std::format("MCP servers {} and {} both normalize to {}; rename one to avoid tool name conflicts", it->second, name, cleaned));
 
         const auto expand = [&](const std::string& text, const std::string& field) {
             return expand_placeholders(text, secrets, field);
@@ -595,23 +595,23 @@ std::vector<mcp::ServerConfig> parse_mcp_servers(const json& root, const base::S
         if (type == "stdio") {
             const auto command = entry.find("command");
             if (command == entry.end() || !command->is_string())
-                fail(ConfigError::Kind::type, where + "/command 应为字符串");
+                fail(ConfigError::Kind::type, where + "/command must be a string");
             config.command.push_back(expand(command->get<std::string>(), where + "/command"));
             if (const auto args = entry.find("args"); args != entry.end() && !args->is_null()) {
-                if (!args->is_array()) fail(ConfigError::Kind::type, where + "/args 应为字符串数组");
+                if (!args->is_array()) fail(ConfigError::Kind::type, where + "/args must be an array of strings");
                 for (std::size_t i = 0; i < args->size(); ++i) {
                     const auto& arg = (*args)[i];
                     if (!arg.is_string())
-                        fail(ConfigError::Kind::type, std::format("{}/args/{} 应为字符串", where, i));
+                        fail(ConfigError::Kind::type, std::format("{}/args/{} must be a string", where, i));
                     config.command.push_back(expand(arg.get<std::string>(), where + "/args"));
                 }
             }
             if (const auto env = entry.find("env"); env != entry.end() && !env->is_null()) {
-                if (!env->is_object()) fail(ConfigError::Kind::type, where + "/env 应为对象");
+                if (!env->is_object()) fail(ConfigError::Kind::type, where + "/env must be an object");
                 for (const auto& [key, value] : env->items()) {
                     if (!value.is_string())
                         fail(ConfigError::Kind::type,
-                             std::format("{}/env/{} 应为字符串", where, key));
+                             std::format("{}/env/{} must be a string", where, key));
                     config.env.emplace_back(key, expand(value.get<std::string>(), where + "/env"));
                 }
             }
@@ -619,14 +619,14 @@ std::vector<mcp::ServerConfig> parse_mcp_servers(const json& root, const base::S
             config.transport = mcp::Transport::http;
             const auto url = entry.find("url");
             if (url == entry.end() || !url->is_string())
-                fail(ConfigError::Kind::type, where + "/url 应为字符串");
+                fail(ConfigError::Kind::type, where + "/url must be a string");
             config.url = expand(url->get<std::string>(), where + "/url");
             if (const auto headers = entry.find("headers"); headers != entry.end() && !headers->is_null()) {
-                if (!headers->is_object()) fail(ConfigError::Kind::type, where + "/headers 应为对象");
+                if (!headers->is_object()) fail(ConfigError::Kind::type, where + "/headers must be an object");
                 for (const auto& [key, value] : headers->items()) {
                     if (!value.is_string())
                         fail(ConfigError::Kind::type,
-                             std::format("{}/headers/{} 应为字符串", where, key));
+                             std::format("{}/headers/{} must be a string", where, key));
                     config.headers.emplace_back(key, expand(value.get<std::string>(), where + "/headers"));
                 }
             }
@@ -656,7 +656,7 @@ Config load_config(const LoadOptions& opt, const base::Secrets& secrets) {
 
     if (opt.explicit_file) {
         const fs::path file = absolute_under(cwd, *opt.explicit_file);
-        if (!fs::exists(file)) fail(ConfigError::Kind::io, "指定的配置文件不存在：" + file.string());
+        if (!fs::exists(file)) fail(ConfigError::Kind::io, "explicit config file does not exist: " + file.string());
         add(file);
     } else {
         if (const fs::path dir = user_config_dir(); !dir.empty()) add(dir / "dagent" / "config.json");
@@ -666,7 +666,7 @@ Config load_config(const LoadOptions& opt, const base::Secrets& secrets) {
             add(project_file);
         } else if (fs::exists(project_file, ec)) {
             untrusted.push_back(project_file);
-            log_app()->warn("项目 {} 未受信任，忽略 {}", root.string(), project_file.string());
+            log_app()->warn("project {} is untrusted; ignoring {}", root.string(), project_file.string());
         }
     }
 
@@ -692,7 +692,7 @@ Config load_config(const LoadOptions& opt, const base::Secrets& secrets) {
         const std::string value = v.str();
         if (value == "auto") config.agent.permissions = agent::PermissionMode::automatic;
         else if (value == "deny") config.agent.permissions = agent::PermissionMode::deny;
-        else fail(ConfigError::Kind::type, v.pointer() + " 应为 \"auto\" 或 \"deny\"");
+        else fail(ConfigError::Kind::type, v.pointer() + " must be \"auto\" or \"deny\"");
     }
     config.credentials = map_credentials(node.child("network"), secrets);
     config.mcp_servers = load_mcp_servers(root, trusted, secrets, untrusted);

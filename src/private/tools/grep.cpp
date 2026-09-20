@@ -18,13 +18,13 @@ using detail::resolve_arg;
 
 namespace {
 
-constexpr std::string_view kDescription = R"(用 ripgrep 在工作区里按正则搜索文件内容。
+constexpr std::string_view kDescription = R"(Search file contents in the workspace using ripgrep regular expressions.
 
-- pattern 是 Rust 正则；只要 pattern 里没有大写字母就自动忽略大小写（rg 的 smart-case）。
-- path 限定搜索的目录或单个文件（默认整个工作区）；glob 用 gitignore 语义过滤文件名，如 "*.cpp" 或 "!*.lock"。
-- 默认输出「路径:行号:内容」，带上下文时上下文行用「路径-行号-内容」，组与组之间用 -- 分隔。
-- files_only=true 时每行一个文件路径，适合先看哪些文件命中再 read。
-- 结果有上限，被截断时请缩小范围（更精确的 pattern、更深的目录、files_only）。)";
+- pattern is a Rust regular expression. Patterns without uppercase letters ignore case automatically (rg smart-case).
+- path restricts the search to a directory or file (default: entire workspace). glob filters filenames with gitignore semantics, e.g. "*.cpp" or "!*.lock".
+- Output uses path:line:content; context lines use path-line-content, and groups are separated by --.
+- files_only=true returns one matching path per line, useful before reading the matching files.
+- Results are bounded. If truncated, narrow the scope with a more precise pattern, deeper directory or files_only.)";
 
 class GrepCall final : public Call {
 public:
@@ -39,7 +39,7 @@ public:
         path_prefix_ = detail::relative_prefix(single_file ? root_.path.parent_path() : root_.path, ctx.root());
         intent_.kind = Intent::Kind::read;
         intent_.paths = {root_};
-        intent_.summary = std::format("搜索 {}", query_.pattern);
+        intent_.summary = std::format("Search {}", query_.pattern);
     }
 
 private:
@@ -50,7 +50,7 @@ private:
         } catch (const workspace::WorkspaceError& e) {
             if (e.kind() == workspace::WorkspaceError::Kind::cancelled) return interrupted_result();
             if (e.kind() == workspace::WorkspaceError::Kind::bad_pattern) // 模型的输入错误，不记 warn
-                return error_result(std::format("正则表达式有问题：{}", e.what()));
+                return error_result(std::format("invalid regular expression: {}", e.what()));
             throw;
         }
         for (workspace::Match& match : found.matches) match.path = path_prefix_ + match.path;
@@ -99,8 +99,8 @@ private:
                     break;
             }
         }
-        if (overflow || found.truncated) text += "[结果已截断，请缩小范围]\n";
-        if (text.empty()) text = "（无匹配）\n";
+        if (overflow || found.truncated) text += "[Results truncated. Narrow the search scope.]\n";
+        if (text.empty()) text = "(no matches)\n";
 
         Result result;
         result.text = base::to_valid_utf8(std::move(text));
@@ -117,7 +117,7 @@ private:
 
     static Result interrupted_result() {
         Result result;
-        result.text = "已被用户中断";
+        result.text = "interrupted by the user";
         result.interrupted = true;
         return result;
     }
@@ -131,13 +131,13 @@ public:
         spec_.parameters = {
             {"type", "object"},
             {"properties",
-             {{"pattern", {{"type", "string"}, {"description", "Rust 正则表达式"}}},
-              {"path", {{"type", "string"}, {"description", "搜索的目录或文件，默认工作区根"}}},
-              {"glob", {{"type", "string"}, {"description", "按 gitignore 语义过滤文件名，如 \"*.cpp\""}}},
-              {"type", {{"type", "string"}, {"description", "rg 的 --type，如 cpp、py"}}},
-              {"ignore_case", {{"type", "boolean"}, {"description", "忽略大小写；默认 smart-case"}}},
-              {"context", {{"type", "integer"}, {"description", "每个匹配前后附带的上下文行数"}}},
-              {"files_only", {{"type", "boolean"}, {"description", "只列出命中的文件路径"}}}}},
+             {{"pattern", {{"type", "string"}, {"description", "Rust regular expression"}}},
+              {"path", {{"type", "string"}, {"description", "Directory or file to search; defaults to the workspace root"}}},
+              {"glob", {{"type", "string"}, {"description", "Filter filenames using gitignore semantics, e.g. \"*.cpp\""}}},
+              {"type", {{"type", "string"}, {"description", "rg --type, e.g. cpp or py"}}},
+              {"ignore_case", {{"type", "boolean"}, {"description", "Ignore case; defaults to smart-case"}}},
+              {"context", {{"type", "integer"}, {"description", "Context lines before and after each match"}}},
+              {"files_only", {{"type", "boolean"}, {"description", "List only matching file paths"}}}}},
             {"required", std::vector<std::string>{"pattern"}},
         };
     }
@@ -161,7 +161,7 @@ public:
         workspace::Resolved root = resolve_arg(ctx, path.value_or("."));
         if (workspace::probe(root.path) == workspace::FileKind::missing)
             return std::unexpected(
-                error_result(std::format("路径不存在：{}", detail::display_path(ctx, root))));
+                error_result(std::format("path does not exist: {}", detail::display_path(ctx, root))));
         workspace::GrepQuery query;
         query.pattern = pattern;
         query.root = root.path;

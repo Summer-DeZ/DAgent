@@ -34,16 +34,25 @@ target_compile_options(dagent_tui PRIVATE -Wall -Wextra)
 
 # 应用层：在冻结的 TUI 框架之上构建的界面与配置（主题文件加载等）。
 add_library(dagent_ui STATIC
+    private/ui/strings.cpp
+    private/ui/display.cpp
     private/ui/theme_config.cpp
     private/ui/shell.cpp
     private/ui/transcript.cpp
     private/ui/prompt_input.cpp
     private/ui/status_line.cpp
     private/ui/approval.cpp
+    private/ui/center.cpp
+    private/ui/toast.cpp
+    private/ui/prompt_box.cpp
+    private/ui/completion.cpp
+    private/ui/panel.cpp
+    private/ui/side_panel.cpp
 )
 
 target_link_libraries(dagent_ui PUBLIC dagent_tui dagent_agent)
 target_compile_options(dagent_ui PRIVATE -Wall -Wextra)
+target_compile_definitions(dagent_ui PRIVATE DAGENT_VERSION="${PROJECT_VERSION}")
 
 # 网络层：libcurl 薄封装（HTTP 整包/流式、取消、超时）与 SSE 解析，不含任何模型协议。
 add_library(dagent_net STATIC
@@ -131,6 +140,7 @@ add_library(tools STATIC
     private/tools/bash.cpp
     private/tools/grep.cpp
     private/tools/glob.cpp
+    private/tools/todo.cpp
     private/tools/mcp.cpp
 )
 

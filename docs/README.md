@@ -7,7 +7,7 @@ DAgent 是一个使用 C++23 和 CMake 构建的终端 Agent，仅支持 Linux�
 | 模块 | 位置 | 状态 |
 | --- | --- | --- |
 | TUI 框架 | `src/*/tui`，库 `dagent_tui` | 已完成并冻结（2026-09-18）：只修缺陷，不增删原语 |
-| 应用层界面 | `src/*/ui`，库 `dagent_ui` | 已完成：全屏对话、流式 Markdown、工具 View、权限对话框、输入排队、斜杠命令、状态栏与 JSON 主题 |
+| 应用层界面 | `src/*/ui`，库 `dagent_ui` | 已完成：居中对话与工具卡片、右侧计划栏、输入/文件补全、命令/会话/主题面板、toast、权限对话框、两段式状态栏与运行时主题切换；英文界面文案集中于 `ui/strings` |
 | Agent 运行时 | `src/*/agent`，库 `dagent_agent`，可执行 `dagent` | 已完成：模型循环、调度与权限、会话恢复、上下文管理、MCP 后台连接与请求前等待、动态工具刷新、单次重连 |
 | 基础库 | `src/*/base`，库 `dagent_base` | 已完成：日志、`.env` 密钥、文本工具、JSON 脱敏 |
 | 子进程与沙箱 | `src/*/exec`，库 `dagent_exec` | 已完成：命令执行与进程组清理、长期子进程、bash 只读分析、Landlock + seccomp 沙箱 |
@@ -15,12 +15,13 @@ DAgent 是一个使用 C++23 和 CMake 构建的终端 Agent，仅支持 Linux�
 | 工作区 | `src/*/workspace`，库 `dagent_workspace` | 已完成：文件原语（原子写入、stale 检测）、ripgrep 搜索与模糊匹配、unified diff、项目上下文（git、AGENTS.md、模板渲染） |
 | 会话存储 | `src/*/session`，库 `dagent_session` | 已完成：JSONL 追加写入、UUIDv7、blob 外置、写入前脱敏、崩溃恢复、按项目过滤的 list |
 | MCP 客户端 | `src/*/mcp`，库 `dagent_mcp` | 已完成：stdio 与 Streamable HTTP、现代（2026-07-28）与经典协议自动识别、取消/超时/断连、经典会话过期恢复；只做 tools |
-| 工具层 | `src/*/tools`，库 `tools` | 已完成：read / write / edit / bash / grep / glob 与 MCP 工具包装；两阶段 prepare/run、Intent 供权限决策、FileTracker 做 stale 检测、按工具定义的 View |
+| 工具层 | `src/*/tools`，库 `tools` | 已完成：read / write / edit / bash / grep / glob / todo 与 MCP 工具包装；两阶段 prepare/run、Intent 供权限决策、FileTracker 做 stale 检测、按工具定义的 View |
 | 入口层 | `src/*/app`，库 `dagent_app` | 已完成：分层配置加载与项目信任、用户级与项目级密钥、`.mcp.json`、命令行解析；可执行入口 `main` 属于核心（`src/private/agent/main.cpp`） |
 
 `config/dagent.json` 是开发期配置（用 `--config` 显式指定），由 app 模块加载；配置文件、工作区与项目信任的约定见 [app 设计文档](design/app.md)。
 当前开发网关为本机 `http://127.0.0.1:10009/v1` 的 Qwen3.8-Flash-Next，无需密钥；通过
-`chat_template_kwargs.enable_thinking=false` 关闭思考输出。服务需先启动。
+`chat_template_kwargs.enable_thinking=true` 打开思考输出，界面折成 `+ Thought` 一行（ctrl+r 展开）。
+思考 token 走输出预算，所以 `max_tokens` 设为 8192。服务需先启动。
 本地服务预填充十几万 token 时可能几分钟不返回字节，超过 `http.idle_timeout_seconds`（120 秒）会按超时失败；
 做超长上下文实验时临时加 `--set http.idle_timeout_seconds=900`，不改默认配置。
 
@@ -98,8 +99,8 @@ g++ -std=c++23 -Wall -Wextra -DSPDLOG_COMPILED_LIB -DSPDLOG_USE_STD_FORMAT \
 
 ```
 docs/
-├── README.md    本索引
-└── design/      架构与模块设计：描述当前实现
+├── README.md      本索引
+└── design/        架构与模块设计：描述当前实现
 ```
 
 - 目录名不含空格，避免 Markdown 链接需要转义。

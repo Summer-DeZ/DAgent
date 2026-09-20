@@ -177,10 +177,10 @@ HttpResponse HttpClient::Impl::run(const HttpOptions& opt, const HttpRequest& re
     curl_multi_remove_handle(multi, easy);
 
     if (t.error) std::rethrow_exception(t.error);
-    if (cancelled) throw HttpError(Kind::cancelled, req.method + " " + req.url + " 已取消");
+    if (cancelled) throw HttpError(Kind::cancelled, req.method + " " + req.url + " interrupted");
     if (rc != CURLE_OK) {
         const std::string detail = errbuf[0] ? errbuf : curl_easy_strerror(rc);
-        throw HttpError(classify(rc, t.too_large), req.method + " " + req.url + " 失败：" + detail);
+        throw HttpError(classify(rc, t.too_large), req.method + " " + req.url + " failed: " + detail);
     }
     curl_easy_getinfo(easy, CURLINFO_RESPONSE_CODE, &t.resp.status);
     return std::move(t.resp);

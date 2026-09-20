@@ -1,41 +1,50 @@
 #include "ui/status_line.hpp"
+#include "ui/display.hpp"
+#include "ui/strings.hpp"
+
+#include <algorithm>
 #include <format>
 
 namespace dagent::ui {
-void StatusLine::session(std::string model, std::string id) {
-    model_ = std::move(model); id_ = std::move(id); used_ = limit_ = 0;
-    mcp_text_.clear(); mcp_warning_ = false; invalidate();
+namespace {
+std::string compact_tokens(std::size_t value) {
+    if (value >= 1000) return format_text(ui::text().status_tokens, value / 1000.0);
+    return std::to_string(value);
 }
-void StatusLine::mcp(const std::vector<agent::ServerState>& states) {
-    using Status = agent::ServerState::Status;
-    std::size_t ready = 0;
-    bool warning = false;
-    std::string detail;
-    for (const auto& state : states) {
-        if (state.status == Status::ready) ++ready;
-        else if (state.status == Status::failed || state.status == Status::disconnected) {
-            warning = true;
-            detail += std::format(" · {} {}", state.name,
-                                   state.status == Status::failed ? "failed" : "disconnected");
-        } else if (state.status == Status::connecting) detail += " · " + state.name + " 连接中";
-        else if (state.status == Status::reconnecting) detail += " · " + state.name + " 重连中";
-    }
-    std::string text = states.empty() ? "" : std::format(" · MCP {}/{}{}", ready, states.size(), detail);
-    if (text == mcp_text_ && warning == mcp_warning_) return;
-    mcp_text_ = std::move(text); mcp_warning_ = warning; invalidate();
 }
-void StatusLine::context(const agent::ContextUpdate& e) { used_ = e.used; limit_ = e.limit; invalidate(); }
-void StatusLine::permission(agent::PermissionMode mode) { mode_ = mode; invalidate(); }
+
+void StatusLine::project(std::string path) {
+    if (path_ == path) return;
+    path_ = std::move(path); invalidate();
+}
+void StatusLine::context(const agent::ContextUpdate& update) {
+    if (used_ == update.used && limit_ == update.limit) return;
+    used_ = update.used; limit_ = update.limit; invalidate();
+}
+void StatusLine::todo(int done, int total, bool shown) {
+    if (todo_done_ == done && todo_total_ == total && todo_shown_ == shown) return;
+    todo_done_ = done; todo_total_ = total; todo_shown_ = shown; invalidate();
+}
+
 void StatusLine::render(tui::Surface& surface) {
-    surface.fill({0, 0, surface.cols(), surface.rows()}, U' ', theme_->background_panel);
-    int col = surface.text(0, 0, model_ + " · ", theme_->text_muted);
-    const double percent = limit_ ? 100.0 * used_ / limit_ : 0;
-    col = surface.text(col, 0, limit_ ? std::format("上下文 {:.0f}%（{}/{}） · ", percent, used_, limit_)
-                                    : "上下文 — · ",
-                       percent >= trigger_ ? theme_->warning : theme_->text_muted);
-    const bool edits = mode_ == agent::PermissionMode::accept_edits;
-    col = surface.text(col, 0, edits ? "自动编辑" : "ask", edits ? theme_->accent : theme_->text_muted);
-    col = surface.text(col, 0, mcp_text_, mcp_warning_ ? theme_->warning : theme_->text_muted);
-    surface.text(col, 0, " · " + id_.substr(0, 8), theme_->text_muted);
+    const int cols = surface.cols();
+    surface.fill({0, 0, cols, surface.rows()}, U' ', theme_->background);
+    if (cols <= 0) return;
+
+    const double percent = limit_ ? 100.0 * static_cast<double>(used_) / static_cast<double>(limit_) : 0;
+    const tui::Style usage_style = percent >= trigger_ ? theme_->warning : theme_->text_muted;
+    std::string usage = limit_ ? std::format("{} ({:.0f}%)", compact_tokens(used_), percent)
+                               : compact_tokens(used_);
+    if (todo_shown_ && todo_total_ > 0)
+        usage = format_text(ui::text().status_plan, todo_done_, todo_total_) + "   " + usage;
+    const std::string hint(ui::text().status_hint);
+
+    const int right_width = display_width(usage) + 3 + display_width(hint);
+    surface.text(0, 0, fit_columns(path_, std::max(0, cols - right_width - 2)), theme_->text_muted);
+    if (right_width + 2 > cols) return;
+    int col = cols - right_width;
+    col = surface.text(col, 0, usage, usage_style);
+    surface.text(col + 3, 0, hint, theme_->text_muted);
 }
+
 } // namespace dagent::ui

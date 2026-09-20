@@ -1,0 +1,163 @@
+#pragma once
+
+#include <format>
+#include <string>
+#include <string_view>
+
+namespace dagent::ui {
+
+// 只收全屏界面文案；模型文本、日志和 CLI 不属于这张表。
+struct Strings {
+    std::string_view status_mcp;
+    std::string_view status_tokens;
+    std::string_view card_elapsed;
+    std::string_view card_read_range;
+    std::string_view card_changes;
+    std::string_view card_state_time;
+    std::string_view banner_identity;
+    std::string_view hint_commands;
+    std::string_view hint_files;
+    std::string_view hint_palette;
+    std::string_view hint_help;
+    std::string_view hint_send;
+    std::string_view hint_newline;
+    std::string_view hint_recall;
+    std::string_view hint_queue;
+    std::string_view hint_interrupt;
+    std::string_view hint_tools;
+    std::string_view hint_select;
+    std::string_view hint_complete;
+    std::string_view hint_confirm;
+    std::string_view hint_cancel;
+    std::string_view hint_mode_auto;
+    std::string_view hint_mode_ask;
+    std::string_view act_thinking;
+    std::string_view act_generating;
+    std::string_view act_preparing;
+    std::string_view act_running;
+    std::string_view act_waiting;
+    std::string_view act_line;
+    std::string_view act_compacting;
+    std::string_view act_resuming;
+    std::string_view box_message;
+    std::string_view box_queued;
+    std::string_view box_placeholder;
+    std::string_view queue_count;
+    std::string_view status_context;
+    std::string_view status_auto_edit;
+    std::string_view status_ask;
+    std::string_view status_plan;
+    std::string_view todo_title;
+    std::string_view todo_more;
+    std::string_view todo_footer;
+    std::string_view todo_expand;
+    std::string_view todo_none;
+    std::string_view panel_commands;
+    std::string_view panel_sessions;
+    std::string_view panel_theme;
+    std::string_view panel_help;
+    std::string_view panel_files;
+    std::string_view panel_search;
+    std::string_view panel_command_footer;
+    std::string_view panel_session_footer;
+    std::string_view panel_theme_footer;
+    std::string_view panel_complete_footer;
+    std::string_view panel_file_footer;
+    std::string_view panel_close;
+    std::string_view panel_loading;
+    std::string_view panel_empty_session;
+    std::string_view panel_no_sessions;
+    std::string_view panel_dark;
+    std::string_view panel_light;
+    std::string_view panel_follow;
+    std::string_view panel_failed;
+    std::string_view panel_current;
+    std::string_view panel_just_now;
+    std::string_view panel_minutes;
+    std::string_view panel_hours;
+    std::string_view panel_days;
+    std::string_view toast_sessions_failed;
+    std::string_view toast_resume_failed;
+    std::string_view toast_unknown_command;
+    std::string_view toast_compact_cancelled;
+    std::string_view toast_exit;
+    std::string_view toast_retry;
+    std::string_view card_unseen;
+    std::string_view card_interrupted;
+    std::string_view card_timeout;
+    std::string_view card_signal;
+    std::string_view card_exit;
+    std::string_view card_matches;
+    std::string_view card_files;
+    std::string_view card_content;
+    std::string_view card_items;
+    std::string_view card_done;
+    std::string_view card_plan_complete;
+    std::string_view card_compacted;
+    std::string_view card_turn_interrupted;
+    std::string_view card_denied;
+    std::string_view card_limit;
+    std::string_view card_collapse;
+    std::string_view card_folded;
+    std::string_view banner_hint;
+    std::string_view banner_resumed;
+    std::string_view approve_title;
+    std::string_view approve_cancel;
+    std::string_view approve_allow;
+    std::string_view approve_session;
+    std::string_view approve_network;
+    std::string_view approve_deny;
+    std::string_view cmd_palette;
+    std::string_view cmd_interrupt;
+    std::string_view cmd_cancel;
+    std::string_view cmd_permission;
+    std::string_view cmd_tools;
+    std::string_view cmd_todo;
+    std::string_view cmd_page_up;
+    std::string_view cmd_page_down;
+    std::string_view cmd_home;
+    std::string_view cmd_end;
+    std::string_view cmd_new;
+    std::string_view cmd_compact;
+    std::string_view cmd_sessions;
+    std::string_view cmd_theme;
+    std::string_view cmd_help;
+    std::string_view cmd_exit;
+    std::string_view cmd_view;
+    std::string_view cmd_transcript;
+    std::string_view cmd_session;
+    std::string_view cmd_permission_group;
+    std::string_view card_tool;
+    std::string_view card_read;
+    std::string_view card_write;
+    std::string_view card_edit;
+    std::string_view card_bash;
+    std::string_view card_grep;
+    std::string_view card_glob;
+    std::string_view card_plan;
+    // 侧栏与会话尾行
+    std::string_view panel_context;
+    std::string_view panel_tokens;
+    std::string_view panel_used;
+    std::string_view panel_plan_heading;
+    std::string_view panel_plan_progress;
+    std::string_view panel_project;
+    std::string_view panel_version;
+    std::string_view box_footer;
+    std::string_view turn_footer;
+    std::string_view thought_live;
+    std::string_view thought_open;
+    std::string_view thought_closed;
+    std::string_view cmd_thoughts;
+    std::string_view status_hint;
+};
+
+const Strings& text() noexcept;
+
+// 文案表使用显式参数索引，支持未来语言的词序调整。
+template<class... Args>
+std::string format_text(std::string_view pattern, Args&&... args) {
+    return std::vformat(pattern, std::make_format_args(args...));
+}
+
+} // namespace dagent::ui

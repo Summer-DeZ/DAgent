@@ -2,11 +2,11 @@
   "gateway": {
     "base_url": "http://127.0.0.1:10009/v1",
     "model": "Qwen3.8-Flash-Next",
-    "max_tokens": 4096,
+    "max_tokens": 8192,
     "temperature": 0,
     "send_reasoning_content": false,
     "include_usage": true,
-    "extra_body": {"chat_template_kwargs": {"enable_thinking": false}},
+    "extra_body": {"chat_template_kwargs": {"enable_thinking": true}},
     "system_prompt_file": "../prompts/system.md",
     "api_key_env": ""
   },

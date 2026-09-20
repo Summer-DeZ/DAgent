@@ -112,7 +112,7 @@ void print_sessions(const dagent::app::Config& config) {
     const std::vector<dagent::session::Summary> sessions = dagent::session::list(
         config.session, config.project_root, 20, dagent::agent::session_title);
     if (sessions.empty()) {
-        std::cout << "这个项目还没有会话\n";
+        std::cout << "no sessions for this project\n";
         return;
     }
     for (const dagent::session::Summary& summary : sessions) {
@@ -139,10 +139,10 @@ int main(int argc, char** argv) {
         try {
             dagent::app::trust_project(root);
         } catch (const std::exception& error) {
-            std::cerr << "信任失败：" << error.what() << "\n";
+            std::cerr << "failed to trust: " << error.what() << "\n";
             return 1;
         }
-        std::cout << "已信任 " << root.string() << "\n";
+        std::cout << "trusted " << root.string() << "\n";
         return 0;
     }
 
@@ -162,10 +162,10 @@ int main(int argc, char** argv) {
             return 0;
         case Mode::interactive: {
             if (!config.untrusted_files.empty()) {
-                std::cout << "这个项目的以下配置尚未受信任，因此没有生效：\n";
+                std::cout << "These project config files are untrusted and were ignored:\n";
                 for (const auto& file : config.untrusted_files) std::cout << "  " << file.string() << '\n';
-                std::cout << "这些文件可以更改模型网关地址、启动任意命令。只有确认来源可靠时才信任它。\n"
-                          << "信任 " << config.project_root.string() << " 吗？[y/N] " << std::flush;
+                std::cout << "They can change the model gateway and run arbitrary commands. Trust them only if you know where they came from.\n"
+                          <<  "Trust " << config.project_root.string() << "? [y/N] " << std::flush;
                 std::string answer;
                 std::getline(std::cin, answer);
                 if (answer == "y" || answer == "Y") {
@@ -200,10 +200,10 @@ int main(int argc, char** argv) {
         }
         }
     } catch (const dagent::app::ConfigError& error) {
-        std::cerr << "配置错误：" << error.what() << "\n";
+        std::cerr << "config error: " << error.what() << "\n";
         return 2;
     } catch (const std::exception& error) {
-        std::cerr << "启动失败：" << error.what() << "\n";
+        std::cerr << "startup failed: " << error.what() << "\n";
         return 1;
     }
     return 0;
