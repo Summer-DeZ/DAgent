@@ -59,6 +59,11 @@ Options，外围模块不反向依赖它。
 模型的 `api_key` 可以直接保存，也可以写成 `env:VARIABLE_NAME`。启动时只从进程环境解析后一种形式。任何模型
 列表只显示 key 的有无，不输出值。`models.json` 不是严格 0600 时拒绝启动并给出 `chmod 600` 提示。
 
+交互界面的 `/model` 面板可按 `a` 添加模型。表单收集 kind、配置名、base URL、模型 ID、密钥、输出上限和
+上下文窗口；支持 `openai-chat`、`anthropic`、`ollama`。app 在落盘前用与启动相同的解析器校验全部模型，拒绝
+重名或缺失必填字段，然后通过同目录临时文件、fsync、rename 原子更新 `models.json`，保留其 0600 权限。
+添加成功后当前会话立即切换到新模型，`default` 不自动改变。`temperature`、`extra_body` 等高级字段仍可直接编辑 JSON。
+
 `config.json` 的 MCP server 位于 `mcp.servers`。stdio 项支持 `command`、`args`、`env`，HTTP 项支持 `url`、
 `headers`；字符串中的 `${VAR}` 从进程环境展开。`mcp.connect_timeout_ms` 与 `mcp.probe_timeout_ms` 和 servers
 同处一个段。

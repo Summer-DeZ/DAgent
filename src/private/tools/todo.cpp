@@ -73,9 +73,13 @@ public:
                 return std::unexpected(detail::error_result("each item in items must be an object"));
             const auto text = raw.find("text");
             const auto state = raw.find("state");
-            if (text == raw.end() || !text->is_string() || text->get<std::string>().empty())
+            if (text == raw.end())
+                return std::unexpected(detail::error_result("plan item text is required"));
+            if (!text->is_string() || text->get<std::string>().empty())
                 return std::unexpected(detail::error_result("plan item text must be a non-empty string"));
-            if (state == raw.end() || !state->is_string())
+            if (state == raw.end())
+                return std::unexpected(detail::error_result("plan item state is required"));
+            if (!state->is_string())
                 return std::unexpected(detail::error_result("plan item state must be a string"));
 
             TodoItem item;

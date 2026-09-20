@@ -82,6 +82,11 @@ InstallationPaths installation_paths();
 /// @brief 读取安装目录中的两份 JSON，再叠加 overrides。未知键只记 warn。
 Config load_config(const LoadOptions&);
 
+/// @brief 校验并追加一个模型配置，原子重写 models.json（保持 0600）；重名时拒绝。
+/// 返回值中的 env:KEY 已解析，供当前进程立即切换使用。
+agent::ProviderConfig add_model(const std::filesystem::path& root,
+                                const agent::ProviderConfig& model);
+
 /// @brief git 根（`git rev-parse --show-toplevel`），不在仓库里或 git 不可用时退回 cwd。
 std::filesystem::path project_root(const std::filesystem::path& cwd);
 

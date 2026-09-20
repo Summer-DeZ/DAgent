@@ -2,6 +2,7 @@
 /// @brief bash 命令分析：拆出简单命令、判断能否静态认定为只读。权限策略由核心基于这个结果决定。
 #pragma once
 
+#include <filesystem>
 #include <string>
 #include <string_view>
 #include <vector>
@@ -25,6 +26,9 @@ Analysis analyze(std::string_view bash_source);
 
 /// @brief 所有子命令都在只读白名单里，并且 has_opaque=false。
 bool is_known_readonly(const Analysis& analysis);
+
+/// @brief 同上，但允许字面量 `cd` 到 workspace 内；cd 到其它位置仍不是已知只读。
+bool is_known_readonly(const Analysis& analysis, const std::filesystem::path& workspace_root);
 
 /// @brief 系统级不可逆命令的短硬拦名单；任何权限模式都不得执行。
 bool is_dangerous(std::string_view bash_source);

@@ -560,4 +560,38 @@ Config load_config(const LoadOptions& options) {
     return config;
 }
 
+agent::ProviderConfig add_model(const fs::path& root_path,
+                                const agent::ProviderConfig& model) {
+    const fs::path root = absolute_path(root_path);
+    const fs::path file = root / "models.json";
+    require_private_file(file);
+    json document = parse_file(file);
+    json& models = document["models"];
+    if (!models.is_object()) fail(ConfigError::Kind::type, "/models must be an object");
+    if (model.name.empty()) fail(ConfigError::Kind::invalid, "model configuration name must not be empty");
+    if (models.contains(model.name))
+        fail(ConfigError::Kind::invalid, "model configuration already exists: " + model.name);
+
+    json entry{{"kind", model.kind},
+               {"base_url", model.base_url},
+               {"model", model.model},
+               {"max_tokens", model.max_tokens},
+               {"context_window", model.context_window},
+               {"send_reasoning_content", model.send_reasoning_content},
+               {"include_usage", model.include_usage}};
+    if (!model.api_key.empty()) entry["api_key"] = model.api_key;
+    if (model.temperature >= 0.0) entry["temperature"] = model.temperature;
+    if (!model.extra_body.empty()) entry["extra_body"] = model.extra_body;
+    models[model.name] = std::move(entry);
+
+    const auto parsed = map_models(Node(models, "/models"));
+    const auto selected = parsed.find(model.name);
+    if (selected == parsed.end()) fail(ConfigError::Kind::invalid, "failed to add model " + model.name);
+
+    const std::optional<workspace::Stamp> stamp = workspace::stamp_of(file);
+    workspace::write_text(file, document.dump(2) + "\n", workspace::Eol::lf, false, stamp);
+    require_private_file(file);
+    return selected->second;
+}
+
 } // namespace dagent::app

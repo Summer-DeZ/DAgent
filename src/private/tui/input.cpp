@@ -108,6 +108,15 @@ Event key_event(Key k, Mods m, std::string_view ch) {
     return e;
 }
 
+void push_text_key(std::vector<Event>& out, Mods mods, std::string_view text) {
+    Event e;
+    e.kind = any(mods) ? Event::Kind::key : Event::Kind::text;
+    e.key = Key::none;
+    e.mods = mods;
+    e.text.assign(text);
+    out.push_back(std::move(e));
+}
+
 // C0 控制字节 → 键事件；Ctrl-字母用 text 携带字母、mods=ctrl 表达。
 Event control_event(unsigned char b, bool alt) {
     const Mods base = alt ? Mods::alt : Mods::none;
@@ -219,16 +228,36 @@ void decode_kitty_key(const CsiParams& p, bool alt, std::vector<Event>& out) {
     case 9: out.push_back(key_event(Key::tab, mods, {})); return;
     case 127: out.push_back(key_event(Key::backspace, mods, {})); return;
     case 27: out.push_back(key_event(Key::escape, mods, {})); return;
+    case 57409: push_text_key(out, mods, "."); return; // KP_DECIMAL
+    case 57410: push_text_key(out, mods, "/"); return; // KP_DIVIDE
+    case 57411: push_text_key(out, mods, "*"); return; // KP_MULTIPLY
+    case 57412: push_text_key(out, mods, "-"); return; // KP_SUBTRACT
+    case 57413: push_text_key(out, mods, "+"); return; // KP_ADD
+    case 57414: out.push_back(key_event(Key::enter, mods, {})); return;
+    case 57415: push_text_key(out, mods, "="); return; // KP_EQUAL
+    case 57416: push_text_key(out, mods, ","); return; // KP_SEPARATOR
+    case 57417: out.push_back(key_event(Key::left, mods, {})); return;
+    case 57418: out.push_back(key_event(Key::right, mods, {})); return;
+    case 57419: out.push_back(key_event(Key::up, mods, {})); return;
+    case 57420: out.push_back(key_event(Key::down, mods, {})); return;
+    case 57421: out.push_back(key_event(Key::page_up, mods, {})); return;
+    case 57422: out.push_back(key_event(Key::page_down, mods, {})); return;
+    case 57423: out.push_back(key_event(Key::home, mods, {})); return;
+    case 57424: out.push_back(key_event(Key::end, mods, {})); return;
+    case 57425: out.push_back(key_event(Key::insert, mods, {})); return;
+    case 57426: out.push_back(key_event(Key::del, mods, {})); return;
     default:
         break;
     }
+    if (code >= 57399 && code <= 57408) {
+        const char digit = static_cast<char>('0' + code - 57399);
+        push_text_key(out, mods, std::string_view(&digit, 1));
+        return;
+    }
+    // kitty 把功能键放在 Unicode 私用区；未识别的功能键不能当文本插入。
+    if (code >= 57344) return;
     if (!valid_codepoint(code) || code < 0x20) return; // 只认可打印码点
-    Event e;
-    e.kind = any(mods) ? Event::Kind::key : Event::Kind::text;
-    e.key = Key::none;
-    e.mods = mods;
-    e.text = utf8_from_codepoint(code);
-    out.push_back(std::move(e));
+    push_text_key(out, mods, utf8_from_codepoint(code));
 }
 
 // CSI 键盘终止符 → 键/焦点事件；识别不了的静默丢弃。

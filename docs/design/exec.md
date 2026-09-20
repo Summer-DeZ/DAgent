@@ -90,6 +90,7 @@ heredoc、控制流、子 shell，以及解析出错的地方。
 
 | 命令 | 条件 |
 | --- | --- |
+| `cd` | 只有 bash 工具提供 workspace 根时可参与只读组合，目标必须是 workspace 本身或其子目录；HOME、`-`、区外路径拒绝 |
 | `ls` `cat` `head` `tail` `wc` `grep` `pwd` `echo` | 无条件 |
 | `rg` | 不能带 `--pre*`、`--hostname-bin`、`--search-zip`，也不能带含 `z` 的短选项（这些都会执行外部程序） |
 | `find` | 不能带 `-exec` `-execdir` `-ok` `-okdir` `-delete` `-fls` `-fprint*` |

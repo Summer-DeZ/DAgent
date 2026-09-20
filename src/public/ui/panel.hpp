@@ -20,7 +20,8 @@ public:
     ~Panel() override;
     void open(std::string title, std::vector<Row>, std::string hint,
               bool filter = true, std::function<void(int)> on_highlight = {},
-              std::function<void(bool)> on_close = {}, int initial_row = 0);
+              std::function<void(bool)> on_close = {}, int initial_row = 0,
+              std::function<void()> on_add = {});
     void close(bool committed = false);
     bool visible() const noexcept { return overlay_ != 0; }
     void set_theme(const tui::ThemeTokens&);
@@ -41,6 +42,7 @@ private:
     int selected_ = 0;
     std::function<void(int)> on_highlight_;
     std::function<void(bool)> on_close_;
+    std::function<void()> on_add_;
     tui::ThemeTokens theme_ = tui::dark_theme();
 };
 

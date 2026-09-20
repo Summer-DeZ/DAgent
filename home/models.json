@@ -1,16 +1,30 @@
 {
   "default": "local",
   "models": {
-    "local": {
-      "kind": "openai-chat",
-      "base_url": "http://127.0.0.1:10009/v1",
-      "model": "Qwen3.8-Flash-Next",
-      "max_tokens": 8192,
-      "temperature": 0,
-      "context_window": 262144,
-      "send_reasoning_content": false,
+    "deepseekv4.1 flash": {
+      "api_key": "sk-60b1b079389747299cb30a6dce9ed35c",
+      "base_url": "https://api.deepseek.com",
+      "context_window": 1000000,
       "include_usage": true,
-      "extra_body": { "chat_template_kwargs": { "enable_thinking": true } }
+      "kind": "openai-chat",
+      "max_tokens": 384000,
+      "model": "deepseek-flash",
+      "send_reasoning_content": false
+    },
+    "local": {
+      "base_url": "http://127.0.0.1:10009/v1",
+      "context_window": 262144,
+      "extra_body": {
+        "chat_template_kwargs": {
+          "enable_thinking": true
+        }
+      },
+      "include_usage": true,
+      "kind": "openai-chat",
+      "max_tokens": 8192,
+      "model": "Qwen3.8-Flash-Next",
+      "send_reasoning_content": false,
+      "temperature": 0
     }
   }
 }

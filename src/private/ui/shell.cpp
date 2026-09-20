@@ -20,6 +20,7 @@
 #include "ui/approval.hpp"
 #include "ui/center.hpp"
 #include "ui/completion.hpp"
+#include "ui/model_dialog.hpp"
 #include "ui/panel.hpp"
 #include "ui/prompt_box.hpp"
 #include "ui/prompt_input.hpp"
@@ -143,14 +144,15 @@ public:
           std::optional<std::filesystem::path> theme_file, bool resumed,
           const InteractiveOptions& options)
         : setup_(std::move(setup)), agent_(std::move(agent)), models_(options.models),
-          resolve_model_(options.resolve_model), mode_(setup_.permission_mode), planning_(setup_.planning),
+          resolve_model_(options.resolve_model), add_model_(options.add_model),
+          mode_(setup_.permission_mode), planning_(setup_.planning),
           themes_(std::move(themes)),
           theme_file_(std::move(theme_file)), root_(layout()), rt_(terminal_, root_),
           transcript_(scroll_->document(), [this](const tools::TodoView& value) { update_todo(value); }),
           prompt_(*input_, [this](std::string text) { submit(std::move(text)); },
                   [this] { recall(); }, [this] { prompt_changed(); },
                   [this] { return completion_.visible(); }),
-          keys_(rt_), mouse_(rt_, *scroll_), dialog_(rt_, [this] { interrupt(); }),
+          keys_(rt_), mouse_(rt_, *scroll_), dialog_(rt_, [this] { interrupt(); }), model_dialog_(rt_),
           toasts_(rt_), panel_(rt_),
           completion_(rt_, *input_, [this] { completion_kind_.clear();  }) {
         id_ = agent_->meta().id;
@@ -317,7 +319,7 @@ private:
         queue_label_->set_theme(theme_); queue_label_->set_style(theme_.text_muted);
         input_->set_theme(theme_); status_->set_theme(theme_);
         side_->set_theme(theme_); toasts_.set_theme(theme_); panel_.set_theme(theme_);
-        dialog_.set_theme(theme_); completion_.set_theme(theme_);
+        dialog_.set_theme(theme_); model_dialog_.set_theme(theme_); completion_.set_theme(theme_);
         root_.invalidate_tree();
     }
     void activity() {
@@ -539,7 +541,34 @@ private:
             rows.push_back({name, provider.kind + "   " + provider.model, current ? std::string(ui::text().panel_current) : "", true,
                             [this, name] { switch_model(name); }});
         }
-        panel_.open(std::string(ui::text().panel_model), std::move(rows), std::string(ui::text().panel_model_footer), true, {}, {}, initial);
+        panel_.open(std::string(ui::text().panel_model), std::move(rows),
+                    std::string(ui::text().panel_model_footer), true, {}, {}, initial,
+                    [this] { add_model(); });
+    }
+    void add_model() {
+        if (busy_ || !add_model_) return;
+        model_dialog_.open(setup_.options.context.window_tokens,
+                           [this](agent::ProviderConfig model) {
+            busy(true); phase_ = std::string(ui::text().act_adding_model); activity();
+            jobs_.push([this, model = std::move(model)]() mutable {
+                try {
+                    agent::ProviderConfig saved = add_model_(std::move(model));
+                    rt_.post([this, saved = std::move(saved)]() mutable {
+                        const std::string name = saved.name;
+                        models_[name] = std::move(saved);
+                        toast(std::string(ui::text().toast_model_added) + name);
+                        busy(false);
+                        switch_model(name);
+                    });
+                } catch (const std::exception& error) {
+                    rt_.post([this, message = std::string(error.what())] {
+                        toast(std::string(ui::text().toast_model_failed) + message,
+                              tui::Notice::Severity::error);
+                        busy(false);
+                    });
+                }
+            });
+        });
     }
     void switch_model(const std::string& name) {
         if (busy_ || name == setup_.provider.name) return;
@@ -740,8 +769,17 @@ private:
     }
     void cycle_permission() {
         std::lock_guard lock(agent_mutex_);
-        if (mode_ == agent::PermissionMode::unrestricted) return;
-        mode_ = mode_ == agent::PermissionMode::ask ? agent::PermissionMode::workspace : agent::PermissionMode::ask;
+        switch (mode_) {
+        case agent::PermissionMode::ask:
+            mode_ = agent::PermissionMode::workspace;
+            break;
+        case agent::PermissionMode::workspace:
+            mode_ = agent::PermissionMode::unrestricted;
+            break;
+        case agent::PermissionMode::unrestricted:
+            mode_ = agent::PermissionMode::ask;
+            break;
+        }
         agent_->set_permission_mode(mode_);
         transcript_.set_session(mode_label(), setup_.provider.model); update_prompt_footer();
     }
@@ -762,6 +800,7 @@ private:
     std::unique_ptr<agent::Agent> agent_;
     std::map<std::string, agent::ProviderConfig> models_;
     std::function<agent::ProviderConfig(const std::string&)> resolve_model_;
+    std::function<agent::ProviderConfig(agent::ProviderConfig)> add_model_;
     std::mutex agent_mutex_;
     agent::PermissionMode mode_ = agent::PermissionMode::ask;
     bool planning_ = false;
@@ -787,6 +826,7 @@ private:
     tui::Keymap keys_;
     tui::ScrollbackMouse mouse_;
     ApprovalDialog dialog_;
+    ModelDialog model_dialog_;
     ToastStack toasts_;
     Panel panel_;
     Completion completion_;

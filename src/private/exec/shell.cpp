@@ -339,6 +339,26 @@ bool is_readonly_command(const std::vector<std::string>& argv) {
     return false;
 }
 
+bool cd_inside_workspace(const std::vector<std::string>& argv,
+                         const std::filesystem::path& workspace_root) {
+    if (argv.size() != 2 || argv[0] != "cd" || argv[1].empty() || argv[1][0] == '~' ||
+        argv[1][0] == '-') return false;
+    std::error_code ec;
+    std::filesystem::path root = std::filesystem::weakly_canonical(workspace_root, ec);
+    if (ec) {
+        ec.clear();
+        root = std::filesystem::absolute(workspace_root, ec).lexically_normal();
+        if (ec) return false;
+    }
+    std::filesystem::path target(argv[1]);
+    if (!target.is_absolute()) target = root / target;
+    target = std::filesystem::weakly_canonical(target, ec);
+    if (ec) return false;
+    const std::filesystem::path relative = target.lexically_relative(root);
+    if (relative.empty()) return false;
+    return relative.begin() == relative.end() || *relative.begin() != "..";
+}
+
 } // namespace
 
 Analysis analyze(std::string_view bash_source) {
@@ -367,6 +387,18 @@ bool is_known_readonly(const Analysis& analysis) {
     if (analysis.has_opaque || analysis.commands.empty()) return false;
     for (const auto& command : analysis.commands) {
         if (!is_readonly_command(command.argv)) return false;
+    }
+    return true;
+}
+
+bool is_known_readonly(const Analysis& analysis, const std::filesystem::path& workspace_root) {
+    if (analysis.has_opaque || analysis.commands.empty()) return false;
+    for (const auto& command : analysis.commands) {
+        if (!command.argv.empty() && command.argv.front() == "cd") {
+            if (!cd_inside_workspace(command.argv, workspace_root)) return false;
+        } else if (!is_readonly_command(command.argv)) {
+            return false;
+        }
     }
     return true;
 }

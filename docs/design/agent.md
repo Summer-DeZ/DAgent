@@ -264,7 +264,7 @@ Policy 是纯逻辑，不弹窗、不读配置。它依据 `Intent` 的规范化
 | --- | --- |
 | 普通读取 | 允许；敏感读取或被分类为工作区外的读取询问 |
 | edit / write | ask 下询问；workspace 放行工作区内普通路径；unrestricted 全部放行 |
-| 已知只读 bash，沙箱可用 | 自动允许，但仍放进 `read_only` 沙箱 |
+| 已知只读 bash，沙箱可用 | 自动允许，但仍放进 `read_only` 沙箱；前置 `cd` 到 workspace 内不改变只读结论 |
 | 其他 bash，沙箱可用 | 询问，允许后用 `workspace_write`，可写工作区与 `/tmp`，默认不联网 |
 | bash，沙箱不可用 | ask / workspace 询问；unrestricted 以 full_access 执行并在启动时 warning |
 | MCP 工具 | ask / workspace 询问；unrestricted 放行；plan 拒绝 |

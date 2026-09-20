@@ -15,7 +15,7 @@ namespace {
 
 constexpr std::string_view kDescription = R"(Run a bash command in the workspace root.
 
-- Every call starts a fresh process: cd, export and environment changes do not persist. Use cd dir && ... when changing directories.
+- Every call already starts in the workspace root. Do not prefix commands with cd to that same directory; use relative paths. Use cd subdir && ... only to enter a different directory. Directory and environment changes do not persist between calls.
 - stdout and stderr are returned together. Commands are terminated on timeout; timeout_ms is in milliseconds and capped at 10 minutes.
 - Commands run in a sandbox by default: no writes outside the workspace (except /tmp) and no network access. Sandbox restrictions are reported in the result. Use another approach or explain the restriction to the user; do not keep retrying.
 - Background daemons (such as server &) are not supported; they are cleaned up when the main process exits.
@@ -41,7 +41,7 @@ public:
         const exec::Analysis analysis = exec::analyze(command_);
         intent_.kind = Intent::Kind::exec;
         intent_.command = command_;
-        intent_.known_readonly = exec::is_known_readonly(analysis);
+        intent_.known_readonly = exec::is_known_readonly(analysis, root_);
         auto line = command_;
         if (const auto nl = line.find('\n'); nl != std::string::npos) line = line.substr(0, nl);
         if (line.size() > 100) line = line.substr(0, 100);

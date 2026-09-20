@@ -102,7 +102,7 @@ PromptBox 左侧是一根竖条（忙碌时换成 `primary`），底纹用 `back
 | Shift/Alt+Enter | 输入换行 |
 | Esc | Interrupt turn（先关闭补全/面板；否则中断当前轮） |
 | Ctrl+C | Clear or exit（先关浮层；忙时中断；有输入时清空；空闲连续两次退出） |
-| Shift+Tab | 在 ask / workspace 间切换；unrestricted 不参与循环 |
+| Shift+Tab | 按 ask → workspace → unrestricted → ask 循环权限模式；unrestricted 用 error 色警示 |
 | Ctrl+G | 进入或退出 plan 模式 |
 | Ctrl+O | Expand tool output（已完成工具输出展开/折叠） |
 | Ctrl+R | Expand thoughts（全部思考展开/折叠） |
@@ -190,6 +190,10 @@ ToastStack 是单一右上角 overlay，内部维护最多三条通知，新通�
 `/model` 或 Ctrl+M 打开通用 Panel，展示配置名、kind、模型 ID，当前项标 current，支持搜索。
 Ctrl+M 需要终端提供可区分的扩展按键编码；传统终端把它与 Enter 编成相同字节时使用 `/model`。
 命令面板在忙碌时禁用切换；忙碌时直接输入 `/model` 也会提示不可用。
+
+模型 Panel 的 `a add` 打开七步表单：协议、配置名、base URL、模型 ID、API key（也可填 `env:VARIABLE`）、
+最大输出和上下文窗口。Enter/Tab 前进，Shift+Tab 返回，Esc 取消。保存工作在 JobQueue 执行，不阻塞渲染；成功后
+把新配置加入当前列表并自动切换，失败用 error toast 显示校验或写入错误。
 
 工作线程重新解析所选配置与密钥，通过 Agent::resume 恢复同一会话，锁内替换 Agent 指针、锁外析构旧对象。
 切换期间显示 switching model，普通输入排队；成功后在渲染线程更新输入框、后续消息尾行和 Context 预算。

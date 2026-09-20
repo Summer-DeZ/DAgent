@@ -40,12 +40,14 @@ struct Strings {
     std::string_view act_compacting;
     std::string_view act_resuming;
     std::string_view act_switching_model;
+    std::string_view act_adding_model;
     std::string_view cmd_model;
     std::string_view panel_model;
     std::string_view panel_model_footer;
     std::string_view toast_model_busy;
     std::string_view toast_model_failed;
     std::string_view toast_model_selected;
+    std::string_view toast_model_added;
     std::string_view box_message;
     std::string_view box_queued;
     std::string_view box_placeholder;

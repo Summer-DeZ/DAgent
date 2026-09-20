@@ -160,6 +160,9 @@ int main(int argc, char** argv) {
                 for (const auto& note : config.model_selection_log) dagent::base::logger("app")->info("{}", note);
                 return config.models.at(name);
             };
+            options.add_model = [root = paths.root](dagent::agent::ProviderConfig model) {
+                return dagent::app::add_model(root, model);
+            };
             options.initial_prompt = args.prompt;
             options.resume_id = args.resume_id;
             options.continue_last = args.continue_last;

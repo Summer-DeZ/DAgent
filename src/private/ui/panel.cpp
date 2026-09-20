@@ -68,9 +68,10 @@ Panel::Panel(tui::Runtime& rt) : rt_(rt) {}
 Panel::~Panel() { on_close_ = {}; close(); }
 void Panel::open(std::string title, std::vector<Row> rows, std::string hint,
                  bool filter, std::function<void(int)> on_highlight,
-                 std::function<void(bool)> on_close, int initial_row) {
+                 std::function<void(bool)> on_close, int initial_row,
+                 std::function<void()> on_add) {
     close(); rows_ = std::move(rows); filter_ = filter; on_highlight_ = std::move(on_highlight);
-    on_close_ = std::move(on_close);
+    on_close_ = std::move(on_close); on_add_ = std::move(on_add);
     query_.clear(); selected_ = 0;
     auto view = std::make_unique<View>(); view_ = view.get(); view_->owner = this;
     view_->title = std::move(title); view_->hint = std::move(hint); view_->theme = &theme_;
@@ -83,7 +84,7 @@ void Panel::close(bool committed) {
     if (!overlay_) return;
     auto callback = std::move(on_close_);
     rt_.close_overlay(overlay_); overlay_ = 0; view_ = nullptr;
-    rows_.clear(); shown_.clear(); query_.clear(); on_highlight_ = {}; on_close_ = {};
+    rows_.clear(); shown_.clear(); query_.clear(); on_highlight_ = {}; on_close_ = {}; on_add_ = {};
     if (callback) callback(committed);
 }
 void Panel::set_theme(const tui::ThemeTokens& theme) {
@@ -122,6 +123,10 @@ bool Panel::on_event(const tui::Event& event) {
     }
     if (event.key == tui::Key::up) { move(-1); return true; }
     if (event.key == tui::Key::down) { move(1); return true; }
+    if (event.kind == tui::Event::Kind::text && event.text == "a" &&
+        event.mods == tui::Mods::none && on_add_) {
+        auto action = std::move(on_add_); close(true); action(); return true;
+    }
     if (event.key == tui::Key::enter) {
         if (!shown_.empty() && rows_[shown_[selected_]].enabled) {
             auto action = rows_[static_cast<std::size_t>(shown_[selected_])].activate;
