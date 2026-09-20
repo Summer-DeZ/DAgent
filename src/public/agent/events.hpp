@@ -99,11 +99,19 @@ using Sink = std::function<void(const Event&)>;
 // ---- 权限询问 ----
 
 struct Approval {
+    struct Request {
+        enum class Kind { dynamic_command, read_path, write_path, network, sensitive_read, protected_write };
+        Kind kind = Kind::dynamic_command;
+        std::string target, reason;
+    };
     std::string call_id, tool;
     tools::Intent intent;     ///< 拷贝：交互界面要把它 post 到渲染线程
     std::string reason;       ///< 为什么要问，见 docs/design/agent.md §7
     std::string session_rule; ///< 选「本会话允许」会记住什么，给界面显示；为空表示不提供这个选项
     bool can_network = false; ///< bash：是否提供「允许并联网」
+    std::string cwd, mode;
+    std::vector<Request> requests;
+    bool partially_executed = false;
 };
 
 struct Decision {

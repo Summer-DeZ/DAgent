@@ -97,7 +97,10 @@ Agent::DispatchOutcome Agent::dispatch(const std::vector<ToolCall>& calls, int b
     // 串行执行：agent 线程上跑（docs/design/agent.md §6）。
     const auto run_serial = [&](std::size_t i, tools::Call& call, const tools::Grant& grant) {
         Slot& slot = slots[i];
-        sink(ToolStarted{slot.call->id, slot.call->name, slot.summary, grant});
+        const ToolStarted started{slot.call->id, slot.call->name, slot.summary, grant};
+        recorder_.tool_started(started);
+        check_broken(sink);
+        sink(started);
         slot.result = call.run(grant, make_on_output(*slot.call), stop);
     };
 
@@ -107,7 +110,10 @@ Agent::DispatchOutcome Agent::dispatch(const std::vector<ToolCall>& calls, int b
         if (group.empty()) return;
         for (const Pending& p : group) {
             const Slot& slot = slots[p.slot];
-            sink(ToolStarted{slot.call->id, slot.call->name, slot.summary, p.grant});
+            const ToolStarted started{slot.call->id, slot.call->name, slot.summary, p.grant};
+            recorder_.tool_started(started);
+            check_broken(sink);
+            sink(started);
         }
         for (std::size_t base = 0; base < group.size(); base += kGroupWidth) {
             const std::size_t end = std::min(base + kGroupWidth, group.size());
@@ -299,7 +305,7 @@ Agent::DispatchOutcome Agent::dispatch(const std::vector<ToolCall>& calls, int b
                 slot.result = make_result(std::string(texts::kInterruptedCall), false, true);
                 break;
             }
-            recorder_.permission(slot.call->id, decision, approval.session_rule);
+            recorder_.permission(approval, decision);
             check_broken(sink);
             switch (decision.answer) {
             case Decision::Answer::allow:

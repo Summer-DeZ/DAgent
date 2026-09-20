@@ -71,6 +71,10 @@ Options，外围模块不反向依赖它。
 配置中的相对路径统一相对于安装根；`--set key=value` 中的相对路径相对于 cwd。未知键记 warning，类型和值错误
 抛 `ConfigError`。`--set` 是一次性覆写，不写回配置；`--model` 命中名字时选择条目，否则临时覆写当前模型 ID。
 
+`sandbox` 是独立版本化对象，当前只接受 version 1；`extra_readable` / `extra_writable` 是宿主维护的持久范围，
+相对路径按 workspace cwd 解析。它们只扩大兼容后端的显式范围，不改变 profile 能力结论，也不会覆盖控制数据、
+敏感读取或 `.git` 保护。
+
 ## 3. 工作目录与项目根
 
 `Args::cwd` 是 `-C` 指定目录或进程启动目录，工具路径、沙箱和会话列表都以它为准。`project_root(cwd)` 仍用于

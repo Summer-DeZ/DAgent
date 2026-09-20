@@ -60,6 +60,7 @@ dagent::agent::Setup make_setup(const dagent::app::Config& config, const dagent:
 
     setup.cwd = args.cwd;
     setup.project_root = config.project_root;
+    setup.control_root = config.root;
     std::error_code ec;
     if (fs::exists(config.project_root / ".git", ec)) setup.git_root = config.project_root;
 
@@ -67,6 +68,7 @@ dagent::agent::Setup make_setup(const dagent::app::Config& config, const dagent:
     setup.files = config.files;
     setup.search = config.search;
     setup.process = config.process;
+    setup.sandbox_options = config.sandbox;
     setup.session = config.session;
     setup.mcp = config.mcp;
     setup.mcp_servers = config.mcp_servers;

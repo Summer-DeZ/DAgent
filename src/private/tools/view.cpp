@@ -65,7 +65,18 @@ inline void to_json(nlohmann::json& j, const BashView& v) {
     j["timed_out"] = v.timed_out;
     j["interrupted"] = v.interrupted;
     j["sandbox"] = v.sandbox;
+    j["backend"] = v.backend;
+    j["grant_source"] = v.grant_source;
+    j["analysis_version"] = v.analysis_version;
     j["allow_network"] = v.allow_network;
+    j["allow_local_sockets"] = v.allow_local_sockets;
+    j["private_tmp"] = v.private_tmp;
+    j["protect_sensitive_names"] = v.protect_sensitive_names;
+    j["readable"] = v.readable;
+    j["writable"] = v.writable;
+    j["protected_read"] = v.protected_read;
+    j["protected_write"] = v.protected_write;
+    j["network_targets"] = v.network_targets;
     j["elapsed_ms"] = v.elapsed_ms;
 }
 
@@ -80,7 +91,18 @@ inline void from_json(const nlohmann::json& j, BashView& v) {
     v.timed_out = j.value("timed_out", d.timed_out);
     v.interrupted = j.value("interrupted", d.interrupted);
     v.sandbox = j.value("sandbox", d.sandbox);
+    v.backend = j.value("backend", d.backend);
+    v.grant_source = j.value("grant_source", d.grant_source);
+    v.analysis_version = j.value("analysis_version", d.analysis_version);
     v.allow_network = j.value("allow_network", d.allow_network);
+    v.allow_local_sockets = j.value("allow_local_sockets", d.allow_local_sockets);
+    v.private_tmp = j.value("private_tmp", d.private_tmp);
+    v.protect_sensitive_names = j.value("protect_sensitive_names", d.protect_sensitive_names);
+    v.readable = j.value("readable", d.readable);
+    v.writable = j.value("writable", d.writable);
+    v.protected_read = j.value("protected_read", d.protected_read);
+    v.protected_write = j.value("protected_write", d.protected_write);
+    v.network_targets = j.value("network_targets", d.network_targets);
     v.elapsed_ms = j.value("elapsed_ms", d.elapsed_ms);
 }
 

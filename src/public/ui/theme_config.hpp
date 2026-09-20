@@ -1,7 +1,7 @@
 // 应用层：主题文件加载（TUI 框架 §1 把主题文件的读取划给应用层，
 // 框架只定义 ThemeTokens 与 epoch 失效规则，见 §4.5）。
 //
-// 主题文件是 JSON（默认主题见 config/themes/dagent.json）：
+// 主题文件是 JSON（默认主题见 home/themes/dagent.json）：
 //   {
 //     "name": "dagent",
 //     "defs":  { "blue": "#7aa2f7", ... },        // 调色板，令牌按名字引用
@@ -19,7 +19,6 @@
 #include <filesystem>
 #include <optional>
 #include <string>
-#include <vector>
 
 #include "tui/widget.hpp"
 
@@ -44,15 +43,5 @@ ThemeSet load_theme(const std::filesystem::path& file);
 tui::ThemeTokens builtin_theme(bool light);
 /// 未指定背景的文字令牌继承主题底色，保留 selection 的叠加语义。
 tui::ThemeTokens resolve_theme(tui::ThemeTokens);
-
-struct ThemeInfo {
-    std::string name;
-    std::filesystem::path path;
-    bool available = true;
-    std::optional<ThemeSet> loaded;
-};
-
-/// 列出目录中的 JSON 主题；坏文件保留为不可用条目，供选择面板灰显。
-std::vector<ThemeInfo> list_themes(const std::filesystem::path& directory);
 
 } // namespace dagent::ui

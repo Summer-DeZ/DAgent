@@ -22,8 +22,7 @@ public:
     void toggle_thoughts();
     void set_session(std::string mode, std::string model);
     void info(std::string text);
-    void banner(std::string version, std::string cwd, std::string branch,
-                std::string model, int mcp_servers);
+    void banner(std::string version, std::string cwd, std::string branch, int mcp_servers);
     void resumed(std::string id, std::size_t messages, std::string age);
     void set_todo_narrow(bool);
     void set_todo_collapsed(bool);

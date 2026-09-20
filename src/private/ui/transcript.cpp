@@ -466,7 +466,7 @@ void Transcript::clear() {
 }
 void Transcript::info(std::string value) { text(std::move(value), "system.status"); }
 void Transcript::banner(std::string version, std::string cwd, std::string branch,
-                        std::string model, int mcp_servers) {
+                        int mcp_servers) {
     static constexpr std::string_view logo =
         "██████╗  █████╗  ██████╗ ███████╗███╗   ██╗████████╗\n"
         "██╔══██╗██╔══██╗██╔════╝ ██╔════╝████╗  ██║   ██║\n"
@@ -477,7 +477,7 @@ void Transcript::banner(std::string version, std::string cwd, std::string branch
         "BANNER_END\n";
     std::string value(logo);
     value += format_text(ui::text().banner_identity, version, cwd,
-                         branch.empty() ? "" : "   ⎇ " + branch, model, mcp_servers);
+                         branch.empty() ? "" : "   ⎇ " + branch, mcp_servers);
     value += std::string(ui::text().banner_hint);
     text(std::move(value), "banner");
 }

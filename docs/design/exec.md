@@ -12,8 +12,8 @@ libseccomp、tree-sitter + tree-sitter-bash。
 | --- | --- | --- |
 | 一次性命令：超时、取消、流式输出、输出截断，结束时清理整个进程组 | `exec/process.hpp` | `run`、`which`、`shell_quote` |
 | 长期存活的子进程：按行读 stdout，线程安全地写 stdin（给 MCP stdio 用） | `exec/child.hpp` | `Child` |
-| bash 命令分析：拆简单命令、判断只读和系统级高危命令 | `exec/shell.hpp` | `analyze`、`is_known_readonly`、`is_dangerous` |
-| OS 隔离：Landlock 限制写文件，seccomp 禁止联网 | `exec/sandbox.hpp` | `prepare`、`probe` |
+| bash 命令分析：语法状态、简单命令、影响证据和只读分类 | `exec/shell.hpp` | `analyze`、`is_known_readonly`、`is_dangerous` |
+| OS 隔离：Landlock 文件范围、seccomp 通信/进程控制、私有临时目录 | `exec/sandbox.hpp` | `prepare`、`probe` |
 
 `exec/detail.hpp` 放的是模块内部几个实现文件共用的代码，外部不要 include。
 
@@ -40,7 +40,7 @@ exec::Result r = exec::run(cmd, options,
 | --- | --- |
 | 会话 | 子进程先 `setsid()`：成为新进程组的组长，**并且没有控制终端**。`sudo`、`ssh` 这类要打开 `/dev/tty` 的程序会直接失败，不会跟 TUI 抢键盘 |
 | stdin | 没有 `stdin_data` 时接 `/dev/null`，不继承 agent 的 stdin |
-| 环境变量 | 继承 agent 的环境，但名字匹配 `env_deny` 的变量会被过滤掉（默认是 `*KEY*`、`*TOKEN*`、`*SECRET*`、`*PASSWORD*`，不区分大小写）；然后注入 `PAGER=cat`、`GIT_PAGER=cat`、`GIT_TERMINAL_PROMPT=0`、`TERM=dumb`、`NO_COLOR=1`；再应用 `env_unset`，最后叠加 `env_set`（`env_set` 不受过滤影响） |
+| 环境变量 | `Command::inherit_env=true` 时继承 agent 环境并按 `env_deny` 过滤；false 时从空环境开始。两者随后注入非交互默认项、应用 `env_unset` 和 `env_set`。受限 bash 使用 false，固定 PATH，并把 HOME/XDG/TMP 指向私有目录，宿主凭据及 BASH_ENV/加载器/语言注入变量不会进入命令 |
 | 查找程序 | argv[0] 带 `/` 时直接使用，相对路径**相对 `Command::cwd`**；否则按**子进程将看到的 PATH**（也就是叠加 `env_set` 之后的值）查找 |
 | 信号 | SIGPIPE 在子进程里恢复为默认行为，所以 `yes \| head` 这类管道能正常结束；信号屏蔽清空（父进程为 sigwait 屏蔽的 SIGINT/SIGTERM 不会带进子进程，`timeout` 与 SIGTERM 清理照常生效） |
 | exec 前失败 | fork 之后 chdir、应用沙箱或 `execve` 失败时，错误码经管道交回父进程，子进程直接 `_exit(127)`：不执行 agent 的 atexit 与静态析构，也不会把 fork 时复制来的 stdio 缓冲再写一遍 |
@@ -79,14 +79,16 @@ child->terminate();                                // 析构时也会自动调�
 
 ## 4. 命令分析：analyze / is_known_readonly
 
-用 tree-sitter-bash 解析命令，把 `&&`、`||`、`;`、`|` 连起来的每一条简单命令拆出来，并把引号、转义、
-heredoc 都还原成 argv。
+`Analysis` 的当前版本是 2。tree-sitter-bash 只做纯解析，不执行命令替换、source、脚本、函数或插件。
+结果保留完整原文，并分别记录：`SyntaxStatus`、错误源码范围、简单命令原文/范围/字面 argv、参数是否动态、
+读写/特殊影响、整体动态标记和 cwd 是否失去确定性。语法错误与合法但动态的命令不再共用一个否决位。
 
-下面这些结构无法静态判断，遇到时 `has_opaque = true`：命令替换和反引号、变量展开、**任何变量赋值**
-（包括 `LD_PRELOAD=… cmd` 这种前缀赋值，以及单独一行的 `PATH=…`）、不带引号的花括号展开、写文件的重定向、
-heredoc、控制流、子 shell，以及解析出错的地方。
+变量与命令展开、环境赋值、控制流、子 shell、解释器、路径形式的程序及未知结构标记为动态；动态只表示
+静态分析不完整，是否执行由权限模式和真实后端能力决定。重定向按每一项记录：输入是 read，普通输出是 write，
+描述符复制/关闭是 special，字面量 `/dev/null` 不形成持久写入。解析失败在工具 prepare 阶段直接返回源码字节位置，
+不会先执行前面的完整语句。
 
-`is_known_readonly` 要求 `has_opaque = false`，并且每条命令都在白名单里：
+`is_known_readonly` 仅在语法有效、没有动态结构、没有写入/网络影响且每条命令均满足保守分类时成立：
 
 | 命令 | 条件 |
 | --- | --- |
@@ -109,32 +111,31 @@ sh/bash。它只向 agent Policy 提供判定，不执行命令。
 
 ## 5. OS 隔离：prepare / probe
 
-```cpp
-auto sandbox = exec::prepare({.mode = exec::Mode::workspace_write, .writable = {root, "/tmp"}});
-cmd.sandbox = sandbox.get();      // run() 执行期间 sandbox 必须一直有效
-```
+`Policy` 包含读/写允许范围、受保护读/写子路径、网络与本地 socket 开关和私有临时空间要求。
+`prepare` 在父进程中创建私有 `/tmp/dagent-command-*` 目录、Landlock 规则集和 seccomp BPF；bash 将
+`TMPDIR`/`TMP`/`TEMP` 指向该目录，`Prepared` 销毁时清理它。命令只拿到显式读取范围和必要系统工具链，
+不再继承全盘读取；`/tmp` 共享目录不在允许范围内。
+后端会在每个明确读取/写入根下递归找出 `.env*`、`*.pem`、`*.key`、私钥名、`.ssh` 和 `.gnupg`，
+以 `protect_sensitive_names=true` 的语义规则加入实际排除集合；该规则本身进入 tool_started/BashView 记录。
 
-| Mode | 可写路径 |
-| --- | --- |
-| `read_only` | 只有 `/dev/null`、`/proc/self` |
-| `workspace_write` | `writable` 里列出的路径，再加 `/dev/null`；`writable` 为空时用 agent 的当前目录、`/tmp` 和 `/dev/null` |
-| `full_access` | 不限制文件系统 |
+seccomp 默认拒绝 AF_INET/AF_INET6/AF_NETLINK、AF_UNIX、io_uring socket 绕过，以及向宿主进程使用
+signal、ptrace、process_vm、kcmp、pidfd_getfd/pidfd_send_signal。规则在 exec 前应用并由全部子进程继承；
+准备或应用失败时命令不执行，不回退 full_access。普通程序 stderr 中的 `Permission denied` 不再被当作可信提权证据。
 
-- **文件系统**：用 Landlock 管理「写」类权限（写入、创建、删除、改名、截断……），读和执行不受限制。会按内核的 ABI 版本自动去掉当前内核不支持的权限位。
-- **网络**（`allow_network = false` 时）：用 seccomp 拒绝创建 `AF_INET`/`AF_INET6` socket，TCP 和 UDP（包括 DNS）都会被拦住，`AF_UNIX` 正常可用；同时禁用 io_uring，防止通过 `IORING_OP_SOCKET` 绕过这条限制。
-- **fork 安全**：规则集、BPF 程序都在父进程的 `prepare` 里准备好；子进程在 exec 之前只调 `prctl` 和 `syscall`，不做任何内存分配。限制只作用于 exec 出来的程序及其子孙，不影响 agent 本身。
-- `probe()` 返回内核支持的 Landlock ABI 版本以及 seccomp 是否可用。不支持时，核心应该降级为「每条命令都询问用户」。
+`Support` 报告后端名和文件读写、嵌套保护、临时空间、网络、本地 socket、进程控制能力，并提供
+`read_only_ready()` / `workspace_ready()`。权限层只在对应 profile 真实满足时启用；`unrestricted` 明确使用 host。
 
-### 为什么不用 bubblewrap
+### 当前后端决策
 
-Ubuntu 24.04 默认开启 `kernel.apparmor_restrict_unprivileged_userns=1`，没有专门 AppArmor 配置的程序
-不能创建 user namespace，bwrap 连启动都失败。Landlock 不需要任何特权，codex 在 Linux 上用的也是
-Landlock + seccomp 这套方案。
+本机兼容路径是 `landlock-seccomp-v2`。它能承担显式只读范围、私有临时空间和通信/进程系统调用限制，
+但 Landlock 的父目录 allow 无法由子目录规则撤销，因此不能证明“workspace 可写但其中 `home/`、`.git`
+不可写”。`protected_subpaths` 据实报告 false，`workspace_ready()` 因此为 false，动态或写入型 bash 在
+ask/workspace 下 fail closed；用户只有显式切换 unrestricted 才会使用宿主全访问。
 
-### 已知限制
-
-- Landlock 的规则只能放行、不能拒绝，所以在 `workspace_write` 模式下，工作区里的 `.git` 同样可写，模型可以往 `.git/hooks` 里写脚本。
-- 只做到「禁止写」和「禁止联网」，读取不受限制，`~/.ssh` 之类的文件在沙箱里仍然能读到。
+本机 bubblewrap 0.9.0 的最小 user namespace 启动在 uid map 阶段返回 EPERM。Anthropic
+`sandbox-runtime` Linux 后端的强/弱嵌套模式也都依赖 bubblewrap user namespace，不能绕过该限制。
+版本、第一方依据和部署前置见 [后端调研](../research/command-sandbox-backend.md)。若宿主日后提供允许 userns 的
+AppArmor profile，仍需接入并真实验收完整后端后才能把 `workspace_ready()` 改为 true。
 
 ---
 

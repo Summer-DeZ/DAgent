@@ -64,8 +64,12 @@ tui::Size SidePanel::measure(tui::Size available) const {
 void SidePanel::render(tui::Surface& surface) {
     const int w = surface.cols(), h = surface.rows();
     if (w < 6 || h < 3) return;
-    surface.fill({0, 0, w, h}, U' ', theme_->background);
-    surface.fill({0, 0, 1, h}, U'│', theme_->border);
+    surface.fill({0, 0, w, h}, U' ', theme_->background_panel);
+    const auto panel_style = [&](tui::Style style) {
+        style.bg = theme_->background_panel.bg;
+        return style;
+    };
+    surface.fill({0, 0, 1, h}, U'│', panel_style(theme_->border));
 
     const int x = 2, width = w - x - 1;
     tui::Style heading = theme_->text;
@@ -74,7 +78,7 @@ void SidePanel::render(tui::Surface& surface) {
     int y = 0;
     const auto line = [&](std::string_view value, const tui::Style& style) {
         if (y >= h - 2) return;
-        surface.text(x, y++, fit_columns(value, width), style);
+        surface.text(x, y++, fit_columns(value, width), panel_style(style));
     };
     const auto gap = [&] { if (y < h - 2) ++y; };
 
@@ -116,16 +120,16 @@ void SidePanel::render(tui::Surface& surface) {
             } else if (item.state == tools::TodoItem::State::dropped) {
                 symbol = "✗"; text_style = theme_->text_muted;
             }
-            surface.text(x, y, symbol, symbol_style);
-            surface.text(x + 2, y, fit_columns(item.text, width - 2), text_style);
+            surface.text(x, y, symbol, panel_style(symbol_style));
+            surface.text(x + 2, y, fit_columns(item.text, width - 2), panel_style(text_style));
             ++y;
         }
     }
 
     if (!project_.empty())
-        surface.text(x, h - 2, fit_columns(project_, width), theme_->text_muted);
+        surface.text(x, h - 2, fit_columns(project_, width), panel_style(theme_->text_muted));
     if (!version_.empty())
-        surface.text(x, h - 1, fit_columns(version_, width), theme_->text_muted);
+        surface.text(x, h - 1, fit_columns(version_, width), panel_style(theme_->text_muted));
 }
 
 } // namespace dagent::ui

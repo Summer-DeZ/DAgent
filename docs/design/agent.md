@@ -98,7 +98,7 @@ MCP 后台连接使用自身线程的 token，一轮取消不关闭后台连接�
 | `ReasoningDelta` / `reasoning` | `text`，思考增量 |
 | `StreamReset` / `stream_reset` | 无附加字段；本次模型尝试的可见内容作废 |
 | `ToolPending` / `tool_pending` | `id, name`；参数仍在传输，仅作提示 |
-| `ToolStarted` / `tool_started` | `id, name, summary, sandbox, network`；已通过权限，开始执行 |
+| `ToolStarted` / `tool_started` | `id, name, summary` 加实际 backend/profile、grant source、analysis version、读写/保护范围、network/local sockets/private tmp；已通过权限，开始执行 |
 | `ToolOutput` / `tool_output` | `id, chunk`；bash 原始输出块 |
 | `ToolFinished` / `tool_finished` | `id, name, summary, text, is_error, interrupted, view`；结果已提交 |
 | `Retrying` / `retrying` | `attempt, max_attempts, wait_ms, reason`；重试次数从 1 开始 |
@@ -252,8 +252,8 @@ Policy 是纯逻辑，不弹窗、不读配置。它依据 `Intent` 的规范化
 
 | 模式 | 未命中已有授权时的行为 |
 | --- | --- |
-| `ask` | 工作区内写入和非只读 bash 也询问；已知只读 bash 直接用 read_only 沙箱 |
-| `workspace` | 工作区内普通写入放行；沙箱可用且命令可解析时，bash 用 workspace_write 放行；区外/敏感操作询问 |
+| `ask` | 工作区内写入和非只读 bash 询问；已知只读 bash 在完整只读 profile 下自动执行 |
+| `workspace` | 工作区内普通文件工具放行；动态/写入型 bash 只有在完整 workspace profile 成立时自动执行 |
 | `unrestricted` | 路径、网络和外部工具均直接放行，bash 使用 full_access；只保留高危命令硬拦 |
 
 路径分类包括：含 `.git` 路径段的受保护路径；`.env`、`.env.*`、
@@ -265,12 +265,13 @@ Policy 是纯逻辑，不弹窗、不读配置。它依据 `Intent` 的规范化
 | 普通读取 | 允许；敏感读取或被分类为工作区外的读取询问 |
 | edit / write | ask 下询问；workspace 放行工作区内普通路径；unrestricted 全部放行 |
 | 已知只读 bash，沙箱可用 | 自动允许，但仍放进 `read_only` 沙箱；前置 `cd` 到 workspace 内不改变只读结论 |
-| 其他 bash，沙箱可用 | 询问，允许后用 `workspace_write`，可写工作区与 `/tmp`，默认不联网 |
-| bash，沙箱不可用 | ask / workspace 询问；unrestricted 以 full_access 执行并在启动时 warning |
+| 其他 bash，完整 workspace profile 可用 | ask 询问、workspace 自动；均使用明确范围且默认不联网 |
+| 所需 profile 不可用 | ask / workspace 直接拒绝且不执行；只有 unrestricted 明确使用 host |
 | MCP 工具 | ask / workspace 询问；unrestricted 放行；plan 拒绝 |
 
-沙箱可用要求 `exec::probe()` 同时发现 Landlock 和 seccomp。workspace 不授予 bash 网络权限；沙箱不可用而降级到
-`full_access` 时不能再依赖网络或文件系统隔离。具体限制见 [exec](exec.md)。
+沙箱能力由 `exec::Support` 分项报告；只读与 workspace profile 分别调用 `read_only_ready()`、
+`workspace_ready()`，不再用 Landlock/seccomp 两个布尔值冒充完整能力。workspace 不授予 bash 网络权限，
+失败也不会降级 full_access。具体限制见 [exec](exec.md)。
 
 `read_only` 与三档正交：写入、非只读 bash 和 external 都走策略拒绝，已知只读 bash 强制 read_only 沙箱。
 plan 在此基础上给出规划专用反馈，使模型改为调研和提案而不结束本轮。`mkfs*`、裸写块设备、大范围 `rm -rf`、
@@ -278,7 +279,7 @@ plan 在此基础上给出规划专用反馈，使模型改为调研和提案而
 
 ### Approver 与会话授权
 
-`Approval` 携带 call id、工具名、Intent、询问原因、可记住的规则文本和是否可提供联网选项。
+`Approval` 携带 call id、完整 Intent、实际 cwd、当前模式、增量权限请求、原因、部分执行状态和有效期选项。
 `Decision` 支持单次允许、会话允许、拒绝、拒绝附说明；执行前记录用户回答。Approver 应在 stop 后立即结束等待，
 核心按取消处理而非普通拒绝。run 模式传空 Approver；需要询问的操作得到策略拒绝结果并让本轮继续。
 
@@ -286,14 +287,16 @@ plan 在此基础上给出规划专用反馈，使模型改为调研和提案而
 | --- | --- |
 | 普通文件写入 | 本会话工作区普通文件免询问 |
 | 工作区外读取 | 路径所在目录；敏感读取不提供此选项 |
-| bash | 每条非只读简单命令的「命令名 + 第一个非选项参数」，以及授权的联网位 |
+| bash | 完整原命令 + 规范化 workspace cwd；动态命令不再按前两个词复用 |
 | MCP | 完整的限定工具名 |
 
-bash 有命令替换等不可静态判断结构时不提供前缀授权。匹配时每条命令必须只读、为 `cd`，或命中已记住的前缀；
-例如授权 `npm test` 不会自动允许后接的 `rm`。这些规则只在内存中，恢复或新建会话后清空。
+敏感读取和受保护写入只提供单次授权。其它会话规则只在内存中，恢复或新建会话后清空；交互界面的
+`/permissions` 列出当前规则，Enter 撤销并对下一次执行生效。当前后端不能强制限定域名出口，因此审批不会把
+network 或未知目标扩大为全网访问。
 
-权限不是完整的敏感文件隔离：只读 bash 能读 `.env`，可写 bash 能改工作区内的 `.git`。
-Landlock 的可写白名单不能在已放行的工作区内再排除它们；MCP 执行也不使用 bash 的沙箱。
+`Grant` 保存实际 profile、backend、来源（mode/once/session/unrestricted）、读写/保护范围、敏感名称规则、通信开关、
+私有临时空间和 analysis version。执行前先持久化版本化 `tool_started`，再发实时事件；`BashView` 在完成记录中保留同一执行事实。旧 view 缺字段时显示 unknown/空值，
+历史授权记录不会在恢复后重新生效。MCP 仍使用独立授权流程。
 
 ### Asker、ask 与 plan
 
@@ -383,7 +386,7 @@ system 在创建或恢复时渲染一次，之后不随日期、git 状态或权
 | `cwd, os, shell, date` | workspace 环境采集 |
 | `git` | 仓库根、分支、状态、近期提交；不可用时 null |
 | `instructions` | 全局到当前目录的 AGENTS.md，包含来源、内容和截断标记 |
-| `model, project_root, sandbox, permission_mode` | Setup 与启动环境 |
+| `model, project_root, sandbox, workspace_sandbox, sandbox_backend, sandbox_missing, permission_mode` | Setup 与启动环境及实际后端能力 |
 
 内置 system / compact 模板与核心给模型的文本固定英文，不随界面语言切换。
 主模板明确 `Reply in the user's language.`，即界面英文、模型回复跟随用户语言。

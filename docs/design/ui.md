@@ -44,24 +44,30 @@ LayerStack
 对话、活动、排队和输入使用同一宽度与左缘。侧栏被收起或终端少于 80 列时宽度为 0；
 80–99 列占 26 列，至少 100 列占 30 列。状态栏始终在计划栏之外铺满。
 
-新会话的第一个 Document 块是欢迎头，包含版本、项目、模型和 MCP 数量；内容栏少于 60 列时只画单行字标。
+新会话的第一个 Document 块是欢迎头，包含版本、项目、git 分支和 MCP 数量；内容栏少于 60 列时只画单行字标。
 恢复会话改画恢复 id 与回放事件数。Scrollback 不贴底时，右下角覆盖显示未读行数，End 回到底部。
 
 ## 2. 主题
 
 `ui.theme_file` 指向 JSON 主题；文件在内置 dark / light 令牌上覆盖同名项，支持顶层 `name`、`defs`、
-`dark` 和 `light`。`list_themes()` 在工作线程枚举并预加载同目录的 `*.json`，解析失败的条目保留但不可选择。
+`dark` 和 `light`。默认文件为 `home/themes/dagent.json`，启动时加载，不扫描同目录的其他文件。
 
 Shell 的所有主题变更都经过 `apply_theme()`：复制令牌、递增 `epoch`，再依次刷新 Scrollback、Activity、
 排队行、PromptBox、HintLine、StatusLine、TodoPanel、ToastStack、Panel、ApprovalDialog 和 Completion。
-`/theme` 面板提供内置 dark、内置 light、跟随终端背景和主题文件的 dark / light 两个版本；打开时选中当前主题，
-不触发预览。移动选择使用已加载令牌即时预览，Enter 保留，Esc / Ctrl+C 恢复打开前的主题。
+`/theme` 面板只提供 `dark`、`light`、`follow terminal`：均使用当前配置文件的明暗配色，无文件时才使用
+应用层后备色。启动默认跟随终端；打开时选中已确认模式，不触发预览。移动选择使用已加载令牌即时预览，
+Enter 保留，Esc / Ctrl+C 恢复已确认模式。预览期间暂停终端背景驱动的切换；退出预览后，跟随模式仍会
+响应终端背景变化，手动 dark / light 不受影响。模式选择仅在当前进程生效。
 内置明暗主题显式设置底色和正文前景；普通文字令牌继承主题底色，状态栏、面板、toast 和计划栏继承各自
-panel 背景，不在底纹上打孔。切换时使整个控件树失效，两侧留白也使用新底色。
+panel 背景，不在底纹上打孔；底部状态栏沿用主背景。切换时使整个控件树失效，两侧留白也使用新底色。
 
 视觉角色只使用 `ThemeTokens`：正文 `text`，次要信息 `text_muted`，用户竖条与选中项 `primary`，
 进行中与自动编辑 `accent`，工具完成/失败分别用 `success`/`error`，上下文阈值和重试用 `warning`。
-用户消息和选中行用 `background_element`；计划栏、状态栏和浮层用 `background_panel`。
+用户消息、输入框和选中行用 `background_element`；侧栏和浮层用 `background_panel`。
+
+默认配色依据本机 OpenCode 1.18.31 当前使用的 `orng` 主题，采用中性黑灰/暖白底色和橙色强调。
+来源、语义映射和适配取舍见 [OpenCode 主题分析](opencode-theme.md)。256 色终端按 xterm 实际色阶比较
+色立方与灰阶的距离，保留深色背景层次，并正确处理纯黑、纯白；真彩终端直接输出 RGB。
 
 ## 3. 线程与生命周期
 
@@ -86,6 +92,8 @@ toast 使用一次性五秒定时器，文件补全使用一次性 80 ms 防抖�
 PromptBox 左侧是一根竖条（忙碌时换成 `primary`），底纹用 `background_element`，正文上方留一行、
 与框内最后一行之间再留一行，输入时不贴着上面的对话；最后一行显示 `权限模式 · 模型`。正文按内容栏宽度折行，控件高度跟着折行结果在 1–8 行之间变化（加上三行留白与尾行，整体 4–11 行），超过 8 行在框内滚动并保证
 光标可见；空输入显示占位文字，占位文字不属于 `text()`。
+
+新会话 Banner 只显示版本、项目路径、git 分支与 MCP 数量，不重复显示模型；当前模型保留在输入框尾行和消息尾行。
 
 框架的 `tui::InputBox` 只做横向滚动、不折行，所以 PromptBox 自绘正文，不调用基类 `render`；
 基类内部的横竖滚动量因此恒为 0，`cursor()` 借这一点从基类光标反推逻辑行号与显示列（基类没有公开它们）。
@@ -172,9 +180,11 @@ ToastStack 是单一右上角 overlay，内部维护最多三条通知，新通�
 错误 Event 已永久进入 Transcript，因此不重复弹 error toast。权限对话框保留 y/a/w/n/e/Esc/Ctrl+C 语义，
 使用 active 圆角边框、`Approval needed` 标题、英文 reason 与 session rule、可滚动预览和横排选项。
 长意图和 session rule 放在可折行的预览区，预览与输入不占用边框列。
+审批预览同时显示实际 cwd、模式和每项增量权限原因；敏感/受保护请求不显示 session 选项。
 底边单独预留一行，避免覆盖选项；紧凑选项为 `[y] allow / [a] session / [w] network / [n] deny / [e] explain`。
 同一模态骨架也显示 Question：数字或上下键选择，Enter 确认，多选用空格，Other 进入自由输入，Esc 取消。
 权限与问题浮层互斥。unrestricted 的输入/消息尾行使用 error 色，plan 使用 accent 色。长计划条目与通知按显示列宽截断。
+`/permissions` 复用 Panel 显示当前内存授权，Enter 撤销所选规则；空列表只显示不可选提示。
 
 ## 7. 退出与错误
 

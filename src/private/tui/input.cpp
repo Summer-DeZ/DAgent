@@ -328,7 +328,7 @@ SeqResult wait_from(std::size_t start, std::vector<Event>& out, std::size_t base
     return {start, false, true};
 }
 
-// 终端字符串：OSC 由 BEL 或 ST 终止，其余仅 ST；只在应答窗口打开时调用。
+// 终端字符串：OSC 由 BEL 或 ST 终止，其余仅 ST。
 SeqResult decode_string(std::string_view s, std::size_t start, char intro,
                         std::vector<Event>& out) {
     const bool osc = intro == ']';
@@ -602,8 +602,16 @@ void Decoder::feed(std::string_view bytes, std::vector<Event>& out) {
                     }
                     continue;
                 }
-                // 终端字符串：只有应答窗口打开时按应答解析；多余的 ESC 是 Alt 组合键。
-                if (reply_window_ && !has_alt &&
+                // OSC 11 背景变化也会在握手结束后主动上报。只放行背景应答，保留 Alt+]。
+                bool background_reply = false;
+                if (!reply_window_ && !has_alt && c == ']') {
+                    const auto body = std::string_view(buf_).substr(esc + 1);
+                    constexpr std::string_view rgb = "11;rgb:", rgba = "11;rgba:";
+                    if (rgb.starts_with(body) || rgba.starts_with(body)) break;
+                    background_reply = body.starts_with(rgb) || body.starts_with(rgba);
+                }
+                // 其余终端字符串只在应答窗口解析；多余的 ESC 是 Alt 组合键。
+                if ((reply_window_ || background_reply) && !has_alt &&
                     (c == ']' || c == 'P' || c == '_' || c == '^' || c == 'X')) {
                     const SeqResult r =
                         decode_string(buf_, esc + 1, static_cast<char>(c), out);

@@ -1,7 +1,6 @@
 #include "ui/theme_config.hpp"
 
 #include <fstream>
-#include <algorithm>
 #include <stdexcept>
 #include <string_view>
 
@@ -120,8 +119,38 @@ ThemeSet load_theme(const std::filesystem::path& file) {
 
 tui::ThemeTokens builtin_theme(bool light) {
     auto theme = light ? tui::light_theme() : tui::dark_theme();
-    theme.text.fg = light ? Color::rgb(52, 59, 88) : Color::rgb(212, 216, 227);
-    theme.background.bg = light ? Color::rgb(255, 255, 255) : Color::rgb(26, 27, 38);
+    const auto color = [light](unsigned dark, unsigned day) {
+        const unsigned value = light ? day : dark;
+        return Color::rgb((value >> 16) & 255, (value >> 8) & 255, value & 255);
+    };
+    const auto plain = [](Color fg, Attr attrs = Attr::none) { return Style{fg, {}, attrs}; };
+    theme.text = plain(color(0xeeeeee, 0x1a1a1a));
+    theme.text_muted = plain(color(0x808080, 0x706b66));
+    theme.primary = plain(color(0xec5b2b, 0xc94d24));
+    theme.accent = plain(color(0xee7948, 0xc94d24));
+    theme.border = plain(color(0x3c3c3c, 0xd4d4d4));
+    theme.border_active = plain(color(0x606060, 0xa0a0a0));
+    theme.background = Style{{}, color(0x0a0a0a, 0xffffff), Attr::none};
+    theme.background_panel = Style{{}, color(0x141414, 0xfff7f1), Attr::none};
+    theme.background_element = Style{{}, color(0x1e1e1e, 0xf5f0eb), Attr::none};
+    theme.success = plain(color(0x6ba1e6, 0x0062d1));
+    theme.warning = plain(color(0xe5c07b, 0x8a6415));
+    theme.error = plain(color(0xe06c75, 0xd1383d), Attr::bold);
+    theme.info = plain(color(0x56b6c2, 0x318795));
+    theme.diff_added = theme.success;
+    theme.diff_removed = plain(theme.error.fg);
+    theme.diff_context = theme.diff_hunk = theme.text_muted;
+    theme.syntax_keyword = theme.primary;
+    theme.syntax_string = theme.success;
+    theme.syntax_comment = plain(theme.text_muted.fg, Attr::italic);
+    theme.syntax_number = plain(color(0xfff7f1, 0xc94d24));
+    theme.syntax_function = theme.accent;
+    theme.syntax_type = theme.warning;
+    theme.markdown_heading = plain(theme.primary.fg, Attr::bold);
+    theme.markdown_code = theme.success;
+    theme.markdown_link = plain(theme.info.fg, Attr::underline);
+    theme.markdown_quote = plain(theme.text_muted.fg, Attr::italic);
+    theme.selection = Style{theme.background.bg, theme.primary.fg, Attr::none};
     return theme;
 }
 
@@ -133,21 +162,6 @@ tui::ThemeTokens resolve_theme(tui::ThemeTokens theme) {
         if (style.fg.kind == Color::Kind::default_) style.fg = theme.text.fg;
     }
     return theme;
-}
-
-std::vector<ThemeInfo> list_themes(const std::filesystem::path& directory) {
-    std::vector<ThemeInfo> result;
-    std::error_code error;
-    for (const auto& entry : std::filesystem::directory_iterator(directory, error)) {
-        if (!entry.is_regular_file(error) || entry.path().extension() != ".json") continue;
-        ThemeInfo info;
-        info.path = entry.path();
-        try { info.loaded = load_theme(info.path); info.name = info.loaded->name; }
-        catch (...) { info.name = info.path.stem().string(); info.available = false; }
-        result.push_back(std::move(info));
-    }
-    std::ranges::sort(result, {}, &ThemeInfo::name);
-    return result;
 }
 
 } // namespace dagent::ui

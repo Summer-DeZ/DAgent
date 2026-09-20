@@ -23,25 +23,16 @@ constexpr std::string_view kDescription = R"(Run a bash command in the workspace
 
 constexpr std::size_t kCollectCap = 4 << 20; // 内部收集上限：状态行提示与中断输出够用
 
-bool looks_like_sandbox_denial(std::string_view output) {
-    constexpr std::string_view kMarkers[] = {
-        "Permission denied", "Read-only file system", "Operation not permitted",
-        "Could not resolve host",
-    };
-    return std::ranges::any_of(kMarkers, [&](std::string_view marker) {
-        return output.find(marker) != std::string_view::npos;
-    });
-}
-
 class BashCall final : public Call {
 public:
-    BashCall(const Context& ctx, std::string command, std::optional<std::chrono::milliseconds> timeout)
+    BashCall(const Context& ctx, std::string command, exec::Analysis analysis,
+             std::optional<std::chrono::milliseconds> timeout)
         : root_(ctx.root()), process_options_(ctx.process()), max_result_bytes_(ctx.options().max_result_bytes),
           command_(std::move(command)), timeout_(timeout) {
-        const exec::Analysis analysis = exec::analyze(command_);
         intent_.kind = Intent::Kind::exec;
         intent_.command = command_;
-        intent_.known_readonly = exec::is_known_readonly(analysis, root_);
+        intent_.analysis = std::move(analysis);
+        intent_.known_readonly = exec::is_known_readonly(intent_.analysis, root_);
         auto line = command_;
         if (const auto nl = line.find('\n'); nl != std::string::npos) line = line.substr(0, nl);
         if (line.size() > 100) line = line.substr(0, 100);
@@ -57,7 +48,14 @@ private:
             exec::Policy policy;
             policy.mode = grant.sandbox;
             policy.allow_network = grant.allow_network;
-            policy.writable = {root_, "/tmp"};
+            policy.allow_local_sockets = grant.allow_local_sockets;
+            policy.private_tmp = grant.private_tmp;
+            policy.protect_sensitive_names = grant.protect_sensitive_names;
+            policy.readable = grant.readable;
+            policy.writable = grant.writable.empty() ? std::vector<std::filesystem::path>{root_}
+                                                     : grant.writable;
+            policy.protected_read = grant.protected_read;
+            policy.protected_write = grant.protected_write;
             try {
                 prepared = exec::prepare(policy);
             } catch (const exec::ExecError& e) {
@@ -70,9 +68,25 @@ private:
         cmd.cwd = root_;
         cmd.merge_stderr = true;
         cmd.timeout = timeout_;
+        cmd.inherit_env = !sandboxed;
         // 固定消息语言：报错文本（strerror）不随系统 locale 变化，给模型和沙箱判断都是稳定输入。
         // 用 C.UTF-8 而不是 C，否则 ls 会把中文文件名转义成 \346… 这样的八进制。
         cmd.env_set.emplace_back("LC_ALL", "C.UTF-8");
+        if (prepared && !prepared->private_tmp().empty()) {
+            const std::string private_home(prepared->private_tmp());
+            cmd.env_unset.insert(cmd.env_unset.end(), {"BASH_ENV", "ENV", "BASHOPTS", "SHELLOPTS",
+                                                        "CDPATH", "GLOBIGNORE",
+                                                        "PROMPT_COMMAND", "LD_PRELOAD", "LD_LIBRARY_PATH",
+                                                        "PYTHONPATH", "PERL5LIB", "RUBYOPT"});
+            cmd.env_set.emplace_back("PATH", "/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin");
+            cmd.env_set.emplace_back("HOME", private_home);
+            cmd.env_set.emplace_back("XDG_CONFIG_HOME", private_home + "/config");
+            cmd.env_set.emplace_back("XDG_CACHE_HOME", private_home + "/cache");
+            cmd.env_set.emplace_back("XDG_RUNTIME_DIR", private_home + "/run");
+            cmd.env_set.emplace_back("TMPDIR", private_home);
+            cmd.env_set.emplace_back("TMP", private_home);
+            cmd.env_set.emplace_back("TEMP", private_home);
+        }
         cmd.sandbox = prepared.get();
 
         std::string collected;
@@ -103,7 +117,29 @@ private:
         BashView view;
         view.command = command_;
         view.sandbox = std::string(detail::sandbox_name(grant.sandbox));
+        view.backend = grant.backend;
+        switch (grant.source) {
+        case Grant::Source::mode: view.grant_source = "mode"; break;
+        case Grant::Source::once: view.grant_source = "once"; break;
+        case Grant::Source::session: view.grant_source = "session"; break;
+        case Grant::Source::unrestricted: view.grant_source = "unrestricted"; break;
+        }
+        view.analysis_version = grant.analysis_version;
         view.allow_network = grant.allow_network;
+        view.allow_local_sockets = grant.allow_local_sockets;
+        view.private_tmp = grant.private_tmp;
+        view.protect_sensitive_names = grant.protect_sensitive_names;
+        const auto copy_paths = [](const auto& paths) {
+            std::vector<std::string> result;
+            result.reserve(paths.size());
+            for (const auto& path : paths) result.push_back(path.string());
+            return result;
+        };
+        view.readable = copy_paths(grant.readable);
+        view.writable = copy_paths(grant.writable);
+        view.protected_read = copy_paths(grant.protected_read);
+        view.protected_write = copy_paths(grant.protected_write);
+        view.network_targets = grant.network_targets;
         view.elapsed_ms = elapsed.count();
 
         std::string raw; // 给视图的「完整输出」（exec 已按上限保留头尾）
@@ -125,14 +161,6 @@ private:
         std::string body = base::truncate_middle(raw, body_budget).text;
         std::string text = body.empty() ? "(no output)" : body;
 
-        // 沙箱提示按文档只在失败时给；退出码 0 时输出里偶然出现这些字样不代表被拦截
-        const bool failed =
-            interrupted ? false
-                        : outcome.has_value()
-                              ? (outcome->timed_out || outcome->signal.has_value() ||
-                                 (outcome->exit_code.has_value() && *outcome->exit_code != 0))
-                              : true;
-
         view.output = raw;
         Result result;
         if (interrupted) {
@@ -153,9 +181,6 @@ private:
             else if (outcome->exit_code && *outcome->exit_code != 0)
                 text += std::format("\n[exit code {}]", *outcome->exit_code);
         }
-        if (sandboxed && failed && looks_like_sandbox_denial(collected))
-            text += "\n[The command ran in a sandbox: no writes outside the workspace and no network access. Use another approach, or explain which restrictions the user needs to relax.]";
-
         result.text = std::move(text);
         result.is_error = !interrupted && outcome.has_value() &&
                           ((outcome->exit_code.has_value() && *outcome->exit_code != 0) ||
@@ -198,6 +223,14 @@ public:
         const auto timeout_ms = detail::get_int(*args, "timeout_ms", err);
         if (!err.empty()) return std::unexpected(error_result(err));
 
+        exec::Analysis analysis = exec::analyze(command);
+        if (analysis.syntax != exec::SyntaxStatus::valid) {
+            std::string message = analysis.syntax_message.empty() ? "bash syntax could not be analyzed"
+                                                                  : analysis.syntax_message;
+            if (analysis.syntax_range) message += std::format(" at byte {}", analysis.syntax_range->begin);
+            return std::unexpected(error_result(message + "; command not executed"));
+        }
+
         std::optional<std::chrono::milliseconds> timeout;
         if (timeout_ms && *timeout_ms > 0) {
             timeout = std::chrono::milliseconds(*timeout_ms);
@@ -205,7 +238,7 @@ public:
         } else {
             timeout = ctx.process().default_timeout; // exec 里 0 表示不限
         }
-        return std::make_unique<BashCall>(ctx, command, timeout);
+        return std::make_unique<BashCall>(ctx, command, std::move(analysis), timeout);
     }
 
 private:

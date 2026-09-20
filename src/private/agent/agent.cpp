@@ -15,7 +15,7 @@ namespace {
 std::shared_ptr<spdlog::logger> log_agent() { return base::logger("agent"); }
 
 bool sandbox_available(const exec::Support& support) {
-    return support.landlock_abi > 0 && support.seccomp;
+    return support.read_only_ready();
 }
 
 std::string render_prompt(const Setup& setup) {
@@ -25,6 +25,10 @@ std::string render_prompt(const Setup& setup) {
     vars.project_root = setup.project_root;
     vars.sandbox = sandbox_available(setup.sandbox) &&
                    setup.permission_mode != PermissionMode::unrestricted;
+    vars.workspace_sandbox = setup.sandbox.workspace_ready() &&
+                             setup.permission_mode != PermissionMode::unrestricted;
+    vars.sandbox_backend = setup.sandbox.backend;
+    vars.sandbox_missing = setup.sandbox.missing;
     vars.permission_mode = setup.planning ? "plan" : std::string(to_string(setup.permission_mode));
     return render_system_prompt(setup.system_prompt, env, vars);
 }
@@ -49,7 +53,7 @@ Agent::Agent(Setup setup, std::string system_prompt, Recorder recorder, Conversa
       registry_(),
       tool_ctx_(setup_.cwd, setup_.tools, setup_.files, setup_.search, setup_.process),
       policy_(setup_.permission_mode, setup_.read_only, setup_.planning, setup_.sandbox,
-              setup_.cwd, setup_.project_root),
+              setup_.cwd, setup_.project_root, setup_.control_root, setup_.sandbox_options),
       model_([provider = setup_.provider] { return make_codec(provider); }, setup_.http,
              RetryOptions{setup_.options.run.max_model_retries},
              find_provider(setup_.provider.kind)->framing),
@@ -338,6 +342,15 @@ void Agent::set_plan_mode(bool value) {
 }
 
 bool Agent::planning() const { return policy_.planning(); }
+
+std::vector<Policy::SessionGrant> Agent::session_grants() const { return policy_.session_grants(); }
+
+bool Agent::revoke_permission(std::string_view id) {
+    if (!policy_.revoke(id)) return false;
+    recorder_.permission_revoked(id);
+    recorder_.sync();
+    return true;
+}
 
 Agent::~Agent() { recorder_.sync(); }
 

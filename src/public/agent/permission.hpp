@@ -40,7 +40,8 @@ struct Verdict {
 class Policy {
 public:
     Policy(PermissionMode mode, bool read_only, bool planning, exec::Support sandbox,
-           std::filesystem::path workspace_root, std::filesystem::path project_root);
+           std::filesystem::path workspace_root, std::filesystem::path project_root,
+           std::filesystem::path control_root, exec::SandboxOptions options);
 
     Verdict evaluate(const ToolCall&, const tools::Intent&) const;
 
@@ -55,6 +56,10 @@ public:
     void set_planning(bool value);
     bool planning() const;
 
+    struct SessionGrant { std::string id, description; };
+    std::vector<SessionGrant> session_grants() const;
+    bool revoke(std::string_view id);
+
 private:
     enum class PathClass { normal, sensitive, outside, guarded };
 
@@ -62,18 +67,18 @@ private:
     bool inside_dir(const std::filesystem::path&, const std::filesystem::path&) const;
     /// 命中会话授权时返回 allow_network（exec 之外恒为 false），未命中返回 nullopt。
     std::optional<bool> matches_session(const Approval&, const tools::Intent&) const;
-    tools::Grant grant_for_exec() const;
+    tools::Grant grant_for_exec(exec::Mode, tools::Grant::Source) const;
 
     std::atomic<PermissionMode> mode_;
     std::atomic<bool> read_only_;
     std::atomic<bool> planning_;
     exec::Support sandbox_;
-    std::filesystem::path workspace_root_, project_root_;
+    exec::SandboxOptions sandbox_options_;
+    std::filesystem::path workspace_root_, project_root_, control_root_;
 
     bool session_edits_ = false;
     struct ExecRule {
-        std::string prefix;
-        bool network = false;
+        std::string id, command, cwd;
     };
     std::vector<ExecRule> exec_rules_;
     std::vector<std::string> external_rules_;

@@ -195,7 +195,7 @@ const std::set<std::string>& known_keys() {
         "run.max_model_calls", "run.max_tool_calls", "run.max_model_retries",
         "session.redact_fields", "log.max_file_bytes",
         "log.max_files", "log.level", "log.also_stderr", "progress.interval_ms",
-        "permissions", "ui.theme_file", "mcp.connect_timeout_ms", "mcp.probe_timeout_ms",
+        "permissions", "ui.theme_file", "sandbox.version", "mcp.connect_timeout_ms", "mcp.probe_timeout_ms",
         "tools.max_result_bytes", "tools.read_default_lines", "tools.read_max_line_bytes",
         "tools.grep_max_matches", "tools.glob_max_files", "tools.bash_max_timeout_ms",
         "tools.mcp_call_timeout_ms"};
@@ -205,6 +205,7 @@ const std::set<std::string>& known_keys() {
 bool known_key(std::string_view key) {
     if (known_keys().contains(std::string(key))) return true;
     constexpr std::string_view prefixes[] = {"session.redact_fields", "process.env_deny",
+                                              "sandbox.extra_readable", "sandbox.extra_writable",
                                               "network.credentials", "mcp.servers"};
     return std::ranges::any_of(prefixes, [&](std::string_view prefix) {
         return key == prefix || (key.starts_with(prefix) && key.size() > prefix.size() &&
@@ -304,6 +305,22 @@ exec::Options map_process(const Node& n) {
     if (auto v = n.child("drain_after_exit_ms"); v.has()) o.drain_after_exit = std::chrono::milliseconds(v.integer());
     if (auto v = n.child("env_deny"); v.has()) o.env_deny = v.strings();
     return o;
+}
+
+exec::SandboxOptions map_sandbox(const Node& n, const fs::path& workspace) {
+    exec::SandboxOptions options;
+    if (auto v = n.child("version"); v.has()) options.version = v.integer(options.version);
+    if (options.version != 1)
+        fail(ConfigError::Kind::invalid, n.child("version").pointer() + " must be 1");
+    const auto paths = [&](std::string_view key) {
+        std::vector<fs::path> result;
+        for (const std::string& value : n.child(key).strings())
+            result.push_back(absolute_under(workspace, value));
+        return result;
+    };
+    options.extra_readable = paths("extra_readable");
+    options.extra_writable = paths("extra_writable");
+    return options;
 }
 
 workspace::FileOptions map_files(const Node& n) {
@@ -535,6 +552,7 @@ Config load_config(const LoadOptions& options) {
     config.compact_prompt_file = node.child("prompts").child("compact").str((root / "compact.md").string());
     config.http = map_http(node.child("http"));
     config.process = map_process(node.child("process"));
+    config.sandbox = map_sandbox(node.child("sandbox"), cwd);
     config.files = map_files(node.child("files"));
     config.search = map_search(node.child("search"));
     config.session = map_session(node.child("session"));

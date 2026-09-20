@@ -50,6 +50,8 @@ public:
     bool read_only() const;
     void set_plan_mode(bool value);
     bool planning() const;
+    std::vector<Policy::SessionGrant> session_grants() const;
+    bool revoke_permission(std::string_view id);
 
     /// @brief MCP 连接状态快照。线程安全，调用方保证 Agent 仍存活。
     std::vector<ServerState> mcp_states() const { return hub_.states(); }

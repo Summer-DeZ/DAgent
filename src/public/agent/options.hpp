@@ -62,6 +62,7 @@ struct Setup {
     // 工作区
     std::filesystem::path cwd;          ///< 工作区根（Args::cwd）
     std::filesystem::path project_root; ///< Config::project_root
+    std::filesystem::path control_root; ///< 配置、提示词、会话与日志所在目录
     std::optional<std::filesystem::path> git_root;
 
     // 外围
@@ -69,6 +70,7 @@ struct Setup {
     workspace::FileOptions files;
     workspace::SearchOptions search;
     exec::Options process;
+    exec::SandboxOptions sandbox_options;
     session::Options session;
     mcp::Options mcp;
     std::vector<mcp::ServerConfig> mcp_servers;

@@ -21,6 +21,7 @@
 
 #include "exec/process.hpp"
 #include "exec/sandbox.hpp"
+#include "exec/shell.hpp"
 #include "lib/nlohmann/json.hpp"
 #include "mcp/client.hpp"
 #include "tools/view.hpp"
@@ -52,6 +53,7 @@ struct Intent {
     Kind kind = Kind::read;
     std::vector<workspace::Resolved> paths; ///< read/write 涉及的路径，带 inside_workspace
     std::string command;                    ///< exec：原始命令
+    exec::Analysis analysis;                ///< exec：prepare 时生成，后续策略和执行复用
     bool known_readonly = false;            ///< exec：exec::is_known_readonly 的结果
     std::string preview;                    ///< write/edit：unified diff，给确认对话框
     std::string summary;                    ///< 一行描述，如「编辑 src/a.cpp（+3 −1）」
@@ -61,8 +63,20 @@ struct Intent {
 
 /// @brief 核心的决定，执行时传回。
 struct Grant {
+    enum class Source { mode, once, session, unrestricted };
     exec::Mode sandbox = exec::Mode::workspace_write; ///< 只对 bash 有意义
     bool allow_network = false;
+    bool allow_local_sockets = false;
+    bool private_tmp = true;
+    bool protect_sensitive_names = false;
+    Source source = Source::mode;
+    std::string backend;
+    int analysis_version = 0;
+    std::vector<std::filesystem::path> readable;
+    std::vector<std::filesystem::path> writable;
+    std::vector<std::filesystem::path> protected_read;
+    std::vector<std::filesystem::path> protected_write;
+    std::vector<std::string> network_targets;
 };
 
 /// @brief 一次工具调用的结果。

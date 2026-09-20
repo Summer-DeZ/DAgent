@@ -30,8 +30,10 @@ public:
     void system(std::string_view text, std::string_view model);
     void user(std::int64_t n, std::string_view text);
     void assistant(std::int64_t n, const Reply&);
+    void tool_started(const ToolStarted&);
     void tool(std::int64_t n, const ToolCall&, std::string_view summary, const tools::Result&);
-    void permission(std::string_view call_id, const Decision&, std::string_view rule);
+    void permission(const Approval&, const Decision&);
+    void permission_revoked(std::string_view id);
     void prune(const std::vector<std::int64_t>& ordinals);
     void compaction(std::int64_t keep_from, std::string_view summary);
     void turn_end(TurnStatus, std::string_view error, int steps, int tool_calls, const Usage& total);

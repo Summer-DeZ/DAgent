@@ -4,9 +4,13 @@
 #include "exec/process.hpp"
 
 #include <cerrno>
+#include <algorithm>
+#include <array>
 #include <cstddef>
 #include <cstdint>
 #include <cstring>
+#include <filesystem>
+#include <optional>
 #include <string>
 #include <sys/stat.h>
 #include <sys/syscall.h>
@@ -29,18 +33,23 @@ struct Prepared::Impl {
     std::vector<sock_filter> filter;  ///< seccomp BPF 程序，随 Prepared 存活到 fork 之后
     sock_fprog program {};            ///< 指向 filter 的程序头，避免在子进程里组装
     bool has_filter = false;
+    std::filesystem::path private_tmp;
 
     ~Impl() {
         if (ruleset_fd >= 0) ::close(ruleset_fd);
+        if (!private_tmp.empty()) {
+            std::error_code ec;
+            std::filesystem::remove_all(private_tmp, ec);
+        }
     }
 };
 
 Prepared::Prepared() : impl_(std::make_unique<Impl>()) {}
 Prepared::~Prepared() = default;
+std::string_view Prepared::private_tmp() const noexcept { return impl_->private_tmp.native(); }
 
 namespace {
 
-// 只处理「写」类权限：读和执行的访问规则不进入 handled 集合，因此全文件系统可读可执行。
 std::uint64_t landlock_write_access(int abi) {
     std::uint64_t access = LANDLOCK_ACCESS_FS_WRITE_FILE | LANDLOCK_ACCESS_FS_REMOVE_FILE |
                            LANDLOCK_ACCESS_FS_REMOVE_DIR | LANDLOCK_ACCESS_FS_MAKE_CHAR |
@@ -56,13 +65,18 @@ std::uint64_t landlock_write_access(int abi) {
     return access;
 }
 
+std::uint64_t landlock_read_access() {
+    return LANDLOCK_ACCESS_FS_EXECUTE | LANDLOCK_ACCESS_FS_READ_FILE | LANDLOCK_ACCESS_FS_READ_DIR;
+}
+
 // 普通文件只能用文件相关的位，带上目录专属位会被内核拒绝。
-std::uint64_t landlock_file_access(std::uint64_t handled) {
-    std::uint64_t access = LANDLOCK_ACCESS_FS_WRITE_FILE;
+std::uint64_t landlock_file_access(std::uint64_t allowed) {
+    std::uint64_t access = LANDLOCK_ACCESS_FS_EXECUTE | LANDLOCK_ACCESS_FS_READ_FILE |
+                           LANDLOCK_ACCESS_FS_WRITE_FILE;
 #ifdef LANDLOCK_ACCESS_FS_TRUNCATE
     access |= LANDLOCK_ACCESS_FS_TRUNCATE;
 #endif
-    return access & handled;
+    return access & allowed;
 }
 
 int create_landlock_ruleset(std::uint64_t handled) {
@@ -71,8 +85,9 @@ int create_landlock_ruleset(std::uint64_t handled) {
     return static_cast<int>(::syscall(SYS_landlock_create_ruleset, &attr, sizeof(attr), 0));
 }
 
-void add_path_rule(int ruleset_fd, const std::filesystem::path& path, std::uint64_t handled) {
-    const int fd = ::open(path.c_str(), O_PATH | O_CLOEXEC);
+void add_path_rule(int ruleset_fd, const std::filesystem::path& path, std::uint64_t allowed,
+                   bool no_follow = false) {
+    const int fd = ::open(path.c_str(), O_PATH | O_CLOEXEC | (no_follow ? O_NOFOLLOW : 0));
     if (fd < 0) {
         if (errno == ENOENT) {
             base::logger("exec")->warn("sandbox path does not exist, skipped: {}", path.string());
@@ -90,7 +105,11 @@ void add_path_rule(int ruleset_fd, const std::filesystem::path& path, std::uint6
 
     landlock_path_beneath_attr rule {};
     rule.parent_fd = fd;
-    rule.allowed_access = S_ISDIR(st.st_mode) ? handled : landlock_file_access(handled);
+    if (S_ISLNK(st.st_mode)) {
+        ::close(fd);
+        return;
+    }
+    rule.allowed_access = S_ISDIR(st.st_mode) ? allowed : landlock_file_access(allowed);
     if (::syscall(SYS_landlock_add_rule, ruleset_fd, LANDLOCK_RULE_PATH_BENEATH, &rule, 0) == -1) {
         const int err = errno;
         ::close(fd);
@@ -100,9 +119,96 @@ void add_path_rule(int ruleset_fd, const std::filesystem::path& path, std::uint6
     ::close(fd);
 }
 
+std::filesystem::path normalized(const std::filesystem::path& path) {
+    std::error_code ec;
+    std::filesystem::path result = std::filesystem::weakly_canonical(path, ec);
+    if (ec) result = std::filesystem::absolute(path, ec).lexically_normal();
+    return result;
+}
+
+bool contains(const std::filesystem::path& parent, const std::filesystem::path& child) {
+    const std::filesystem::path relative = child.lexically_relative(parent);
+    return !relative.empty() && (relative.begin() == relative.end() || *relative.begin() != "..");
+}
+
+bool sensitive_name(std::string_view name) {
+    return name == ".env" || name.starts_with(".env.") || name.ends_with(".pem") ||
+           name.ends_with(".key") || name.starts_with("id_rsa") || name.starts_with("id_ed25519");
+}
+
+void collect_sensitive(const std::filesystem::path& root,
+                       std::vector<std::filesystem::path>& protected_paths) {
+    std::error_code ec;
+    std::filesystem::recursive_directory_iterator it(
+        root, std::filesystem::directory_options::skip_permission_denied, ec), end;
+    for (; !ec && it != end; it.increment(ec)) {
+        const auto status = it->symlink_status(ec);
+        if (ec) break;
+        if (std::filesystem::is_symlink(status)) {
+            if (it->is_directory(ec)) it.disable_recursion_pending();
+            continue;
+        }
+        const std::string name = it->path().filename().string();
+        const bool protected_dir = std::filesystem::is_directory(status) &&
+                                   (name == ".ssh" || name == ".gnupg");
+        if (protected_dir || sensitive_name(name)) protected_paths.push_back(normalized(it->path()));
+        if (protected_dir) it.disable_recursion_pending();
+    }
+    if (ec) throw ExecError{ExecError::Kind::sandbox,
+                            "scan sensitive paths under " + root.string() + ": " + ec.message()};
+}
+
+void add_tree_except(int ruleset_fd, const std::filesystem::path& raw_root, std::uint64_t allowed,
+                     const std::vector<std::filesystem::path>& raw_protected) {
+    const std::filesystem::path root = normalized(raw_root);
+    std::vector<std::filesystem::path> protected_paths;
+    for (const auto& path : raw_protected) {
+        const std::filesystem::path item = normalized(path);
+        if (item == root) return;
+        if (contains(root, item)) protected_paths.push_back(item);
+    }
+    if (protected_paths.empty()) {
+        add_path_rule(ruleset_fd, root, allowed);
+        return;
+    }
+
+    // 只授予列目录权，文件读取与所有写权限由未受保护的具体子树规则提供。
+    const std::uint64_t directory_only = allowed & LANDLOCK_ACCESS_FS_READ_DIR;
+    if (directory_only != 0) add_path_rule(ruleset_fd, root, directory_only);
+
+    std::error_code ec;
+    for (std::filesystem::directory_iterator it(root, std::filesystem::directory_options::skip_permission_denied, ec), end;
+         !ec && it != end; it.increment(ec)) {
+        const std::filesystem::path child = normalized(it->path());
+        bool excluded = false, contains_excluded = false;
+        for (const auto& item : protected_paths) {
+            excluded = excluded || child == item;
+            contains_excluded = contains_excluded || contains(child, item);
+        }
+        if (excluded) continue;
+        if (contains_excluded && it->is_directory(ec))
+            add_tree_except(ruleset_fd, child, allowed, protected_paths);
+        else
+            add_path_rule(ruleset_fd, it->path(), allowed, true);
+    }
+    if (ec) throw ExecError{ExecError::Kind::sandbox, "enumerate " + root.string() + ": " + ec.message()};
+}
+
+std::filesystem::path make_private_tmp() {
+    std::array<char, 32> path{};
+    const std::string pattern = "/tmp/dagent-command-XXXXXX";
+    std::copy(pattern.begin(), pattern.end(), path.begin());
+    char* created = ::mkdtemp(path.data());
+    if (created == nullptr)
+        throw ExecError{ExecError::Kind::sandbox, "create private temporary directory: " +
+                                                     std::string(std::strerror(errno))};
+    return created;
+}
+
 // 用 seccomp 拒绝 AF_INET/AF_INET6 的 socket 创建：UDP（DNS）也一起被挡住，AF_UNIX 照常。
 // 只接收需要填充的几个字段，避免在非 friend 函数里提到 Prepared 的私有 Impl。
-void build_network_filter(std::vector<sock_filter>& filter, sock_fprog& program, bool& has_filter) {
+void build_filter(std::vector<sock_filter>& filter, sock_fprog& program, bool& has_filter,
+                  bool allow_network, bool allow_local_sockets) {
     scmp_filter_ctx ctx = ::seccomp_init(SCMP_ACT_ALLOW);
     if (ctx == nullptr) throw ExecError{ExecError::Kind::sandbox, "seccomp_init failed"};
 
@@ -110,10 +216,18 @@ void build_network_filter(std::vector<sock_filter>& filter, sock_fprog& program,
         ::seccomp_release(ctx);
         throw ExecError{ExecError::Kind::sandbox, std::string(step) + ": seccomp rule error"};
     };
-    if (::seccomp_rule_add(ctx, SCMP_ACT_ERRNO(EPERM), SCMP_SYS(socket), 1, SCMP_A0(SCMP_CMP_EQ, AF_INET)) != 0)
-        fail("deny AF_INET");
-    if (::seccomp_rule_add(ctx, SCMP_ACT_ERRNO(EPERM), SCMP_SYS(socket), 1, SCMP_A0(SCMP_CMP_EQ, AF_INET6)) != 0)
-        fail("deny AF_INET6");
+    if (!allow_network) {
+        if (::seccomp_rule_add(ctx, SCMP_ACT_ERRNO(EPERM), SCMP_SYS(socket), 1, SCMP_A0(SCMP_CMP_EQ, AF_INET)) != 0)
+            fail("deny AF_INET");
+        if (::seccomp_rule_add(ctx, SCMP_ACT_ERRNO(EPERM), SCMP_SYS(socket), 1, SCMP_A0(SCMP_CMP_EQ, AF_INET6)) != 0)
+            fail("deny AF_INET6");
+        if (::seccomp_rule_add(ctx, SCMP_ACT_ERRNO(EPERM), SCMP_SYS(socket), 1, SCMP_A0(SCMP_CMP_EQ, AF_NETLINK)) != 0)
+            fail("deny AF_NETLINK");
+    }
+    if (!allow_local_sockets &&
+        ::seccomp_rule_add(ctx, SCMP_ACT_ERRNO(EPERM), SCMP_SYS(socket), 1,
+                           SCMP_A0(SCMP_CMP_EQ, AF_UNIX)) != 0)
+        fail("deny AF_UNIX");
     // io_uring 的 IORING_OP_SOCKET（内核 5.19+）不经过 socket 系统调用，会绕开上面两条规则；
     // 普通程序不依赖 io_uring，拿不到时会退回普通系统调用，所以整体禁用。
     for (const int nr : {SCMP_SYS(io_uring_setup), SCMP_SYS(io_uring_enter), SCMP_SYS(io_uring_register)}) {
@@ -123,6 +237,13 @@ void build_network_filter(std::vector<sock_filter>& filter, sock_fprog& program,
     // 32 位兼容的 socketcall 把参数放在指针里，无法按 family 过滤，直接禁止。
     if (::seccomp_rule_add(ctx, SCMP_ACT_ERRNO(EPERM), SCMP_SYS(socketcall), 0) != 0) fail("deny socketcall");
 #endif
+
+    // 沙箱内进程可以管理自己的正常子进程，但不能向任意宿主 PID 发信号、ptrace 或复制 fd。
+    for (const int nr : {SCMP_SYS(kill), SCMP_SYS(tkill), SCMP_SYS(tgkill), SCMP_SYS(ptrace),
+                         SCMP_SYS(process_vm_readv), SCMP_SYS(process_vm_writev), SCMP_SYS(kcmp),
+                         SCMP_SYS(pidfd_getfd), SCMP_SYS(pidfd_send_signal)}) {
+        if (::seccomp_rule_add(ctx, SCMP_ACT_ERRNO(EPERM), nr, 0) != 0) fail("deny process control");
+    }
 
     // 2.5.5 没有 seccomp_export_bpf_mem，先导出到 memfd 再读回成 sock_filter 数组；
     // 子进程里只需 prctl 加载，不再调用会分配内存的 libseccomp。
@@ -166,31 +287,49 @@ std::unique_ptr<Prepared> prepare(const Policy& policy) {
         if (support.landlock_abi < 1)
             throw ExecError{ExecError::Kind::sandbox, "Landlock is not available on this kernel"};
 
-        const std::uint64_t handled = landlock_write_access(support.landlock_abi);
+        const std::uint64_t write = landlock_write_access(support.landlock_abi);
+        const std::uint64_t read = policy.readable.empty() ? 0 : landlock_read_access();
+        const std::uint64_t handled = write | read;
         const int ruleset_fd = create_landlock_ruleset(handled);
         if (ruleset_fd < 0)
             throw ExecError{ExecError::Kind::sandbox,
                             "landlock_create_ruleset: " + std::string(std::strerror(errno))};
         impl.ruleset_fd = ruleset_fd;
 
-        std::vector<std::filesystem::path> paths;
-        if (policy.mode == Mode::read_only) {
-            // 只读模式也要放行 /dev/null 和 /proc/self，否则很多程序会莫名失败。
-            paths = {"/dev/null", "/proc/self"};
-        } else if (policy.writable.empty()) {
-            paths = {std::filesystem::current_path(), "/tmp", "/dev/null"};
-        } else {
-            paths = policy.writable;
-            paths.push_back("/dev/null");
+        if (read != 0) {
+            static const std::filesystem::path system_read[] = {
+                "/bin", "/sbin", "/usr", "/lib", "/lib64", "/etc", "/dev/null", "/dev/zero",
+                "/dev/random", "/dev/urandom", "/proc/self", "/proc/thread-self", "/proc/cpuinfo",
+                "/proc/meminfo", "/sys/devices/system/cpu"};
+            for (const auto& path : system_read) add_path_rule(ruleset_fd, path, read);
+            std::vector<std::filesystem::path> protected_read = policy.protected_read;
+            if (policy.protect_sensitive_names)
+                for (const auto& path : policy.readable) collect_sensitive(path, protected_read);
+            for (const auto& path : policy.readable)
+                add_tree_except(ruleset_fd, path, read, protected_read);
         }
-        for (const auto& path : paths) add_path_rule(ruleset_fd, path, handled);
+
+        if (policy.private_tmp) {
+            impl.private_tmp = make_private_tmp();
+            add_path_rule(ruleset_fd, impl.private_tmp, read | write);
+        }
+        add_path_rule(ruleset_fd, "/dev/null", read | write);
+        if (policy.mode == Mode::workspace_write) {
+            const std::vector<std::filesystem::path> paths = policy.writable.empty()
+                                                                  ? std::vector<std::filesystem::path>{std::filesystem::current_path()}
+                                                                  : policy.writable;
+            std::vector<std::filesystem::path> protected_write = policy.protected_write;
+            if (policy.protect_sensitive_names)
+                for (const auto& path : paths) collect_sensitive(path, protected_write);
+            for (const auto& path : paths)
+                add_tree_except(ruleset_fd, path, read | write, protected_write);
+        }
     }
 
-    if (!policy.allow_network) {
-        if (!support.seccomp)
-            throw ExecError{ExecError::Kind::sandbox, "seccomp is not available on this kernel"};
-        build_network_filter(impl.filter, impl.program, impl.has_filter);
-    }
+    if (!support.seccomp)
+        throw ExecError{ExecError::Kind::sandbox, "seccomp is not available on this kernel"};
+    build_filter(impl.filter, impl.program, impl.has_filter, policy.allow_network,
+                 policy.allow_local_sockets);
 
     impl.noop = impl.ruleset_fd < 0 && !impl.has_filter;
     return prepared;
@@ -201,7 +340,30 @@ Support probe() {
     const long abi = ::syscall(SYS_landlock_create_ruleset, nullptr, 0, LANDLOCK_CREATE_RULESET_VERSION);
     if (abi >= 1) support.landlock_abi = static_cast<int>(abi);
     support.seccomp = ::prctl(PR_GET_SECCOMP, 0, 0, 0, 0) >= 0;
+    support.backend = support.landlock_abi > 0 && support.seccomp ? "landlock-seccomp-v2" : "none";
+    support.filesystem_write = support.landlock_abi >= 3;
+    support.filesystem_read = support.landlock_abi >= 1;
+    // Landlock 的父目录 allow 不能被子目录规则撤销；兼容路径不得声称满足嵌套保护。
+    support.protected_subpaths = false;
+    support.private_tmp = support.landlock_abi >= 1;
+    support.network_block = support.seccomp;
+    support.local_socket_block = support.seccomp;
+    support.process_control_block = support.seccomp;
+    if (!support.filesystem_write) support.missing.push_back("Landlock ABI 3 write and truncate controls");
+    if (!support.filesystem_read) support.missing.push_back("Landlock read controls");
+    if (!support.protected_subpaths)
+        support.missing.push_back("nested protected paths inside a writable workspace");
+    if (!support.seccomp) support.missing.push_back("seccomp syscall filtering");
     return support;
+}
+
+bool Support::read_only_ready() const {
+    return filesystem_read && filesystem_write && private_tmp && network_block &&
+           local_socket_block && process_control_block;
+}
+
+bool Support::workspace_ready() const {
+    return read_only_ready() && protected_subpaths;
 }
 
 namespace detail {

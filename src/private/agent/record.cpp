@@ -135,6 +135,13 @@ void Recorder::assistant(std::int64_t n, const Reply& reply) {
     append("assistant", std::move(payload));
 }
 
+void Recorder::tool_started(const ToolStarted& event) {
+    json payload = to_json(Event{event});
+    payload.erase("type");
+    payload["schema"] = 1;
+    append("tool_started", std::move(payload));
+}
+
 void Recorder::tool(std::int64_t n, const ToolCall& call, std::string_view summary,
                     const tools::Result& result) {
     append("tool", json{{"n", n},
@@ -147,11 +154,33 @@ void Recorder::tool(std::int64_t n, const ToolCall& call, std::string_view summa
                         {"view", tools::to_json(result.display)}});
 }
 
-void Recorder::permission(std::string_view call_id, const Decision& decision, std::string_view rule) {
-    append("permission", json{{"call_id", call_id},
+void Recorder::permission(const Approval& approval, const Decision& decision) {
+    json requests = json::array();
+    for (const auto& request : approval.requests) {
+        const char* kind = "dynamic_command";
+        switch (request.kind) {
+        case Approval::Request::Kind::dynamic_command: break;
+        case Approval::Request::Kind::read_path: kind = "read_path"; break;
+        case Approval::Request::Kind::write_path: kind = "write_path"; break;
+        case Approval::Request::Kind::network: kind = "network"; break;
+        case Approval::Request::Kind::sensitive_read: kind = "sensitive_read"; break;
+        case Approval::Request::Kind::protected_write: kind = "protected_write"; break;
+        }
+        requests.push_back({{"kind", kind}, {"target", request.target}, {"reason", request.reason}});
+    }
+    append("permission", json{{"schema", 2},
+                              {"call_id", approval.call_id},
                               {"answer", answer_name(decision.answer)},
-                              {"rule", rule},
-                              {"network", decision.network}});
+                              {"rule", approval.session_rule},
+                              {"network", decision.network},
+                              {"cwd", approval.cwd},
+                              {"mode", approval.mode},
+                              {"partially_executed", approval.partially_executed},
+                              {"requests", std::move(requests)}});
+}
+
+void Recorder::permission_revoked(std::string_view id) {
+    append("permission_revoked", json{{"schema", 1}, {"id", id}});
 }
 
 void Recorder::turn_end(TurnStatus status, std::string_view error, int steps, int tool_calls,
@@ -258,6 +287,53 @@ Restored replay_into(const session::Options& options, std::string_view id, const
             ++next_ordinal;
             return;
         }
+        if (type == "tool_started") {
+            if (integer_field(type, payload, "schema") != 1) corrupt(type, "unknown schema");
+            tools::Grant grant;
+            const std::string sandbox = string_field(type, payload, "sandbox");
+            if (sandbox == "read_only") grant.sandbox = exec::Mode::read_only;
+            else if (sandbox == "workspace_write") grant.sandbox = exec::Mode::workspace_write;
+            else if (sandbox == "full_access") grant.sandbox = exec::Mode::full_access;
+            else corrupt(type, "unknown sandbox profile");
+            grant.backend = string_field(type, payload, "backend");
+            const std::string source = string_field(type, payload, "grant_source");
+            if (source == "mode") grant.source = tools::Grant::Source::mode;
+            else if (source == "once") grant.source = tools::Grant::Source::once;
+            else if (source == "session") grant.source = tools::Grant::Source::session;
+            else if (source == "unrestricted") grant.source = tools::Grant::Source::unrestricted;
+            else corrupt(type, "unknown grant source");
+            grant.analysis_version = static_cast<int>(integer_field(type, payload, "analysis_version"));
+            grant.allow_network = bool_field(type, payload, "network");
+            grant.allow_local_sockets = bool_field(type, payload, "local_sockets");
+            grant.private_tmp = bool_field(type, payload, "private_tmp");
+            grant.protect_sensitive_names = payload.value("protect_sensitive_names", false);
+            const auto paths = [&](const char* key) {
+                const auto found = payload.find(key);
+                if (found == payload.end() || !found->is_array())
+                    corrupt(type, std::format("field {} must be an array", key));
+                std::vector<std::filesystem::path> result;
+                for (const auto& value : *found) {
+                    if (!value.is_string()) corrupt(type, std::format("field {} entries must be strings", key));
+                    result.emplace_back(value.get<std::string>());
+                }
+                return result;
+            };
+            grant.readable = paths("readable");
+            grant.writable = paths("writable");
+            grant.protected_read = paths("protected_read");
+            grant.protected_write = paths("protected_write");
+            const auto targets = payload.find("network_targets");
+            if (targets == payload.end() || !targets->is_array())
+                corrupt(type, "field network_targets must be an array");
+            for (const auto& value : *targets) {
+                if (!value.is_string()) corrupt(type, "network_targets entries must be strings");
+                grant.network_targets.push_back(value.get<std::string>());
+            }
+            sink(ToolStarted{string_field(type, payload, "id"),
+                             string_field(type, payload, "name"),
+                             string_field(type, payload, "summary"), std::move(grant)});
+            return;
+        }
         if (type == "tool") {
             const std::int64_t n = integer_field(type, payload, "n");
             if (n != next_ordinal) corrupt(type, std::format("expected message ordinal {}, got {}", next_ordinal, n));
@@ -321,6 +397,11 @@ Restored replay_into(const session::Options& options, std::string_view id, const
             (void)string_field(type, payload, "answer");
             (void)string_field(type, payload, "rule");
             (void)bool_field(type, payload, "network");
+            return;
+        }
+        if (type == "permission_revoked") {
+            if (integer_field(type, payload, "schema") != 1) corrupt(type, "unknown schema");
+            (void)string_field(type, payload, "id");
             return;
         }
         if (type == "turn_end") {

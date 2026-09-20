@@ -29,6 +29,22 @@ const char* sandbox_name(exec::Mode mode) {
     return "unknown";
 }
 
+const char* grant_source_name(tools::Grant::Source source) {
+    switch (source) {
+    case tools::Grant::Source::mode: return "mode";
+    case tools::Grant::Source::once: return "once";
+    case tools::Grant::Source::session: return "session";
+    case tools::Grant::Source::unrestricted: return "unrestricted";
+    }
+    return "mode";
+}
+
+json paths_json(const std::vector<std::filesystem::path>& paths) {
+    json result = json::array();
+    for (const auto& path : paths) result.push_back(path.string());
+    return result;
+}
+
 const char* level_name(Notice::Level level) {
     switch (level) {
     case Notice::Level::info: return "info";
@@ -69,7 +85,18 @@ json to_json(const Event& event) {
                             {"name", e.name},
                             {"summary", e.summary},
                             {"sandbox", sandbox_name(e.grant.sandbox)},
-                            {"network", e.grant.allow_network}};
+                            {"backend", e.grant.backend},
+                            {"grant_source", grant_source_name(e.grant.source)},
+                            {"analysis_version", e.grant.analysis_version},
+                            {"network", e.grant.allow_network},
+                            {"local_sockets", e.grant.allow_local_sockets},
+                            {"private_tmp", e.grant.private_tmp},
+                            {"protect_sensitive_names", e.grant.protect_sensitive_names},
+                            {"readable", paths_json(e.grant.readable)},
+                            {"writable", paths_json(e.grant.writable)},
+                            {"protected_read", paths_json(e.grant.protected_read)},
+                            {"protected_write", paths_json(e.grant.protected_write)},
+                            {"network_targets", e.grant.network_targets}};
             },
             [](const ToolOutput& e) {
                 // chunk 是原始字节，先过一遍 UTF-8 再进 JSON（docs/design/agent.md §2）。

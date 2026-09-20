@@ -148,19 +148,18 @@ tools::Result result = (*prepared)->run(grant, on_output, stop);
   `LC_ALL=C.UTF-8`（报错文本不随系统 locale 变化，同时 `ls` 不会把中文文件名转义成八进制）。
 - **每次调用都是新进程**：`cd`、`export` 不保留。说明里告诉模型需要换目录就写 `cd dir && …`；后台常驻进程
   （`server &`）会在主进程退出后被清理，说明里写明不支持。
-- **沙箱**：`Grant::sandbox` 不是 `full_access` 时调 `exec::prepare`，`writable = {root, /tmp}`；准备失败时
-  命令不执行，返回 `is_error`。
-- **Intent**：`exec::analyze` 后填 `known_readonly`。只读判断只是给核心的依据，核心自动放行只读命令时仍然
-  应该给 `read_only` 沙箱（见 [exec 设计文档](exec.md)）。
+- **沙箱**：`Grant::sandbox` 不是 `full_access` 时把其明确读写范围、受保护路径、通信开关与私有临时空间要求
+  原样交给 `exec::prepare`；准备失败时命令不执行，返回 `is_error`，没有 full_access 回退。
+- **Intent**：prepare 只调用一次 `exec::analyze`，把完整 `Analysis` 与 `known_readonly` 一起保存；策略、审批和
+  执行复用该结果。语法错误在 prepare 返回带字节位置的未执行错误。
 - **给模型的文本**：`strip_ansi` → `to_valid_utf8` → `truncate_middle`，正文预算是 `max_result_bytes` 减去
   512 字节的余量，**截断之后**再追加状态行，保证状态行不会被切掉、整体仍在预算内：
   - 退出码非 0 时 `[退出码 N]`，超时 `[超时，已在 Ns 后终止]`，信号 `[被信号 N 终止]`，取消 `[已被用户中断]`，
     启动失败或执行层失败 `[无法执行命令：…]` / `[执行失败：…]`；没有输出时写 `（无输出）`；退出码 0 不写状态行。
-  - 在沙箱里**失败**、且输出里有 `Permission denied`、`Read-only file system`、`Operation not permitted`、
-    `Could not resolve host` 这类字样时，再追加一行沙箱提示，让模型换个做法或向用户说明，而不是反复重试。
+  - 普通非零退出只按退出码/信号/超时报告；不会仅凭 stderr 关键词声称是沙箱拒绝或自动请求扩权。
 - `is_error`：退出码非 0、被信号终止、超时、无法执行。
 - `on_output` 把原始输出块交给核心，核心 `post` 给界面。
-- display：`BashView`；`output` 是 exec 按 `process.max_output_bytes` 截断后的输出，不是给模型的那份，
+- display：`BashView` 额外保存实际 backend、grant source 与 analysis version；`output` 是 exec 按 `process.max_output_bytes` 截断后的输出，不是给模型的那份，
   存进会话时直接进入 SQLite payload BLOB。
 
 ### ask / exit_plan
@@ -224,7 +223,7 @@ tools::Result result = (*prepared)->run(grant, on_output, stop);
 | --- | --- |
 | `ReadView` | `path`、`start_line`、`end_line`、`total_lines`、`truncated`、`directory` |
 | `FileChangeView` | `path`、`diff`（unified diff 文本）、`added`、`removed`、`created`；edit 和 write 共用 |
-| `BashView` | `command`、`output`、`exit_code`、`signal`、`timed_out`、`interrupted`、`sandbox`（`read_only` / `workspace_write` / `full_access`）、`allow_network`、`elapsed_ms` |
+| `BashView` | `command`、`output`、退出状态、实际 backend/profile、grant source、analysis version、读写/保护范围、敏感名称规则、network/local sockets/private tmp、`elapsed_ms` |
 | `GrepView` | `pattern`、`lines`（`GrepLine`：`path`、`text`、`line`、`spans`、`is_context`）、`truncated` |
 | `GlobView` | `pattern`、`files`、`truncated` |
 | `McpView` | `server`、`tool`、`content`、`structured`、`disconnected` |

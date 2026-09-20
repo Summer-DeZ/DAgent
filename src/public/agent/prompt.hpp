@@ -7,6 +7,7 @@
 #include <filesystem>
 #include <string>
 #include <string_view>
+#include <vector>
 
 #include "workspace/context.hpp"
 
@@ -17,6 +18,9 @@ struct PromptVars {
     std::string model;
     std::filesystem::path project_root;
     bool sandbox = false;             ///< exec::probe() 结果：沙箱可用
+    bool workspace_sandbox = false;
+    std::string sandbox_backend;
+    std::vector<std::string> sandbox_missing;
     std::string permission_mode;      ///< "ask" / "workspace" / "unrestricted"
 };
 

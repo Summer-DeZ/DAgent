@@ -409,7 +409,18 @@ void Runtime::start_handshake() {
 
 // 消费窗口期内的握手应答；DA1 到达即提交。
 bool Runtime::handle_handshake_reply(const Event& e) {
-    if (!handshake_active_ || e.kind != Event::Kind::reply) return false;
+    if (e.kind != Event::Kind::reply) return false;
+    if (!handshake_active_) {
+        if (e.reply_type == Event::ReplyType::osc) {
+            if (Color bg; parse_osc11_background(e.text, bg)) {
+                auto caps = term_.caps();
+                caps.background = bg;
+                term_.apply_caps(caps);
+                report_caps();
+            }
+        }
+        return true;
+    }
     if (e.reply_type == Event::ReplyType::csi) {
         if (e.text.ends_with('c')) {
             finish_handshake(true); // DA1 哨兵

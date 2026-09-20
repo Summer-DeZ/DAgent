@@ -1,6 +1,8 @@
 #include "tui/surface.hpp"
 
 #include <charconv>
+#include <algorithm>
+#include <cstdlib>
 
 namespace dagent::tui {
 
@@ -23,14 +25,21 @@ void append_cup(std::string& out, int row1, int col1) {
 
 /// @brief 无 truecolor 时把 RGB 量化到 xterm 256 色。
 int quantize256(const Color& c) noexcept {
-    if (c.r == c.g && c.g == c.b) {
-        const int v = (c.r * 24) / 256;
-        return 232 + (v > 23 ? 23 : v);
-    }
-    const int r = (c.r * 5 + 127) / 255;
-    const int g = (c.g * 5 + 127) / 255;
-    const int b = (c.b * 5 + 127) / 255;
-    return 16 + 36 * r + 6 * g + b;
+    // xterm 色立方并非均匀分布；近灰色也必须与灰阶比较，避免暗底被抬亮。
+    constexpr int levels[] = {0, 95, 135, 175, 215, 255};
+    const auto nearest = [&](int value) {
+        int best = 0;
+        for (int i = 1; i < 6; ++i)
+            if (std::abs(value - levels[i]) < std::abs(value - levels[best])) best = i;
+        return best;
+    };
+    const auto square = [](int value) { return value * value; };
+    const int r = nearest(c.r), g = nearest(c.g), b = nearest(c.b);
+    const int cube_error = square(c.r - levels[r]) + square(c.g - levels[g]) + square(c.b - levels[b]);
+    const int gray = std::clamp((static_cast<int>(c.r) + c.g + c.b - 24 + 15) / 30, 0, 23);
+    const int value = 8 + 10 * gray;
+    const int gray_error = square(c.r - value) + square(c.g - value) + square(c.b - value);
+    return gray_error < cube_error ? 232 + gray : 16 + 36 * r + 6 * g + b;
 }
 
 void append_color(std::string& out, const Color& c, bool foreground,

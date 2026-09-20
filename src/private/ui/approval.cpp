@@ -118,8 +118,17 @@ void ApprovalDialog::open(const agent::Approval& approval,
     case tools::Intent::Kind::ask:
     case tools::Intent::Kind::exit_plan: break;
     }
-    panel_->preview->document().append_block(tui::BlockKind::text, approval.intent.summary +
-        (approval.session_rule.empty() ? "" : "\n[a] " + approval.session_rule));
+    std::string scope = approval.intent.summary;
+    if (!approval.cwd.empty()) scope += "\ncwd: " + approval.cwd;
+    if (!approval.mode.empty()) scope += "\nmode: " + approval.mode;
+    for (const auto& request : approval.requests) {
+        scope += "\n- " + request.reason;
+        if (!request.target.empty() && request.target != approval.intent.command)
+            scope += ": " + request.target;
+    }
+    if (approval.partially_executed) scope += "\nWarning: part of this call has already executed.";
+    if (!approval.session_rule.empty()) scope += "\n[a] " + approval.session_rule;
+    panel_->preview->document().append_block(tui::BlockKind::text, std::move(scope));
     panel_->preview->document().append_block(kind, preview);
     overlay_ = rt_.open_overlay(std::move(panel), tui::Placement::center, {}, this, panel_->feedback);
 }

@@ -31,7 +31,12 @@ struct BashView {
     std::optional<int> exit_code, signal;
     bool timed_out = false, interrupted = false;
     std::string sandbox; ///< "read_only" / "workspace_write" / "full_access"
+    std::string backend, grant_source;
+    int analysis_version = 0;
     bool allow_network = false; ///< 回放时保留实际的联网授权
+    bool allow_local_sockets = false, private_tmp = false;
+    bool protect_sensitive_names = false;
+    std::vector<std::string> readable, writable, protected_read, protected_write, network_targets;
     std::int64_t elapsed_ms = 0;
 };
 

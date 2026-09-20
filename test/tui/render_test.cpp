@@ -277,7 +277,7 @@ BOOST_AUTO_TEST_CASE(frame_diff_rewrites_only_changed_cells) {
     Surface blank(cols, rows);
     render_frame(out, front, blank, {false, false, std::nullopt, true});
     BOOST_TEST(out.find("\x1b[38;2;") == std::string::npos);
-    BOOST_TEST(out.find("\x1b[38;5;173m") != std::string::npos);
+    BOOST_TEST(out.find("\x1b[38;5;167m") != std::string::npos);
 }
 
 // 字素切分与 Unicode 官方测试一致（按清单排除 GB9b/GB9c），宽度符合终端显示。

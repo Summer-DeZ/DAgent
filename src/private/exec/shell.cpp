@@ -78,18 +78,48 @@ public:
     explicit Analyzer(std::string_view source) : source_(source) {}
 
     void analyze(Node root) {
-        if (ts_node_has_error(root)) opaque_ = true;
+        if (ts_node_has_error(root)) find_syntax_error(root);
         visit(root);
     }
 
-    void mark_opaque() { opaque_ = true; }
+    void mark_incomplete(std::string message) {
+        syntax_ = SyntaxStatus::incomplete;
+        syntax_message_ = std::move(message);
+    }
 
-    Analysis take() { return {std::move(commands_), opaque_}; }
+    Analysis take() {
+        Analysis result;
+        result.source = std::string(source_);
+        result.syntax = syntax_;
+        result.syntax_range = syntax_range_;
+        result.syntax_message = std::move(syntax_message_);
+        result.commands = std::move(commands_);
+        result.impacts = std::move(impacts_);
+        result.dynamic = dynamic_;
+        result.cwd_unknown = cwd_unknown_;
+        return result;
+    }
 
 private:
+    SourceRange range_of(Node node) const {
+        return {ts_node_start_byte(node), ts_node_end_byte(node)};
+    }
+
     std::string_view text_of(Node node) const {
         const std::uint32_t begin = ts_node_start_byte(node);
         return source_.substr(begin, ts_node_end_byte(node) - begin);
+    }
+
+    void find_syntax_error(Node node) {
+        const std::string_view type = ts_node_type(node);
+        if (type == "ERROR" || ts_node_is_missing(node)) {
+            const SourceRange found = range_of(node);
+            if (!syntax_range_ || found.begin < syntax_range_->begin) syntax_range_ = found;
+            syntax_ = SyntaxStatus::error;
+            syntax_message_ = ts_node_is_missing(node) ? "incomplete bash syntax" : "invalid bash syntax";
+        }
+        const std::uint32_t count = ts_node_child_count(node);
+        for (std::uint32_t i = 0; i < count; ++i) find_syntax_error(ts_node_child(node, i));
     }
 
     // 双引号串里只要出现 string_content 之外的命名子节点，就含有动态展开。
@@ -136,6 +166,55 @@ private:
         return std::nullopt;
     }
 
+    bool discards_output(Node node) const {
+        bool output = false;
+        unsigned destinations = 0;
+        const std::uint32_t count = ts_node_child_count(node);
+        for (std::uint32_t i = 0; i < count; ++i) {
+            const Node child = ts_node_child(node, i);
+            const std::string_view type = ts_node_type(child);
+            if (type == "file_descriptor") continue;
+            if (!ts_node_is_named(child)) {
+                if (type != ">" && type != ">>" && type != ">|" && type != "&>" && type != "&>>") return false;
+                output = true;
+                continue;
+            }
+            const auto destination = literal(child);
+            if (!destination || *destination != "/dev/null" || ++destinations != 1) return false;
+        }
+        return output && destinations == 1;
+    }
+
+    void record_redirect(Node node) {
+        bool input = false, output = false;
+        bool descriptor_only = false;
+        std::optional<std::string> target;
+        const std::uint32_t count = ts_node_child_count(node);
+        for (std::uint32_t i = 0; i < count; ++i) {
+            const Node child = ts_node_child(node, i);
+            const std::string_view type = ts_node_type(child);
+            if (!ts_node_is_named(child)) {
+                descriptor_only = descriptor_only || type == ">&" || type == "<&";
+                input = input || type == "<" || type == "<>";
+                output = output || type == ">" || type == ">>" || type == ">|" ||
+                                    type == "&>" || type == "&>>" || type == "<>";
+                continue;
+            }
+            if (type != "file_descriptor") target = literal(child);
+        }
+        if (descriptor_only) {
+            impacts_.push_back({ImpactKind::special, {}, "file descriptor duplication or close",
+                                range_of(node), false});
+            return;
+        }
+        if (input) impacts_.push_back({ImpactKind::read, target.value_or(""), "input redirection",
+                                      range_of(node), !target.has_value()});
+        if (output && (!target || *target != "/dev/null"))
+            impacts_.push_back({ImpactKind::write, target.value_or(""), "output redirection",
+                                range_of(node), !target.has_value()});
+        if (!target) dynamic_ = true;
+    }
+
     void visit_children(Node node) {
         const std::uint32_t count = ts_node_named_child_count(node);
         for (std::uint32_t i = 0; i < count; ++i) visit(ts_node_named_child(node, i));
@@ -154,7 +233,7 @@ private:
 
         if (type == "string") {
             if (string_is_dynamic(node)) {
-                opaque_ = true;
+                dynamic_ = true;
                 visit_children(node);
             }
             return;
@@ -165,9 +244,16 @@ private:
             return;
         }
 
+        if (type == "file_redirect") {
+            // /dev/null 不形成持久写影响；目标动态与其它文件重定向单独记录。
+            if (!discards_output(node)) record_redirect(node);
+            visit_children(node);
+            return;
+        }
+
         // 纯结构节点：只继续往下收集。
         if (type == "program" || type == "list" || type == "pipeline" || type == "negated_command" ||
-            type == "concatenation" ||
+            type == "concatenation" || type == "redirected_statement" ||
             type == "do_group" || type == "elif_clause" || type == "else_clause" || type == "condition" ||
             type == "consequence" || type == "body" || type == "case_item" || type == "last_case_item") {
             visit_children(node);
@@ -176,12 +262,17 @@ private:
 
         // 变量赋值（LD_PRELOAD=x cat、PATH=/tmp; ls 都能让「只读」命令执行任意代码）、展开、控制流、
         // heredoc 重定向和未知识别：无法静态判断，按不透明处理并继续收集嵌套命令。
-        opaque_ = true;
+        dynamic_ = true;
+        if (type == "subshell" || type == "compound_statement" || type == "for_statement" ||
+            type == "while_statement" || type == "if_statement" || type == "case_statement" ||
+            type == "function_definition") cwd_unknown_ = true;
         visit_children(node);
     }
 
     void extract(Node command) {
         SimpleCommand simple;
+        simple.source = std::string(text_of(command));
+        simple.range = range_of(command);
         bool name_resolved = false;
         const std::uint32_t count = ts_node_named_child_count(command);
         for (std::uint32_t i = 0; i < count; ++i) {
@@ -194,14 +285,22 @@ private:
                     simple.argv.push_back(std::move(*value));
                     name_resolved = true;
                 } else {
-                    opaque_ = true;
+                    dynamic_ = true;
+                    simple.arguments_dynamic = true;
                     visit(child);
                 }
                 continue;
             }
-            if (type == "file_redirect" || type == "heredoc_redirect" || type == "herestring_redirect") {
+            if (type == "file_redirect") {
+                visit(child);
+                continue;
+            }
+            if (type == "heredoc_redirect" || type == "herestring_redirect") {
                 // 写文件的重定向、heredoc 正文里的展开都无法静态判断；正文是数据，不再深入。
-                opaque_ = true;
+                dynamic_ = true;
+                simple.arguments_dynamic = true;
+                impacts_.push_back({ImpactKind::special, {}, "here document or here string",
+                                    range_of(child), true});
                 continue;
             }
             if (type == "file_descriptor") continue;
@@ -210,7 +309,8 @@ private:
                 continue;
             }
             if (type == "subshell" || type == "compound_statement") {
-                opaque_ = true;
+                dynamic_ = true;
+                simple.arguments_dynamic = true;
                 visit(child);
                 continue;
             }
@@ -220,16 +320,31 @@ private:
                 simple.argv.push_back(std::move(*value));
                 continue;
             }
-            opaque_ = true;
+            dynamic_ = true;
+            simple.arguments_dynamic = true;
             visit(child);
         }
         // 命令名自己就是动态展开时，argv 不可信，不放进 commands。
-        if (name_resolved) commands_.push_back(std::move(simple));
+        if (name_resolved) {
+            if (!simple.argv.empty()) {
+                const std::string& name = simple.argv.front();
+                if (name == "cd" && (simple.argv.size() != 2 || simple.arguments_dynamic)) cwd_unknown_ = true;
+                if (name == "eval" || name == "source" || name == "." || name == "bash" ||
+                    name == "sh" || name == "python" || name == "python3" || name.find('/') != std::string::npos)
+                    dynamic_ = true;
+            }
+            commands_.push_back(std::move(simple));
+        }
     }
 
     std::string_view source_;
     std::vector<SimpleCommand> commands_;
-    bool opaque_ = false;
+    std::vector<Impact> impacts_;
+    SyntaxStatus syntax_ = SyntaxStatus::valid;
+    std::optional<SourceRange> syntax_range_;
+    std::string syntax_message_;
+    bool dynamic_ = false;
+    bool cwd_unknown_ = false;
 };
 
 bool find_is_readonly(const std::vector<std::string>& argv) {
@@ -366,7 +481,9 @@ Analysis analyze(std::string_view bash_source) {
     if (!ts_parser_set_language(parser, tree_sitter_bash())) {
         ts_parser_delete(parser);
         Analysis analysis;
-        analysis.has_opaque = true;
+        analysis.source = std::string(bash_source);
+        analysis.syntax = SyntaxStatus::incomplete;
+        analysis.syntax_message = "tree-sitter-bash language is unavailable";
         return analysis;
     }
 
@@ -374,17 +491,25 @@ Analysis analyze(std::string_view bash_source) {
         ts_parser_parse_string(parser, nullptr, bash_source.data(), static_cast<std::uint32_t>(bash_source.size()));
     Analyzer analyzer(bash_source);
     if (tree == nullptr) {
-        analyzer.mark_opaque();
+        analyzer.mark_incomplete("tree-sitter-bash could not produce a syntax tree");
     } else {
         analyzer.analyze(ts_tree_root_node(tree));
         ts_tree_delete(tree);
     }
     ts_parser_delete(parser);
-    return analyzer.take();
+    Analysis analysis = analyzer.take();
+    for (const auto& command : analysis.commands) {
+        if (!command.argv.empty() && command.argv.front() != "cd" && !is_readonly_command(command.argv))
+            analysis.dynamic = true;
+    }
+    return analysis;
 }
 
 bool is_known_readonly(const Analysis& analysis) {
-    if (analysis.has_opaque || analysis.commands.empty()) return false;
+    if (analysis.syntax != SyntaxStatus::valid || analysis.dynamic || analysis.commands.empty()) return false;
+    if (std::ranges::any_of(analysis.impacts, [](const Impact& impact) {
+            return impact.kind == ImpactKind::write || impact.kind == ImpactKind::network || impact.dynamic;
+        })) return false;
     for (const auto& command : analysis.commands) {
         if (!is_readonly_command(command.argv)) return false;
     }
@@ -392,7 +517,10 @@ bool is_known_readonly(const Analysis& analysis) {
 }
 
 bool is_known_readonly(const Analysis& analysis, const std::filesystem::path& workspace_root) {
-    if (analysis.has_opaque || analysis.commands.empty()) return false;
+    if (analysis.syntax != SyntaxStatus::valid || analysis.dynamic || analysis.commands.empty()) return false;
+    if (std::ranges::any_of(analysis.impacts, [](const Impact& impact) {
+            return impact.kind == ImpactKind::write || impact.kind == ImpactKind::network || impact.dynamic;
+        })) return false;
     for (const auto& command : analysis.commands) {
         if (!command.argv.empty() && command.argv.front() == "cd") {
             if (!cd_inside_workspace(command.argv, workspace_root)) return false;
@@ -403,8 +531,8 @@ bool is_known_readonly(const Analysis& analysis, const std::filesystem::path& wo
     return true;
 }
 
-bool is_dangerous(std::string_view source) {
-    const Analysis analysis = analyze(source);
+bool is_dangerous(const Analysis& analysis) {
+    const std::string_view source = analysis.source;
     const auto basename = [](std::string_view value) {
         const auto slash = value.rfind('/');
         return slash == std::string_view::npos ? value : value.substr(slash + 1);

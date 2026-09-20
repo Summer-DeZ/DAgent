@@ -63,12 +63,14 @@ constexpr std::pair<std::string_view, std::string_view> kDefaultEnv[] = {
 
 std::vector<std::string> make_environment(const Command& cmd, const Options& opt) {
     std::vector<std::string> env;
-    for (char** entry = ::environ; entry != nullptr && *entry != nullptr; ++entry) {
-        const std::string_view view(*entry);
-        const auto equals = view.find('=');
-        if (equals == std::string_view::npos || equals == 0) continue;
-        if (is_denied(view.substr(0, equals), opt.env_deny)) continue;
-        env.emplace_back(view);
+    if (cmd.inherit_env) {
+        for (char** entry = ::environ; entry != nullptr && *entry != nullptr; ++entry) {
+            const std::string_view view(*entry);
+            const auto equals = view.find('=');
+            if (equals == std::string_view::npos || equals == 0) continue;
+            if (is_denied(view.substr(0, equals), opt.env_deny)) continue;
+            env.emplace_back(view);
+        }
     }
 
     for (const auto& [name, value] : kDefaultEnv) set_entry(env, name, value);

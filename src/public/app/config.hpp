@@ -33,6 +33,7 @@ struct Config {
     std::filesystem::path compact_prompt_file;
     net::HttpOptions http;
     exec::Options process;
+    exec::SandboxOptions sandbox;
     workspace::FileOptions files;
     workspace::SearchOptions search;
     session::Options session;
