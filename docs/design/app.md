@@ -10,7 +10,8 @@
 | 命令行解析 | `app/cli.hpp` | `parse_args` |
 
 程序入口（可执行目标 `dagent` 的 `main`）属于核心，在 `src/private/agent/main.cpp`：拿到 `Args` 和 `Config` 之后
-组装 agent 与各模块，遵守第 5 节列出的约定；装配方式见 [next-to-do/11-entry.md](../next-to-do/11-entry.md)。
+组装 agent 与各模块，遵守第 5 节列出的约定；装配、信号和输出方式见 [agent §12](agent.md#12-配置装配与非交互入口)，
+全屏前端见 [ui](ui.md)。
 
 ---
 
@@ -56,7 +57,7 @@
 - 合并用 `json::merge_patch`（RFC 7386）：对象递归合并，数组整体替换，`null` 删除这个键。
 - 允许 `//` 注释。
 - **相对路径相对于它所在的配置文件**（`gateway.system_prompt_file`、`session.directory`、`log.file`、
-  `search.rg_path`），在合并之前就解析成绝对路径；`--set` 里的相对路径相对 cwd。`search.rg_path` 不含 `/`
+  `search.rg_path`、`ui.theme_file`），在合并之前就解析成绝对路径；`--set` 里的相对路径相对 cwd。`search.rg_path` 不含 `/`
   时是命令名（在 PATH 里找），不做解析。
 - **未知键只警告**（日志里「未知配置项 gateway.modle」），不报错。
 - **类型错误**抛 `ConfigError{type}`，信息里带 JSON 指针，比如 `/http/timeout_seconds 应为整数`。
@@ -89,7 +90,7 @@
 
 - 信任以**项目根**为单位，按规范化路径精确匹配，不继承到子目录或父目录。
 - 未受信任时这两个文件都不读，记一条 warn，并列在 `Config::untrusted_files` 里。入口看到它非空时，
-  交互模式应当询问用户是否信任，确认后调用 `trust_project(config.project_root)` 并重新 `load_config`；
+  交互模式在进入全屏前询问用户是否信任，确认后调用 `trust_project(config.project_root)` 并重新 `load_config`；
   `run` 模式只警告，按未受信任继续。
 - 授予信任的两条路：交互模式下的询问，以及 `dagent trust [目录]` 子命令（给 run/CI 场景用）。
 - 信任列表损坏时按空处理（记 warn）：宁可多问一次，也不能因为文件坏了就当成全都信任。

@@ -187,7 +187,7 @@ target_link_libraries(dagent_agent
     PUBLIC dagent_base dagent_net dagent_exec dagent_workspace dagent_session dagent_mcp tools
 )
 
-# 可执行文件：只编 main.cpp，其余代码都在库里（README §2）。
+# 可执行文件：只编 main.cpp，其余代码都在库里（docs/design/agent.md §1）。
 add_executable(dagent private/agent/main.cpp)
 
 target_compile_features(dagent PRIVATE cxx_std_23)

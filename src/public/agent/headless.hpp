@@ -19,7 +19,7 @@ struct HeadlessOptions {
     bool continue_last = false;
 };
 
-/// @brief 进程级的中断状态（11-entry §4.4）。本轮运行中（graceful 为 true）第一次 SIGINT/SIGTERM 只
+/// @brief 进程级的中断状态（docs/design/agent.md §12）。本轮运行中（graceful 为 true）第一次 SIGINT/SIGTERM 只
 /// request_stop，第二次 _Exit(130)；轮外（启动、读 stdin、收尾）收到信号直接 _Exit(130)。
 struct Interrupts {
     std::stop_source stop;

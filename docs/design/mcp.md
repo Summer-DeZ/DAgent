@@ -35,9 +35,9 @@ mcp::CallResult r = client->call("mcp__fs__read_text_file", {{"path", "a.txt"}},
   安全的，互不排队。
 - 一个 Client 对应一个 server；**一个 server 起不来不影响其他 Client**，由核心决定是否提示用户。
 
-Agent 已通过 `agent::McpHub` 接入这些接口：后台连接每个 server，只在模型请求之间注册或刷新工具；工具结果标记
-disconnected 后自动重连一次，失败警告不影响其他服务。状态可在交互界面查看；核心生命周期细节见
-[McpHub](../next-to-do/10-mcp.md)。
+Agent 通过 `agent::McpHub` 后台连接每个 server，启动界面不等待，每一步模型请求前可取消地等待连接结果；
+只在请求之间注册或刷新工具。工具结果标记 disconnected 后自动重连一次，失败警告不影响其他服务。
+状态可在交互界面查看；核心生命周期见 [agent §11](agent.md#11-mcp-生命周期)。
 
 ---
 
@@ -155,7 +155,7 @@ server 重启后会对旧会话回 404。带会话的请求收到 404 时：同�
 - 只做 tools。resources、prompts、sampling、elicitation、MRTR（`input_required`）都不做；现代 spec 已经
   把 roots、sampling、logging 标为弃用。
 - 不实现 `subscriptions/listen`，所以**现代 server 的 `tools/list_changed` 收不到**，`on_tools_changed`
-  只对经典 server 有效。需要时由核心定期 `refresh_tools`。
+  只对经典 server 有效。当前 McpHub 依据通知刷新，没有周期性刷新现代 server 工具列表。
 - 不做 HTTP server 的 OAuth 授权流程：鉴权头由 `ServerConfig::headers` 直接给出。
 - 不支持已弃用的 HTTP+SSE 传输（2024-11-05）。
 - HTTP 连接不跨调用复用。

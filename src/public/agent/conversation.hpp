@@ -1,7 +1,7 @@
 /// @file conversation.hpp
 /// @brief 发给模型的消息历史：条目、协议不变式、组装 Request、压缩用的切点与替换。
 ///
-/// 纯内存数据结构：不做 I/O、不发事件、不落盘（09-record）。
+/// 纯内存数据结构：不做 I/O、不发事件、不落盘（docs/design/agent.md §10）。
 #pragma once
 
 #include <cstddef>
@@ -19,8 +19,8 @@ namespace dagent::agent {
 
 struct Entry {
     Message message;
-    std::int64_t ordinal = -1; ///< 会话记录里的序号（09-record）；压缩摘要是 -1
-    bool pruned = false;       ///< tool 消息的内容已被裁剪成占位（07-context）
+    std::int64_t ordinal = -1; ///< 会话记录里的序号（docs/design/agent.md §10）；压缩摘要是 -1
+    bool pruned = false;       ///< tool 消息的内容已被裁剪成占位（docs/design/agent.md §8）
     std::string summary;       ///< tool 消息：调度时的 Intent::summary，生成裁剪占位用
     std::size_t tokens = 0;    ///< estimate_tokens 的缓存，加入或修改时算一次
 };
@@ -68,13 +68,13 @@ public:
     /// @brief 检查 I1–I4；返回第一条违反的描述。debug 构建里 build 开头 assert 它为空。
     std::optional<std::string> validate() const;
 
-    // ---- 压缩（07-context）----
+    // ---- 压缩（docs/design/agent.md §8）----
     std::vector<std::size_t> safe_cuts() const; ///< 可以切开的下标，升序
     void prune(std::size_t tool_entry, std::string placeholder);
     void replace_prefix(std::size_t cut, std::string summary_message);
     void discard_prefix(std::size_t cut); ///< 保留已有摘要；调用方保证尾部满足 I4
 
-    // ---- 恢复（09-record）----
+    // ---- 恢复（docs/design/agent.md §10）----
     void restore(Entry entry); ///< 按记录原样放回，不重新分配 ordinal
     void set_next_ordinal(std::int64_t);
 

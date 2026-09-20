@@ -8,7 +8,7 @@
 中立 Request ──encode──► 厂商 JSON ──HttpClient──► SSE ──decode──► 中立 StreamEvent 序列
 ```
 
-不做：重试策略、上下文压缩、工具执行——这些都是核心里更上层的部分，用这里产出的中立事件做决策。
+不做：重试策略、上下文压缩、工具执行——这些由 [agent 运行时](agent.md) 使用这里产出的中立事件做决策。
 不引入厂商 SDK：C++ 没有官方 SDK，社区 SDK 会把消息模型绑死在它的类型上。
 
 ---
@@ -21,9 +21,8 @@
 | 中立流事件、错误分类、Codec 接口、token 估算 | `agent/llm.hpp` | `StreamEvent`、`Error`、`Codec`、`estimate_tokens`、`TokenEstimator` |
 | OpenAI Chat Completions 编解码器 | `agent/openai_chat.hpp` | `OpenAiChatOptions`、`make_openai_chat_codec` |
 
-厂商实现的优先级：**OpenAI Chat Completions**（本地网关、vLLM、Ollama、DeepSeek 等几乎都兼容这个协议）
-→ Anthropic Messages → OpenAI Responses。目前只写了第一个：本机没有可实测的 Anthropic/Responses 服务，
-不写没有真实验证过的代码；`Codec` 是纯虚接口，之后加实现不影响已有调用方。
+目前只有 **OpenAI Chat Completions** 编解码器，供本地 Qwen 等兼容服务使用。
+Anthropic Messages 和 OpenAI Responses 尚未实现；`Codec` 是纯虚接口，增加实现不影响中立消息类型。
 
 ---
 
@@ -145,20 +144,21 @@ std::unique_ptr<Codec> make_openai_chat_codec(OpenAiChatOptions);
 
 ---
 
-## 5. 在本地网关上的实测行为（127.0.0.1:10000，qwen3.6-35b-a3b，OpenAI 兼容）
+## 5. 本地模型接入
 
-- 冷启动大约 190 秒，期间只发送 `: keep-alive` 注释行（SSE 注释，`net::SseParser` 已经会跳过，不会被
-  当成事件）。
-- 思考内容放在非标准字段 `delta.reasoning_content` 里，和 DeepSeek 一致，用同一套 decode 逻辑处理。
-- **这个网关会丢掉请求里的 `tools` 字段**：带不带工具定义，`prompt_tokens` 都不变，也就没法在这个网关上
-  测原生工具调用（验收 3 用 DeepSeek 做的）。`extra_body` 选项就是为了给这一类网关专属参数（比如这个
-  网关的 `enable_thinking`）留一个出口，同时保证不覆盖 `Request` 已经生成的核心字段。
-- 请求不存在的模型时返回 404，body 是 `{"error":{"message","type","code"}}`，走 `classify` 的默认分支
-  （非 2xx 且不在可重试状态码里）。
+[开发配置](../../config/dagent.json) 使用 `http://127.0.0.1:10009/v1` 的 `Qwen3.8-Flash-Next`，无需 API key，
+使用原生工具调用与流式 usage。模型服务须另行启动；这些是开发配置，不是 Codec 内置的地址或模型限制。
+
+通过 `extra_body.chat_template_kwargs.enable_thinking=false` 关闭思考，`send_reasoning_content=false` 不回传历史思考。
+需要接收思考的网关使用 `delta.reasoning_content` 时，仍由现有 decoder 处理。
+llama-server 返回的 `exceeds the available context size` 会被分类为上下文超长，由 Agent 强制压缩后重发一次。
+
+Model 的总请求超时、空闲超时和重试策略见 [agent §3](agent.md#3-模型调用)。大上下文预填充时可能长时间没有响应字节，
+需按实际任务设置 `http.idle_timeout_seconds`，不能假设所有本地服务都会发送 keep-alive。
 
 ---
 
 ## 6. 依赖与构建
 
-- 只依赖 base（token 估算用不到任何三方库）和 net（`HttpRequest`/`HttpResponse`/`SseEvent`）。
-- 需要真实请求的检测用 DeepSeek；本地网关的实测行为见 §5。
+- 编解码部分只依赖 base 和 net；它与运行时共同构建为 `dagent_agent`，完整库的依赖见 [agent](agent.md)。
+- 真实请求使用本地 Qwen，临时检测放在 `temp/`，不增加模拟模型或测试构建目标。

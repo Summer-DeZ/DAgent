@@ -7,8 +7,8 @@ DAgent 是一个使用 C++23 和 CMake 构建的终端 Agent，仅支持 Linux�
 | 模块 | 位置 | 状态 |
 | --- | --- | --- |
 | TUI 框架 | `src/*/tui`，库 `dagent_tui` | 已完成并冻结（2026-09-18）：只修缺陷，不增删原语 |
-| 应用层界面 | `src/*/ui`，库 `dagent_ui` | 起步：JSON 主题加载（`ui::load_theme`），默认主题 `config/themes/dagent.json` |
-| Agent 运行时 | `src/*/agent`，库 `dagent_agent`，可执行 `dagent` | C1–C6 已完成：模型循环、调度与权限、会话恢复、交互界面、上下文管理、MCP 接入（后台连接、首次请求前等待、动态工具刷新、单次重连）。设计与验收见 next-to-do |
+| 应用层界面 | `src/*/ui`，库 `dagent_ui` | 已完成：全屏对话、流式 Markdown、工具 View、权限对话框、输入排队、斜杠命令、状态栏与 JSON 主题 |
+| Agent 运行时 | `src/*/agent`，库 `dagent_agent`，可执行 `dagent` | 已完成：模型循环、调度与权限、会话恢复、上下文管理、MCP 后台连接与请求前等待、动态工具刷新、单次重连 |
 | 基础库 | `src/*/base`，库 `dagent_base` | 已完成：日志、`.env` 密钥、文本工具、JSON 脱敏 |
 | 子进程与沙箱 | `src/*/exec`，库 `dagent_exec` | 已完成：命令执行与进程组清理、长期子进程、bash 只读分析、Landlock + seccomp 沙箱 |
 | 网络 | `src/*/net`，库 `dagent_net` | 已完成：libcurl 薄封装（整包/流式、stop_token 取消、超时分类）与 SSE 解析 |
@@ -24,12 +24,14 @@ DAgent 是一个使用 C++23 和 CMake 构建的终端 Agent，仅支持 Linux�
 本地服务预填充十几万 token 时可能几分钟不返回字节，超过 `http.idle_timeout_seconds`（120 秒）会按超时失败；
 做超长上下文实验时临时加 `--set http.idle_timeout_seconds=900`，不改默认配置。
 
-## 后续工作
+## 阅读顺序
 
-[next-to-do/](next-to-do/README.md)：Agent 核心的设计与执行计划。README 是总览（范围、分层、线程模型、统一约定），
-01–12 每篇讲一个部件（事件接口、模型调用、消息历史、一轮循环、工具调度、权限、上下文管理、提示词、会话记录与恢复、
-MCP、入口、交互界面），[plan.md](next-to-do/plan.md) 把里程碑 C0–C6 拆成任务并列出验收场景。七个外围模块和 tools
-层已全部完成，设计文档见下表。核心完成并审核通过后，改写成 `design/` 下的设计文档，并删除 next-to-do。
+先读 [agent：运行时与程序入口](design/agent.md) 了解依赖、线程、事件和一轮的数据流，再按关注点读
+[ui：应用层交互界面](design/ui.md)、[app：配置与命令行](design/app.md)、[tools：工具层](design/tools.md)。
+底层协议、存储、执行与终端原语分别由下表的模块文档说明。
+
+核心 C0–C6 已完成并审核通过，原执行计划与部件草案已整理为架构文档。当前能力及限制以 `design/` 和源码为准，
+不再保留已完成的任务拆分、临时验收脚本路径或开发期网关结论作为接入说明。
 
 ## 设计文档
 
@@ -38,11 +40,13 @@ MCP、入口、交互界面），[plan.md](next-to-do/plan.md) 把里程碑 C0�
 
 | 文档 | 内容 |
 | --- | --- |
+| [agent：运行时与程序入口](design/agent.md) | 分层与线程、Event / Approver、模型调用、历史不变式、循环与调度、权限、上下文与提示词、记录恢复、MCP 生命周期、run 输出与退出码 |
+| [ui：应用层交互界面](design/ui.md) | Shell 与任务队列、主题与布局、输入排队、事件渲染、工具 View、权限对话框、状态刷新、会话切换与退出 |
 | [base：日志与公共工具](design/base.md) | 日志接入与 `DAGENT_LOG`、`.env` 密钥与格式、文本工具与 JSON 脱敏的行为 |
 | [net：HTTP 客户端与 SSE 解析](design/net.md) | 整包与流式请求、三种超时、错误分类、即时取消、连接复用与线程约束、SSE 解析规则 |
 | [exec：子进程与沙箱](design/exec.md) | `run` 的行为与子进程运行环境、`Child`、只读判定白名单、沙箱模式与已知限制；exec 会让整个进程忽略 SIGPIPE |
 | [workspace：文件、搜索、diff、项目上下文](design/workspace.md) | 路径解析与原子写入、ripgrep 调用与 fzy 模糊匹配、unified diff 的 hunk 合并、git 信息与 AGENTS.md 收集、inja 模板渲染 |
-| [LLM 编解码：消息模型与厂商协议翻译](design/llm.md) | 中立消息模型与 StreamEvent、Codec 接口、OpenAI Chat Completions 的编解码规则、错误分类与重试、token 估算 |
+| [LLM 编解码：消息模型与厂商协议翻译](design/llm.md) | 中立消息模型与 StreamEvent、Codec 接口、OpenAI Chat Completions 的编解码规则、协议错误分类、token 估算 |
 | [session：会话存储](design/session.md) | 存储布局、Writer 的写入与恢复、崩溃后的截断与续写、list/replay 的边界、UUIDv7 |
 | [app：配置与命令行](design/app.md) | 工作区根与项目根、配置文件布局与分层合并、项目信任、密钥优先级、`.mcp.json` 规则、命令行与入口约定 |
 | [mcp：MCP 客户端](design/mcp.md) | 现代与经典协议的识别规则、stdio / Streamable HTTP 传输、请求头与 x-mcp-header、会话过期恢复、超时取消断连、错误分类与已知限制 |
@@ -82,12 +86,12 @@ AGENTS.md 不允许为测试加构建目标，真实功能检测都是放在 `te
 ```bash
 b=build/dev
 g++ -std=c++23 -Wall -Wextra -DSPDLOG_COMPILED_LIB -DSPDLOG_USE_STD_FORMAT \
-    -I src/public -I $b/_deps/spdlog-src/include check.cpp \
+    -I src/public -I $b/_deps/spdlog-src/include temp/check.cc \
     $b/src/libdagent_app.a $b/src/libdagent_agent.a $b/src/libtools.a $b/src/libdagent_session.a \
     $b/src/libdagent_mcp.a $b/src/libdagent_workspace.a $b/src/libdagent_net.a $b/src/libdagent_exec.a \
     $b/src/libdagent_base.a $b/_deps/spdlog-build/libspdlogd.a \
     $b/_deps/tree-sitter-build/libtree-sitter.a $b/libtree-sitter-bash.a \
-    -lcurl -lseccomp -pthread -o check
+    -lcurl -lseccomp -pthread -o temp/check
 ```
 
 ## 目录约定
@@ -95,8 +99,7 @@ g++ -std=c++23 -Wall -Wextra -DSPDLOG_COMPILED_LIB -DSPDLOG_USE_STD_FORMAT \
 ```
 docs/
 ├── README.md    本索引
-├── design/      设计文档：描述当前实现
-└── next-to-do/  待实现部分的设计与执行计划（完成后迁入 design/）
+└── design/      架构与模块设计：描述当前实现
 ```
 
 - 目录名不含空格，避免 Markdown 链接需要转义。

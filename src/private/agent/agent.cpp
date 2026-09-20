@@ -217,7 +217,7 @@ TurnStatus Agent::run_turn(std::string input, const Sink& sink, const Approver& 
         try {
             hub_.apply_pending(registry_, sink, stop);
             const RequestShape shape{system_prompt_, tool_defs(), setup_.model};
-            // 自动压缩在 StepStarted 之前（01-events §3）：界面在一步开始后作废的内容不含压缩提示。
+            // 自动压缩在 StepStarted 之前（docs/design/agent.md §2）：界面在一步开始后作废的内容不含压缩提示。
             compactor_.maybe_compact(conversation_, shape, model_, estimator_, recorder_, sink, stop);
             check_broken(sink);
             sink(StepStarted{steps});

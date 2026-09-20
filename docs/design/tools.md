@@ -14,6 +14,8 @@
 - 调度。哪些调用并行、调用上限、失败后是否继续，由核心决定。
 - 消息历史。结果怎样放进 `agent::Message`、要不要压缩，由核心决定。
 
+这些职责的实际接入见 [agent：运行时](agent.md)，View 的显示见 [ui](ui.md#5-event-到对话文档)。
+
 `tools/detail.hpp` 放的是各工具实现文件共用的代码（参数解析、路径解析、文本拼装、各工具的工厂函数），
 外部不要 include。
 
@@ -238,8 +240,7 @@ tools::Result result = (*prepared)->run(grant, on_output, stop);
 
 ## 6. 已知限制
 
-- 没有多处编辑（`edits` 数组）、后台 shell、web_fetch、todo、图片读取（编解码器还只支持文本）。等最小循环
-  跑通、看到真实的使用情况再加。
+- 没有多处编辑（`edits` 数组）、后台 shell、web_fetch、todo、图片读取（编解码器还只支持文本）。
 - edit 只做精确匹配，失败时给提示，不做模糊回退。
 - bash 每次都是新进程，不保留 cwd。以后如果要保留，要先考虑和并行执行的冲突。
 - write 新建文件时不检查 prepare 之后是否有别人抢先创建了同名文件。
@@ -252,4 +253,5 @@ tools::Result result = (*prepared)->run(grant, on_output, stop);
   `read_default_lines`（2000）、`read_max_line_bytes`（2000）、`grep_max_matches`（200）、`glob_max_files`（200）、
   `bash_max_timeout_ms`（600000）、`mcp_call_timeout_ms`（120000），由 app 映射。文件读写上限沿用 `files` 段：
   `max_read_bytes` 是 read 能翻页的最大文件（8 MiB），`max_write_bytes` 是写入上限（1 MiB）。
-- 需要模型的真实检测用 DeepSeek：本地 qwen 网关会丢掉 `tools` 字段，测不了工具调用。
+- 需要模型的真实功能检测使用当前开发配置的本地 Qwen3.8-Flash-Next，支持工具调用；接入方式见
+  [文档索引](../README.md)。临时检测材料只放在 `temp/`。

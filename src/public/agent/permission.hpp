@@ -1,7 +1,7 @@
 /// @file permission.hpp
 /// @brief 权限策略：按 Intent 判定允许 / 询问 / 拒绝，以及允许时给 bash 什么沙箱。
 ///
-/// 纯逻辑：不读文件、不弹对话框；需要询问时由调度器调 Approver（05-dispatch）。
+/// 纯逻辑：不读文件、不弹对话框；需要询问时由调度器调 Approver（docs/design/agent.md §6）。
 #pragma once
 
 #include <atomic>
@@ -75,7 +75,7 @@ private:
     std::vector<std::filesystem::path> read_dirs_;
 };
 
-/// @brief 05-dispatch 规则 1：只有直接放行的只读调用能进并行组。
+/// @brief docs/design/agent.md §6：只有直接放行的只读调用能进并行组。
 bool parallel(const Verdict&, const tools::Intent&);
 
 } // namespace dagent::agent

@@ -51,7 +51,7 @@ std::string_view to_string(TurnStatus status) {
     return "unknown";
 }
 
-// 字段名与文法见 01-events §6。
+// 字段名与文法见 docs/design/agent.md §2。
 json to_json(const Event& event) {
     return std::visit(
         Overloaded{
@@ -72,7 +72,7 @@ json to_json(const Event& event) {
                             {"network", e.grant.allow_network}};
             },
             [](const ToolOutput& e) {
-                // chunk 是原始字节，先过一遍 UTF-8 再进 JSON（01-events §6）。
+                // chunk 是原始字节，先过一遍 UTF-8 再进 JSON（docs/design/agent.md §2）。
                 return json{{"type", "tool_output"},
                             {"id", e.id},
                             {"chunk", base::to_valid_utf8(e.chunk)}};

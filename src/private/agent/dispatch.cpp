@@ -14,7 +14,7 @@
 namespace dagent::agent {
 namespace {
 
-constexpr std::size_t kGroupWidth = 8; ///< 并行组每块的线程数上限（README §5）
+constexpr std::size_t kGroupWidth = 8; ///< 并行组每块的线程数上限（docs/design/agent.md §1）
 
 std::shared_ptr<spdlog::logger> log_agent() { return base::logger("agent"); }
 
@@ -71,7 +71,7 @@ Agent::DispatchOutcome Agent::dispatch(const std::vector<ToolCall>& calls, int b
     std::size_t committed = 0;
     std::vector<Pending> group; ///< 挂起的并行组
 
-    // 结果按 tool_calls 的原始顺序写入历史、写记录、发事件；能提交的前缀尽早提交（05-dispatch §4.3）。
+    // 结果按 tool_calls 的原始顺序写入历史、写记录、发事件；能提交的前缀尽早提交（docs/design/agent.md §6）。
     const auto commit = [&] {
         while (committed < slots.size() && slots[committed].result.has_value()) {
             Slot& slot = slots[committed];
@@ -93,7 +93,7 @@ Agent::DispatchOutcome Agent::dispatch(const std::vector<ToolCall>& calls, int b
         return [&sink, id = call.id](std::string_view chunk) { sink(ToolOutput{id, std::string(chunk)}); };
     };
 
-    // 串行执行：agent 线程上跑（05-dispatch §4.2 run_serial）。
+    // 串行执行：agent 线程上跑（docs/design/agent.md §6）。
     const auto run_serial = [&](std::size_t i, tools::Call& call, const tools::Grant& grant) {
         Slot& slot = slots[i];
         sink(ToolStarted{slot.call->id, slot.call->name, slot.summary, grant});
@@ -101,7 +101,7 @@ Agent::DispatchOutcome Agent::dispatch(const std::vector<ToolCall>& calls, int b
     };
 
     // 并行组：ToolStarted 按顺序在 agent 线程上发；执行分块、每块至多 8 个 jthread，
-    // 块内 join 完才起下一块；每个线程只写自己的 slot（05-dispatch §4.4）。
+    // 块内 join 完才起下一块；每个线程只写自己的 slot（docs/design/agent.md §6）。
     const auto run_group = [&] {
         if (group.empty()) return;
         for (const Pending& p : group) {
@@ -144,7 +144,7 @@ Agent::DispatchOutcome Agent::dispatch(const std::vector<ToolCall>& calls, int b
 
         const tools::Tool* tool = registry_.find(slot.call->name);
         if (tool == nullptr) {
-            // 未知工具没有 prepare，不触发跑组（05-dispatch §5）。
+            // 未知工具没有 prepare，不触发跑组（docs/design/agent.md §6）。
             slot.result = make_result(
                 std::format(texts::kUnknownTool, slot.call->name, available_tools(registry_)), true, false);
             commit();
@@ -154,7 +154,7 @@ Agent::DispatchOutcome Agent::dispatch(const std::vector<ToolCall>& calls, int b
         auto prepared = tool->prepare(slot.call->arguments, tool_ctx_);
         std::optional<Verdict> verdict;
         if (prepared) verdict = policy_.evaluate(*slot.call, prepared.value()->intent());
-        // 这个调用进不了并行组：先跑完挂起的组，再重新 prepare（prepare 无副作用，05-dispatch 规则 3）。
+        // 这个调用进不了并行组：先跑完挂起的组，再重新 prepare（prepare 无副作用，docs/design/agent.md §6）。
         if (!group.empty() && !(prepared && parallel(*verdict, prepared.value()->intent()))) {
             run_group();
             prepared = tool->prepare(slot.call->arguments, tool_ctx_);

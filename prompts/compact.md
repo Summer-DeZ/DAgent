@@ -1,4 +1,4 @@
-{# 摘要请求的 system prompt（07-context §4.3 / 08-prompt §4.2）；模板变量与 system.md 可以不同，
+{# 摘要请求的 system prompt（docs/design/agent.md §8 / docs/design/agent.md §9）；模板变量与 system.md 可以不同，
    但同样走 inja 渲染，保持处理方式一致。注意行首不要用 ##（inja 的行语句前缀）。 #}
 你在为一段编码对话写交接摘要，读者是接手的同一个 agent，它看不到原始对话。
 

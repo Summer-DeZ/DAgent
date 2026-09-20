@@ -1,7 +1,7 @@
 /// @file prompt.hpp
 /// @brief 提示词：内置文本（编进二进制）、开发期覆盖、会话开始时渲染 system prompt。
 ///
-/// 每轮动态修改会破坏前缀缓存（03-conversation §4），所以只在会话开始时渲染一次。
+/// 每轮动态修改会破坏前缀缓存（docs/design/agent.md §4），所以只在会话开始时渲染一次。
 #pragma once
 
 #include <filesystem>
@@ -12,7 +12,7 @@
 
 namespace dagent::agent {
 
-/// @brief system.md 的模板变量（08-prompt §3）。
+/// @brief system.md 的模板变量（docs/design/agent.md §9）。
 struct PromptVars {
     std::string model;
     std::filesystem::path project_root;

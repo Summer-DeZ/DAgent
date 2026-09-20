@@ -97,7 +97,7 @@ using Sink = std::function<void(const Event&)>;
 struct Approval {
     std::string call_id, tool;
     tools::Intent intent;     ///< 拷贝：交互界面要把它 post 到渲染线程
-    std::string reason;       ///< 为什么要问，见 06-permission §4
+    std::string reason;       ///< 为什么要问，见 docs/design/agent.md §7
     std::string session_rule; ///< 选「本会话允许」会记住什么，给界面显示；为空表示不提供这个选项
     bool can_network = false; ///< bash：是否提供「允许并联网」
 };

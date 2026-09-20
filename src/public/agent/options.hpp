@@ -23,7 +23,7 @@
 
 namespace dagent::agent {
 
-/// @brief 上下文预算，对应 config "context" 段（07-context §2）。
+/// @brief 上下文预算，对应 config "context" 段（docs/design/agent.md §8）。
 struct ContextOptions {
     std::size_t window_tokens = 262144;
     std::size_t safety_margin_tokens = 8192;
@@ -47,17 +47,17 @@ struct Options {
     ContextOptions context;
     Limits run;
     ProgressOptions progress;
-    PermissionMode permissions = PermissionMode::automatic; ///< 只作用于 run 模式（06-permission §7）
+    PermissionMode permissions = PermissionMode::automatic; ///< 只作用于 run 模式（docs/design/agent.md §7）
 };
 
-/// @brief 一个 Agent 需要的全部输入（11-entry §2）。
+/// @brief 一个 Agent 需要的全部输入（docs/design/agent.md §12）。
 struct Setup {
     Options options;
 
     // 模型
     ModelParams model;
     OpenAiChatOptions codec; ///< 含 api_key
-    net::HttpOptions http;   ///< 已按 02-model §6 调整：timeout = 0
+    net::HttpOptions http;   ///< 已按 docs/design/agent.md §3 调整：timeout = 0
 
     // 工作区
     std::filesystem::path cwd;          ///< 工作区根（Args::cwd）

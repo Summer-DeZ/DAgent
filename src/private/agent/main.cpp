@@ -30,13 +30,13 @@ namespace {
 namespace fs = std::filesystem;
 using dagent::app::Mode;
 
-// 11-entry §4.3：整个进程忽略 SIGPIPE，写关闭的管道得到 EPIPE 而不是被信号杀死。
+// docs/design/agent.md §12：整个进程忽略 SIGPIPE，写关闭的管道得到 EPIPE 而不是被信号杀死。
 // exec 层只会在 SIGPIPE 仍是默认处理时设置它，两者不冲突。
 void ignore_sigpipe() { ::signal(SIGPIPE, SIG_IGN); }
 
 dagent::agent::PermissionMode
 permission_mode(const dagent::app::Config& config, const dagent::app::Args& args) {
-    // 优先级：--permissions → 配置的 permissions → automatic（06-permission §7）。
+    // 优先级：--permissions → 配置的 permissions → automatic（docs/design/agent.md §7）。
     if (args.permissions) {
         return *args.permissions == "deny" ? dagent::agent::PermissionMode::deny
                                            : dagent::agent::PermissionMode::automatic;

@@ -61,7 +61,7 @@ bool single_readonly(const exec::SimpleCommand& command) {
 }
 
 // 选「本会话允许」时会记住的前缀：每条不是已知只读的简单命令一个，去重、保持顺序。
-// 含无法静态判断的结构时不提供会话授权，返回空（06-permission §6.1）。
+// 含无法静态判断的结构时不提供会话授权，返回空（docs/design/agent.md §7）。
 std::vector<std::string> session_prefixes(const std::string& command) {
     const exec::Analysis analysis = exec::analyze(command);
     if (analysis.has_opaque) return {};
@@ -232,7 +232,7 @@ Verdict Policy::evaluate(const ToolCall& call, const tools::Intent& intent) cons
     if (verdict.kind != Verdict::Kind::ask) return verdict;
 
     // 步骤 3：本会话授权。放行的 exec 命令用 workspace_write 沙箱；当初授权时勾了联网的记住联网
-    // （06-permission §6.1）。
+    // （docs/design/agent.md §7）。
     if (const std::optional<bool> session = matches_session(verdict.approval, intent)) {
         if (intent.kind == tools::Intent::Kind::exec) {
             verdict.grant = grant_for_exec(); // 沙箱不可用时降级为 full_access

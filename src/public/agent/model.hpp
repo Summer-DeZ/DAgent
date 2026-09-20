@@ -1,7 +1,7 @@
 /// @file model.hpp
 /// @brief 一次模型调用：中立 Request → 流式 HTTP → 中立 Reply，含累积、失败分类与重试。
 ///
-/// 不含请求内容（Conversation）、压缩策略（07-context）与参数 JSON 解析（tools 层）。
+/// 不含请求内容（Conversation）、压缩策略（docs/design/agent.md §8）与参数 JSON 解析（tools 层）。
 #pragma once
 
 #include <chrono>

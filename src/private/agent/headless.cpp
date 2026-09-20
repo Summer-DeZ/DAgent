@@ -116,7 +116,7 @@ struct TextOutput {
                    event);
     }
 
-    /// 等待模型超过一个 interval 后每个 interval 一行「等待模型… 12s」（11-entry §4.2）。
+    /// 等待模型超过一个 interval 后每个 interval 一行「等待模型… 12s」（docs/design/agent.md §12）。
     void heartbeat() {
         const std::lock_guard lock(mutex);
         if (!waiting) return;
@@ -154,7 +154,7 @@ std::jthread start_ticker(TextOutput& output, std::chrono::milliseconds interval
     });
 }
 
-/// @brief jsonl 模式的 Sink：每个事件一行写 stdout；写失败时停掉这一轮（11-entry §4.3）。
+/// @brief jsonl 模式的 Sink：每个事件一行写 stdout；写失败时停掉这一轮（docs/design/agent.md §12）。
 /// tool_output 的块按调用 id 留住末尾不完整的 UTF-8 字节，拼到下一块前面，不在字符中间切开。
 struct JsonlOutput {
     std::mutex mutex;
@@ -293,7 +293,7 @@ int run_headless(Setup setup, const HeadlessOptions& options, Interrupts& interr
             std::cout << object.dump() << '\n';
             std::cout.flush();
         } else {
-            // text 模式的 stdout 只放最终结果；写失败忽略（11-entry §4.3）。
+            // text 模式的 stdout 只放最终结果；写失败忽略（docs/design/agent.md §12）。
             const std::string result = output.result();
             if (!result.empty()) {
                 std::cout << result;

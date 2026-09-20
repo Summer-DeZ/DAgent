@@ -1,7 +1,7 @@
 /// @file agent.hpp
 /// @brief 一个会话的全部状态加 `run_turn`：模型 → 工具 → 回填，直到结束。
 ///
-/// Agent 不是线程安全的：所有方法都在调用它的 agent 线程上跑（README §5）。
+/// Agent 不是线程安全的：所有方法都在调用它的 agent 线程上跑（docs/design/agent.md §1）。
 #pragma once
 
 #include <memory>
@@ -72,7 +72,7 @@ private:
     void report_stream(const StreamEvent&, const Sink&);
     void report_retry(const RetryInfo&, const Sink&);
 
-    // 成员声明顺序即构造顺序，析构倒序：registry_ 先于任何持有 Client 的部件析构（04-turn §3）。
+    // 成员声明顺序即构造顺序，析构倒序：registry_ 先于任何持有 Client 的部件析构（docs/design/agent.md §1）。
     Setup setup_;
     Recorder recorder_;
     McpHub hub_; ///< registry_ 先析构，确保 MCP 工具不再引用 Client
