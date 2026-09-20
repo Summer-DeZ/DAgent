@@ -19,6 +19,10 @@ void PromptBox::set_footer(std::string value) {
     if (footer_ == value) return;
     footer_ = std::move(value); invalidate();
 }
+void PromptBox::set_footer_tone(bool error, bool accent) {
+    if (footer_error_ == error && footer_accent_ == accent) return;
+    footer_error_ = error; footer_accent_ = accent; invalidate();
+}
 void PromptBox::set_placeholder(std::string value) {
     if (placeholder_ == value) return;
     placeholder_ = std::move(value); invalidate();
@@ -136,8 +140,11 @@ void PromptBox::render(tui::Surface& surface) {
             surface.text(k_left, k_top + i, line, body);
         }
     }
-    if (!footer_.empty())
-        surface.text(k_left, h - 1, fit_columns(footer_, width), muted);
+    if (!footer_.empty()) {
+        tui::Style footer = footer_error_ ? theme_->error : footer_accent_ ? theme_->accent : muted;
+        footer.bg = theme_->background_element.bg;
+        surface.text(k_left, h - 1, fit_columns(footer_, width), footer);
+    }
 }
 
 } // namespace dagent::ui

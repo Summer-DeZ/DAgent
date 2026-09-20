@@ -2,8 +2,9 @@
 /.dagent/
 /.env
 /.env.*
-!/.env.example
 /compile_commands.json
 /temp/
+/home/dagent.db*
+/home/logs/
 /.claude
 /.opencode

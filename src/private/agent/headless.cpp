@@ -104,6 +104,7 @@ struct TextOutput {
                        },
                        [&](const ContextUpdate&) {},
                        [&](const ModelChanged&) {},
+                       [&](const ModeChanged&) {},
                        [&](const Notice& notice) {
                            std::cerr << "[" << level_name(notice.level) << "] " << notice.text << "\n";
                        },
@@ -240,7 +241,7 @@ int run_headless(Setup setup, const HeadlessOptions& options, Interrupts& interr
                                                                ? std::optional<std::string_view>(*options.resume_id)
                                                                : std::nullopt;
             const std::string session_id =
-                resolve_session_id(setup.session, setup.project_root, prefix);
+                resolve_session_id(setup.session, setup.cwd, prefix);
             agent = Agent::resume(std::move(setup), session_id, [](const Event&) {});
         } else {
             agent = Agent::create(std::move(setup));
@@ -263,7 +264,7 @@ int run_headless(Setup setup, const HeadlessOptions& options, Interrupts& interr
             nlohmann::json{{"type", "session"}, {"id", session_id}, {"resumed", resumed}});
         const Sink sink = [&output](const Event& event) { output(event); };
         interrupts.graceful = true;
-        status = agent->run_turn(options.prompt, sink, Approver{}, interrupts.stop.get_token());
+        status = agent->run_turn(options.prompt, sink, Approver{}, Asker{}, interrupts.stop.get_token());
         interrupts.graceful = false;
         const std::lock_guard lock(output.mutex);
         output_failed = output.failed;
@@ -272,7 +273,7 @@ int run_headless(Setup setup, const HeadlessOptions& options, Interrupts& interr
         const Sink sink = [&output](const Event& event) { output(event); };
         std::jthread ticker = start_ticker(output, heartbeat_interval);
         interrupts.graceful = true;
-        status = agent->run_turn(options.prompt, sink, Approver{}, interrupts.stop.get_token());
+        status = agent->run_turn(options.prompt, sink, Approver{}, Asker{}, interrupts.stop.get_token());
         interrupts.graceful = false;
         const auto ms =
             std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::now() - begin)

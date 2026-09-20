@@ -24,7 +24,7 @@
 | `Panel` | 命令、会话、主题和帮助共用的居中列表浮层 |
 | `ToastStack` | 右上角最多三条、五秒到期的瞬时通知 |
 | `SidePanel` | 右侧常驻信息栏：会话标题、上下文用量、MCP、最近一份 `TodoView`、项目与版本 |
-| `ApprovalDialog` | 权限原因、意图预览、反馈输入和跨线程回答 |
+| `ApprovalDialog` | 权限审批与选项提问共用的模态骨架、输入和跨线程回答 |
 
 ```text
 LayerStack
@@ -102,11 +102,11 @@ PromptBox 左侧是一根竖条（忙碌时换成 `primary`），底纹用 `back
 | Shift/Alt+Enter | 输入换行 |
 | Esc | Interrupt turn（先关闭补全/面板；否则中断当前轮） |
 | Ctrl+C | Clear or exit（先关浮层；忙时中断；有输入时清空；空闲连续两次退出） |
-| Shift+Tab | Cycle permission mode（ask / auto-edit 切换） |
+| Shift+Tab | 在 ask / workspace 间切换；unrestricted 不参与循环 |
+| Ctrl+G | 进入或退出 plan 模式 |
 | Ctrl+O | Expand tool output（已完成工具输出展开/折叠） |
 | Ctrl+R | Expand thoughts（全部思考展开/折叠） |
 | Ctrl+T | 收起或展开右侧信息栏 |
-| Ctrl+T | Toggle plan panel（展开/收起；无计划时弹 toast） |
 | Ctrl+P | Command palette（命令面板） |
 | Ctrl+? | Keys and commands（帮助面板） |
 | PgUp/PgDn、Home/End | Page up/down、Go to top/bottom（翻页、回顶、回底） |
@@ -121,7 +121,8 @@ PromptBox 左侧是一根竖条（忙碌时换成 `primary`），底纹用 `back
 | --- | --- |
 | `/new` | New session（清空对话和计划） |
 | `/compact` | Compact context（手动压缩，可取消） |
-| `/sessions` | Switch session（异步列出并恢复本项目会话） |
+| `/sessions` | Switch session（异步列出并恢复当前 cwd 的会话） |
+| `/plan` | 进入或退出只读规划模式；新会话不继承 plan |
 | `/theme` | Switch theme（即时预览并切换） |
 | `/help` | Keys and commands（打开只读帮助） |
 | `/exit` | Exit（退出） |
@@ -172,7 +173,8 @@ ToastStack 是单一右上角 overlay，内部维护最多三条通知，新通�
 使用 active 圆角边框、`Approval needed` 标题、英文 reason 与 session rule、可滚动预览和横排选项。
 长意图和 session rule 放在可折行的预览区，预览与输入不占用边框列。
 底边单独预留一行，避免覆盖选项；紧凑选项为 `[y] allow / [a] session / [w] network / [n] deny / [e] explain`。
-长计划条目与通知按显示列宽截断，ASCII `...` 不覆盖边框。
+同一模态骨架也显示 Question：数字或上下键选择，Enter 确认，多选用空格，Other 进入自由输入，Esc 取消。
+权限与问题浮层互斥。unrestricted 的输入/消息尾行使用 error 色，plan 使用 accent 色。长计划条目与通知按显示列宽截断。
 
 ## 7. 退出与错误
 
@@ -194,5 +196,4 @@ Ctrl+M 需要终端提供可区分的扩展按键编码；传统终端把它与 
 历史对话不清空，session ID 不变。失败弹 error toast，保持当前 Agent，随后继续处理排队输入。
 ModelChanged 事件使恢复后的历史消息仍显示当时的模型标签。密钥不进入面板或日志。
 
-本地 Qwen 与 Ollama 的跨协议切换、失败保留和回放已真实验证；远端切换仍等待可用密钥，
-详见 [验收记录](../next-to-do/validation.md)。
+本地 Qwen 与 Ollama 的跨协议切换、失败保留和回放已真实验证；远端切换尚未验证。

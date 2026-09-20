@@ -35,14 +35,6 @@ std::terminate_handler& previous_handler() {
     return handler;
 }
 
-std::filesystem::path default_log_file() {
-    if (const char* dir = std::getenv("XDG_STATE_HOME"); dir && *dir)
-        return std::filesystem::path(dir) / "dagent" / "logs" / "dagent.log";
-    if (const char* home = std::getenv("HOME"); home && *home)
-        return std::filesystem::path(home) / ".local" / "state" / "dagent" / "logs" / "dagent.log";
-    return std::filesystem::temp_directory_path() / "dagent" / "logs" / "dagent.log";
-}
-
 std::string_view trim(std::string_view s) {
     while (!s.empty() && (s.front() == ' ' || s.front() == '\t')) s.remove_prefix(1);
     while (!s.empty() && (s.back() == ' ' || s.back() == '\t')) s.remove_suffix(1);
@@ -117,7 +109,8 @@ void init_log(const LogOptions& opt) {
     if (const char* spec = std::getenv("DAGENT_LOG"); spec && *spec)
         parse_level_spec(spec, s.level, s.module_levels);
 
-    const std::filesystem::path file = opt.file.empty() ? default_log_file() : opt.file;
+    if (opt.file.empty()) throw std::invalid_argument("log file path is empty");
+    const std::filesystem::path file = opt.file;
     if (file.has_parent_path()) std::filesystem::create_directories(file.parent_path());
 
     // spdlog 的 max_files 是备份文件数，备份加上当前文件才是总文件数，这里换算成总数上限。

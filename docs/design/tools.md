@@ -40,7 +40,7 @@
 
 ```cpp
 tools::Registry registry;
-tools::add_builtin(registry);                       // read / write / edit / bash / grep / glob / todo
+tools::add_builtin(registry);                       // read/write/edit/bash/grep/glob/todo/ask/exit_plan
 tools::add_mcp(registry, *client);                  // 每个 MCP server 一次
 tools::Context ctx(root, config.tools, config.files, config.search, config.process);
 
@@ -55,9 +55,9 @@ tools::Result result = (*prepared)->run(grant, on_output, stop);
 
 | 类型 | 作用 |
 | --- | --- |
-| `Options` | `dagent.json` 的 `tools` 段：给模型的文本上限、read 默认行数与单行上限、grep/glob 数量上限、bash 最长超时、MCP 调用超时 |
+| `Options` | `config.json` 的 `tools` 段：给模型的文本上限、read 默认行数与单行上限、grep/glob 数量上限、bash 最长超时、MCP 调用超时 |
 | `Spec` | 名字、说明、参数 JSON Schema；核心把它一一对应地转成 `agent::ToolDef` |
-| `Intent` | 工具打算做什么：`kind`（read / write / exec / external）、涉及的路径（带 `inside_workspace`）、bash 命令与 `known_readonly`、edit/write 的 unified diff 预览、一行摘要 |
+| `Intent` | 工具打算做什么：`kind`（read / write / exec / external / ask / exit_plan）、路径、bash 分析、diff 预览、提问 View 和摘要 |
 | `Grant` | 核心的决定：bash 的沙箱模式与是否允许联网 |
 | `Result` | `text` 给模型、`is_error`、`interrupted`、`display`（View） |
 | `Context` | 会话级状态，核心每个会话建一个，所有调用共用，线程安全；持有工作区根、各模块的 Options 和 FileTracker |
@@ -161,7 +161,13 @@ tools::Result result = (*prepared)->run(grant, on_output, stop);
 - `is_error`：退出码非 0、被信号终止、超时、无法执行。
 - `on_output` 把原始输出块交给核心，核心 `post` 给界面。
 - display：`BashView`；`output` 是 exec 按 `process.max_output_bytes` 截断后的输出，不是给模型的那份，
-  存进会话时会转成 blob。
+  存进会话时直接进入 SQLite payload BLOB。
+
+### ask / exit_plan
+
+`ask` 接受 header、prompt、2–4 个 options，以及 multi_select / allow_other。prepare 只校验并生成 AskView；核心
+不调用 `Call::run`，而是通过 Asker 得到选择并生成普通 Result。`exit_plan` 只接受 summary，三项权限选择由核心
+固定；它只在 planning 状态下生效。两者的题目、选项和答案都通过 AskView 进入会话回放。
 
 ### grep
 
@@ -249,7 +255,7 @@ tools::Result result = (*prepared)->run(grant, on_output, stop);
 
 ## 6. 已知限制
 
-- 没有多处编辑（`edits` 数组）、后台 shell、web_fetch、todo、图片读取（编解码器还只支持文本）。
+- 没有多处编辑（`edits` 数组）、后台 shell、web_fetch、图片读取（编解码器还只支持文本）。
 - edit 只做精确匹配，失败时给提示，不做模糊回退。
 - bash 每次都是新进程，不保留 cwd。以后如果要保留，要先考虑和并行执行的冲突。
 - write 新建文件时不检查 prepare 之后是否有别人抢先创建了同名文件。
@@ -258,7 +264,7 @@ tools::Result result = (*prepared)->run(grant, on_output, stop);
 
 ## 7. 配置与构建
 
-- 选项对应 `config/dagent.json` 的 `tools` 段：`max_result_bytes`（32 KiB，约 8k token）、
+- 选项对应 `home/config.json` 的 `tools` 段：`max_result_bytes`（32 KiB，约 8k token）、
   `read_default_lines`（2000）、`read_max_line_bytes`（2000）、`grep_max_matches`（200）、`glob_max_files`（200）、
   `bash_max_timeout_ms`（600000）、`mcp_call_timeout_ms`（120000），由 app 映射。文件读写上限沿用 `files` 段：
   `max_read_bytes` 是 read 能翻页的最大文件（8 MiB），`max_write_bytes` 是写入上限（1 MiB）。

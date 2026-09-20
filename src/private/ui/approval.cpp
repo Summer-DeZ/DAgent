@@ -4,6 +4,7 @@
 
 #include <algorithm>
 #include <atomic>
+#include <format>
 #include <future>
 #include <utility>
 
@@ -30,6 +31,7 @@ public:
     std::unique_ptr<tui::ScrollbackMouse> mouse;
     const tui::ThemeTokens* current_theme = &tui::dark_theme();
     std::string tool;
+    bool question = false;
 
     explicit Panel(tui::Runtime& rt) {
         auto add_text = [&] {
@@ -74,7 +76,8 @@ public:
         surface.put(w - 1, 0, "╮", current_theme->border_active);
         surface.put(0, h - 1, "╰", current_theme->border_active);
         surface.put(w - 1, h - 1, "╯", current_theme->border_active);
-        surface.text(2, 0, std::string(ui::text().approve_title) + tool + " ", current_theme->text);
+        surface.text(2, 0, (question ? "Choose — " : std::string(ui::text().approve_title)) + tool + " ",
+                     current_theme->text);
         surface.text(std::max(2, (w - display_width(ui::text().approve_cancel)) / 2), h - 1, std::string(ui::text().approve_cancel), current_theme->text_muted);
     }
     void theme(const tui::ThemeTokens& theme) {
@@ -112,6 +115,8 @@ void ApprovalDialog::open(const agent::Approval& approval,
         for (const auto& path : approval.intent.paths) preview += path.path.string() + '\n';
         break;
     case tools::Intent::Kind::external: kind = tui::BlockKind::code; break;
+    case tools::Intent::Kind::ask:
+    case tools::Intent::Kind::exit_plan: break;
     }
     panel_->preview->document().append_block(tui::BlockKind::text, approval.intent.summary +
         (approval.session_rule.empty() ? "" : "\n[a] " + approval.session_rule));
@@ -119,10 +124,48 @@ void ApprovalDialog::open(const agent::Approval& approval,
     overlay_ = rt_.open_overlay(std::move(panel), tui::Placement::center, {}, this, panel_->feedback);
 }
 
+void ApprovalDialog::open(const agent::Question& question,
+                          std::function<void(agent::Answer)> answer) {
+    close();
+    question_ = question;
+    question_answer_ = std::move(answer);
+    selected_.assign(question.options.size(), false);
+    question_cursor_ = 0;
+    auto panel = std::make_unique<Panel>(rt_);
+    panel_ = panel.get();
+    panel_->tool = question.header;
+    panel_->question = true;
+    panel_->theme(theme_);
+    panel_->heading->set_text(" ");
+    panel_->preview->document().append_block(tui::BlockKind::text, question.prompt);
+    refresh_question();
+    overlay_ = rt_.open_overlay(std::move(panel), tui::Placement::center, {}, this, panel_->feedback);
+}
+
+void ApprovalDialog::refresh_question() {
+    if (!panel_ || !question_answer_) return;
+    std::string choices;
+    for (std::size_t i = 0; i < question_.options.size(); ++i) {
+        const bool current = question_cursor_ == static_cast<int>(i);
+        choices += current ? "▌" : " ";
+        if (question_.multi_select) choices += selected_[i] ? "[x] " : "[ ] ";
+        choices += std::format("{}  {}", i + 1, question_.options[i].label);
+        if (!question_.options[i].description.empty())
+            choices += " — " + question_.options[i].description;
+        choices += '\n';
+    }
+    if (question_.allow_other) {
+        choices += question_cursor_ == static_cast<int>(question_.options.size()) ? "▌" : " ";
+        choices += std::format("{}  Other…", question_.options.size() + 1);
+    }
+    panel_->summary->set_text("  " + question_.prompt);
+    panel_->choices->set_text(std::move(choices));
+}
+
 void ApprovalDialog::close() {
     if (!overlay_) return;
     rt_.unbind_mouse(*panel_->preview);
-    rt_.close_overlay(overlay_); overlay_ = 0; panel_ = nullptr; answer_ = {};
+    rt_.close_overlay(overlay_); overlay_ = 0; panel_ = nullptr; answer_ = {}; question_answer_ = {};
 }
 void ApprovalDialog::set_theme(const tui::ThemeTokens& theme) {
     theme_ = theme; if (panel_) panel_->theme(theme_);
@@ -130,11 +173,62 @@ void ApprovalDialog::set_theme(const tui::ThemeTokens& theme) {
 void ApprovalDialog::answer(agent::Decision decision) {
     auto callback = std::move(answer_); close(); if (callback) callback(std::move(decision));
 }
+void ApprovalDialog::answer(agent::Answer value) {
+    auto callback = std::move(question_answer_); close(); if (callback) callback(std::move(value));
+}
 bool ApprovalDialog::on_event(const tui::Event& e) {
     if (!panel_) return false;
     if (tui::any(e.mods & tui::Mods::ctrl) && e.text == "c") { interrupt_(); return true; }
     if (e.key == tui::Key::page_up || e.key == tui::Key::page_down) {
         panel_->preview->scroll_pages(e.key == tui::Key::page_up ? -1 : 1); return true;
+    }
+    if (question_answer_) {
+        const int count = static_cast<int>(question_.options.size()) + (question_.allow_other ? 1 : 0);
+        if (panel_->feedback->visible) {
+            if (e.key == tui::Key::escape) {
+                panel_->feedback->visible = false; panel_->feedback->invalidate_layout();
+            } else if (e.key == tui::Key::enter) {
+                answer(agent::Answer{{}, panel_->feedback->text(), false});
+            } else panel_->edit->on_event(e);
+            return true;
+        }
+        if (e.key == tui::Key::escape) { answer(agent::Answer{{}, {}, true}); return true; }
+        if (e.key == tui::Key::up || e.key == tui::Key::down) {
+            question_cursor_ = (question_cursor_ + (e.key == tui::Key::up ? count - 1 : 1)) % count;
+            refresh_question(); return true;
+        }
+        if (e.text.size() == 1 && e.text[0] >= '1' && e.text[0] <= '9') {
+            const int index = e.text[0] - '1';
+            if (index >= count) return true;
+            question_cursor_ = index;
+            if (index == static_cast<int>(question_.options.size())) {
+                panel_->feedback->visible = true; panel_->feedback->invalidate_layout();
+            } else if (question_.multi_select) {
+                selected_[static_cast<std::size_t>(index)] = !selected_[static_cast<std::size_t>(index)];
+                refresh_question();
+            } else answer(agent::Answer{{index}, {}, false});
+            return true;
+        }
+        if (e.text == " " && question_.multi_select &&
+            question_cursor_ < static_cast<int>(question_.options.size())) {
+            selected_[static_cast<std::size_t>(question_cursor_)] =
+                !selected_[static_cast<std::size_t>(question_cursor_)];
+            refresh_question(); return true;
+        }
+        if (e.key == tui::Key::enter) {
+            if (question_cursor_ == static_cast<int>(question_.options.size())) {
+                panel_->feedback->visible = true; panel_->feedback->invalidate_layout();
+                return true;
+            }
+            std::vector<int> selected;
+            if (question_.multi_select) {
+                for (std::size_t i = 0; i < selected_.size(); ++i)
+                    if (selected_[i]) selected.push_back(static_cast<int>(i));
+                if (selected.empty()) return true;
+            } else selected.push_back(question_cursor_);
+            answer(agent::Answer{std::move(selected), {}, false});
+        }
+        return true;
     }
     if (panel_->feedback->visible) {
         if (e.key == tui::Key::escape) {
@@ -166,6 +260,23 @@ agent::Decision approve(tui::Runtime& rt, ApprovalDialog& dialog,
         if (!state->done.load()) dialog.open(approval, answer);
     });
     std::stop_callback cancelled(stop, [&] { answer({agent::Decision::Answer::deny, {}, false}); });
+    auto result = future.get();
+    if (stop.stop_requested()) rt.post([&dialog] { dialog.close(); });
+    return result;
+}
+
+agent::Answer ask(tui::Runtime& rt, ApprovalDialog& dialog,
+                  const agent::Question& question, std::stop_token stop) {
+    struct Pending { std::promise<agent::Answer> promise; std::atomic<bool> done{false}; };
+    auto state = std::make_shared<Pending>();
+    auto future = state->promise.get_future();
+    auto answer = [state](agent::Answer value) {
+        if (!state->done.exchange(true)) state->promise.set_value(std::move(value));
+    };
+    rt.post([&dialog, question, answer, state] {
+        if (!state->done.load()) dialog.open(question, answer);
+    });
+    std::stop_callback cancelled(stop, [&] { answer(agent::Answer{{}, {}, true}); });
     auto result = future.get();
     if (stop.stop_requested()) rt.post([&dialog] { dialog.close(); });
     return result;

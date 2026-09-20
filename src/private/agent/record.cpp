@@ -37,7 +37,7 @@ json usage_json(const Usage& usage) {
 }
 
 void require_object(std::string_view type, const json& payload) {
-    if (!payload.is_object()) corrupt(type, "missing payload; record_payloads may have been disabled");
+    if (!payload.is_object()) corrupt(type, "payload must be an object");
 }
 
 std::string string_field(std::string_view type, const json& object, const char* key) {
@@ -344,7 +344,7 @@ Restored replay_into(const session::Options& options, std::string_view id, const
 
     if (!saw_system) {
         throw session::SessionError(session::SessionError::Kind::corrupt,
-                                    "session record has no system entry; record_payloads may have been disabled");
+                                    "session record has no system entry");
     }
     conversation.set_next_ordinal(next_ordinal);
 
@@ -388,12 +388,11 @@ std::string session_title(const nlohmann::json& first_events) {
 }
 
 std::string resolve_session_id(const session::Options& options,
-                               const std::filesystem::path& project_root,
+                               const std::filesystem::path& cwd,
                                std::optional<std::string_view> prefix) {
-    const std::vector<session::Summary> sessions =
-        session::list(options, project_root, 0, session_title);
+    const std::vector<session::Summary> sessions = session::list(options, cwd, 0);
     if (!prefix) {
-        if (sessions.empty()) throw std::runtime_error("no sessions for this project");
+        if (sessions.empty()) throw std::runtime_error("no sessions for this working directory");
         return sessions.front().meta.id;
     }
 
@@ -402,7 +401,7 @@ std::string resolve_session_id(const session::Options& options,
         if (summary.meta.id == *prefix) return summary.meta.id;
         if (summary.meta.id.starts_with(*prefix)) matches.push_back(&summary);
     }
-    if (matches.empty()) throw std::runtime_error("session not found in this project: " + std::string(*prefix));
+    if (matches.empty()) throw std::runtime_error("session not found in this working directory: " + std::string(*prefix));
     if (matches.size() == 1) return matches.front()->meta.id;
 
     std::string message = "ambiguous session ID prefix; use a longer prefix: ";

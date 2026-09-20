@@ -20,7 +20,7 @@ flowchart TD
 ```
 
 `main.cpp` 只编进可执行目标，负责把 app 的配置映射为 `Setup` 并选择前端。`dagent_agent` 不依赖 app、ui 或 tui；
-两个前端通过 `Sink` 接收事件，通过 `Approver` 回答权限询问。`sessions` 命令排版借用 tui 的字素宽度计算。
+两个前端通过 `Sink` 接收事件，通过 `Approver` 回答权限询问，通过 `Asker` 回答选项问题。`sessions` 命令排版借用 tui 的字素宽度计算。
 
 一个 `Agent` 对应一个会话，持有以下部件：
 
@@ -57,7 +57,7 @@ Agent 的常规接口在同一个 agent 线程上串行调用。两个跨线程�
 由这个线程归属保证。
 
 `Sink` 必须线程安全：`ToolOutput` 可从工具线程发出，其余运行事件由 agent 线程交付。交互前端用 `Runtime::post`，
-非交互前端加锁输出。`Approver` 只在 agent 线程调用，同一时刻至多一个，不能反向重入 Agent。
+非交互前端加锁输出。`Approver` 与 `Asker` 只在 agent 线程调用，同一时刻至多一个，不能反向重入 Agent。
 
 一轮使用调用方提供的 `stop_token`，贯穿模型、重试等待、权限等待、工具、摘要和 MCP 连接等待。
 MCP 后台连接使用自身线程的 token，一轮取消不关闭后台连接；Hub 析构才取消它们。
@@ -68,9 +68,10 @@ MCP 后台连接使用自身线程的 token，一轮取消不关闭后台连接�
 | --- | --- |
 | `Agent::create(Setup)` | 渲染提示词、创建记录、注册内置工具，启动 MCP 后台连接 |
 | `Agent::resume(Setup, id, replay_sink)` | 重建消息、补齐崩溃记录，用事件重画历史，并更新提示词 |
-| `run_turn(input, sink, approver, stop)` | 阻塞完成一轮，返回 `TurnStatus` |
+| `run_turn(input, sink, approver, asker, stop)` | 阻塞完成一轮，返回 `TurnStatus` |
 | `compact(sink, stop)` | 手动摘要，返回 `TurnStatus`；不创建一轮，不追加用户消息或 `turn_end` |
 | `set_permission_mode(mode)` | 下一次权限决策生效 |
+| `set_read_only` / `set_plan_mode` | 正交地切换只读与规划状态 |
 | `mcp_states()` / `meta()` | 连接状态快照 / 会话元信息；只有前者支持跨线程读取 |
 
 创建与恢复失败会抛异常，由入口报错。运行中的模型与 MCP 已知失败转换成结束状态；工具失败作为 `Result` 回填，
@@ -103,6 +104,7 @@ MCP 后台连接使用自身线程的 token，一轮取消不关闭后台连接�
 | `Retrying` / `retrying` | `attempt, max_attempts, wait_ms, reason`；重试次数从 1 开始 |
 | `Compacted` / `compacted` | `before, after, summarized`；压缩前后估算及是否摘要 |
 | `ModelChanged` / `model_changed` | `model`；恢复/切换时更新后续消息标签 |
+| `ModeChanged` / `mode_changed` | `mode, planning`；`exit_plan` 后同步前端状态 |
 | `ContextUpdate` / `context` | `prompt, completion, cached, used, limit` |
 | `Notice` / `notice` | `level` 为 info / warn / error，另有 `text` |
 | `TurnEnded` / `turn_ended` | `status, error, steps, tool_calls, usage`；本轮结束 |
@@ -224,6 +226,7 @@ idle timeout 看收到的字节，包括 SSE 注释。大上下文预填充期�
 tool_calls → 查 Registry → prepare → Intent → Policy
                                                ├─ 允许 → 串行执行或加入只读并行组
                                                ├─ 询问 → Approver → 执行或拒绝
+                                               ├─ ask / exit_plan → Asker（不进工具线程）
                                                └─ 拒绝 → 生成结果
 结果按原调用顺序 → Conversation → Recorder → ToolFinished
 ```
@@ -243,38 +246,41 @@ FileTracker，「edit a → edit a」的后一个 diff 基于前一个修改。�
 ## 7. 权限与沙箱
 
 Policy 是纯逻辑，不弹窗、不读配置。它依据 `Intent` 的规范化路径、命令分析和外部工具名给出 allow / ask / deny；
-允许时的 `Grant` 决定 bash 沙箱和网络权限。工作区根决定写入范围，项目根决定项目配置归属。
+允许时的 `Grant` 决定 bash 沙箱和网络权限。工作区根决定写入范围。
 
 ### 模式和默认规则
 
 | 模式 | 未命中已有授权时的行为 |
 | --- | --- |
-| `ask` | 交互默认，需要权限就询问 |
-| `accept_edits` | 自动允许普通文件写入；受保护或被分类为工作区外的写入仍询问 |
-| `automatic`（配置值 `auto`） | run 默认，将询问转为允许；受保护或被分类为工作区外的写入拒绝 |
-| `deny` | 将需要询问的操作转为策略拒绝 |
+| `ask` | 工作区内写入和非只读 bash 也询问；已知只读 bash 直接用 read_only 沙箱 |
+| `workspace` | 工作区内普通写入放行；沙箱可用且命令可解析时，bash 用 workspace_write 放行；区外/敏感操作询问 |
+| `unrestricted` | 路径、网络和外部工具均直接放行，bash 使用 full_access；只保留高危命令硬拦 |
 
-路径分类包括：项目 `.dagent/` 下的文件、文件名为 `.mcp.json` 或含 `.git` 路径段的受保护路径；`.env`、`.env.*`、
+路径分类包括：含 `.git` 路径段的受保护路径；`.env`、`.env.*`、
 `*.pem`、`*.key`、`id_rsa*`、`id_ed25519*` 及含 `.ssh` / `.gnupg` 段的敏感路径；其余按工作区内外区分。
 分类是依次匹配，受保护和敏感分类优先于工作区外，不能把这些检查理解成彼此独立的文件系统隔离层。
 
 | 操作 | 默认决定 |
 | --- | --- |
 | 普通读取 | 允许；敏感读取或被分类为工作区外的读取询问 |
-| edit / write | 询问，按上面的模式转换；受保护及工作区外分类不提供会话授权 |
+| edit / write | ask 下询问；workspace 放行工作区内普通路径；unrestricted 全部放行 |
 | 已知只读 bash，沙箱可用 | 自动允许，但仍放进 `read_only` 沙箱 |
 | 其他 bash，沙箱可用 | 询问，允许后用 `workspace_write`，可写工作区与 `/tmp`，默认不联网 |
-| bash，沙箱不可用 | 包括只读命令都询问；auto 模式记录警告并以 `full_access` 执行 |
-| MCP 工具 | external 意图，默认询问，同样受模式转换及会话授权影响 |
+| bash，沙箱不可用 | ask / workspace 询问；unrestricted 以 full_access 执行并在启动时 warning |
+| MCP 工具 | ask / workspace 询问；unrestricted 放行；plan 拒绝 |
 
-沙箱可用要求 `exec::probe()` 同时发现 Landlock 和 seccomp。auto 不授予 bash 网络权限；沙箱不可用而降级到
+沙箱可用要求 `exec::probe()` 同时发现 Landlock 和 seccomp。workspace 不授予 bash 网络权限；沙箱不可用而降级到
 `full_access` 时不能再依赖网络或文件系统隔离。具体限制见 [exec](exec.md)。
+
+`read_only` 与三档正交：写入、非只读 bash 和 external 都走策略拒绝，已知只读 bash 强制 read_only 沙箱。
+plan 在此基础上给出规划专用反馈，使模型改为调研和提案而不结束本轮。`mkfs*`、裸写块设备、大范围 `rm -rf`、
+关机重启、对根/HOME 的递归 chmod/chown、下载后直接 pipe 到 shell 会在全部模式中直接拒绝。
 
 ### Approver 与会话授权
 
 `Approval` 携带 call id、工具名、Intent、询问原因、可记住的规则文本和是否可提供联网选项。
 `Decision` 支持单次允许、会话允许、拒绝、拒绝附说明；执行前记录用户回答。Approver 应在 stop 后立即结束等待，
-核心按取消处理而非普通拒绝。run 模式传空 Approver，Policy 的 auto / deny 足以决策。
+核心按取消处理而非普通拒绝。run 模式传空 Approver；需要询问的操作得到策略拒绝结果并让本轮继续。
 
 | 授权 | 记住什么 |
 | --- | --- |
@@ -286,8 +292,17 @@ Policy 是纯逻辑，不弹窗、不读配置。它依据 `Intent` 的规范化
 bash 有命令替换等不可静态判断结构时不提供前缀授权。匹配时每条命令必须只读、为 `cd`，或命中已记住的前缀；
 例如授权 `npm test` 不会自动允许后接的 `rm`。这些规则只在内存中，恢复或新建会话后清空。
 
-权限不是完整的敏感文件隔离：只读 bash 能读 `.env`，可写 bash 能改工作区内的 `.dagent`、`.mcp.json` 和 `.git`。
+权限不是完整的敏感文件隔离：只读 bash 能读 `.env`，可写 bash 能改工作区内的 `.git`。
 Landlock 的可写白名单不能在已放行的工作区内再排除它们；MCP 执行也不使用 bash 的沙箱。
+
+### Asker、ask 与 plan
+
+`Question` 带 2–4 个选项、单/多选和自由输入开关；`Answer` 保存下标、自由文本或取消。内置 `ask` 的 prepare
+生成交互 Intent，调度器直接调用 Asker 并把答案转成普通工具 Result/AskView，因此会话回放自然保留题目和选择。
+每轮第四次提问被拒；headless 没有 Asker 时返回说明，要求模型自行选择、声明假设并继续。
+
+plan = planning 状态 + read_only。`exit_plan(summary)` 的三个选项由核心固定：切 workspace 开始、切 ask 开始、
+或留在 plan 继续。取消结束本轮并保留 plan。headless 的 exit_plan 返回无法确认的工具错误，模型仍可给出最终方案。
 
 ## 8. 上下文预算与压缩
 
@@ -356,9 +371,10 @@ target  = limit × compaction_target_percent / 100
 
 ## 9. 提示词与环境快照
 
-[system.md](../../prompts/system.md) 和 [compact.md](../../prompts/compact.md) 由 CMake 嵌入二进制，改动后下一次构建
-自动重新配置。`system_prompt_file` 可覆盖主模板；入口读好内容放进 Setup，路径规则见 [app](app.md)。
-摘要模板使用内置版本。模板都经 workspace 的 inja 渲染，模板错误或覆盖文件读取失败会使启动失败。
+[system.md](../../home/system.md) 和 [compact.md](../../home/compact.md) 位于安装根，由入口在创建或恢复会话前
+读取到 Setup。`config.json` 的 `prompts.system` 与 `prompts.compact` 可以改名或指向其它文件，相对路径规则见
+[app](app.md)。提示词不再编入二进制，修改后下一次会话立即生效。模板都经 workspace 的 inja 渲染，模板错误
+或文件读取失败会使启动失败。
 
 system 在创建或恢复时渲染一次，之后不随日期、git 状态或权限切换改写，保持前缀稳定。变量包括：
 
@@ -381,7 +397,7 @@ compact 模板保留六段结构，标题为 `User requests`、`Decisions made`�
 
 ## 10. 会话记录与恢复
 
-[session](session.md) 负责信封、JSONL、脱敏、blob 和尾部恢复；`Recorder` 定义 payload，且只追加写入。
+[session](session.md) 负责 SQLite 顺序事件、脱敏和崩溃标记；`Recorder` 定义 payload，且只追加写入。
 消息序号 `n` 与 session 的事件序号 `seq` 不同：只有 user / assistant / tool 消耗 n，权限与压缩事件不消耗。
 
 | type | payload 的主要字段 |
@@ -414,10 +430,10 @@ usage 内字段是 `prompt, completion, cached`，避免被 session 按 `token` 
 恢复后使用当前配置重新渲染 system、写新的 system 记录；模型与最近 system 记录（旧记录回落到 meta）不同会提示。system 记录包含当前模型名，
 回放发出 ModelChanged 更新后续消息的模型标签。
 FileTracker 和会话授权均从空开始，MCP 重新连接；旧读取状态不能用于覆盖已被外部改动的文件。
-不认识的 schema、不一致历史或关闭 `record_payloads` 的记录直接报错，不猜测修复。
+不认识的 schema 或不一致历史直接报错，不猜测修复。
 
-`resolve_session_id` 只搜索当前项目，接受完整 id 或唯一前缀，歧义时列候选；完整 id 也不能跨项目恢复。
-`--continue` 选当前项目最近更新的会话。标题来自首条用户输入第一行，截到 60 个字符，列表再按显示宽度排版。
+`resolve_session_id` 只搜索当前规范化 cwd，接受完整 id 或唯一前缀，歧义时列候选；完整 id 也不能跨 cwd 恢复。
+`--continue` 选当前 cwd 最近更新的会话。标题来自首条用户输入第一行，截到 60 个字符，列表再按显示宽度排版。
 
 ## 11. MCP 生命周期
 
@@ -457,19 +473,18 @@ stateDiagram-v2
 ## 12. 配置装配与非交互入口
 
 `Setup` 是 Agent 的全部输入，包含 `Options`、`ProviderConfig`、HTTP、工作区与项目根、外围 Options、MCP server
-列表、沙箱探测结果、权限模式及可选 system 模板文本。Agent 不读配置文件；配置优先级与密钥归 app 管理。
+列表、沙箱探测结果、权限模式、只读/plan 状态及两份提示词文本。Agent 不读配置文件；安装根与密钥归 app 管理。
 
-`main` 在任何线程创建前安装信号处理，然后解析参数、读取配置与密钥、初始化日志，分派四种模式：
+`main` 在任何线程创建前安装信号处理，然后解析参数、读取安装根中的配置、初始化日志，分派三种模式：
 
 | 模式 | 入口行为 |
 | --- | --- |
-| 交互 | 进入全屏前询问信任未受信任的项目配置，确认后重新加载；调用 `ui::run_interactive` |
-| `run` | 新建或恢复会话，使用 auto / deny 完成一轮后退出 |
-| `sessions` | 列当前项目最近 20 个会话，本地时间、50 列标题、完整 id |
-| `trust` | 信任指定目录所属项目，供之后配置加载使用 |
+| 交互 | 新建或恢复会话，调用 `ui::run_interactive` |
+| `run` | 新建或恢复会话，按三档权限、`--read-only` / `--plan` 完成一轮后退出 |
+| `sessions` | 精确列当前 cwd 最近 20 个会话，本地时间、50 列标题、完整 id |
 
-进程不 chdir；所有模块显式接收 `Args::cwd`。交互权限固定从 ask 开始；run 优先用 `--permissions`，再用配置，
-默认 auto。交互强制关闭日志的 `also_stderr`，避免污染全屏；run 沿用配置。
+进程不 chdir；所有模块显式接收 `Args::cwd`。权限优先用 `--permissions`，再用配置，默认 workspace。
+交互强制关闭日志的 `also_stderr`，避免污染全屏；run 沿用配置。
 
 ### 输出格式
 
@@ -497,15 +512,15 @@ exec 在子进程中清空信号屏蔽，工具的 SIGTERM 清理因此仍然有
 
 | 情况 | 退出码 |
 | --- | --- |
-| run 的 done；正常关闭交互；列表与信任成功 | 0 |
+| run 的 done；正常关闭交互；列表成功 | 0 |
 | run 的 failed / limit / denied，启动失败，jsonl 写出失败，交互工作线程异常 | 1 |
 | 参数或配置错误 | 2 |
 | run 被信号中断，或交互因进程中断信号退出 | 130 |
 
 ## 13. 当前范围
 
-当前提供单会话、每轮单模型的文本编码 Agent（空闲时可用 `/model` 在同一会话切换），支持六个内置工具、MCP tools、非交互与终端前端、记录恢复和上下文压缩。
-尚未实现子 Agent、多模型路由、图片输入、web_fetch、todo 工具、hooks、插件、自定义斜杠命令或会话搜索索引。
+当前提供单会话、每轮单模型的文本编码 Agent（空闲时可用 `/model` 在同一会话切换），支持 read/write/edit/bash/grep/glob/todo/ask/exit_plan、MCP tools、非交互与终端前端、记录恢复和上下文压缩。
+尚未实现子 Agent、多模型路由、图片输入、web_fetch、hooks、插件或会话全文搜索。
 编解码器目前只有 OpenAI Chat Completions，MCP 的协议限制见其模块文档。
 
 构建与真实功能验证约定见 [文档索引](../README.md)。开发模型为本地 Qwen3.8-Flash-Next；文档和实现不依赖

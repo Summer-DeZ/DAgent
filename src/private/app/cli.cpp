@@ -91,8 +91,6 @@ std::variant<Args, int> parse_args(int argc, char** argv) {
 
     std::string cwd;
     app.add_option("-C,--cwd", cwd, "working directory (default: current)")->check(CLI::ExistingDirectory);
-    std::string config_file;
-    app.add_option("-c,--config", config_file, "explicit config file")->check(CLI::ExistingFile);
     std::vector<std::string> set_values;
     // allow_extra_args(false)：每次出现只取一个值、可以重复；否则后面的提示词会被当成它的值吞掉。
     app.add_option("--set", set_values, "override config: key=value, repeatable; keys are dot-separated (literal dots in keys are unsupported)")
@@ -108,6 +106,13 @@ std::variant<Args, int> parse_args(int argc, char** argv) {
     resume_option->excludes(continue_option);
     std::string log_level;
     app.add_option("--log-level", log_level, "log level");
+    std::string permissions;
+    app.add_option("--permissions", permissions, "permission mode: ask / workspace / unrestricted")
+        ->check(CLI::IsMember({"ask", "workspace", "unrestricted"}));
+    bool read_only = false;
+    app.add_flag("--read-only", read_only, "reject writes and state-changing commands");
+    bool plan = false;
+    app.add_flag("--plan", plan, "start in read-only planning mode");
     std::vector<std::string> prompt_words;
     app.add_option("prompt", prompt_words, "open the interactive interface; use the optional prompt as the first message")
         ->type_name("PROMPT");
@@ -116,9 +121,6 @@ std::variant<Args, int> parse_args(int argc, char** argv) {
     run->fallthrough(); // 通用选项写在子命令后面也认
     std::vector<std::string> run_words;
     run->add_option("run_prompt", run_words, "prompt (also accepted via stdin)")->type_name("PROMPT");
-    std::string permissions;
-    run->add_option("--permissions", permissions, "policy without interactive approval: auto / deny")
-        ->check(CLI::IsMember({"auto", "deny"}));
     std::string output = "text";
     run->add_option("--output", output, "output format")
         ->check(CLI::IsMember({"text", "json", "jsonl"}))
@@ -127,14 +129,7 @@ std::variant<Args, int> parse_args(int argc, char** argv) {
     CLI::App* sessions = app.add_subcommand("sessions", "list recent sessions");
     sessions->fallthrough();
 
-    CLI::App* trust = app.add_subcommand("trust", "trust this directory's project: load its .dagent/config.json and .mcp.json");
-    trust->fallthrough();
-    std::string trust_dir;
-    trust->add_option("dir", trust_dir, "directory to trust (default: current; stored by its git root)")
-        ->check(CLI::ExistingDirectory)
-        ->type_name("DIR");
-
-    // 最多一个子命令：进入子命令之后，提示词里再出现 run/sessions/trust 也只是普通的词。
+    // 最多一个子命令：进入子命令之后，提示词里再出现 run/sessions 也只是普通的词。
     app.require_subcommand(0, 1);
 
     try {
@@ -152,7 +147,7 @@ std::variant<Args, int> parse_args(int argc, char** argv) {
 
     // `dagent 修一下 run 的测试` 这种没加引号的提示词里带了子命令名：CLI11 会切进子命令、丢掉前面的词，
     // 意图说不清，直接报错让用户加引号。
-    if (!prompt_words.empty() && (run->parsed() || sessions->parsed() || trust->parsed())) {
+    if (!prompt_words.empty() && (run->parsed() || sessions->parsed())) {
         std::cerr << "prompt contains a subcommand name; quote the prompt, e.g. dagent \"" << join_words(prompt_words)
                   << " …\"\n";
         return 2;
@@ -164,27 +159,24 @@ std::variant<Args, int> parse_args(int argc, char** argv) {
         args.prompt = join_words(run_words);
     } else if (sessions->parsed()) {
         args.mode = Mode::sessions;
-    } else if (trust->parsed()) {
-        args.mode = Mode::trust;
     } else {
         args.mode = Mode::interactive;
         args.prompt = join_words(prompt_words);
     }
     if (!permissions.empty()) args.permissions = permissions;
+    args.read_only = read_only;
+    args.plan = plan;
     if (output == "json") args.output = OutputFormat::json;
     else if (output == "jsonl") args.output = OutputFormat::jsonl;
 
     args.cwd = cwd.empty() ? fs::current_path() : make_absolute(cwd);
-    if (!trust_dir.empty()) args.cwd = make_absolute(trust_dir);
-    if (!config_file.empty()) args.config_file = make_absolute(config_file);
     args.overrides = collect_overrides(argc, argv);
     if (!resume.empty()) args.resume_id = resume;
     args.continue_last = continue_last;
     if (!log_level.empty()) args.log_level = log_level;
 
-    if ((args.mode == Mode::sessions || args.mode == Mode::trust) &&
-        (args.resume_id || args.continue_last)) {
-        std::cerr << "sessions / trust cannot be combined with --resume / --continue\n";
+    if (args.mode == Mode::sessions && (args.resume_id || args.continue_last)) {
+        std::cerr << "sessions cannot be combined with --resume / --continue\n";
         return 2;
     }
 

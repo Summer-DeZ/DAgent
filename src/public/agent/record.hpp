@@ -66,7 +66,7 @@ Restored replay_into(const session::Options&, std::string_view id, const Sink& s
 std::string session_title(const nlohmann::json& first_events);
 
 /// @brief 在当前项目的会话中解析完整 id 或唯一前缀；prefix 为空时选择最近会话。
-std::string resolve_session_id(const session::Options&, const std::filesystem::path& project_root,
+std::string resolve_session_id(const session::Options&, const std::filesystem::path& cwd,
                                std::optional<std::string_view> prefix);
 
 } // namespace dagent::agent

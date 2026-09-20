@@ -166,8 +166,8 @@ server 重启后会对旧会话回 404。带会话的请求收到 404 时：同�
 
 - 没有第三方库，JSON-RPC 直接用 nlohmann 组装。`clientInfo.version` 取编译宏 `DAGENT_VERSION`
   （根 `CMakeLists.txt` 的 `PROJECT_VERSION`）。
-- `.mcp.json` 的解析和 `${VAR}` 占位符展开属于 app，本模块只认 `ServerConfig`（见 [app 设计文档](app.md)）。
-- 选项对应 `config/dagent.json` 的 `mcp` 段（`connect_timeout_ms`、`probe_timeout_ms`）；子进程和 HTTP
+- `config.json` 中 `mcp.servers` 的解析和 `${VAR}` 占位符展开属于 app，本模块只认 `ServerConfig`。
+- 选项对应 `config.json` 的 `mcp` 段（`connect_timeout_ms`、`probe_timeout_ms`）；子进程和 HTTP
   部分沿用 `process`、`http` 段。
 - 实测过的真实 server：`npx` 的 filesystem / everything、`uvx mcp-server-time`，以及用官方 Python SDK v1（经典）
   和 v2（现代）写的 server；复现需要本机有 `npx`、`uvx`、`uv`。

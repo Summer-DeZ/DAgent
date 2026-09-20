@@ -75,9 +75,23 @@ struct TodoView {
     bool operator==(const TodoView&) const = default;
 };
 
+struct AskOption {
+    std::string label, description;
+};
+
+struct AskView {
+    std::string header, prompt;
+    std::vector<AskOption> options;
+    std::vector<int> selected;
+    std::string other;
+    bool multi_select = false;
+    bool allow_other = true;
+    bool cancelled = false;
+};
+
 /// monostate：prepare 阶段就失败的调用（参数错误等），界面只显示 text。
 using View = std::variant<std::monostate, ReadView, FileChangeView, BashView, GrepView, GlobView,
-                          McpView, TodoView>;
+                          McpView, TodoView, AskView>;
 
 /// 序列化成 {"kind": "read", ...}，给 session::Writer::append；kind 区分各分支。
 nlohmann::json to_json(const View&);

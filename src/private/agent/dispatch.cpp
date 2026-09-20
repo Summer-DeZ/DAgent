@@ -49,7 +49,8 @@ std::string available_tools(const tools::Registry& registry) {
 } // namespace
 
 Agent::DispatchOutcome Agent::dispatch(const std::vector<ToolCall>& calls, int budget, const Sink& sink,
-                                       const Approver& approver, std::stop_token stop) {
+                                       const Approver& approver, const Asker& asker,
+                                       std::stop_token stop) {
     struct Slot {
         const ToolCall* call = nullptr;
         std::string summary;
@@ -153,13 +154,20 @@ Agent::DispatchOutcome Agent::dispatch(const std::vector<ToolCall>& calls, int b
 
         auto prepared = tool->prepare(slot.call->arguments, tool_ctx_);
         std::optional<Verdict> verdict;
-        if (prepared) verdict = policy_.evaluate(*slot.call, prepared.value()->intent());
+        const auto interactive = [&] {
+            if (!prepared) return false;
+            const auto kind = prepared.value()->intent().kind;
+            return kind == tools::Intent::Kind::ask || kind == tools::Intent::Kind::exit_plan;
+        };
+        if (prepared && !interactive()) verdict = policy_.evaluate(*slot.call, prepared.value()->intent());
         // 这个调用进不了并行组：先跑完挂起的组，再重新 prepare（prepare 无副作用，docs/design/agent.md §6）。
-        if (!group.empty() && !(prepared && parallel(*verdict, prepared.value()->intent()))) {
+        if (!group.empty() && !(prepared && verdict && parallel(*verdict, prepared.value()->intent()))) {
             run_group();
             prepared = tool->prepare(slot.call->arguments, tool_ctx_);
             verdict.reset();
-            if (prepared) verdict = policy_.evaluate(*slot.call, prepared.value()->intent());
+            if (prepared && prepared.value()->intent().kind != tools::Intent::Kind::ask &&
+                prepared.value()->intent().kind != tools::Intent::Kind::exit_plan)
+                verdict = policy_.evaluate(*slot.call, prepared.value()->intent());
         }
         if (!prepared) {
             slot.result = std::move(prepared.error());
@@ -167,6 +175,97 @@ Agent::DispatchOutcome Agent::dispatch(const std::vector<ToolCall>& calls, int b
             continue;
         }
         slot.summary = prepared.value()->intent().summary; // 以最后一次 prepare 的 Intent 为准
+
+        if (prepared.value()->intent().kind == tools::Intent::Kind::ask) {
+            sink(ToolStarted{slot.call->id, slot.call->name, slot.summary, {}});
+            tools::AskView view = prepared.value()->intent().ask;
+            if (++questions_this_turn_ > 3) {
+                slot.result = make_result(
+                    "Question limit reached for this turn. Make the most reasonable choice, state the assumption, and continue.",
+                    true, false);
+                slot.result->display = view;
+            } else if (!asker) {
+                slot.result = make_result(
+                    "Non-interactive run: cannot ask the user. Pick the most reasonable option, state the assumption you made, and continue.",
+                    true, false);
+                slot.result->display = view;
+            } else {
+                Question question;
+                question.call_id = slot.call->id;
+                question.header = view.header;
+                question.prompt = view.prompt;
+                question.multi_select = view.multi_select;
+                question.allow_other = view.allow_other;
+                for (const auto& option : view.options)
+                    question.options.push_back({option.label, option.description});
+                const Answer answer = asker(question, stop);
+                view.selected = answer.selected;
+                view.other = answer.other;
+                view.cancelled = answer.cancelled;
+                if (answer.cancelled || stop.stop_requested()) {
+                    outcome.stop = DispatchOutcome::Stop::interrupted;
+                    slot.result = make_result("The user cancelled the question.", false, true);
+                } else {
+                    std::string choices;
+                    for (const int index : answer.selected) {
+                        if (index < 0 || static_cast<std::size_t>(index) >= view.options.size()) continue;
+                        if (!choices.empty()) choices += ", ";
+                        choices += view.options[static_cast<std::size_t>(index)].label;
+                    }
+                    if (!answer.other.empty()) {
+                        if (!choices.empty()) choices += ", ";
+                        choices += answer.other;
+                    }
+                    slot.result = make_result("User chose: " + choices, false, false);
+                }
+                slot.result->display = std::move(view);
+            }
+            commit();
+            continue;
+        }
+
+        if (prepared.value()->intent().kind == tools::Intent::Kind::exit_plan) {
+            sink(ToolStarted{slot.call->id, slot.call->name, slot.summary, {}});
+            tools::AskView view = prepared.value()->intent().ask;
+            if (!policy_.planning()) {
+                slot.result = make_result("exit_plan is only available while planning.", true, false);
+            } else if (!asker) {
+                slot.result = make_result(
+                    "Non-interactive planning run: the plan cannot be confirmed. Present the final plan and stop without making changes.",
+                    true, false);
+                slot.result->display = view;
+            } else {
+                Question question;
+                question.call_id = slot.call->id;
+                question.header = view.header;
+                question.prompt = view.prompt;
+                question.allow_other = false;
+                for (const auto& option : view.options)
+                    question.options.push_back({option.label, option.description});
+                const Answer answer = asker(question, stop);
+                view.selected = answer.selected;
+                view.cancelled = answer.cancelled;
+                if (answer.cancelled || stop.stop_requested()) {
+                    outcome.stop = DispatchOutcome::Stop::interrupted;
+                    slot.result = make_result("Plan confirmation was cancelled.", false, true);
+                } else if (answer.selected.empty() || answer.selected.front() == 2) {
+                    slot.result = make_result("Continue planning. Refine the proposal and submit it again when ready.", false, false);
+                } else {
+                    const PermissionMode next = answer.selected.front() == 0
+                                                    ? PermissionMode::workspace
+                                                    : PermissionMode::ask;
+                    policy_.set_mode(next);
+                    policy_.set_planning(false);
+                    policy_.set_read_only(setup_.read_only);
+                    sink(ModeChanged{std::string(to_string(next)), false});
+                    slot.result = make_result("Plan accepted. Begin implementation now.", false, false);
+                }
+                slot.result->display = std::move(view);
+            }
+            commit();
+            continue;
+        }
+
         const Verdict& v = *verdict;
         log_agent()->debug("工具调用 {}：{} → {}", slot.call->name, slot.summary,
                            v.kind == Verdict::Kind::allow    ? "allow"

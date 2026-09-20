@@ -2,7 +2,10 @@
 
 #include <tree_sitter/api.h>
 
+#include <algorithm>
 #include <cstdint>
+#include <cstdlib>
+#include <filesystem>
 #include <optional>
 #include <string>
 #include <string_view>
@@ -366,6 +369,73 @@ bool is_known_readonly(const Analysis& analysis) {
         if (!is_readonly_command(command.argv)) return false;
     }
     return true;
+}
+
+bool is_dangerous(std::string_view source) {
+    const Analysis analysis = analyze(source);
+    const auto basename = [](std::string_view value) {
+        const auto slash = value.rfind('/');
+        return slash == std::string_view::npos ? value : value.substr(slash + 1);
+    };
+    const auto recursive_force = [](const std::vector<std::string>& argv) {
+        bool recursive = false, force = false;
+        for (std::size_t i = 1; i < argv.size(); ++i) {
+            const std::string_view arg = argv[i];
+            recursive = recursive || arg == "--recursive" ||
+                        (arg.starts_with('-') && !arg.starts_with("--") && arg.find('r') != std::string_view::npos);
+            force = force || arg == "--force" ||
+                    (arg.starts_with('-') && !arg.starts_with("--") && arg.find('f') != std::string_view::npos);
+        }
+        return recursive && force;
+    };
+    const char* home = std::getenv("HOME");
+    const auto broad_target = [home](std::string_view raw) {
+        if (raw == "/" || raw == "~" || raw == "$HOME" || raw == "${HOME}") return true;
+        if (home != nullptr && raw == home) return true;
+        if (!raw.starts_with('/')) return false;
+        std::filesystem::path path(raw);
+        return static_cast<int>(std::distance(path.begin(), path.end())) <= 2;
+    };
+    const auto device = [](std::string_view value) {
+        return value.starts_with("/dev/sd") || value.starts_with("/dev/nvme") ||
+               value.starts_with("/dev/vd") || value.starts_with("/dev/mmcblk");
+    };
+    const bool raw_device = source.find("/dev/sd") != std::string_view::npos ||
+                            source.find("/dev/nvme") != std::string_view::npos ||
+                            source.find("/dev/vd") != std::string_view::npos ||
+                            source.find("/dev/mmcblk") != std::string_view::npos;
+    if (raw_device && source.find('>') != std::string_view::npos) return true;
+
+    bool downloader = false, shell = false;
+    for (const SimpleCommand& command : analysis.commands) {
+        if (command.argv.empty()) continue;
+        const std::string_view name = basename(command.argv.front());
+        if (name.starts_with("mkfs")) return true;
+        if (name == "shutdown" || name == "reboot" || name == "halt" || name == "poweroff") return true;
+        downloader = downloader || name == "curl" || name == "wget";
+        shell = shell || name == "sh" || name == "bash";
+
+        if (name == "dd") {
+            for (const std::string& arg : command.argv)
+                if (arg.starts_with("of=") && device(std::string_view(arg).substr(3))) return true;
+        }
+        if ((name == "tee" || name == "cp" || name == "mv" || name == "install") &&
+            std::ranges::any_of(command.argv, [&](const std::string& arg) { return device(arg); })) return true;
+        if (name == "rm" && recursive_force(command.argv)) {
+            if (source.find("$HOME") != std::string_view::npos ||
+                source.find("${HOME}") != std::string_view::npos) return true;
+            for (std::size_t i = 1; i < command.argv.size(); ++i)
+                if (!command.argv[i].starts_with('-') && broad_target(command.argv[i])) return true;
+        }
+        if ((name == "chmod" || name == "chown") &&
+            std::ranges::any_of(command.argv, [](const std::string& arg) {
+                return arg == "-R" || arg == "--recursive";
+            })) {
+            for (std::size_t i = 1; i < command.argv.size(); ++i)
+                if (!command.argv[i].starts_with('-') && broad_target(command.argv[i])) return true;
+        }
+    }
+    return downloader && shell && source.find('|') != std::string_view::npos;
 }
 
 } // namespace dagent::exec

@@ -130,18 +130,6 @@ std::vector<Instructions> collect_instructions(const fs::path& cwd,
                                                const std::optional<fs::path>& repo_root,
                                                const ContextOptions& opt) {
     std::vector<fs::path> candidates;
-    fs::path config_home;
-    if (const char* xdg = std::getenv("XDG_CONFIG_HOME"); xdg != nullptr && *xdg != '\0') {
-        config_home = xdg;
-    } else if (const char* home = std::getenv("HOME"); home != nullptr && *home != '\0') {
-        config_home = fs::path(home) / ".config";
-    }
-    if (!config_home.empty()) {
-        for (const std::string& name : opt.instruction_files) {
-            candidates.push_back(config_home / "dagent" / name);
-        }
-    }
-
     const fs::path top = repo_root ? *repo_root : cwd;
     std::vector<fs::path> dirs;
     for (fs::path dir = cwd;; dir = dir.parent_path()) {

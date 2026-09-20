@@ -21,6 +21,7 @@ constexpr std::string_view kGrep = "grep";
 constexpr std::string_view kGlob = "glob";
 constexpr std::string_view kMcp = "mcp";
 constexpr std::string_view kTodo = "todo";
+constexpr std::string_view kAsk = "ask";
 
 } // namespace
 
@@ -50,6 +51,9 @@ inline void from_json(const nlohmann::json& j, TodoItem& item) {
 }
 
 NLOHMANN_DEFINE_TYPE_NON_INTRUSIVE_WITH_DEFAULT(TodoView, items)
+NLOHMANN_DEFINE_TYPE_NON_INTRUSIVE_WITH_DEFAULT(AskOption, label, description)
+NLOHMANN_DEFINE_TYPE_NON_INTRUSIVE_WITH_DEFAULT(AskView, header, prompt, options, selected, other,
+                                                multi_select, allow_other, cancelled)
 
 // BashView 的 exit_code / signal 是 std::optional<int>：本项目用的 nlohmann 开着隐式转换，
 // 这份配置不提供 optional 的序列化，BashView 手写（缺字段取默认值，null 表示没有）。
@@ -91,6 +95,7 @@ json to_json(const View& view) {
                    [&](const GlobView& v) { out = json{{"kind", kGlob}}; out.update(json(v)); },
                    [&](const McpView& v) { out = json{{"kind", kMcp}}; out.update(json(v)); },
                    [&](const TodoView& v) { out = json{{"kind", kTodo}}; out.update(json(v)); },
+                   [&](const AskView& v) { out = json{{"kind", kAsk}}; out.update(json(v)); },
                },
                view);
     return out;
@@ -109,6 +114,7 @@ View view_from_json(const json& data) {
         if (name == kGlob) return data.get<GlobView>();
         if (name == kMcp) return data.get<McpView>();
         if (name == kTodo) return data.get<TodoView>();
+        if (name == kAsk) return data.get<AskView>();
     } catch (const json::exception&) {
         return {}; // 会话文件损坏的条目按 monostate 显示
     }

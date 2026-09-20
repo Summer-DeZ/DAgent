@@ -47,7 +47,8 @@ struct Options {
     ContextOptions context;
     Limits run;
     ProgressOptions progress;
-    PermissionMode permissions = PermissionMode::automatic; ///< 只作用于 run 模式（docs/design/agent.md §7）
+    PermissionMode permissions = PermissionMode::workspace;
+    bool read_only = false;
 };
 
 /// @brief 一个 Agent 需要的全部输入（docs/design/agent.md §12）。
@@ -74,8 +75,11 @@ struct Setup {
 
     // 运行环境
     exec::Support sandbox;                              ///< exec::probe()，启动时探测一次
-    PermissionMode permission_mode = PermissionMode::ask; ///< 交互：ask；run：--permissions 或配置
-    std::optional<std::string> system_prompt_override;  ///< system_prompt_file 的内容，已读好
+    PermissionMode permission_mode = PermissionMode::workspace; ///< --permissions 或 config.json
+    bool read_only = false;
+    bool planning = false;
+    std::string system_prompt;  ///< home/system.md 或配置指定文件的内容
+    std::string compact_prompt; ///< home/compact.md 或配置指定文件的内容
 };
 
 } // namespace dagent::agent

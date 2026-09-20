@@ -15,7 +15,7 @@ namespace dagent::base {
 
 /// @brief 日志选项，对应 config/dagent.json 的 "log" 段。级别会被环境变量 DAGENT_LOG 覆盖。
 struct LogOptions {
-    std::filesystem::path file;             ///< 为空时用 $XDG_STATE_HOME/dagent/logs/dagent.log
+    std::filesystem::path file;             ///< 入口固定为 <root>/logs/dagent-<pid>.log
     std::size_t max_file_bytes = 5 << 20;   ///< 单文件上限，写满后滚动
     std::size_t max_files = 3;              ///< 日志文件总数上限（含当前文件）
     std::string level = "info";             ///< 全局默认级别

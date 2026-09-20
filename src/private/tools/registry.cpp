@@ -61,6 +61,8 @@ void add_builtin(Registry& registry) {
     registry.add(detail::make_grep_tool());
     registry.add(detail::make_glob_tool());
     registry.add(detail::make_todo_tool());
+    registry.add(detail::make_ask_tool());
+    registry.add(detail::make_exit_plan_tool());
 }
 
 void add_mcp(Registry& registry, mcp::Client& client) {

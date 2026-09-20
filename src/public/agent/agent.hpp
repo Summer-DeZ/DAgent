@@ -39,13 +39,17 @@ public:
 
     /// @brief 一轮。阻塞到结束；除编程错误外不抛异常。
     TurnStatus run_turn(std::string input, const Sink& sink, const Approver& approver,
-                        std::stop_token stop);
+                        const Asker& asker, std::stop_token stop);
 
     /// @brief 手动摘要；不追加用户消息或 turn_end，通过返回值报告完成状态。
     TurnStatus compact(const Sink&, std::stop_token);
 
     /// @brief 权限模式（交互界面的 Shift+Tab）。线程安全，下一次决策生效；调用方保证对象仍存活。
     void set_permission_mode(PermissionMode mode);
+    void set_read_only(bool value);
+    bool read_only() const;
+    void set_plan_mode(bool value);
+    bool planning() const;
 
     /// @brief MCP 连接状态快照。线程安全，调用方保证 Agent 仍存活。
     std::vector<ServerState> mcp_states() const { return hub_.states(); }
@@ -64,7 +68,7 @@ private:
 
     std::vector<ToolDef> tool_defs() const;
     DispatchOutcome dispatch(const std::vector<ToolCall>& calls, int budget, const Sink&,
-                             const Approver&, std::stop_token);
+                             const Approver&, const Asker&, std::stop_token);
     TurnStatus finish(TurnStatus, std::string error, int steps, int calls, const Usage& total,
                       const Sink&);
     void keep_partial(const Reply&, const Sink&);
@@ -85,6 +89,7 @@ private:
     Compactor compactor_;
     std::string system_prompt_;
     bool broken_notified_ = false;
+    int questions_this_turn_ = 0;
 };
 
 } // namespace dagent::agent

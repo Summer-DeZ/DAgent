@@ -19,11 +19,9 @@
 
 namespace dagent::session {
 
-/// @brief 会话选项，对应 config/dagent.json 的 "session" 段。
+/// @brief 会话选项；数据库位置由安装根固定，只有记录与脱敏策略可配置。
 struct Options {
-    std::filesystem::path directory; ///< 为空时用 $XDG_DATA_HOME/dagent/sessions（默认 ~/.local/share/dagent/sessions）
-    bool record_payloads = true;
-    std::size_t max_inline_payload_bytes = 4096;
+    std::filesystem::path database;
     std::vector<std::string> redact_fields{"api_key", "authorization", "token"};
 };
 
@@ -31,7 +29,7 @@ struct Meta {
     std::string id;
     std::filesystem::path cwd, git_root;
     std::string model;
-    std::string created; ///< UTC ISO-8601，毫秒
+    std::string created; ///< UTC ISO-8601，毫秒（展示/兼容字段）
 };
 
 struct Summary {
@@ -55,7 +53,7 @@ private:
     Kind kind_;
 };
 
-/// @brief 只追加的会话写入器。创建/恢复后事件写到 `<目录>/YYYY/MM/DD/<id>/events.jsonl`。
+/// @brief SQLite 会话写入器；一轮事件在事务里提交。
 class Writer {
 public:
     static Writer create(const Options&, Meta meta);
@@ -67,7 +65,7 @@ public:
     Writer(const Writer&) = delete;
     Writer& operator=(const Writer&) = delete;
 
-    /// @brief 脱敏 → 超大字符串转 blob → 组装信封 → 单次 write 落盘。
+    /// @brief 脱敏后把 JSON payload 直接写入 events BLOB。
     void append(std::string_view type, nlohmann::json payload);
 
     /// @brief 刷盘；核心按自己的节奏调用（比如每轮结束），不是每行都 fsync。
@@ -81,12 +79,10 @@ private:
     std::unique_ptr<Impl> impl_;
 };
 
-/// @brief 列出会话，按更新时间倒序。title_of 收到文件开头几个已解析事件的数组（不含 meta 行）。
-std::vector<Summary> list(const Options&, const std::optional<std::filesystem::path>& project_root,
-                          std::size_t limit,
-                          const std::function<std::string(const nlohmann::json& first_events)>& title_of);
+/// @brief 按规范化 cwd 过滤并按更新时间倒序。
+std::vector<Summary> list(const Options&, const std::filesystem::path& cwd, std::size_t limit);
 
-/// @brief 回放一个会话；blob 引用还原成原文，最后一行写了一半就跳过并记 warn。
+/// @brief 按 seq 回放一个会话。
 void replay(const Options&, std::string_view id,
             const std::function<void(std::string_view type, const nlohmann::json& payload)>& on_event);
 

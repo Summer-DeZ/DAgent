@@ -18,8 +18,17 @@ FetchContent_Declare(tree-sitter
     GIT_REPOSITORY https://github.com/tree-sitter/tree-sitter
     GIT_TAG v0.27.0
     GIT_SHALLOW TRUE
+    SOURCE_SUBDIR _no_cmake
 )
 FetchContent_MakeAvailable(tree-sitter)
+file(GLOB TREE_SITTER_SOURCES CONFIGURE_DEPENDS ${tree-sitter_SOURCE_DIR}/lib/src/*.c)
+list(REMOVE_ITEM TREE_SITTER_SOURCES ${tree-sitter_SOURCE_DIR}/lib/src/lib.c)
+add_library(tree-sitter STATIC ${TREE_SITTER_SOURCES})
+target_include_directories(tree-sitter PRIVATE ${tree-sitter_SOURCE_DIR}/lib/src
+                                  PUBLIC ${tree-sitter_SOURCE_DIR}/lib/include)
+target_compile_definitions(tree-sitter PRIVATE
+    _POSIX_C_SOURCE=200112L _DEFAULT_SOURCE _BSD_SOURCE _DARWIN_C_SOURCE)
+set_target_properties(tree-sitter PROPERTIES C_STANDARD 11 POSITION_INDEPENDENT_CODE ON)
 
 # tree-sitter-bash 语法：只编译随 tag 发布的 parser.c/scanner.c。
 # 语法仓库自己的 CMake 会在构建时调用 tree-sitter CLI 重新生成 parser.c，

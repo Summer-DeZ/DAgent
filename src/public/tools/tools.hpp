@@ -48,13 +48,15 @@ struct Spec {
 
 /// @brief 工具打算做什么：权限决策的输入，只描述，不决策。
 struct Intent {
-    enum class Kind { read, write, exec, external }; ///< external：MCP 工具，语义未知
+    enum class Kind { read, write, exec, external, ask, exit_plan }; ///< external：MCP 工具，语义未知
     Kind kind = Kind::read;
     std::vector<workspace::Resolved> paths; ///< read/write 涉及的路径，带 inside_workspace
     std::string command;                    ///< exec：原始命令
     bool known_readonly = false;            ///< exec：exec::is_known_readonly 的结果
     std::string preview;                    ///< write/edit：unified diff，给确认对话框
     std::string summary;                    ///< 一行描述，如「编辑 src/a.cpp（+3 −1）」
+    AskView ask;                            ///< ask / exit_plan 的交互内容
+    std::string plan_summary;               ///< exit_plan：模型提交的方案
 };
 
 /// @brief 核心的决定，执行时传回。

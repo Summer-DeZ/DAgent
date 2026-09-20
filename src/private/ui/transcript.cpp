@@ -69,6 +69,8 @@ public:
         std::string first = "  ", next = "  ";
         if (block.meta == "user") first = next = width < 60 ? "▌" : "▌ ";
         else if (block.meta == "thought") style = theme.accent;
+        else if (block.meta == "msg.footer.error") style = theme.error;
+        else if (block.meta == "msg.footer.plan") style = theme.accent;
         else if (block.meta == "msg.footer") style = theme.text_muted;
         else if (block.meta == "thought.body") { // 与 Thought 标题同列，不再加符号
             style = theme.text_muted; style.attrs = style.attrs | tui::Attr::italic;
@@ -361,6 +363,19 @@ void Transcript::finished(const agent::ToolFinished& event) {
                 text(std::move(summary), "system.todo");
             }
             todo_complete_ = complete;
+        },
+        [&](const tools::AskView& v) {
+            name = v.header.empty() ? "Question" : v.header;
+            param = clean_field(v.prompt);
+            body = v.prompt + "\n";
+            for (std::size_t i = 0; i < v.options.size(); ++i) {
+                const bool chosen = std::ranges::find(v.selected, static_cast<int>(i)) != v.selected.end();
+                body += std::format("{} {} — {}\n", chosen ? "✓" : "○",
+                                    v.options[i].label, v.options[i].description);
+            }
+            if (!v.other.empty()) body += "✓ Other — " + v.other + "\n";
+            if (v.cancelled) body += "Cancelled\n";
+            rows = 8;
         }
     }, event.result.display);
     if (body.empty() && event.result.is_error) body = event.result.text;
@@ -432,7 +447,9 @@ void Transcript::apply(const agent::Event& event) {
                 if (live_step_ && !model_.empty()) {
                     const double seconds = std::chrono::duration<double>(
                         std::chrono::steady_clock::now() - turn_began_).count();
-                    text(format_text(ui::text().turn_footer, mode_, model_, seconds), "msg.footer");
+                    const std::string meta = mode_ == "unrestricted" ? "msg.footer.error"
+                                           : mode_ == "plan" ? "msg.footer.plan" : "msg.footer";
+                    text(format_text(ui::text().turn_footer, mode_, model_, seconds), meta);
                 }
                 break;
             }

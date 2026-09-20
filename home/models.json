@@ -1,0 +1,16 @@
+{
+  "default": "local",
+  "models": {
+    "local": {
+      "kind": "openai-chat",
+      "base_url": "http://127.0.0.1:10009/v1",
+      "model": "Qwen3.8-Flash-Next",
+      "max_tokens": 8192,
+      "temperature": 0,
+      "context_window": 262144,
+      "send_reasoning_content": false,
+      "include_usage": true,
+      "extra_body": { "chat_template_kwargs": { "enable_thinking": true } }
+    }
+  }
+}

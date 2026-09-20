@@ -10,6 +10,7 @@
 #include <string>
 #include <string_view>
 #include <variant>
+#include <vector>
 
 #include "agent/llm.hpp"
 #include "lib/nlohmann/json.hpp"
@@ -70,6 +71,7 @@ struct Compacted {
 };
 
 struct ModelChanged { std::string model; }; ///< 会话回放及切换时更新后续消息的模型标签
+struct ModeChanged { std::string mode; bool planning = false; };
 
 struct ContextUpdate {
     Usage usage;
@@ -91,7 +93,7 @@ struct TurnEnded {
 
 using Event = std::variant<TurnStarted, StepStarted, TextDelta, ReasoningDelta, StreamReset, ToolPending,
                            ToolStarted, ToolOutput, ToolFinished, Retrying, Compacted, ContextUpdate,
-                           Notice, ModelChanged, TurnEnded>;
+                           Notice, ModelChanged, ModeChanged, TurnEnded>;
 using Sink = std::function<void(const Event&)>;
 
 // ---- 权限询问 ----
@@ -112,6 +114,24 @@ struct Decision {
 };
 
 using Approver = std::function<Decision(const Approval&, std::stop_token)>;
+
+struct Question {
+    struct Option { std::string label, description; };
+    std::string call_id;
+    std::string header;
+    std::string prompt;
+    std::vector<Option> options;
+    bool multi_select = false;
+    bool allow_other = true;
+};
+
+struct Answer {
+    std::vector<int> selected;
+    std::string other;
+    bool cancelled = false;
+};
+
+using Asker = std::function<Answer(const Question&, std::stop_token)>;
 
 /// @brief 事件 → JSON（`--output jsonl` 的每一行）。
 nlohmann::json to_json(const Event&);

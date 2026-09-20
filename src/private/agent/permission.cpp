@@ -7,15 +7,12 @@
 #include <optional>
 #include <string_view>
 
-#include "base/log.hpp"
 #include "exec/shell.hpp"
 
 namespace dagent::agent {
 namespace {
 
 namespace fs = std::filesystem;
-
-std::shared_ptr<spdlog::logger> log_agent() { return base::logger("agent"); }
 
 bool starts_with(std::string_view text, std::string_view prefix) { return text.starts_with(prefix); }
 
@@ -80,15 +77,15 @@ std::vector<std::string> session_prefixes(const std::string& command) {
 std::string_view to_string(PermissionMode mode) {
     switch (mode) {
     case PermissionMode::ask: return "ask";
-    case PermissionMode::accept_edits: return "accept_edits";
-    case PermissionMode::automatic: return "auto";
-    case PermissionMode::deny: return "deny";
+    case PermissionMode::workspace: return "workspace";
+    case PermissionMode::unrestricted: return "unrestricted";
     }
-    return "auto";
+    return "workspace";
 }
 
-Policy::Policy(PermissionMode mode, exec::Support sandbox, fs::path workspace_root, fs::path project_root)
-    : mode_(mode), sandbox_(sandbox), workspace_root_(std::move(workspace_root)),
+Policy::Policy(PermissionMode mode, bool read_only, bool planning, exec::Support sandbox,
+               fs::path workspace_root, fs::path project_root)
+    : mode_(mode), read_only_(read_only || planning), planning_(planning), sandbox_(sandbox), workspace_root_(std::move(workspace_root)),
       project_root_(std::move(project_root)) {}
 
 bool Policy::inside_dir(const fs::path& path, const fs::path& dir) const {
@@ -98,7 +95,6 @@ bool Policy::inside_dir(const fs::path& path, const fs::path& dir) const {
 
 Policy::PathClass Policy::classify(const workspace::Resolved& resolved) const {
     const fs::path& path = resolved.path;
-    if (inside_dir(path, project_root_ / ".dagent") || path.filename() == ".mcp.json") return PathClass::guarded;
     for (const auto& part : path) {
         if (part == ".git") return PathClass::guarded;
         if (part == ".ssh" || part == ".gnupg") return PathClass::sensitive;
@@ -147,6 +143,9 @@ std::optional<bool> Policy::matches_session(const Approval& approval, const tool
         }
         return network;
     }
+    case tools::Intent::Kind::ask:
+    case tools::Intent::Kind::exit_plan:
+        return std::nullopt;
     }
     return std::nullopt;
 }
@@ -166,6 +165,42 @@ Verdict Policy::evaluate(const ToolCall& call, const tools::Intent& intent) cons
         verdict.kind = kind;
         return verdict;
     };
+
+    if (intent.kind == tools::Intent::Kind::exec && exec::is_dangerous(intent.command)) {
+        verdict.kind = Verdict::Kind::deny;
+        verdict.reason = "dangerous system-level command blocked by policy";
+        return verdict;
+    }
+
+    if (planning()) {
+        if (intent.kind == tools::Intent::Kind::exec && intent.known_readonly) {
+            verdict.grant.sandbox = exec::Mode::read_only;
+            return answer(Verdict::Kind::allow);
+        }
+        if (intent.kind != tools::Intent::Kind::read) {
+            verdict.kind = Verdict::Kind::deny;
+            verdict.reason = "Planning mode: research and propose only. Do not modify files or run state-changing commands. Explain what you would change and why, then submit the plan.";
+            return verdict;
+        }
+    } else if (read_only()) {
+        if (intent.kind == tools::Intent::Kind::exec && intent.known_readonly) {
+            verdict.grant.sandbox = exec::Mode::read_only;
+            return answer(Verdict::Kind::allow);
+        }
+        if (intent.kind != tools::Intent::Kind::read) {
+            verdict.kind = Verdict::Kind::deny;
+            verdict.reason = "read-only mode: writes, state-changing commands and external tools are disabled";
+            return verdict;
+        }
+    }
+
+    if (mode() == PermissionMode::unrestricted) {
+        if (intent.kind == tools::Intent::Kind::exec) {
+            verdict.grant.sandbox = exec::Mode::full_access;
+            verdict.grant.allow_network = true;
+        }
+        return answer(Verdict::Kind::allow);
+    }
 
     switch (intent.kind) {
     case tools::Intent::Kind::read:
@@ -227,6 +262,9 @@ Verdict Policy::evaluate(const ToolCall& call, const tools::Intent& intent) cons
         verdict.approval.session_rule = std::format("Allow {} for this session", call.name);
         verdict.kind = Verdict::Kind::ask;
         break;
+    case tools::Intent::Kind::ask:
+    case tools::Intent::Kind::exit_plan:
+        return answer(Verdict::Kind::allow);
     }
 
     if (verdict.kind != Verdict::Kind::ask) return verdict;
@@ -245,37 +283,35 @@ Verdict Policy::evaluate(const ToolCall& call, const tools::Intent& intent) cons
     switch (mode()) {
     case PermissionMode::ask:
         return verdict;
-    case PermissionMode::accept_edits:
+    case PermissionMode::workspace:
         if (intent.kind == tools::Intent::Kind::write && !has(PathClass::guarded) &&
             !has(PathClass::outside)) {
             return answer(Verdict::Kind::allow);
         }
+        if (intent.kind == tools::Intent::Kind::exec) {
+            const exec::Analysis analysis = exec::analyze(intent.command);
+            if (sandbox_.landlock_abi > 0 && sandbox_.seccomp && !analysis.has_opaque) {
+                verdict.grant = grant_for_exec();
+                return answer(Verdict::Kind::allow);
+            }
+        }
         return verdict;
-    case PermissionMode::automatic:
-        if (intent.kind == tools::Intent::Kind::write &&
-            (has(PathClass::guarded) || has(PathClass::outside))) {
-            verdict.kind = Verdict::Kind::deny;
-            verdict.reason = verdict.approval.reason;
-            return verdict;
-        }
-        if (intent.kind == tools::Intent::Kind::exec && !(sandbox_.landlock_abi > 0 && sandbox_.seccomp)) {
-            log_agent()->warn("沙箱不可用，命令以 full_access 运行：{}", intent.summary);
-            verdict.grant.sandbox = exec::Mode::full_access;
-        }
+    case PermissionMode::unrestricted:
         return answer(Verdict::Kind::allow);
-    case PermissionMode::deny:
-        verdict.kind = Verdict::Kind::deny;
-        verdict.reason = "read-only mode";
-        return verdict;
     }
     return verdict;
 }
 
 tools::Grant Policy::grant_for_exec() const {
     tools::Grant grant;
-    grant.sandbox = (sandbox_.landlock_abi > 0 && sandbox_.seccomp) ? exec::Mode::workspace_write
-                                                                   : exec::Mode::full_access;
-    grant.allow_network = false;
+    if (mode() == PermissionMode::unrestricted) {
+        grant.sandbox = exec::Mode::full_access;
+        grant.allow_network = true;
+    } else {
+        grant.sandbox = (sandbox_.landlock_abi > 0 && sandbox_.seccomp) ? exec::Mode::workspace_write
+                                                                       : exec::Mode::full_access;
+        grant.allow_network = false;
+    }
     return grant;
 }
 
@@ -312,12 +348,23 @@ void Policy::remember(const Approval& approval, const Decision& decision) {
             else rule->network = rule->network || decision.network;
         }
         return;
+    case tools::Intent::Kind::ask:
+    case tools::Intent::Kind::exit_plan:
+        return;
     }
 }
 
 void Policy::set_mode(PermissionMode mode) { mode_.store(mode); }
 
 PermissionMode Policy::mode() const { return mode_.load(); }
+
+void Policy::set_read_only(bool value) { read_only_.store(value); }
+
+bool Policy::read_only() const { return read_only_.load(); }
+
+void Policy::set_planning(bool value) { planning_.store(value); }
+
+bool Policy::planning() const { return planning_.load(); }
 
 bool parallel(const Verdict& verdict, const tools::Intent& intent) {
     if (verdict.kind != Verdict::Kind::allow) return false;

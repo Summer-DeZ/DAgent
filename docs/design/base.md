@@ -45,7 +45,7 @@ base::shutdown_log();                                    // 程序退出前
 
 | `LogOptions` 字段 | 默认值 | 说明 |
 | --- | --- | --- |
-| `file` | `$XDG_STATE_HOME/dagent/logs/dagent.log`（未设置时为 `~/.local/state/…`） | 所在目录不存在时自动创建 |
+| `file` | 入口设置为 `<root>/logs/dagent-<pid>.log` | 必填；所在目录不存在时自动创建 |
 | `max_file_bytes` | 5 MiB | 单个文件的上限，写满后滚动 |
 | `max_files` | 3 | 日志文件**总数**的上限，包括当前正在写的文件 |
 | `level` | `info` | 全局默认级别 |
@@ -71,6 +71,9 @@ DAGENT_LOG=net=debug,warn         # net 模块 debug，其余模块 warn
 
 ## 3. 密钥：Secrets
 
+这是 base 提供的通用解析工具；当前 app 不调用它，也不搜索任何 `.env` 文件。DAgent 的模型密钥只从安装根的
+`models.json` 读取，具体规则见 [app](app.md)。
+
 ```cpp
 const std::filesystem::path files[] = {root / ".env.dev", root / ".env"};
 const auto secrets = base::Secrets::load(files);
@@ -81,7 +84,7 @@ std::optional<std::string> key = secrets.get("DEEPSEEK_API_KEY");
 - `get` 先查进程环境变量，再查文件内容。
 - 不调用 `setenv`，文件里的值不会传给子进程。
 
-文件格式（仓库根目录的 `.env.example` 是可提交的样例）：
+文件格式：
 
 | 写法 | 结果 |
 | --- | --- |

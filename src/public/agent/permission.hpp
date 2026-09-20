@@ -20,13 +20,12 @@
 namespace dagent::agent {
 
 enum class PermissionMode {
-    ask,          ///< 交互界面默认：规则说「询问」就问
-    accept_edits, ///< 交互界面：工作区内的普通写入不再询问
-    automatic,    ///< run 模式默认（配置里写 "auto"）：「询问」变成允许，但有硬性拒绝
-    deny,         ///< run 模式：只读 agent
+    ask,
+    workspace,
+    unrestricted,
 };
 
-std::string_view to_string(PermissionMode); ///< "ask" / "accept_edits" / "auto" / "deny"
+std::string_view to_string(PermissionMode); ///< "ask" / "workspace" / "unrestricted"
 
 /// @brief 一次权限决策的结果。
 struct Verdict {
@@ -40,8 +39,8 @@ struct Verdict {
 /// @brief 按模式与规则表判定。线程安全：set_mode 是 atomic，下一次决策生效。
 class Policy {
 public:
-    Policy(PermissionMode mode, exec::Support sandbox, std::filesystem::path workspace_root,
-           std::filesystem::path project_root);
+    Policy(PermissionMode mode, bool read_only, bool planning, exec::Support sandbox,
+           std::filesystem::path workspace_root, std::filesystem::path project_root);
 
     Verdict evaluate(const ToolCall&, const tools::Intent&) const;
 
@@ -51,6 +50,10 @@ public:
 
     void set_mode(PermissionMode mode);
     PermissionMode mode() const;
+    void set_read_only(bool value);
+    bool read_only() const;
+    void set_planning(bool value);
+    bool planning() const;
 
 private:
     enum class PathClass { normal, sensitive, outside, guarded };
@@ -62,6 +65,8 @@ private:
     tools::Grant grant_for_exec() const;
 
     std::atomic<PermissionMode> mode_;
+    std::atomic<bool> read_only_;
+    std::atomic<bool> planning_;
     exec::Support sandbox_;
     std::filesystem::path workspace_root_, project_root_;
 

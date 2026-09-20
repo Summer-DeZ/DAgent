@@ -19,16 +19,14 @@ bool sandbox_available(const exec::Support& support) {
 }
 
 std::string render_prompt(const Setup& setup) {
-    const std::string_view tmpl = setup.system_prompt_override
-                                      ? std::string_view(*setup.system_prompt_override)
-                                      : builtin_system_prompt();
     const workspace::Environment env = workspace::collect_environment(setup.cwd);
     PromptVars vars;
     vars.model = setup.provider.model;
     vars.project_root = setup.project_root;
-    vars.sandbox = sandbox_available(setup.sandbox);
-    vars.permission_mode = std::string(to_string(setup.permission_mode));
-    return render_system_prompt(tmpl, env, vars);
+    vars.sandbox = sandbox_available(setup.sandbox) &&
+                   setup.permission_mode != PermissionMode::unrestricted;
+    vars.permission_mode = setup.planning ? "plan" : std::string(to_string(setup.permission_mode));
+    return render_system_prompt(setup.system_prompt, env, vars);
 }
 
 template <class... Ts>
@@ -50,16 +48,19 @@ Agent::Agent(Setup setup, std::string system_prompt, Recorder recorder, Conversa
       hub_(setup_.mcp_servers, setup_.mcp),
       registry_(),
       tool_ctx_(setup_.cwd, setup_.tools, setup_.files, setup_.search, setup_.process),
-      policy_(setup_.permission_mode, setup_.sandbox, setup_.cwd, setup_.project_root),
+      policy_(setup_.permission_mode, setup_.read_only, setup_.planning, setup_.sandbox,
+              setup_.cwd, setup_.project_root),
       model_([provider = setup_.provider] { return make_codec(provider); }, setup_.http,
              RetryOptions{setup_.options.run.max_model_retries},
              find_provider(setup_.provider.kind)->framing),
       conversation_(std::move(conversation)),
       estimator_(),
       compactor_(setup_.options.context, setup_.provider.max_tokens,
-                 workspace::render(builtin_compact_prompt(), nlohmann::json::object())),
+                 workspace::render(setup_.compact_prompt, nlohmann::json::object())),
       system_prompt_(std::move(system_prompt)) {
     tools::add_builtin(registry_);
+    if (setup_.permission_mode == PermissionMode::unrestricted && !sandbox_available(setup_.sandbox))
+        log_agent()->warn("sandbox support is unavailable; unrestricted commands run with full host access");
 }
 
 std::unique_ptr<Agent> Agent::resume(Setup setup, std::string_view session_id,
@@ -194,7 +195,8 @@ TurnStatus Agent::finish(TurnStatus status, std::string error, int steps, int ca
 }
 
 TurnStatus Agent::run_turn(std::string input, const Sink& sink, const Approver& approver,
-                           std::stop_token stop) {
+                           const Asker& asker, std::stop_token stop) {
+    questions_this_turn_ = 0;
     input = base::to_valid_utf8(input);
     const std::int64_t user_ordinal = conversation_.add_user(input);
     recorder_.user(user_ordinal, input);
@@ -292,7 +294,7 @@ TurnStatus Agent::run_turn(std::string input, const Sink& sink, const Approver& 
         }
 
         const DispatchOutcome outcome =
-            dispatch(reply.message.tool_calls, max_tool_calls - calls, sink, approver, stop);
+            dispatch(reply.message.tool_calls, max_tool_calls - calls, sink, approver, asker, stop);
         calls += outcome.handled;
         switch (outcome.stop) {
         case DispatchOutcome::Stop::interrupted:
@@ -325,6 +327,17 @@ TurnStatus Agent::compact(const Sink& sink, std::stop_token stop) {
 }
 
 void Agent::set_permission_mode(PermissionMode mode) { policy_.set_mode(mode); }
+
+void Agent::set_read_only(bool value) { policy_.set_read_only(value); }
+
+bool Agent::read_only() const { return policy_.read_only(); }
+
+void Agent::set_plan_mode(bool value) {
+    policy_.set_planning(value);
+    policy_.set_read_only(value || setup_.read_only);
+}
+
+bool Agent::planning() const { return policy_.planning(); }
 
 Agent::~Agent() { recorder_.sync(); }
 

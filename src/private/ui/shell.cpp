@@ -143,7 +143,8 @@ public:
           std::optional<std::filesystem::path> theme_file, bool resumed,
           const InteractiveOptions& options)
         : setup_(std::move(setup)), agent_(std::move(agent)), models_(options.models),
-          resolve_model_(options.resolve_model), themes_(std::move(themes)),
+          resolve_model_(options.resolve_model), mode_(setup_.permission_mode), planning_(setup_.planning),
+          themes_(std::move(themes)),
           theme_file_(std::move(theme_file)), root_(layout()), rt_(terminal_, root_),
           transcript_(scroll_->document(), [this](const tools::TodoView& value) { update_todo(value); }),
           prompt_(*input_, [this](std::string text) { submit(std::move(text)); },
@@ -258,6 +259,7 @@ private:
         add_command("session.interrupt", std::string(ui::text().cmd_interrupt), std::string(ui::text().cmd_session), "escape", {}, [this] { interrupt(); });
         add_command("session.cancel", std::string(ui::text().cmd_cancel), std::string(ui::text().cmd_session), "ctrl+c", {}, [this] { cancel(); });
         add_command("permission.cycle", std::string(ui::text().cmd_permission), std::string(ui::text().cmd_permission_group), "shift+tab", {}, [this] { cycle_permission(); });
+        add_command("mode.plan", "Toggle planning mode", std::string(ui::text().cmd_permission_group), "ctrl+g", "/plan", [this] { toggle_plan(); });
         add_command("tools.expand", std::string(ui::text().cmd_tools), std::string(ui::text().cmd_transcript), "ctrl+o", {}, [this] { transcript_.toggle_tools(); });
         add_command("thoughts.toggle", std::string(ui::text().cmd_thoughts), std::string(ui::text().cmd_transcript), "ctrl+r", {}, [this] { transcript_.toggle_thoughts(); });
         add_command("todo.toggle", std::string(ui::text().cmd_todo), std::string(ui::text().cmd_view), "ctrl+t", {}, [this] { toggle_todo(); });
@@ -377,6 +379,14 @@ private:
                     toast(e.text, e.level == agent::Notice::Level::warn
                                       ? tui::Notice::Severity::warn : tui::Notice::Severity::info);
             },
+            [&](const agent::ModeChanged& e) {
+                planning_ = e.planning;
+                mode_ = e.mode == "ask" ? agent::PermissionMode::ask
+                      : e.mode == "unrestricted" ? agent::PermissionMode::unrestricted
+                                                   : agent::PermissionMode::workspace;
+                transcript_.set_session(mode_label(), setup_.provider.model);
+                update_prompt_footer();
+            },
             [&](const agent::TurnEnded&) { dialog_.close(); busy(false); drain(); },
             [](const auto&) {}
         }, event);
@@ -398,11 +408,14 @@ private:
     }
     /// 输入框尾行与消息尾行共用同一份「模式 · 模型」。
     std::string mode_label() const {
-        return std::string(mode_ == agent::PermissionMode::accept_edits ? ui::text().status_auto_edit
-                                                                        : ui::text().status_ask);
+        if (planning_) return "plan";
+        if (mode_ == agent::PermissionMode::unrestricted) return "unrestricted";
+        return std::string(mode_ == agent::PermissionMode::workspace ? ui::text().status_auto_edit
+                                                                     : ui::text().status_ask);
     }
     void update_prompt_footer() {
         input_->set_footer(format_text(ui::text().box_footer, mode_label(), setup_.provider.model));
+        input_->set_footer_tone(!planning_ && mode_ == agent::PermissionMode::unrestricted, planning_);
     }
     static std::string mcp_label(const std::vector<agent::ServerState>& states) {
         if (states.empty()) return {};
@@ -452,6 +465,8 @@ private:
                 };
                 agent_->run_turn(text, sink, [this](const agent::Approval& approval, std::stop_token stop) {
                     return approve(rt_, dialog_, approval, stop);
+                }, [this](const agent::Question& question, std::stop_token stop) {
+                    return ask(rt_, dialog_, question, stop);
                 }, token);
             });
         }
@@ -481,12 +496,13 @@ private:
         busy(true);
         jobs_.push([this] {
             auto setup = setup_;
-            { std::lock_guard lock(agent_mutex_); setup.permission_mode = mode_; }
+            { std::lock_guard lock(agent_mutex_); setup.permission_mode = mode_; setup.planning = false; }
             auto next = agent::Agent::create(std::move(setup));
             std::string id = next->meta().id;
-            { std::lock_guard lock(agent_mutex_); next->set_permission_mode(mode_); agent_.swap(next); }
+            { std::lock_guard lock(agent_mutex_); next->set_permission_mode(mode_); next->set_plan_mode(false); agent_.swap(next); }
             rt_.post([this, id = std::move(id)] {
-                id_ = id; reset_transcript(); side_->set_title({});
+                id_ = id; planning_ = false; reset_transcript(); side_->set_title({});
+                transcript_.set_session(mode_label(), setup_.provider.model); update_prompt_footer();
                 refresh_project(); busy(false); drain();
             });
         });
@@ -497,7 +513,7 @@ private:
         jobs_.push([this, id = std::move(id)] {
             try {
                 std::vector<agent::Event> history;
-                auto setup = setup_; setup.permission_mode = mode_;
+                auto setup = setup_; setup.permission_mode = mode_; setup.planning = planning_;
                 auto next = agent::Agent::resume(setup, id, [&](const agent::Event& event) { history.push_back(event); });
                 { std::lock_guard lock(agent_mutex_); next->set_permission_mode(mode_); agent_.swap(next); }
                 rt_.post([this, id, history = std::move(history)]() mutable {
@@ -532,7 +548,7 @@ private:
         jobs_.push([this, name, setup = std::move(setup)]() mutable {
             try {
                 setup.provider = resolve_model_ ? resolve_model_(name) : models_.at(name);
-                { std::lock_guard lock(agent_mutex_); setup.permission_mode = mode_; }
+                { std::lock_guard lock(agent_mutex_); setup.permission_mode = mode_; setup.planning = planning_; }
                 std::vector<agent::Event> updates;
                 auto next = agent::Agent::resume(setup, id_, [&](const agent::Event& event) {
                     if (std::holds_alternative<agent::ContextUpdate>(event) ||
@@ -574,7 +590,7 @@ private:
         panel_.open(std::string(ui::text().panel_sessions), {{std::string(ui::text().panel_loading), {}, {}, false, {}}}, std::string(ui::text().panel_session_footer), false);
         jobs_.push([this] {
             try {
-                auto sessions = session::list(setup_.session, setup_.project_root, 50, agent::session_title);
+                auto sessions = session::list(setup_.session, setup_.cwd, 50);
                 rt_.post([this, sessions = std::move(sessions)]() mutable {
                     std::vector<Panel::Row> rows;
                     for (const auto& session : sessions) {
@@ -724,9 +740,18 @@ private:
     }
     void cycle_permission() {
         std::lock_guard lock(agent_mutex_);
-        mode_ = mode_ == agent::PermissionMode::ask ? agent::PermissionMode::accept_edits : agent::PermissionMode::ask;
+        if (mode_ == agent::PermissionMode::unrestricted) return;
+        mode_ = mode_ == agent::PermissionMode::ask ? agent::PermissionMode::workspace : agent::PermissionMode::ask;
         agent_->set_permission_mode(mode_);
         transcript_.set_session(mode_label(), setup_.provider.model); update_prompt_footer();
+    }
+    void toggle_plan() {
+        if (busy_) return;
+        std::lock_guard lock(agent_mutex_);
+        planning_ = !planning_;
+        agent_->set_plan_mode(planning_);
+        transcript_.set_session(mode_label(), setup_.provider.model);
+        update_prompt_footer();
     }
     void exit() {
         exiting_ = true; pending_.clear(); turn_stop_.request_stop(); jobs_.close();
@@ -739,6 +764,7 @@ private:
     std::function<agent::ProviderConfig(const std::string&)> resolve_model_;
     std::mutex agent_mutex_;
     agent::PermissionMode mode_ = agent::PermissionMode::ask;
+    bool planning_ = false;
     std::optional<ThemeSet> themes_;
     std::optional<std::filesystem::path> theme_file_;
     tui::ThemeTokens theme_ = tui::dark_theme();
@@ -781,7 +807,6 @@ private:
 } // namespace
 
 int run_interactive(agent::Setup setup, const InteractiveOptions& options, agent::Interrupts& interrupts) {
-    setup.permission_mode = agent::PermissionMode::ask;
     std::optional<ThemeSet> themes;
     if (options.theme_file && !options.theme_file->empty()) themes = load_theme(*options.theme_file);
     std::vector<agent::Event> history;
@@ -789,7 +814,7 @@ int run_interactive(agent::Setup setup, const InteractiveOptions& options, agent
     const bool resumed = options.resume_id.has_value() || options.continue_last;
     if (resumed) {
         const auto prefix = options.resume_id ? std::optional<std::string_view>(*options.resume_id) : std::nullopt;
-        const auto id = agent::resolve_session_id(setup.session, setup.project_root, prefix);
+        const auto id = agent::resolve_session_id(setup.session, setup.cwd, prefix);
         agent = agent::Agent::resume(setup, id, [&](const agent::Event& event) { history.push_back(event); });
     } else agent = agent::Agent::create(setup);
     Shell shell(std::move(setup), std::move(agent), std::move(history), std::move(themes),

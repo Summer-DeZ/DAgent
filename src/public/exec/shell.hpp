@@ -26,4 +26,7 @@ Analysis analyze(std::string_view bash_source);
 /// @brief 所有子命令都在只读白名单里，并且 has_opaque=false。
 bool is_known_readonly(const Analysis& analysis);
 
+/// @brief 系统级不可逆命令的短硬拦名单；任何权限模式都不得执行。
+bool is_dangerous(std::string_view bash_source);
+
 } // namespace dagent::exec

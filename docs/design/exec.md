@@ -12,7 +12,7 @@ libseccomp、tree-sitter + tree-sitter-bash。
 | --- | --- | --- |
 | 一次性命令：超时、取消、流式输出、输出截断，结束时清理整个进程组 | `exec/process.hpp` | `run`、`which`、`shell_quote` |
 | 长期存活的子进程：按行读 stdout，线程安全地写 stdin（给 MCP stdio 用） | `exec/child.hpp` | `Child` |
-| bash 命令分析：拆出简单命令，判断是不是「已知只读」 | `exec/shell.hpp` | `analyze`、`is_known_readonly` |
+| bash 命令分析：拆简单命令、判断只读和系统级高危命令 | `exec/shell.hpp` | `analyze`、`is_known_readonly`、`is_dangerous` |
 | OS 隔离：Landlock 限制写文件，seccomp 禁止联网 | `exec/sandbox.hpp` | `prepare`、`probe` |
 
 `exec/detail.hpp` 放的是模块内部几个实现文件共用的代码，外部不要 include。
@@ -96,6 +96,10 @@ heredoc、控制流、子 shell，以及解析出错的地方。
 | `git` | 全局选项只允许 `--no-pager`/`-P`（`-c` 能注入 alias）；子命令只能是 `status` `log` `diff` `show`，并且不能带 `--output*`、`--ext-diff`、`--textconv`、`--open-files-in-pager`；`branch` 只放行列出分支的写法（带位置参数时必须配合 `--list`） |
 
 命令名里带 `/` 的一律不放行。
+
+`is_dangerous` 在同一分析结果上识别刻意保持很短的硬拦名单：`mkfs*`、`dd of=/dev/*` 和其它块设备写入、
+对 `/`、HOME 或过浅绝对路径的 `rm -rf`、关机重启、对根/HOME 的递归 chmod/chown，以及 curl/wget pipe 到
+sh/bash。它只向 agent Policy 提供判定，不执行命令。
 
 **「只读」不等于「安全」**：仓库自己的 `.git/config`（比如 `core.fsmonitor`、`diff.external`）能让
 `git status`、`git diff` 执行任意程序。所以核心自动放行只读命令时，仍然应该用 `read_only` 沙箱去执行。

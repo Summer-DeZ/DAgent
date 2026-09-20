@@ -28,7 +28,7 @@ enum class Transport {
     http,  ///< Streamable HTTP：每个请求一个 POST，响应可能是 JSON，也可能是 SSE
 };
 
-/// @brief 一个 server 的连接参数。对应 .mcp.json 里 "mcpServers" 的一项，由 app 映射并展开
+/// @brief 一个 server 的连接参数。对应 config.json 中 mcp.servers 的一项，由 app 映射并展开
 /// ${VAR} 占位符。
 struct ServerConfig {
     std::string name;      ///< 工具命名空间前缀；清理成 [A-Za-z0-9_-] 后在一批 server 里唯一，且不含 "__"

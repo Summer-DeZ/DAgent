@@ -100,15 +100,21 @@ target_link_libraries(dagent_workspace
     PRIVATE dagent_exec pantor::inja
 )
 
-# 会话存储：JSONL 追加写入、blob 外置、脱敏、列目录与回放。
+# 会话存储：单个 SQLite 数据库、脱敏、按 cwd 列表与顺序回放。
 add_library(dagent_session STATIC
     private/session/session.cpp
+    public/lib/sqlite/sqlite3.c
 )
 
 target_include_directories(dagent_session PUBLIC ${CMAKE_SOURCE_DIR}/src/public)
 target_compile_features(dagent_session PUBLIC cxx_std_23)
 target_compile_options(dagent_session PRIVATE -Wall -Wextra)
-target_compile_definitions(dagent_session PRIVATE DAGENT_VERSION="${PROJECT_VERSION}")
+target_compile_definitions(dagent_session PRIVATE
+    DAGENT_VERSION="${PROJECT_VERSION}"
+    SQLITE_OMIT_LOAD_EXTENSION
+    SQLITE_DQS=0
+    SQLITE_THREADSAFE=1
+)
 target_link_libraries(dagent_session
     PUBLIC dagent_base
 )
@@ -141,6 +147,7 @@ add_library(tools STATIC
     private/tools/grep.cpp
     private/tools/glob.cpp
     private/tools/todo.cpp
+    private/tools/ask.cpp
     private/tools/mcp.cpp
 )
 
@@ -161,18 +168,15 @@ target_include_directories(dagent_app PUBLIC ${CMAKE_SOURCE_DIR}/src/public)
 target_compile_features(dagent_app PUBLIC cxx_std_23)
 target_compile_options(dagent_app PRIVATE -Wall -Wextra)
 target_compile_definitions(dagent_app PRIVATE DAGENT_VERSION="${PROJECT_VERSION}")
+if(DAGENT_DEV_HOME)
+    target_compile_definitions(dagent_app PRIVATE DAGENT_DEV_HOME="${DAGENT_DEV_HOME}")
+endif()
 target_link_libraries(dagent_app
     PUBLIC dagent_agent dagent_base dagent_exec dagent_workspace dagent_net dagent_session dagent_mcp tools
     PRIVATE CLI11::CLI11
 )
 
 # 核心 agent：中立消息模型、LLM 编解码、事件接口与一轮循环。
-file(READ ${CMAKE_SOURCE_DIR}/prompts/system.md DAGENT_PROMPT_SYSTEM)
-file(READ ${CMAKE_SOURCE_DIR}/prompts/compact.md DAGENT_PROMPT_COMPACT)
-configure_file(${CMAKE_SOURCE_DIR}/cmake/prompts.cpp.in ${CMAKE_BINARY_DIR}/generated/prompts.cpp @ONLY)
-set_property(DIRECTORY APPEND PROPERTY CMAKE_CONFIGURE_DEPENDS
-             ${CMAKE_SOURCE_DIR}/prompts/system.md ${CMAKE_SOURCE_DIR}/prompts/compact.md)
-
 add_library(dagent_agent STATIC
     private/agent/llm.cpp
     private/agent/provider.cpp
@@ -190,7 +194,6 @@ add_library(dagent_agent STATIC
     private/agent/agent.cpp
     private/agent/dispatch.cpp
     private/agent/headless.cpp
-    ${CMAKE_BINARY_DIR}/generated/prompts.cpp
 )
 
 target_include_directories(dagent_agent PUBLIC ${CMAKE_SOURCE_DIR}/src/public)

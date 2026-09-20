@@ -51,8 +51,7 @@ Usage 使用累计值，避免把累计计数再次相加。
 | `openai-chat` | `https://api.openai.com/v1` | SSE | 本地 Qwen3.8-Flash-Next，工具调用、恢复、跨协议切换 |
 | `ollama` | `http://127.0.0.1:11434` | NDJSON | qwen3:1.7b，读写工具、切换、12,788 prompt tokens、num_ctx=16384 |
 
-运行记录与未覆盖项见 [Provider 验收记录](../next-to-do/validation.md)。表中的协议已验证，
-不代表同协议下每一个远端服务都已经验收。
+表中的协议已用列出的服务真实验证，不代表同协议下每一个远端服务都已经验收。
 
 ### openai-chat
 

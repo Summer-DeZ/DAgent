@@ -142,9 +142,8 @@ camelCase 边界 0.7；连续匹配奖励 1.0；两端与内部的 gap 惩罚分
 
 ### AGENTS.md 收集
 
-候选路径：`$XDG_CONFIG_HOME/dagent/AGENTS.md`（没有 `XDG_CONFIG_HOME` 时用 `$HOME/.config`），加上从
-cwd 向上到 git 仓库根（不是仓库时只有 cwd 自己）逐级的 `AGENTS.md`。最终顺序**由外到内**：全局配置最先，
-仓库根次之，越往 cwd 靠近的越后面。
+候选路径是从 cwd 向上到 git 仓库根（不是仓库时只有 cwd 自己）逐级的 `AGENTS.md`。最终顺序**由外到内**：
+仓库根最先，越往 cwd 靠近的越后面。不读取 HOME 或 XDG 下的全局指令文件。
 
 预算不足时优先牺牲最外层：从最内层往外分配 `max_instructions_bytes`，分配不到完整内容的文件先截断
 （`base::truncate_middle`），预算耗尽后，更外层的文件整体丢弃（`content` 为空，`truncated=true`）。
@@ -166,6 +165,6 @@ inja 抛 `InjaError` 时，转成 `bad_template`，如果错误带了行号就�
   vendor 在 `src/public/lib/nlohmann/` 的那份包成 `nlohmann_json::nlohmann_json` interface target 给
   inja 用，避免同一个翻译单元里出现两份 nlohmann（会撞 include guard 和 ODR）。
 - **ripgrep ≥ 13**、**git**：运行时依赖，通过 exec 调用（只传 argv，不经过 shell），不是编译期依赖。
-  找不到 `rg` 时 `search.rg_path`（`config/dagent.json`）可以覆盖自动探测的路径。
+  找不到 `rg` 时 `search.rg_path`（`home/config.json`）可以覆盖自动探测的路径。
 - `dagent_workspace` 对外公开链接 `dagent_base`，`dagent_exec` 和 `inja` 只是私有依赖（不出现在
   workspace 的公开头文件里）。

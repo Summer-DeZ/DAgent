@@ -106,6 +106,9 @@ json to_json(const Event& event) {
                 return j;
             },
             [](const ModelChanged& e) { return json{{"type", "model_changed"}, {"model", e.model}}; },
+            [](const ModeChanged& e) {
+                return json{{"type", "mode_changed"}, {"mode", e.mode}, {"planning", e.planning}};
+            },
             [](const Notice& e) {
                 return json{{"type", "notice"}, {"level", level_name(e.level)}, {"text", e.text}};
             },
