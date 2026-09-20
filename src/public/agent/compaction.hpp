@@ -9,7 +9,7 @@ namespace dagent::agent {
 struct RequestShape {
     std::string system;
     std::vector<ToolDef> tools;
-    ModelParams params;
+    ProviderConfig params;
 };
 
 struct Budget {

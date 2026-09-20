@@ -10,7 +10,7 @@
 #include <vector>
 
 #include "agent/model.hpp"
-#include "agent/openai_chat.hpp"
+#include "agent/provider.hpp"
 #include "agent/permission.hpp"
 #include "exec/process.hpp"
 #include "exec/sandbox.hpp"
@@ -55,8 +55,7 @@ struct Setup {
     Options options;
 
     // 模型
-    ModelParams model;
-    OpenAiChatOptions codec; ///< 含 api_key
+    ProviderConfig provider; ///< 含 api_key
     net::HttpOptions http;   ///< 已按 docs/design/agent.md §3 调整：timeout = 0
 
     // 工作区
@@ -76,7 +75,7 @@ struct Setup {
     // 运行环境
     exec::Support sandbox;                              ///< exec::probe()，启动时探测一次
     PermissionMode permission_mode = PermissionMode::ask; ///< 交互：ask；run：--permissions 或配置
-    std::optional<std::string> system_prompt_override;  ///< gateway.system_prompt_file 的内容，已读好
+    std::optional<std::string> system_prompt_override;  ///< system_prompt_file 的内容，已读好
 };
 
 } // namespace dagent::agent

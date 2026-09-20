@@ -22,6 +22,7 @@ struct Message {
     Role role = Role::user;
     std::string content;
     std::string reasoning_content;       ///< assistant 的思考内容；是否回传由编解码器选项决定
+    std::string reasoning_signature;    ///< 思考回传时的校验串；没有则为空
     std::vector<ToolCall> tool_calls;    ///< role == assistant 时有效
     std::string tool_call_id;            ///< role == tool 时有效
 };

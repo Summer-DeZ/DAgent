@@ -20,6 +20,7 @@ struct TextDelta {
 };
 struct ReasoningDelta {
     std::string text;
+    std::string signature = {}; ///< 可选的思考校验串增量
 };
 struct ToolCallBegin {
     int index = 0;

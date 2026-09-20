@@ -49,14 +49,7 @@ dagent::agent::Setup make_setup(const dagent::app::Config& config, const dagent:
 
     agent::Setup setup;
     setup.options = config.agent;
-    setup.model.model = config.gateway.model;
-    setup.model.max_tokens = static_cast<std::size_t>(std::max(config.gateway.max_tokens, 0));
-    setup.model.temperature = config.gateway.temperature.value_or(-1.0);
-    setup.codec.base_url = config.gateway.base_url;
-    setup.codec.api_key = config.gateway.api_key;
-    setup.codec.send_reasoning_content = config.gateway.send_reasoning_content;
-    setup.codec.include_usage = config.gateway.include_usage;
-    setup.codec.extra_body = config.gateway.extra_body;
+    setup.provider = config.models.at(config.model);
 
     setup.http = config.http;
     setup.http.timeout = std::chrono::seconds{0};
@@ -79,9 +72,9 @@ dagent::agent::Setup make_setup(const dagent::app::Config& config, const dagent:
 
     setup.sandbox = dagent::exec::probe();
     setup.permission_mode = permission_mode(config, args);
-    if (!config.gateway.system_prompt_file.empty()) {
+    if (!config.system_prompt_file.empty()) {
         dagent::workspace::TextFile file =
-            dagent::workspace::read_text(config.gateway.system_prompt_file, config.files);
+            dagent::workspace::read_text(config.system_prompt_file, config.files);
         setup.system_prompt_override = std::move(file.content);
     }
     return setup;
@@ -155,8 +148,16 @@ int main(int argc, char** argv) {
         // 全屏界面下写 stderr 会弄花画面；run 模式按 log.also_stderr 配置。
         if (args.mode == Mode::interactive) config.log.also_stderr = false;
         dagent::base::init_log(config.log);
+        for (const auto& note : config.model_selection_log) dagent::base::logger("app")->info("{}", note);
 
         switch (args.mode) {
+        case Mode::models:
+            std::cout << "NAME\tKIND\tMODEL\tBASE_URL\tKEY\n";
+            for (const auto& [name, model] : config.models)
+                std::cout << name << (name == config.model ? " *" : "") << '\t' << model.kind << '\t'
+                          << model.model << '\t' << model.base_url << '\t'
+                          << (model.api_key.empty() ? "no" : "yes") << '\n';
+            return 0;
         case Mode::sessions:
             print_sessions(config);
             return 0;
@@ -175,9 +176,19 @@ int main(int argc, char** argv) {
                     if (args.log_level) config.log.level = *args.log_level;
                     config.log.also_stderr = false;
                     dagent::base::init_log(config.log);
+                    for (const auto& note : config.model_selection_log) dagent::base::logger("app")->info("{}", note);
                 }
             }
             dagent::ui::InteractiveOptions options;
+            options.models = config.models;
+            options.resolve_model = [args](const std::string& name) {
+                const auto secrets = dagent::app::load_secrets(dagent::app::project_root(args.cwd));
+                auto overrides = args.overrides;
+                overrides.push_back("@model=" + name);
+                auto config = dagent::app::load_config({args.cwd, args.config_file, overrides, std::nullopt}, secrets);
+                for (const auto& note : config.model_selection_log) dagent::base::logger("app")->info("{}", note);
+                return config.models.at(name);
+            };
             options.initial_prompt = args.prompt;
             options.resume_id = args.resume_id;
             options.continue_last = args.continue_last;

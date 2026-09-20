@@ -1,4 +1,4 @@
-#include "agent/openai_chat.hpp"
+#include "agent/provider_detail.hpp"
 
 #include <algorithm>
 #include <cctype>
@@ -18,98 +18,7 @@ namespace dagent::agent {
 namespace {
 
 using nlohmann::json;
-
-std::string join_url(std::string_view base, std::string_view path) {
-    std::string url(base);
-    while (!url.empty() && url.back() == '/') url.pop_back();
-    return url + std::string(path);
-}
-
-std::string string_field(const json& object, const char* key) {
-    const auto it = object.find(key);
-    return it != object.end() && it->is_string() ? it->get<std::string>() : std::string{};
-}
-
-int int_field(const json& object, const char* key) {
-    const auto it = object.find(key);
-    return it != object.end() && it->is_number_integer() ? it->get<int>() : 0;
-}
-
-std::string snippet(std::string_view text, std::size_t limit) {
-    std::string out;
-    out.reserve(std::min(text.size(), limit));
-    for (const char c : text) {
-        if (out.size() >= limit) break;
-        out += (c == '\n' || c == '\r') ? ' ' : c;
-    }
-    if (text.size() > limit) out += "…";
-    return out;
-}
-
-// 错误体里常见 {"error":{...}}，也可能是别的形状；只取人类可读的部分。
-std::string error_message(const json& error) {
-    if (error.is_string()) return error.get<std::string>();
-    if (error.is_object()) {
-        std::string message = string_field(error, "message");
-        const std::string code = string_field(error, "code");
-        if (!code.empty() && code != message) {
-            message += message.empty() ? code : std::format(" [{}]", code);
-        }
-        return message;
-    }
-    return {};
-}
-
-std::optional<std::chrono::milliseconds> parse_retry_after(std::string_view raw) {
-    const std::size_t begin = raw.find_first_not_of(" \t\r\n");
-    if (begin == std::string_view::npos) return std::nullopt;
-    const std::size_t end = raw.find_last_not_of(" \t\r\n");
-    const std::string value(raw.substr(begin, end - begin + 1));
-
-    if (std::all_of(value.begin(), value.end(), [](unsigned char c) { return std::isdigit(c) != 0; })) {
-        if (value.size() > 12) return std::nullopt;
-        return std::chrono::seconds(std::stoll(value));
-    }
-
-    // HTTP-date：Wed, 21 Oct 2015 07:28:00 GMT（不依赖 locale，手工映射月份）
-    static constexpr std::string_view months[] = {"Jan", "Feb", "Mar", "Apr", "May", "Jun",
-                                                  "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"};
-    char weekday[4] = {};
-    char month[4] = {};
-    int day = 0, year = 0, hour = 0, minute = 0, second = 0;
-    if (std::sscanf(value.c_str(), "%3s, %2d %3s %4d %2d:%2d:%2d", weekday, &day, month, &year, &hour,
-                    &minute, &second) != 7) {
-        return std::nullopt;
-    }
-    const auto found = std::find_if(std::begin(months), std::end(months),
-                                    [&](std::string_view name) { return name == month; });
-    if (found == std::end(months) || year < 1970) return std::nullopt;
-
-    std::tm tm{};
-    tm.tm_year = year - 1900;
-    tm.tm_mon = static_cast<int>(found - std::begin(months));
-    tm.tm_mday = day;
-    tm.tm_hour = hour;
-    tm.tm_min = minute;
-    tm.tm_sec = second;
-    const std::time_t when = ::timegm(&tm);
-    const auto delta = std::chrono::system_clock::from_time_t(when) - std::chrono::system_clock::now();
-    if (delta <= std::chrono::system_clock::duration::zero()) return std::chrono::milliseconds(0);
-    return std::chrono::duration_cast<std::chrono::milliseconds>(delta);
-}
-
-bool looks_like_context_overflow(std::string_view detail) {
-    std::string lower(detail);
-    std::transform(lower.begin(), lower.end(), lower.begin(),
-                   [](unsigned char c) { return static_cast<char>(std::tolower(c)); });
-    static constexpr std::string_view needles[] = {
-        "context length", "context_length", "maximum context", "max context",
-        "too many tokens", "token limit",    "exceeds the maximum", "reduce the length",
-        "exceeds the available context size", // llama-server 的超长请求
-    };
-    return std::any_of(std::begin(needles), std::end(needles),
-                       [&](std::string_view needle) { return lower.find(needle) != std::string::npos; });
-}
+using namespace provider_detail;
 
 Usage parse_usage(const json& usage) {
     Usage out;
@@ -132,16 +41,6 @@ Finish::Reason finish_reason_from(std::string_view raw) {
     if (raw == "content_filter") return Finish::Reason::content_filter;
     // 缺失或未知都不能当成正常结束，否则核心会把截断误当完整回复
     return Finish::Reason::error;
-}
-
-std::string_view role_name(Role role) {
-    switch (role) {
-        case Role::system: return "system";
-        case Role::user: return "user";
-        case Role::assistant: return "assistant";
-        case Role::tool: return "tool";
-    }
-    return "user";
 }
 
 json encode_messages(const std::vector<Message>& messages, bool send_reasoning) {
@@ -175,21 +74,9 @@ json encode_messages(const std::vector<Message>& messages, bool send_reasoning) 
     return out;
 }
 
-json encode_tools(const std::vector<ToolDef>& tools) {
-    json out = json::array();
-    for (const ToolDef& tool : tools) {
-        out.push_back({{"type", "function"},
-                       {"function",
-                        {{"name", tool.name},
-                         {"description", tool.description},
-                         {"parameters", tool.parameters}}}});
-    }
-    return out;
-}
-
 class OpenAiChatCodec final : public Codec {
 public:
-    explicit OpenAiChatCodec(OpenAiChatOptions options) : opt_(std::move(options)) {}
+    explicit OpenAiChatCodec(ProviderConfig options) : opt_(std::move(options)) {}
 
     net::HttpRequest encode(const Request& request) const override {
         json body = json::object();
@@ -199,7 +86,8 @@ public:
         if (request.stream && opt_.include_usage) {
             body["stream_options"] = {{"include_usage", true}};
         }
-        if (request.max_tokens > 0) body["max_tokens"] = request.max_tokens;
+        if (request.max_tokens > 0 && !opt_.extra_body.contains("max_completion_tokens"))
+            body["max_tokens"] = request.max_tokens;
         if (request.temperature >= 0.0) body["temperature"] = request.temperature;
         if (!request.tools.empty()) body["tools"] = encode_tools(request.tools);
         for (auto it = opt_.extra_body.begin(); it != opt_.extra_body.end(); ++it) {
@@ -226,7 +114,7 @@ public:
 
         const json chunk = json::parse(data, nullptr, false);
         if (chunk.is_discarded()) {
-            fail(out, std::format("invalid JSON in SSE data: {}", snippet(data, 120)));
+            fail(out, std::format("invalid JSON in SSE data: {}", std::string(data.substr(0, 120))));
             return;
         }
         if (const auto error = chunk.find("error"); error != chunk.end() && !error->is_null()) {
@@ -250,7 +138,7 @@ public:
         if (std::string text = string_field(*delta, "content"); !text.empty()) {
             out.emplace_back(TextDelta{std::move(text)});
         }
-        if (std::string reasoning = string_field(*delta, "reasoning_content"); !reasoning.empty()) {
+        if (std::string reasoning = string_field(*delta, delta->contains("reasoning_content") ? "reasoning_content" : "reasoning"); !reasoning.empty()) {
             out.emplace_back(ReasoningDelta{std::move(reasoning)});
         }
         if (const auto calls = delta->find("tool_calls"); calls != delta->end() && calls->is_array()) {
@@ -259,30 +147,7 @@ public:
     }
 
     Error classify(const net::HttpResponse& response) const override {
-        Error error;
-        std::string detail;
-        if (const json parsed = json::parse(response.body, nullptr, false); !parsed.is_discarded()) {
-            if (const auto it = parsed.find("error"); it != parsed.end()) detail = error_message(*it);
-        }
-        if (detail.empty()) detail = snippet(response.body, 300);
-        error.message = std::format("HTTP {}: {}", response.status, detail.empty() ? "no detail" : detail);
-
-        switch (response.status) {
-            case 408:
-            case 429:
-                error.retryable = true;
-                break;
-            default:
-                error.retryable = response.status >= 500;
-                break;
-        }
-        if (error.retryable) {
-            if (const auto header = response.header("retry-after")) {
-                if (const auto delay = parse_retry_after(*header)) error.retry_after = *delay;
-            }
-        }
-        if (response.status == 400 && looks_like_context_overflow(detail)) error.context_too_long = true;
-        return error;
+        return classify_http(response, opt_.api_key);
     }
 
 private:
@@ -323,7 +188,7 @@ private:
         out.emplace_back(Finish{Finish::Reason::error, std::move(message)});
     }
 
-    OpenAiChatOptions opt_;
+    ProviderConfig opt_;
     bool closed_ = false;
     std::string finish_reason_;
     std::optional<Usage> usage_;
@@ -333,8 +198,8 @@ private:
 
 } // namespace
 
-std::unique_ptr<Codec> make_openai_chat_codec(OpenAiChatOptions options) {
-    return std::make_unique<OpenAiChatCodec>(std::move(options));
+std::unique_ptr<Codec> provider_detail::make_chat(const ProviderConfig& options) {
+    return std::make_unique<OpenAiChatCodec>(options);
 }
 
 } // namespace dagent::agent

@@ -140,8 +140,10 @@ class Shell final : public tui::EventHandler {
 public:
     Shell(agent::Setup setup, std::unique_ptr<agent::Agent> agent,
           std::vector<agent::Event> history, std::optional<ThemeSet> themes,
-          std::optional<std::filesystem::path> theme_file, bool resumed)
-        : setup_(std::move(setup)), agent_(std::move(agent)), themes_(std::move(themes)),
+          std::optional<std::filesystem::path> theme_file, bool resumed,
+          const InteractiveOptions& options)
+        : setup_(std::move(setup)), agent_(std::move(agent)), models_(options.models),
+          resolve_model_(options.resolve_model), themes_(std::move(themes)),
           theme_file_(std::move(theme_file)), root_(layout()), rt_(terminal_, root_),
           transcript_(scroll_->document(), [this](const tools::TodoView& value) { update_todo(value); }),
           prompt_(*input_, [this](std::string text) { submit(std::move(text)); },
@@ -156,7 +158,7 @@ public:
         status_->set_trigger(setup_.options.context.compaction_trigger_percent);
         side_->set_project(project_path_, {});
         side_->set_version(DAGENT_VERSION);
-        transcript_.set_session(mode_label(), setup_.model.model);
+        transcript_.set_session(mode_label(), setup_.provider.model);
         update_prompt_footer();
         rt_.set_focus(&prompt_, input_); rt_.set_global(*this);
         terminal_.set_mouse(true); // 不开这一行，滚轮与拖选的转义序列根本不会上报
@@ -266,6 +268,7 @@ private:
         add_command("session.new", std::string(ui::text().cmd_new), std::string(ui::text().cmd_session), {}, "/new", [this] { new_session(); });
         add_command("session.compact", std::string(ui::text().cmd_compact), std::string(ui::text().cmd_session), {}, "/compact", [this] { compact(); });
         add_command("session.list", std::string(ui::text().cmd_sessions), std::string(ui::text().cmd_session), {}, "/sessions", [this] { session_panel(); });
+        add_command("model.pick", std::string(ui::text().cmd_model), std::string(ui::text().cmd_session), "ctrl+m", "/model", [this] { model_panel(); }, [this] { return !busy_; });
         add_command("theme.pick", std::string(ui::text().cmd_theme), std::string(ui::text().cmd_view), {}, "/theme", [this] { theme_panel(); });
         add_command("help.show", std::string(ui::text().cmd_help), std::string(ui::text().cmd_view), "ctrl+?", "/help", [this] { help_panel(); });
         add_command("session.exit", std::string(ui::text().cmd_exit), std::string(ui::text().cmd_session), {}, "/exit", [this] { exit(); });
@@ -280,7 +283,7 @@ private:
     void reset_transcript(bool resumed = false, std::size_t messages = 0) {
         transcript_.clear();
         if (resumed) transcript_.resumed(id_, messages, std::string(ui::text().panel_just_now));
-        else transcript_.banner(DAGENT_VERSION, project_path_, branch_, setup_.model.model,
+        else transcript_.banner(DAGENT_VERSION, project_path_, branch_, setup_.provider.model,
                                 static_cast<int>(setup_.mcp_servers.size()));
         transcript_.set_todo_narrow(terminal_.size().cols < 80);
     }
@@ -399,7 +402,7 @@ private:
                                                                         : ui::text().status_ask);
     }
     void update_prompt_footer() {
-        input_->set_footer(format_text(ui::text().box_footer, mode_label(), setup_.model.model));
+        input_->set_footer(format_text(ui::text().box_footer, mode_label(), setup_.provider.model));
     }
     static std::string mcp_label(const std::vector<agent::ServerState>& states) {
         if (states.empty()) return {};
@@ -427,6 +430,7 @@ private:
     void submit(std::string text) {
         if (exiting_) return;
         if (!text.starts_with('/')) set_session_title(text);
+        if (busy_ && text == "/model") { toast(std::string(ui::text().toast_model_busy), tui::Notice::Severity::warn); return; }
         pending_.push_back(std::move(text)); refresh_queue();  drain();
     }
     /// 侧栏标题取本会话第一条真实输入的首行。
@@ -504,6 +508,51 @@ private:
             } catch (const std::exception& error) {
                 rt_.post([this, message = std::string(error.what())] {
                     toast(std::string(ui::text().toast_resume_failed) + message, tui::Notice::Severity::error); busy(false); drain();
+                });
+            }
+        });
+    }
+
+    void model_panel() {
+        if (busy_) return;
+        std::vector<Panel::Row> rows;
+        int initial = 0;
+        for (const auto& [name, provider] : models_) {
+            const bool current = name == setup_.provider.name;
+            if (current) initial = static_cast<int>(rows.size());
+            rows.push_back({name, provider.kind + "   " + provider.model, current ? std::string(ui::text().panel_current) : "", true,
+                            [this, name] { switch_model(name); }});
+        }
+        panel_.open(std::string(ui::text().panel_model), std::move(rows), std::string(ui::text().panel_model_footer), true, {}, {}, initial);
+    }
+    void switch_model(const std::string& name) {
+        if (busy_ || name == setup_.provider.name) return;
+        busy(true); phase_ = std::string(ui::text().act_switching_model); activity();
+        auto setup = setup_;
+        jobs_.push([this, name, setup = std::move(setup)]() mutable {
+            try {
+                setup.provider = resolve_model_ ? resolve_model_(name) : models_.at(name);
+                { std::lock_guard lock(agent_mutex_); setup.permission_mode = mode_; }
+                std::vector<agent::Event> updates;
+                auto next = agent::Agent::resume(setup, id_, [&](const agent::Event& event) {
+                    if (std::holds_alternative<agent::ContextUpdate>(event) ||
+                        std::holds_alternative<agent::Notice>(event)) updates.push_back(event);
+                });
+                { std::lock_guard lock(agent_mutex_); next->set_permission_mode(mode_); agent_.swap(next); }
+                next.reset(); // 可能等待 MCP 线程，在锁外、工作线程销毁。
+                rt_.post([this, provider = std::move(setup.provider), updates = std::move(updates)]() mutable {
+                    setup_.provider = std::move(provider);
+                    models_[setup_.provider.name] = setup_.provider;
+                    transcript_.set_session(mode_label(), setup_.provider.model);
+                    update_prompt_footer();
+                    for (const auto& event : updates) apply(event);
+                    toast(std::string(ui::text().toast_model_selected) + setup_.provider.name);
+                    busy(false); drain();
+                });
+            } catch (const std::exception& error) {
+                rt_.post([this, message = std::string(error.what())] {
+                    toast(std::string(ui::text().toast_model_failed) + message, tui::Notice::Severity::error);
+                    busy(false); drain();
                 });
             }
         });
@@ -677,7 +726,7 @@ private:
         std::lock_guard lock(agent_mutex_);
         mode_ = mode_ == agent::PermissionMode::ask ? agent::PermissionMode::accept_edits : agent::PermissionMode::ask;
         agent_->set_permission_mode(mode_);
-        transcript_.set_session(mode_label(), setup_.model.model); update_prompt_footer();
+        transcript_.set_session(mode_label(), setup_.provider.model); update_prompt_footer();
     }
     void exit() {
         exiting_ = true; pending_.clear(); turn_stop_.request_stop(); jobs_.close();
@@ -686,6 +735,8 @@ private:
 
     agent::Setup setup_;
     std::unique_ptr<agent::Agent> agent_;
+    std::map<std::string, agent::ProviderConfig> models_;
+    std::function<agent::ProviderConfig(const std::string&)> resolve_model_;
     std::mutex agent_mutex_;
     agent::PermissionMode mode_ = agent::PermissionMode::ask;
     std::optional<ThemeSet> themes_;
@@ -742,7 +793,7 @@ int run_interactive(agent::Setup setup, const InteractiveOptions& options, agent
         agent = agent::Agent::resume(setup, id, [&](const agent::Event& event) { history.push_back(event); });
     } else agent = agent::Agent::create(setup);
     Shell shell(std::move(setup), std::move(agent), std::move(history), std::move(themes),
-                options.theme_file, resumed);
+                options.theme_file, resumed, options);
     return shell.run(options.initial_prompt, interrupts);
 }
 } // namespace dagent::ui

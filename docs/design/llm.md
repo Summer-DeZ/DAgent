@@ -1,165 +1,108 @@
-# LLM 编解码：消息模型与厂商协议翻译
+# LLM 编解码：消息模型与 Provider
 
-核心 agent 的一部分（不是外围模块），头文件在 `src/public/agent/`，实现在 `src/private/agent/`，构建为
-静态库 `dagent_agent`，命名空间 `dagent::agent`。依赖 base 和 net（`net::HttpClient` 发请求、
-`net::SseParser` 拆流）。
+属于 `dagent_agent`，头文件在 `src/public/agent/`，实现在 `src/private/agent/`。
+核心只传中立 `Request`、消费 `StreamEvent`；Provider 翻译 URL、鉴权、报文和错误。
+重试、取消、工具执行和压缩仍由 [agent 运行时](agent.md) 负责。
 
-```
-中立 Request ──encode──► 厂商 JSON ──HttpClient──► SSE ──decode──► 中立 StreamEvent 序列
-```
-
-不做：重试策略、上下文压缩、工具执行——这些由 [agent 运行时](agent.md) 使用这里产出的中立事件做决策。
-不引入厂商 SDK：C++ 没有官方 SDK，社区 SDK 会把消息模型绑死在它的类型上。
-
----
-
-## 1. 概述
-
-| 内容 | 头文件 | 主要类型/接口 |
-| --- | --- | --- |
-| 中立消息模型 | `agent/message.hpp` | `Role`、`Message`、`ToolCall`、`ToolDef`、`Request` |
-| 中立流事件、错误分类、Codec 接口、token 估算 | `agent/llm.hpp` | `StreamEvent`、`Error`、`Codec`、`estimate_tokens`、`TokenEstimator` |
-| OpenAI Chat Completions 编解码器 | `agent/openai_chat.hpp` | `OpenAiChatOptions`、`make_openai_chat_codec` |
-
-目前只有 **OpenAI Chat Completions** 编解码器，供本地 Qwen 等兼容服务使用。
-Anthropic Messages 和 OpenAI Responses 尚未实现；`Codec` 是纯虚接口，增加实现不影响中立消息类型。
-
----
-
-## 2. 中立消息模型（message.hpp）
-
-```cpp
-enum class Role { system, user, assistant, tool };
-
-struct ToolCall { std::string id, name, arguments; };  // arguments 可能是坏的 JSON，由核心决定怎么处理
-
-struct Message {
-    Role role = Role::user;
-    std::string content;
-    std::string reasoning_content;    // assistant 的思考内容；是否回传由 codec 选项决定
-    std::vector<ToolCall> tool_calls; // role == assistant 时有效
-    std::string tool_call_id;         // role == tool 时有效
-};
-
-struct ToolDef { std::string name, description; nlohmann::json parameters; };  // JSON Schema
-
-struct Request {
-    std::string model;
-    std::vector<Message> messages;
-    std::vector<ToolDef> tools;
-    std::size_t max_tokens = 0;  // 0 表示不发送，交给服务端默认值
-    double temperature = -1.0;   // < 0 表示不发送
-    bool stream = true;
-};
+```text
+ProviderConfig → make_codec（每次请求一个实例）
+Request → encode → HTTP → SSE / NDJSON → decode → StreamEvent
+非 2xx → classify → Error → Model 决定重试或交给 Agent 压缩
 ```
 
-这套类型和具体厂商无关，编解码器负责翻译成各自的 JSON；消息历史（要不要回传 `reasoning_content`、
-压缩策略）由核心管理，这里只是纯数据。
+## 1. 接口与边界
 
----
+| 文件 | 职责 |
+| --- | --- |
+| `agent/message.hpp` | Role、Message、ToolCall、ToolDef、Request |
+| `agent/llm.hpp` | StreamEvent、Error、Codec、token 估算 |
+| `agent/provider.hpp` | ProviderConfig、ProviderInfo、Framing、providers、find_provider、make_codec |
+| `agent/provider_detail.hpp` | Provider 内部共用的报文原语与工厂声明，不供 app 装配使用 |
+| `provider.cpp` | kind 注册表、工厂、通用 HTTP 错误分类 |
+| `provider_chat.cpp` / `provider_ollama.cpp` / `provider_anthropic.cpp` | 各协议的 encode、decode、classify |
 
-## 3. StreamEvent 与 Codec（llm.hpp）
+`Setup::provider` 替代原来的模型参数与专用 Codec 选项。`ProviderConfig` 包括 kind、配置名字、
+base_url、model、api_key、max_tokens、temperature、context_window、send_reasoning_content、
+include_usage 和 extra_body。app 解析密钥，核心不读取环境或配置文件。Codec 有流状态，不能跨请求复用。
 
-```cpp
-using StreamEvent = std::variant<TextDelta, ReasoningDelta, ToolCallBegin, ToolCallDelta, ToolCallEnd,
-                                 Usage, Finish>;
+`ProviderInfo` 声明默认端点、SSE/NDJSON 分帧、是否必须提供 key/max_tokens。
+`make_codec` 对未知 kind 抛 `invalid_argument`。不探测模型能力或上下文窗口。
 
-class Codec {
-public:
-    virtual net::HttpRequest encode(const Request&) const = 0;
-    virtual void decode(const net::SseEvent&, std::vector<StreamEvent>& out) = 0;
-    virtual Error classify(const net::HttpResponse&) const = 0;
-};
-```
+## 2. 中立格式
 
-- **`decode` 有状态，一次请求用一个实例**：内部要按 `index` 累积工具调用参数的分片，同一个实例不能跨请求
-  复用。`Finish` 只在协议的结束标记（OpenAI 是 `data: [DONE]`）出现时发出；发出之后再喂数据不产生任何
-  事件。`Usage` 保证出现在 `Finish` 之前（如果服务端给了的话）。
-- **`Finish::Reason`**：`stop`/`length`/`tool_calls`/`content_filter` 是正常结束；`finish_reason`
-  缺失或者是编解码器不认识的字符串，一律映射成 `error`——不能把截断误判成正常结束。
-- **`Error`**：`classify` 只依据 HTTP 状态码和响应体判断，不抛异常；`retry_after` 为 0 表示服务端没给，
-  不代表「立即重试」，由核心自己决定退避策略；`message` 保证不含密钥。
-- **token 估算**：`estimate_tokens` 是启发式规则（ASCII 约 4 字节 1 token，非 ASCII 码点约 1 个 1
-  token），`TokenEstimator` 用上一次真实 `usage.prompt_tokens` 与估算值的比例做指数滑动平均校正
-  （新系数 = 0.5×旧系数 + 0.5×本次比例）。不引入 tokenizer 库。`estimate_prompt_tokens` 不统计历史消息里
-  的 `reasoning_content`（要不要回传是 codec 选项决定的运行时行为，静态估算拿不到），这部分偏差由校正
-  系数吸收。
+Message 保留 role、content、reasoning_content、tool_calls、tool_call_id，并补充
+`reasoning_signature`（无校验串时为空）。内容块、厂商字段名和 URL 不进入消息模型。
+`ReasoningDelta` 的可选 signature 增量由 Model 累积到 Message，界面只显示文本。
+会话 assistant 记录保存 signature；旧记录缺该字段时按空读取。
 
----
+StreamEvent 仍是 TextDelta、ReasoningDelta、ToolCallBegin/Delta/End、Usage 和 Finish。
+Finish 只分 stop、length、tool_calls、content_filter、error；未知原因保存原文到 raw，并归 error。
+流缺少结束事件或返回流内错误时，Model 重试；不会把不完整回复当成功。
+Usage 使用累计值，避免把累计计数再次相加。
 
-## 4. OpenAI Chat Completions 编解码器（openai_chat.hpp/.cpp）
+`Model` 按 ProviderInfo 分帧：SSE 使用 `net::SseParser`；NDJSON 缓冲跨网络块的半行，
+按换行分出完整 JSON，处理 CRLF 和最后没有换行的完整行，再包装成 `SseEvent.data` 交给 Codec。
+网络层无需知道厂商协议。
 
-```cpp
-struct OpenAiChatOptions {
-    std::string base_url, api_key;      // api_key 从 base::Secrets 读出后传入，不写日志
-    bool send_reasoning_content = false; // 历史里的 reasoning_content 要不要回传
-    bool include_usage = true;           // stream_options.include_usage；个别网关不支持时关掉
-    nlohmann::json extra_body;            // 透传网关专属字段，不覆盖已有字段
-};
-std::unique_ptr<Codec> make_openai_chat_codec(OpenAiChatOptions);
-```
+## 3. 已真实运行的 Provider
 
-### encode
+| kind | 默认 base_url | 分帧 | 本次证据 |
+| --- | --- | --- | --- |
+| `openai-chat` | `https://api.openai.com/v1` | SSE | 本地 Qwen3.8-Flash-Next，工具调用、恢复、跨协议切换 |
+| `ollama` | `http://127.0.0.1:11434` | NDJSON | qwen3:1.7b，读写工具、切换、12,788 prompt tokens、num_ctx=16384 |
 
-- URL 是 `{base_url}/chat/completions`（去掉 `base_url` 结尾多余的斜杠再拼）。
-- `tool_calls` 非空但 `content` 为空时，`content` 发 JSON `null`（不是空字符串）——部分网关按这个区分
-  「纯工具调用」和「带说明的工具调用」。
-- `stream=true` 且 `include_usage` 时加 `stream_options.include_usage=true`；`stream=false` 时不发
-  `stream_options`。
-- `extra_body` 逐个 key 合并进请求体，**已经由 `Request` 生成的字段不会被覆盖**（先 `contains` 检查）。
-- 没设置的 `max_tokens`（0）、`temperature`（< 0）不写进请求体，交给服务端默认值。
+运行记录与未覆盖项见 [Provider 验收记录](../next-to-do/validation.md)。表中的协议已验证，
+不代表同协议下每一个远端服务都已经验收。
 
-### decode：分片累积规则
+### openai-chat
 
-- **工具调用**：分片按 `index` 累积。第一次出现某个 `index` 时（`fragment.contains("index")`，缺失时
-  按出现顺序补一个）发 `ToolCallBegin`（带 `id`、`function.name`）；后续分片只带 `function.arguments`
-  的片段，追加成 `ToolCallDelta`。**不在每个分片到达时解析 JSON**，原始片段原样交给核心，等
-  `[DONE]` 时按首次出现的顺序统一补 `ToolCallEnd`。同一个 chunk 里可以出现多个 `index`（并行调用）。
-- **`choices` 可能是空数组**：开了 `include_usage` 之后，最后一个 chunk 形如 `{"choices": [], "usage":
-  {...}}`，decode 遇到空 `choices` 直接返回（不当错误），但已经先处理过 `usage` 字段。
-- **流中途的错误**：chunk 里出现非 null 的 `error` 字段时，转成 `Finish{error}` 并关闭这个实例，不再
-  处理后面的数据。
-- **坏 JSON**：`json::parse(..., allow_exceptions=false)` 失败时同样转成 `Finish{error}`，decoder 本身
-  不抛异常。
-- **usage 字段**：`prompt_tokens`/`completion_tokens` 直接取；`cached` 优先取 DeepSeek 的
-  `prompt_cache_hit_tokens`，没有的话退回 OpenAI 的 `prompt_tokens_details.cached_tokens`。
+POST `{base_url}/chat/completions`，非空 key 使用 Bearer 头。
+工具参数以 JSON 字符串发送；纯工具调用的 assistant.content 为 null。
+默认请求 `stream_options.include_usage=true`；可按配置关闭。
+历史思考默认不回传，显式 `send_reasoning_content=true` 时才发送。
+流同时识别 reasoning_content / reasoning，前者出现时优先；工具分片按 index 聚合，
+在 `[DONE]` 时依次交付 ToolCallEnd、Usage、Finish。
 
-### classify
+`extra_body` 顶层只补缺失字段，不覆盖已生成字段。配置 `extra_body.max_completion_tokens`
+时不再生成 max_tokens；app 同时用该值作为输出预留预算，避免实际输出上限与预算脱节。
 
-- 429、408 视为可重试；5xx 可重试；其余（包括 400、401）不可重试。
-- `Retry-After` 响应头：纯数字按秒解析；否则按 HTTP-date（`Wed, 21 Oct 2015 07:28:00 GMT`）手工解析，不
-  依赖 locale。header 缺失或解析失败时 `retry_after` 为 0。
-- 400 且响应体里出现「context length」「too many tokens」或 llama-server 的「exceeds the available context size」
-  等英文短语（大小写不敏感）时标记
-  `context_too_long = true`，供核心决定要不要触发上下文压缩后重试。这是关键词启发式，不追求完全覆盖
-  所有厂商的措辞。
-- 错误信息优先取响应体 `error.message`（`error.code` 不同于 message 时附在后面），没有就截取原始 body
-  的前 300 字节；两种情况都不会包含请求里的 `api_key`（key 只在 `encode` 时写进 `Authorization` 头，
-  `classify` 只读响应体和响应头）。
+### ollama
 
-### DeepSeek 的特殊之处
+POST `{base_url}/api/chat`，不添加鉴权头。
+工具参数转换成对象；服务端没有调用 ID，适配器生成每次请求唯一的前缀与顺序号，
+回传历史时由 ID 找工具名并按原顺序发送 tool 消息。这样不会覆盖界面中更早的工具卡片。
+message.content / thinking 映射为文本/思考增量；done=true 时交付 usage 和 finish。
+stop 且出现工具调用归 tool_calls，length 归 length，load/unload 等未知结束原因归 error。
 
-历史里的 `reasoning_content` 要不要回传，DeepSeek 不同版本要求不一样（早期版本回传会报 400，后来的
-版本在工具调用的中间轮次要求回传），做成了 `send_reasoning_content` 选项，而不是写死的行为。
+总是显式设置 `options.num_ctx` 为有效窗口，`num_predict` 为输出上限。
+`extra_body.options` 仅补充未生成的采样参数，不能覆盖 num_ctx；think、keep_alive 等顶层参数可透传。
+窗口为 0 时由 Agent 统一回落到全局 `context.window_tokens`，相同窗口同时用于压缩预算和请求。
+接口依据 [Ollama Chat 文档](https://docs.ollama.com/api/chat)。
 
----
+## 4. 已实现但未验收：Anthropic
 
-## 5. 本地模型接入
+`anthropic` kind 可配置并构建，默认端点为 `https://api.anthropic.com/v1`，但当前没有可用密钥，
+**不作为已验证能力发布或合并**。
 
-[开发配置](../../config/dagent.json) 使用 `http://127.0.0.1:10009/v1` 的 `Qwen3.8-Flash-Next`，无需 API key，
-使用原生工具调用与流式 usage。模型服务须另行启动；这些是开发配置，不是 Codec 内置的地址或模型限制。
+实现 POST `/messages`、x-api-key 与 anthropic-version 头，强制非零 max_tokens。
+system 单独放顶层；assistant 工具调用翻译为 tool_use，连续工具结果合并为同一 user 消息的 tool_result。
+SSE 按块 index 处理文本及工具 JSON 分片；message_start 汇总输入和缓存用量，
+message_delta 使用累计 output_tokens。end_turn/stop_sequence、max_tokens、tool_use、refusal
+分别归 stop、length、tool_calls、content_filter。
 
-开发配置用 `extra_body.chat_template_kwargs.enable_thinking=true` 打开思考；`send_reasoning_content=false`
-不回传历史思考（部分网关回传会 400，且白白占 prompt 预算）。思考 token 计入输出预算，打开时要把 `max_tokens` 留够。
-需要接收思考的网关使用 `delta.reasoning_content` 时，仍由现有 decoder 处理。
-llama-server 返回的 `exceeds the available context size` 会被分类为上下文超长，由 Agent 强制压缩后重发一次。
+extended thinking 尚未开放；配置试图启用时明确拒绝。虽然保留思考文本和 signature 的流/记录通道，
+仍未声称支持完整 thinking 块回传。实现依据 [Claude 流式接口文档](https://platform.claude.com/docs/en/build-with-claude/streaming)。
 
-Model 的总请求超时、空闲超时和重试策略见 [agent §3](agent.md#3-模型调用)。大上下文预填充时可能长时间没有响应字节，
-需按实际任务设置 `http.idle_timeout_seconds`，不能假设所有本地服务都会发送 keep-alive。
+## 5. 错误与预算
 
----
+共享分类支持 408、429、5xx 重试（含 529），解析 retry-after 秒数或 HTTP-date。
+400 的上下文超长措辞归 context_too_long，包括 `prompt is too long` 和 llama.cpp 的 available context size。
+错误文本移除当前配置的 API key。退避、重试上限和强制压缩仍由 Model / Agent 统一管理。
 
-## 6. 依赖与构建
+预算使用模型的 context_window；为 0 时使用全局窗口。减去 safety_margin_tokens 和输出预留得到 limit，
+ContextUpdate 报告该可用预算。切换后重新建立估算器，首轮正常执行自动压缩。
+TokenEstimator 仍用 ASCII 约 4 字节/token、非 ASCII 码点约 1 token 的启发式，结合实际 prompt usage 校正。
+历史 reasoning 不进入静态估算，由真实用量校正吸收偏差。
 
-- 编解码部分只依赖 base 和 net；它与运行时共同构建为 `dagent_agent`，完整库的依赖见 [agent](agent.md)。
-- 真实请求使用本地 Qwen，临时检测放在 `temp/`，不增加模拟模型或测试构建目标。
+尚未真实验证：Anthropic 全路径、远端兼容服务、429/retry-after、Anthropic/Ollama 超长错误分类。
+不提供 Responses、Gemini 原生接口、同轮路由或自动降级。验证只使用真实服务，产物放在 `temp/`。

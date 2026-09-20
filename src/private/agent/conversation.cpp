@@ -76,7 +76,7 @@ std::size_t Conversation::tokens() const {
 }
 
 Request Conversation::build(const std::string& system, const std::vector<ToolDef>& tools,
-                            const ModelParams& params) const {
+                            const ProviderConfig& params) const {
     assert(!validate().has_value());
 
     Request request;

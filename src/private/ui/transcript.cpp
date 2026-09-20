@@ -416,6 +416,7 @@ void Transcript::apply(const agent::Event& event) {
         [&](const agent::Compacted& e) {
             text(format_text(ui::text().card_compacted, e.before, e.after), "system.compact");
         },
+        [&](const agent::ModelChanged& e) { model_ = e.model; },
         [&](const agent::Notice& e) { if (e.level == agent::Notice::Level::error) text("✗ " + e.text, "system.error"); },
         [&](const agent::TurnEnded& e) {
             if (live_step_ && reasoning_ && e.status == agent::TurnStatus::interrupted) doc_.replace(reasoning_, {});

@@ -31,21 +31,12 @@
 
 namespace dagent::app {
 
-/// @brief 模型网关，对应 "gateway" 段。api_key 已经从 Secrets 取出，本地网关可以为空。
-struct Gateway {
-    std::string base_url, model;
-    int max_tokens = 4096;
-    std::optional<double> temperature;
-    bool send_reasoning_content = false; ///< DeepSeek：历史里的 reasoning_content 要不要回传
-    bool include_usage = true;           ///< 请求 stream_options.include_usage
-    nlohmann::json extra_body = nlohmann::json::object(); ///< 原样透传的厂商专属字段
-    std::filesystem::path system_prompt_file; ///< 已解析成绝对路径
-    std::string api_key;
-};
-
 struct Config {
     struct Ui { std::filesystem::path theme_file; } ui;
-    Gateway gateway;
+    std::map<std::string, agent::ProviderConfig> models;
+    std::string model;
+    std::vector<std::string> model_selection_log; ///< 日志初始化后输出 CLI 选择/覆盖路径
+    std::filesystem::path system_prompt_file;
     net::HttpOptions http;
     exec::Options process;
     workspace::FileOptions files;

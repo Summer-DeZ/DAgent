@@ -50,7 +50,7 @@ std::size_t summary_cut(const Conversation& conversation, std::size_t protection
 }
 
 Request summary_request(const Conversation& conversation, std::size_t cut,
-                         const ModelParams& params, const std::string& prompt,
+                         const ProviderConfig& params, const std::string& prompt,
                          TokenEstimator& estimator, std::size_t limit) {
     Request request;
     request.model = params.model;

@@ -105,6 +105,7 @@ json to_json(const Event& event) {
                 j.update(usage_json(e.usage));
                 return j;
             },
+            [](const ModelChanged& e) { return json{{"type", "model_changed"}, {"model", e.model}}; },
             [](const Notice& e) {
                 return json{{"type", "notice"}, {"level", level_name(e.level)}, {"text", e.text}};
             },

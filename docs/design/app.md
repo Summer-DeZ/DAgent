@@ -48,7 +48,7 @@
 
 | 层 | 位置 | 说明 |
 | --- | --- | --- |
-| 1 内置默认 | 各 Options 结构的默认值 | 没有任何配置也能跑 |
+| 1 内置默认 | 各 Options 结构的默认值 | 模型表没有内置默认，至少配置一项 models 和默认 model |
 | 2 用户级 | `$XDG_CONFIG_HOME/dagent/config.json` | |
 | 3 项目级 | `<项目根>/.dagent/config.json` | **只在项目受信任时读取** |
 | 4 显式文件 | `--config <文件>` | 指定之后替换第 2、3 层；用户主动指定，不受信任限制 |
@@ -56,10 +56,10 @@
 
 - 合并用 `json::merge_patch`（RFC 7386）：对象递归合并，数组整体替换，`null` 删除这个键。
 - 允许 `//` 注释。
-- **相对路径相对于它所在的配置文件**（`gateway.system_prompt_file`、`session.directory`、`log.file`、
+- **相对路径相对于它所在的配置文件**（`system_prompt_file`、`session.directory`、`log.file`、
   `search.rg_path`、`ui.theme_file`），在合并之前就解析成绝对路径；`--set` 里的相对路径相对 cwd。`search.rg_path` 不含 `/`
   时是命令名（在 PATH 里找），不做解析。
-- **未知键只警告**（日志里「未知配置项 gateway.modle」），不报错。
+- **未知键只警告**（日志里「unknown config key ui.unknown」），不报错。
 - **类型错误**抛 `ConfigError{type}`，信息里带 JSON 指针，比如 `/http/timeout_seconds 应为整数`。
 - `--set` 的值先按 JSON 解析（`true`、`3`、`[1,2]`），失败就当字符串。键按 `.` 分段，所以无法指定本身
   含 `.` 的键名（比如 `network.credentials` 下的主机名），这类键要写在配置文件里。
@@ -68,7 +68,8 @@
 
 | 配置段 | 映射到 |
 | --- | --- |
-| `gateway` | `Gateway`（`api_key_env` 指向的变量经 Secrets 取值，本地网关可以为空）；`send_reasoning_content`、`include_usage`、`extra_body`（对象，原样透传给编解码器）对应 `agent::OpenAiChatOptions` 的同名字段 |
+| `models`、`model` | 名字 → `agent::ProviderConfig` 的表，以及选中的名字；api_key_env 经 Secrets 取值 |
+| `system_prompt_file` | 会话共用的系统提示词模板路径，位于顶层 |
 | `http` | `net::HttpOptions` |
 | `process` | `exec::Options` |
 | `files`、`search` | `workspace::FileOptions`、`workspace::SearchOptions` |
@@ -80,6 +81,34 @@
 
 键名到字段逐项手写映射（单位不同，如 `timeout_seconds` → `std::chrono::seconds`）。`api_key` 和任何密钥值
 都不会出现在日志和错误信息里。
+
+### 多模型
+
+```json
+{
+  "models": {
+    "local": {"kind": "openai-chat", "base_url": "http://127.0.0.1:10009/v1",
+              "model": "Qwen3.8-Flash-Next", "max_tokens": 8192, "context_window": 262144},
+    "small": {"kind": "ollama", "model": "qwen3:1.7b", "max_tokens": 2048,
+              "context_window": 16384, "extra_body": {"think": false}}
+  },
+  "model": "local"
+}
+```
+
+models 按名字合并，同名条目逐键覆盖，项目添加模型不会删除其它用户模型。
+默认 model 是配置名；`-m` 先查当前表，命中则选择配置，否则覆盖当前条目的模型 ID。
+`-m` 与 `--set` 按出现顺序处理，日志说明选择还是覆盖；列表中的 `*` 表示当前项。
+`--list-models` 无需终端，打印名字、kind、模型 ID、URL 以及密钥有/无，随后退出。
+
+每一项都在启动时校验 kind、非空 model、端点、非负窗口/输出上限、必需的 key/max_tokens。
+api_key_env 非空但变量缺失也会报错，信息指出模型名字、字段和变量名，不打印密钥。
+密钥通过 api_key_env 引用，不在 JSON 中直接写 api_key。
+未知 kind、空 models、不存在的默认 model 均失败；Anthropic 代码尚待真实密钥验收，见 [llm](llm.md)。
+
+旧 gateway 段已删除，加载任一层或命令行发现它时明确报错，不兼容、不静默忽略。
+迁移时将网关字段放入 models.local，并设置 model=local；system_prompt_file 单独移到顶层。
+交互 `/model` 每次选择重新解析配置与密钥，失败时保留当前 Agent。
 
 ---
 
@@ -126,6 +155,7 @@ dagent [选项] [提示词…]             进入交互界面；给了提示词�
 dagent run [选项] <提示词…>         非交互：跑完一轮后退出
 dagent sessions                     列出最近的会话
 dagent trust [目录]                 信任目录所在的项目
+dagent --list-models                列出模型配置（不显示密钥值）
 dagent --version
 
 通用选项：-C/--cwd  -c/--config  -m/--model  --set  -r/--resume  --continue  --log-level

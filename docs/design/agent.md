@@ -102,6 +102,7 @@ MCP 后台连接使用自身线程的 token，一轮取消不关闭后台连接�
 | `ToolFinished` / `tool_finished` | `id, name, summary, text, is_error, interrupted, view`；结果已提交 |
 | `Retrying` / `retrying` | `attempt, max_attempts, wait_ms, reason`；重试次数从 1 开始 |
 | `Compacted` / `compacted` | `before, after, summarized`；压缩前后估算及是否摘要 |
+| `ModelChanged` / `model_changed` | `model`；恢复/切换时更新后续消息标签 |
 | `ContextUpdate` / `context` | `prompt, completion, cached, used, limit` |
 | `Notice` / `notice` | `level` 为 info / warn / error，另有 `text` |
 | `TurnEnded` / `turn_ended` | `status, error, steps, tool_calls, usage`；本轮结束 |
@@ -298,7 +299,7 @@ trigger = limit × compaction_trigger_percent / 100
 target  = limit × compaction_target_percent / 100
 ```
 
-ContextOptions 默认窗口 262144、安全余量 8192、触发 80%、目标 60%。若 max_tokens 为 4096，则 limit 为 249856。
+有效窗口优先取 ProviderConfig.context_window，0 时回落全局。ContextOptions 默认窗口 262144、安全余量 8192、触发 80%、目标 60%。若 max_tokens 为 4096，则 limit 为 249856。
 预留量用尽窗口时预算为零，非空历史不能继续请求。估算包含 system、工具定义和历史；不能只统计消息正文。
 
 `TokenEstimator` 用真实 prompt usage 校正上一次请求估算。摘要单独 estimate / observe；主请求在压缩后重新 build
@@ -356,7 +357,7 @@ ContextOptions 默认窗口 262144、安全余量 8192、触发 80%、目标 60%
 ## 9. 提示词与环境快照
 
 [system.md](../../prompts/system.md) 和 [compact.md](../../prompts/compact.md) 由 CMake 嵌入二进制，改动后下一次构建
-自动重新配置。`gateway.system_prompt_file` 可覆盖主模板；入口读好内容放进 Setup，路径规则见 [app](app.md)。
+自动重新配置。`system_prompt_file` 可覆盖主模板；入口读好内容放进 Setup，路径规则见 [app](app.md)。
 摘要模板使用内置版本。模板都经 workspace 的 inja 渲染，模板错误或覆盖文件读取失败会使启动失败。
 
 system 在创建或恢复时渲染一次，之后不随日期、git 状态或权限切换改写，保持前缀稳定。变量包括：
@@ -410,7 +411,8 @@ usage 内字段是 `prompt, completion, cached`，避免被 session 按 `token` 
 为没结果的调用补 T9，再追加 `turn_end{crashed}` 并同步；第二次恢复不会重复补齐。T9 表示结果未知，
 不能声称没有执行，因为修改可能已完成但结果尚未落盘。
 
-恢复后使用当前配置重新渲染 system、写新的 system 记录；模型与原 meta 不同会提示。
+恢复后使用当前配置重新渲染 system、写新的 system 记录；模型与最近 system 记录（旧记录回落到 meta）不同会提示。system 记录包含当前模型名，
+回放发出 ModelChanged 更新后续消息的模型标签。
 FileTracker 和会话授权均从空开始，MCP 重新连接；旧读取状态不能用于覆盖已被外部改动的文件。
 不认识的 schema、不一致历史或关闭 `record_payloads` 的记录直接报错，不猜测修复。
 
@@ -454,7 +456,7 @@ stateDiagram-v2
 
 ## 12. 配置装配与非交互入口
 
-`Setup` 是 Agent 的全部输入，包含 `Options`、模型参数与 Codec、HTTP、工作区与项目根、外围 Options、MCP server
+`Setup` 是 Agent 的全部输入，包含 `Options`、`ProviderConfig`、HTTP、工作区与项目根、外围 Options、MCP server
 列表、沙箱探测结果、权限模式及可选 system 模板文本。Agent 不读配置文件；配置优先级与密钥归 app 管理。
 
 `main` 在任何线程创建前安装信号处理，然后解析参数、读取配置与密钥、初始化日志，分派四种模式：
@@ -502,7 +504,7 @@ exec 在子进程中清空信号屏蔽，工具的 SIGTERM 清理因此仍然有
 
 ## 13. 当前范围
 
-当前提供单会话、单模型的文本编码 Agent，支持六个内置工具、MCP tools、非交互与终端前端、记录恢复和上下文压缩。
+当前提供单会话、每轮单模型的文本编码 Agent（空闲时可用 `/model` 在同一会话切换），支持六个内置工具、MCP tools、非交互与终端前端、记录恢复和上下文压缩。
 尚未实现子 Agent、多模型路由、图片输入、web_fetch、todo 工具、hooks、插件、自定义斜杠命令或会话搜索索引。
 编解码器目前只有 OpenAI Chat Completions，MCP 的协议限制见其模块文档。
 

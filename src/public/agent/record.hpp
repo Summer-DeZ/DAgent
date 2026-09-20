@@ -27,7 +27,7 @@ public:
     static Recorder create(const session::Options&, session::Meta);
     static Recorder resume(const session::Options&, std::string_view id);
 
-    void system(std::string_view text);
+    void system(std::string_view text, std::string_view model);
     void user(std::int64_t n, std::string_view text);
     void assistant(std::int64_t n, const Reply&);
     void tool(std::int64_t n, const ToolCall&, std::string_view summary, const tools::Result&);
@@ -53,6 +53,7 @@ private:
 };
 
 struct Restored {
+    std::string model; ///< 最近的 system 记录，旧格式回落到会话 Meta
     Conversation conversation;
     bool unfinished = false;          ///< 最后一轮没有 turn_end（崩溃或被杀）
     std::vector<ToolCall> open_calls; ///< unfinished 时还没有结果的调用

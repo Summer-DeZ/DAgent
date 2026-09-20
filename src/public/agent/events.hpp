@@ -69,6 +69,8 @@ struct Compacted {
     bool summarized = false;
 };
 
+struct ModelChanged { std::string model; }; ///< 会话回放及切换时更新后续消息的模型标签
+
 struct ContextUpdate {
     Usage usage;
     std::size_t used = 0, limit = 0; ///< 每步结束后
@@ -89,7 +91,7 @@ struct TurnEnded {
 
 using Event = std::variant<TurnStarted, StepStarted, TextDelta, ReasoningDelta, StreamReset, ToolPending,
                            ToolStarted, ToolOutput, ToolFinished, Retrying, Compacted, ContextUpdate,
-                           Notice, TurnEnded>;
+                           Notice, ModelChanged, TurnEnded>;
 using Sink = std::function<void(const Event&)>;
 
 // ---- 权限询问 ----

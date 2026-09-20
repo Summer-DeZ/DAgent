@@ -103,6 +103,7 @@ struct TextOutput {
                                      << "\n";
                        },
                        [&](const ContextUpdate&) {},
+                       [&](const ModelChanged&) {},
                        [&](const Notice& notice) {
                            std::cerr << "[" << level_name(notice.level) << "] " << notice.text << "\n";
                        },

@@ -58,8 +58,8 @@ void append_arguments(AttemptState& state, const ToolCallDelta& event) {
 ModelError::ModelError(Kind kind, Reply partial, const std::string& what)
     : std::runtime_error(what), kind_(kind), partial_(std::move(partial)) {}
 
-Model::Model(std::function<std::unique_ptr<Codec>()> codec_factory, net::HttpOptions http, RetryOptions retry)
-    : codec_factory_(std::move(codec_factory)), http_(http), retry_(retry) {}
+Model::Model(std::function<std::unique_ptr<Codec>()> codec_factory, net::HttpOptions http, RetryOptions retry, Framing framing)
+    : codec_factory_(std::move(codec_factory)), http_(http), retry_(retry), framing_(framing) {}
 
 Model::AttemptOutcome Model::attempt(const Request& request,
                                       const std::function<void(const StreamEvent&)>& on_event,
@@ -68,6 +68,8 @@ Model::AttemptOutcome Model::attempt(const Request& request,
     std::unique_ptr<Codec> codec = codec_factory_();
     net::SseParser sse;
     AttemptState state;
+    state.reply.message.role = Role::assistant;
+    std::string pending_line;
 
     const auto handle = [&](const StreamEvent& event) {
         std::visit(Overloaded{
@@ -77,6 +79,7 @@ Model::AttemptOutcome Model::attempt(const Request& request,
                        },
                        [&](const ReasoningDelta& e) {
                            state.reply.message.reasoning_content += e.text;
+                           state.reply.message.reasoning_signature += e.signature;
                            state.had_output = true;
                        },
                        [&](const ToolCallBegin& e) {
@@ -97,16 +100,26 @@ Model::AttemptOutcome Model::attempt(const Request& request,
                    event);
     };
 
+    const auto decode = [&](const net::SseEvent& event) {
+        state.any_sse = true;
+        std::vector<StreamEvent> events;
+        codec->decode(event, events);
+        for (const auto& stream_event : events) { handle(stream_event); on_event(stream_event); }
+    };
+    const auto decode_line = [&](std::string_view line) {
+        if (!line.empty() && line.back() == '\r') line.remove_suffix(1);
+        if (line.find_first_not_of(" \t") != std::string_view::npos)
+            decode(net::SseEvent{{}, std::string(line), {}});
+    };
     const auto on_data = [&](std::string_view chunk) {
-        sse.feed(chunk, [&](const net::SseEvent& event) {
-            state.any_sse = true;
-            std::vector<StreamEvent> events;
-            codec->decode(event, events);
-            for (const StreamEvent& stream_event : events) {
-                handle(stream_event);
-                on_event(stream_event);
-            }
-        });
+        if (framing_ == Framing::sse) { sse.feed(chunk, decode); return; }
+        pending_line.append(chunk);
+        std::size_t begin = 0, end;
+        while ((end = pending_line.find('\n', begin)) != std::string::npos) {
+            decode_line(std::string_view(pending_line).substr(begin, end - begin));
+            begin = end + 1;
+        }
+        pending_line.erase(0, begin);
     };
 
     const auto finish_outcome = [&](AttemptOutcome::Kind kind, std::string message) {
@@ -146,8 +159,9 @@ Model::AttemptOutcome Model::attempt(const Request& request,
         if (error.retryable) return finish_outcome(AttemptOutcome::Kind::retryable, error.message);
         return finish_outcome(AttemptOutcome::Kind::rejected, error.message);
     }
+    if (framing_ == Framing::ndjson && !pending_line.empty()) decode_line(pending_line);
     if (!state.any_sse) {
-        return finish_outcome(AttemptOutcome::Kind::rejected, "The gateway returned no SSE stream - it may not support stream=true");
+        return finish_outcome(AttemptOutcome::Kind::rejected, "The provider returned no event stream - it may not support stream=true");
     }
     if (state.finish_seen && state.reply.finish.reason == Finish::Reason::error) {
         const std::string detail = state.reply.finish.raw.empty() ? "provider returned an error" : state.reply.finish.raw;

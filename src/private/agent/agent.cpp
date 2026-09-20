@@ -24,7 +24,7 @@ std::string render_prompt(const Setup& setup) {
                                       : builtin_system_prompt();
     const workspace::Environment env = workspace::collect_environment(setup.cwd);
     PromptVars vars;
-    vars.model = setup.model.model;
+    vars.model = setup.provider.model;
     vars.project_root = setup.project_root;
     vars.sandbox = sandbox_available(setup.sandbox);
     vars.permission_mode = std::string(to_string(setup.permission_mode));
@@ -41,17 +41,22 @@ Overloaded(Ts...) -> Overloaded<Ts...>;
 } // namespace
 
 Agent::Agent(Setup setup, std::string system_prompt, Recorder recorder, Conversation conversation)
-    : setup_(std::move(setup)),
+    : setup_([&] {
+          if (setup.provider.context_window == 0) setup.provider.context_window = setup.options.context.window_tokens;
+          setup.options.context.window_tokens = setup.provider.context_window;
+          return std::move(setup);
+      }()),
       recorder_(std::move(recorder)),
       hub_(setup_.mcp_servers, setup_.mcp),
       registry_(),
       tool_ctx_(setup_.cwd, setup_.tools, setup_.files, setup_.search, setup_.process),
       policy_(setup_.permission_mode, setup_.sandbox, setup_.cwd, setup_.project_root),
-      model_([codec = setup_.codec] { return make_openai_chat_codec(codec); }, setup_.http,
-             RetryOptions{setup_.options.run.max_model_retries}),
+      model_([provider = setup_.provider] { return make_codec(provider); }, setup_.http,
+             RetryOptions{setup_.options.run.max_model_retries},
+             find_provider(setup_.provider.kind)->framing),
       conversation_(std::move(conversation)),
       estimator_(),
-      compactor_(setup_.options.context, setup_.model.max_tokens,
+      compactor_(setup_.options.context, setup_.provider.max_tokens,
                  workspace::render(builtin_compact_prompt(), nlohmann::json::object())),
       system_prompt_(std::move(system_prompt)) {
     tools::add_builtin(registry_);
@@ -61,7 +66,7 @@ std::unique_ptr<Agent> Agent::resume(Setup setup, std::string_view session_id,
                                      const Sink& replay_sink) {
     Restored restored = replay_into(setup.session, session_id, replay_sink);
     Recorder recorder = Recorder::resume(setup.session, session_id);
-    const std::string previous_model = recorder.meta().model;
+    const std::string previous_model = restored.model.empty() ? recorder.meta().model : restored.model;
     std::string system_prompt = render_prompt(setup);
 
     auto agent = std::unique_ptr<Agent>(new Agent(std::move(setup), std::move(system_prompt),
@@ -90,18 +95,19 @@ std::unique_ptr<Agent> Agent::resume(Setup setup, std::string_view session_id,
                                     "inconsistent session history: " + *invalid);
     }
 
-    agent->recorder_.system(agent->system_prompt_);
-    if (previous_model != agent->setup_.model.model) {
+    agent->recorder_.system(agent->system_prompt_, agent->setup_.provider.model);
+    if (previous_model != agent->setup_.provider.model) {
         replay_sink(Notice{Notice::Level::info,
                            std::format("This session used {}; continuing with {}", previous_model,
-                                       agent->setup_.model.model)});
+                                       agent->setup_.provider.model)});
     }
     if (agent->recorder_.broken()) {
         log_agent()->error("Failed to write the session record: {}", agent->recorder_.error());
     }
-    log_agent()->info("会话已恢复：id={} model={}", agent->meta().id, agent->setup_.model.model);
+    log_agent()->info("会话已恢复：id={} model={}", agent->meta().id, agent->setup_.provider.model);
+    replay_sink(ModelChanged{agent->setup_.provider.model});
     replay_sink(ContextUpdate{{}, agent->estimator_.estimate(agent->conversation_.build(
-                                      agent->system_prompt_, agent->tool_defs(), agent->setup_.model)),
+                                      agent->system_prompt_, agent->tool_defs(), agent->setup_.provider)),
                                agent->compactor_.budget().limit});
     return agent;
 }
@@ -113,12 +119,12 @@ std::unique_ptr<Agent> Agent::create(Setup setup) {
     meta.id = session::new_id();
     meta.cwd = setup.cwd;
     meta.git_root = setup.git_root.value_or(std::filesystem::path{});
-    meta.model = setup.model.model;
+    meta.model = setup.provider.model;
     Recorder recorder = Recorder::create(setup.session, std::move(meta));
 
     auto agent =
         std::unique_ptr<Agent>(new Agent(std::move(setup), std::move(system_prompt), std::move(recorder)));
-    agent->recorder_.system(agent->system_prompt_);
+    agent->recorder_.system(agent->system_prompt_, agent->setup_.provider.model);
     if (agent->recorder_.broken()) log_agent()->error("Failed to write the session record: {}", agent->recorder_.error());
     log_agent()->info("会话已创建：id={} model={}", agent->meta().id, agent->meta().model);
     return agent;
@@ -216,7 +222,7 @@ TurnStatus Agent::run_turn(std::string input, const Sink& sink, const Approver& 
         Reply reply;
         try {
             hub_.apply_pending(registry_, sink, stop);
-            const RequestShape shape{system_prompt_, tool_defs(), setup_.model};
+            const RequestShape shape{system_prompt_, tool_defs(), setup_.provider};
             // 自动压缩在 StepStarted 之前（docs/design/agent.md §2）：界面在一步开始后作废的内容不含压缩提示。
             compactor_.maybe_compact(conversation_, shape, model_, estimator_, recorder_, sink, stop);
             check_broken(sink);
@@ -304,10 +310,10 @@ TurnStatus Agent::run_turn(std::string input, const Sink& sink, const Approver& 
 TurnStatus Agent::compact(const Sink& sink, std::stop_token stop) {
     TurnStatus status = TurnStatus::done;
     try {
-        compactor_.summarize(conversation_, {system_prompt_, tool_defs(), setup_.model}, model_,
+        compactor_.summarize(conversation_, {system_prompt_, tool_defs(), setup_.provider}, model_,
                              estimator_, recorder_, sink, stop);
         sink(ContextUpdate{{}, estimator_.estimate(conversation_.build(system_prompt_, tool_defs(),
-                                                                       setup_.model)),
+                                                                       setup_.provider)),
                             compactor_.budget().limit});
     } catch (const ModelError& error) {
         status = error.kind() == ModelError::Kind::cancelled ? TurnStatus::interrupted : TurnStatus::failed;

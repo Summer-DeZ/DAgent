@@ -13,17 +13,11 @@
 #include <stop_token>
 #include <string>
 
-#include "agent/llm.hpp"
+#include "agent/provider.hpp"
 #include "agent/message.hpp"
 #include "net/http.hpp"
 
 namespace dagent::agent {
-
-struct ModelParams { ///< 来自 gateway 段，每次 build Request 时用
-    std::string model;
-    std::size_t max_tokens = 0;
-    double temperature = -1.0;
-};
 
 struct RetryOptions {
     int max_retries = 2; ///< 总尝试次数 = 1 + max_retries
@@ -67,7 +61,8 @@ private:
 
 class Model {
 public:
-    Model(std::function<std::unique_ptr<Codec>()> codec_factory, net::HttpOptions http, RetryOptions retry);
+    Model(std::function<std::unique_ptr<Codec>()> codec_factory, net::HttpOptions http, RetryOptions retry,
+          Framing framing = Framing::sse);
 
     /// @brief 阻塞到拿到完整回复。on_event 在调用线程上收到每个 StreamEvent（含 Usage、Finish）；
     /// on_retry 在每次重试等待之前调用。
@@ -90,6 +85,7 @@ private:
     std::function<std::unique_ptr<Codec>()> codec_factory_;
     net::HttpClient http_;
     RetryOptions retry_;
+    Framing framing_;
     int call_serial_ = 0; ///< 给没有 id 的调用补 `call_<n>_<序号>`，在一个会话内唯一
 };
 

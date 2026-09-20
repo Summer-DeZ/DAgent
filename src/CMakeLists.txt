@@ -175,7 +175,10 @@ set_property(DIRECTORY APPEND PROPERTY CMAKE_CONFIGURE_DEPENDS
 
 add_library(dagent_agent STATIC
     private/agent/llm.cpp
-    private/agent/openai_chat.cpp
+    private/agent/provider.cpp
+    private/agent/provider_chat.cpp
+    private/agent/provider_anthropic.cpp
+    private/agent/provider_ollama.cpp
     private/agent/events.cpp
     private/agent/model.cpp
     private/agent/conversation.cpp

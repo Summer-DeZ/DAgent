@@ -1,15 +1,23 @@
 {
-  "gateway": {
-    "base_url": "http://127.0.0.1:10009/v1",
-    "model": "Qwen3.8-Flash-Next",
-    "max_tokens": 8192,
-    "temperature": 0,
-    "send_reasoning_content": false,
-    "include_usage": true,
-    "extra_body": {"chat_template_kwargs": {"enable_thinking": true}},
-    "system_prompt_file": "../prompts/system.md",
-    "api_key_env": ""
+  "models": {
+    "local": {
+      "base_url": "http://127.0.0.1:10009/v1",
+      "model": "Qwen3.8-Flash-Next",
+      "max_tokens": 8192,
+      "temperature": 0,
+      "send_reasoning_content": false,
+      "include_usage": true,
+      "extra_body": {
+        "chat_template_kwargs": {
+          "enable_thinking": true
+        }
+      },
+      "api_key_env": "",
+      "kind": "openai-chat",
+      "context_window": 262144
+    }
   },
+  "model": "local",
   "http": {
     "timeout_seconds": 300,
     "connect_timeout_seconds": 30,
@@ -61,7 +69,11 @@
     "directory": "../.dagent/sessions",
     "record_payloads": true,
     "max_inline_payload_bytes": 4096,
-    "redact_fields": ["api_key", "authorization", "token"]
+    "redact_fields": [
+      "api_key",
+      "authorization",
+      "token"
+    ]
   },
   "progress": {
     "interval_ms": 1000
@@ -69,5 +81,6 @@
   "permissions": "auto",
   "ui": {
     "theme_file": "themes/dagent.json"
-  }
+  },
+  "system_prompt_file": "../prompts/system.md"
 }

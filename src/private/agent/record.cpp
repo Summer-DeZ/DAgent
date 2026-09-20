@@ -112,8 +112,8 @@ void Recorder::append(std::string_view type, nlohmann::json payload) {
     }
 }
 
-void Recorder::system(std::string_view text) {
-    append("system", json{{"schema", 1}, {"text", text}});
+void Recorder::system(std::string_view text, std::string_view model) {
+    append("system", json{{"schema", 1}, {"text", text}, {"model", model}});
 }
 
 void Recorder::user(std::int64_t n, std::string_view text) {
@@ -128,6 +128,7 @@ void Recorder::assistant(std::int64_t n, const Reply& reply) {
     json payload = {{"n", n},
                     {"content", reply.message.content},
                     {"reasoning", reply.message.reasoning_content},
+                    {"reasoning_signature", reply.message.reasoning_signature},
                     {"tool_calls", std::move(tool_calls)},
                     {"finish", reply.finish.raw}};
     if (reply.usage) payload["usage"] = usage_json(*reply.usage);
@@ -194,6 +195,7 @@ const session::Meta& Recorder::meta() const { return writer_->meta(); }
 Restored replay_into(const session::Options& options, std::string_view id, const Sink& sink) {
     Conversation conversation;
     bool saw_system = false;
+    std::string model;
     bool open_turn = false;
     std::int64_t next_ordinal = 0;
 
@@ -205,6 +207,10 @@ Restored replay_into(const session::Options& options, std::string_view id, const
             const std::int64_t schema = integer_field(type, payload, "schema");
             if (schema != 1) corrupt(type, std::format("unknown session format version {}", schema));
             (void)string_field(type, payload, "text");
+            if (payload.contains("model")) {
+                model = string_field(type, payload, "model");
+                sink(ModelChanged{model});
+            }
             saw_system = true;
             return;
         }
@@ -229,6 +235,8 @@ Restored replay_into(const session::Options& options, std::string_view id, const
             message.role = Role::assistant;
             message.content = string_field(type, payload, "content");
             message.reasoning_content = string_field(type, payload, "reasoning");
+            if (payload.contains("reasoning_signature"))
+                message.reasoning_signature = string_field(type, payload, "reasoning_signature");
             const auto calls = payload.find("tool_calls");
             if (calls == payload.end() || !calls->is_array()) corrupt(type, "field tool_calls must be an array");
             for (const json& item : *calls) {
@@ -354,6 +362,7 @@ Restored replay_into(const session::Options& options, std::string_view id, const
     }
 
     Restored restored;
+    restored.model = std::move(model);
     restored.conversation = std::move(conversation);
     restored.unfinished = open_turn;
     restored.open_calls = open_calls;

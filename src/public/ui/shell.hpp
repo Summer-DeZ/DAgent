@@ -1,12 +1,16 @@
 #pragma once
 
 #include <filesystem>
+#include <functional>
+#include <map>
 #include <optional>
 #include <string>
 #include "agent/headless.hpp"
 
 namespace dagent::ui {
 struct InteractiveOptions {
+    std::map<std::string, agent::ProviderConfig> models;
+    std::function<agent::ProviderConfig(const std::string&)> resolve_model;
     std::string initial_prompt;
     std::optional<std::string> resume_id;
     bool continue_last = false;

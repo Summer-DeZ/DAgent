@@ -158,7 +158,7 @@ void resolve_path_fields(json& layer, const fs::path& base) {
         if (value.empty() || value.is_absolute()) return;
         *node = absolute_under(base, value).string();
     };
-    resolve({"gateway", "system_prompt_file"});
+    resolve({"system_prompt_file"});
     resolve({"ui", "theme_file"});
     resolve({"session", "directory"});
     resolve({"search", "rg_path"}, /*command_like=*/true);
@@ -167,9 +167,7 @@ void resolve_path_fields(json& layer, const fs::path& base) {
 
 const std::set<std::string>& known_keys() {
     static const std::set<std::string> keys = {
-        "gateway.base_url", "gateway.model", "gateway.max_tokens", "gateway.temperature",
-        "gateway.send_reasoning_content", "gateway.include_usage", "gateway.system_prompt_file",
-        "gateway.api_key_env",
+        "model", "system_prompt_file",
         "http.timeout_seconds", "http.connect_timeout_seconds", "http.idle_timeout_seconds",
         "http.max_body_bytes", "http.max_error_body_bytes", "http.verify_peer", "http.verify_host",
         "context.window_tokens", "context.safety_margin_tokens", "context.compaction_trigger_percent",
@@ -195,7 +193,7 @@ bool known_key(std::string_view key) {
     if (known_keys().contains(std::string(key))) return true;
     // flatten() 会把数组拆成 key.0、key.1，对象拆成 key.子键；这些前缀下的键都算已知。
     static constexpr std::string_view kPrefixKeys[] = {"session.redact_fields", "process.env_deny",
-                                                       "gateway.extra_body"};
+                                                       "models"};
     for (const std::string_view prefix : kPrefixKeys) {
         if (key == prefix ||
             (key.size() > prefix.size() && key.starts_with(prefix) && key[prefix.size()] == '.'))
@@ -253,29 +251,54 @@ fs::path user_config_dir() {
     return {};
 }
 
-Gateway map_gateway(const Node& node, const base::Secrets& secrets) {
-    Gateway gateway;
-    if (const Node v = node.child("base_url"); v.has()) gateway.base_url = v.str();
-    if (const Node v = node.child("model"); v.has()) gateway.model = v.str();
-    if (const Node v = node.child("max_tokens"); v.has()) gateway.max_tokens = v.integer(gateway.max_tokens);
-    if (const Node v = node.child("temperature"); v.has()) gateway.temperature = v.real();
-    if (const Node v = node.child("send_reasoning_content"); v.has())
-        gateway.send_reasoning_content = v.flag(gateway.send_reasoning_content);
-    if (const Node v = node.child("include_usage"); v.has()) gateway.include_usage = v.flag(gateway.include_usage);
-    if (const Node v = node.child("extra_body"); v.has()) {
-        if (!v.raw().is_object()) fail(ConfigError::Kind::type, v.pointer() + " must be an object");
-        gateway.extra_body = v.raw();
-    }
-    if (const Node v = node.child("system_prompt_file"); v.has())
-        gateway.system_prompt_file = v.str();
-    if (const Node v = node.child("api_key_env"); v.has()) {
-        const std::string name = v.str();
-        if (!name.empty()) {
-            if (const auto value = secrets.get(name)) gateway.api_key = *value;
-            else log_app()->warn("environment variable {} referenced by gateway.api_key_env is unset", name);
+std::map<std::string, agent::ProviderConfig> map_models(const Node& node, const base::Secrets& secrets) {
+    if (!node.has() || !node.raw().is_object() || node.raw().empty())
+        fail(ConfigError::Kind::invalid, "models: at least one named model is required");
+    std::map<std::string, agent::ProviderConfig> models;
+    for (const auto& [name, entry] : node.raw().items()) {
+        const std::string key = "models." + name;
+        if (name.empty() || !entry.is_object()) fail(ConfigError::Kind::type, key + ": expected a named object");
+        const Node value(entry, key);
+        agent::ProviderConfig config;
+        config.name = name;
+        config.kind = value.child("kind").str(config.kind);
+        const auto* info = agent::find_provider(config.kind);
+        if (!info) fail(ConfigError::Kind::invalid, key + ".kind: unknown provider \"" + config.kind + "\"");
+        config.model = value.child("model").str();
+        if (config.model.empty()) fail(ConfigError::Kind::invalid, key + ".model: must not be empty");
+        config.base_url = value.child("base_url").str();
+        if (config.base_url.empty()) config.base_url = info->default_base_url;
+        if (config.base_url.empty()) fail(ConfigError::Kind::invalid, key + ".base_url: required for this provider");
+        config.max_tokens = value.child("max_tokens").usize();
+        if (info->needs_max_tokens && config.max_tokens == 0)
+            fail(ConfigError::Kind::invalid, key + ".max_tokens: must be greater than zero");
+        config.temperature = value.child("temperature").real(-1.0);
+        config.context_window = value.child("context_window").usize();
+        config.send_reasoning_content = value.child("send_reasoning_content").flag();
+        config.include_usage = value.child("include_usage").flag(true);
+        if (const auto extra = value.child("extra_body"); extra.has()) {
+            if (!extra.raw().is_object()) fail(ConfigError::Kind::type, key + ".extra_body: must be an object");
+            config.extra_body = extra.raw();
         }
+        if (config.kind == "openai-chat" && config.extra_body.contains("max_completion_tokens")) {
+            config.max_tokens = Node(config.extra_body, key + ".extra_body").child("max_completion_tokens").usize();
+            if (config.max_tokens == 0) fail(ConfigError::Kind::invalid, key + ".extra_body.max_completion_tokens: must be greater than zero");
+        }
+        if (config.kind == "ollama" && config.extra_body.contains("options") && !config.extra_body["options"].is_object())
+            fail(ConfigError::Kind::type, key + ".extra_body.options: must be an object");
+        if (config.kind == "anthropic" && config.extra_body.contains("thinking") &&
+            config.extra_body["thinking"] != json{{"type", "disabled"}})
+            fail(ConfigError::Kind::invalid, key + ".extra_body.thinking: extended thinking is not supported yet");
+        const std::string env = value.child("api_key_env").str();
+        if (!env.empty()) {
+            config.api_key = secrets.get(env).value_or("");
+            if (config.api_key.empty()) fail(ConfigError::Kind::invalid, key + ".api_key_env: environment variable " + env + " is unset or empty");
+        }
+        if (info->needs_api_key && config.api_key.empty())
+            fail(ConfigError::Kind::invalid, key + ".api_key_env: a secret environment variable is required");
+        models.emplace(name, std::move(config));
     }
-    return gateway;
+    return models;
 }
 
 net::HttpOptions map_http(const Node& node) {
@@ -649,6 +672,7 @@ Config load_config(const LoadOptions& opt, const base::Secrets& secrets) {
         std::error_code ec;
         if (!fs::exists(file, ec)) return;
         json layer = parse_layer(file);
+        if (layer.contains("gateway")) fail(ConfigError::Kind::invalid, "gateway has been replaced by models; migrate " + file.string());
         resolve_path_fields(layer, file.parent_path());
         merged.merge_patch(layer);
         sources.push_back(file);
@@ -670,13 +694,42 @@ Config load_config(const LoadOptions& opt, const base::Secrets& secrets) {
         }
     }
 
-    merged.merge_patch(build_override_layer(opt.overrides, cwd));
+    std::vector<std::string> model_selection_log;
+    for (const auto& entry : opt.overrides) {
+        if (entry.starts_with("@model=")) {
+            const auto choice = entry.substr(7);
+            const auto models = merged.find("models");
+            if (models != merged.end() && models->is_object() && models->contains(choice)) {
+                merged["model"] = choice;
+                model_selection_log.push_back(std::format("--model {} selected a named configuration", choice));
+            } else {
+                const auto selected = Node(merged, "").child("model").str();
+                if (models == merged.end() || !models->is_object() || !models->contains(selected))
+                    fail(ConfigError::Kind::invalid, "model: select an existing configuration before overriding its model id");
+                merged["models"][selected]["model"] = choice;
+                model_selection_log.push_back(std::format("--model {} overrides model id in {}", choice, selected));
+            }
+        } else {
+            if (entry.starts_with("gateway=") || entry.starts_with("gateway."))
+                fail(ConfigError::Kind::invalid, "gateway has been replaced by models; migrate your configuration");
+            merged.merge_patch(build_override_layer({entry}, cwd));
+        }
+    }
+    if (merged.contains("gateway")) fail(ConfigError::Kind::invalid, "gateway has been replaced by models; migrate your configuration");
     warn_unknown(merged);
 
     const Node node(merged, "");
     Config config;
+    config.model_selection_log = std::move(model_selection_log);
     if (const Node v = node.child("ui").child("theme_file"); v.has()) config.ui.theme_file = v.str();
-    config.gateway = map_gateway(node.child("gateway"), secrets);
+    config.models = map_models(node.child("models"), secrets);
+    config.model = node.child("model").str();
+    if (!config.models.contains(config.model)) {
+        std::string available;
+        for (const auto& [name, model] : config.models) { if (!available.empty()) available += ", "; available += name; }
+        fail(ConfigError::Kind::invalid, "model: unknown selection \"" + config.model + "\"; available: " + available);
+    }
+    config.system_prompt_file = node.child("system_prompt_file").str();
     config.http = map_http(node.child("http"));
     config.process = map_process(node.child("process"));
     config.files = map_files(node.child("files"));

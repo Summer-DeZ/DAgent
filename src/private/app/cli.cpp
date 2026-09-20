@@ -67,16 +67,16 @@ std::vector<std::string> collect_overrides(int argc, char** argv) {
         if (arg == "--set" || arg == "-m" || arg == "--model") {
             if (i + 1 < argc) {
                 const std::string value(argv[++i]);
-                overrides.push_back(arg == "--set" ? value : "gateway.model=" + value);
+                overrides.push_back(arg == "--set" ? value : "@model=" + value);
             }
             continue;
         }
         if (arg.starts_with("--set=")) {
             overrides.push_back(std::string(arg.substr(6)));
         } else if (arg.starts_with("--model=")) {
-            overrides.push_back("gateway.model=" + std::string(arg.substr(8)));
+            overrides.push_back("@model=" + std::string(arg.substr(8)));
         } else if (arg.starts_with("-m") && arg.size() > 2) {
-            overrides.push_back("gateway.model=" + std::string(arg.substr(2)));
+            overrides.push_back("@model=" + std::string(arg.substr(2)));
         }
     }
     return overrides;
@@ -98,7 +98,9 @@ std::variant<Args, int> parse_args(int argc, char** argv) {
     app.add_option("--set", set_values, "override config: key=value, repeatable; keys are dot-separated (literal dots in keys are unsupported)")
         ->allow_extra_args(false);
     std::vector<std::string> model_values;
-    app.add_option("-m,--model", model_values, "shorthand for --set gateway.model=<model>")->allow_extra_args(false);
+    app.add_option("-m,--model", model_values, "select a named configuration, or override the current model id")->allow_extra_args(false);
+    bool list_models = false;
+    app.add_flag("--list-models", list_models, "list named model configurations and exit");
     std::string resume;
     CLI::Option* resume_option = app.add_option("-r,--resume", resume, "resume a session by id");
     bool continue_last = false;
@@ -185,6 +187,8 @@ std::variant<Args, int> parse_args(int argc, char** argv) {
         std::cerr << "sessions / trust cannot be combined with --resume / --continue\n";
         return 2;
     }
+
+    if (list_models) { args.mode = Mode::models; return args; }
 
     const bool stdin_tty = ::isatty(STDIN_FILENO) != 0;
     if (args.mode == Mode::interactive) {
