@@ -605,14 +605,23 @@ private:
     }
     void submit(std::string text) {
         if (exiting_) return;
-        // 子视图是子会话的只读投影，消息属于主会话；命令（/agents、/exit 等）仍然放行。
-        if (active_ != 0 && !text.starts_with('/')) {
+        // 命令立即执行，不进待发队列：drain() 只在空闲时跑，命令排进去会被压到整轮结束
+        // （/agents、/help、/permissions 都如此）。能否在忙碌时执行由各命令自己的 enabled 决定。
+        if (text.starts_with('/')) {
+            if (busy_ && text == "/model") {
+                toast(std::string(ui::text().toast_model_busy), tui::Notice::Severity::warn);
+                return;
+            }
+            command(text);
+            return;
+        }
+        // 子视图是子会话的只读投影，消息属于主会话。
+        if (active_ != 0) {
             input_->set_text(std::move(text)); // 保留已输入的内容，不让用户白打一遍
             toast(std::string(ui::text().toast_subview_readonly), tui::Notice::Severity::warn);
             return;
         }
-        if (!text.starts_with('/')) set_session_title(text);
-        if (busy_ && text == "/model") { toast(std::string(ui::text().toast_model_busy), tui::Notice::Severity::warn); return; }
+        set_session_title(text);
         pending_.push_back(std::move(text)); refresh_queue();  drain();
     }
     /// 侧栏标题取本会话第一条真实输入的首行。
