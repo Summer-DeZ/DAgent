@@ -15,6 +15,7 @@
 #include <signal.h>
 
 #include "agent/headless.hpp"
+#include "agent/host.hpp"
 #include "agent/options.hpp"
 #include "agent/record.hpp"
 #include "app/cli.hpp"
@@ -45,7 +46,8 @@ permission_mode(const dagent::app::Config& config, const dagent::app::Args& args
     return config.agent.permissions;
 }
 
-dagent::agent::Setup make_setup(const dagent::app::Config& config, const dagent::app::Args& args) {
+dagent::agent::Setup make_setup(const dagent::app::Config& config, const dagent::app::Args& args,
+                                const std::shared_ptr<dagent::agent::AgentHost>& host) {
     namespace agent = dagent::agent;
 
     agent::Setup setup;
@@ -72,6 +74,8 @@ dagent::agent::Setup make_setup(const dagent::app::Config& config, const dagent:
     setup.session = config.session;
     setup.mcp = config.mcp;
     setup.mcp_servers = config.mcp_servers;
+    setup.host = host;
+    setup.subagents = config.subagents;
 
     setup.sandbox = dagent::exec::probe();
     setup.permission_mode = permission_mode(config, args);
@@ -140,6 +144,19 @@ int main(int argc, char** argv) {
         if (args.mode == Mode::interactive) config.log.also_stderr = false;
         dagent::base::init_log(config.log);
         for (const auto& note : config.model_selection_log) dagent::base::logger("app")->info("{}", note);
+        if (!config.subagents.empty()) {
+            std::string names;
+            for (const auto& def : config.subagents) {
+                if (!names.empty()) names += "、";
+                names += def.name;
+            }
+            dagent::base::logger("app")->info("loaded {} subagent definitions: {}", config.subagents.size(), names);
+        }
+
+        // 共享运行时只创建一次：环境事实只收集一次，MCP 连接全进程共用，审批在 host 里串行化。
+        auto host = dagent::agent::AgentHost::create(
+            config.mcp_servers, config.mcp, dagent::workspace::collect_environment(args.cwd, {}),
+            config.subagents, config.models);
 
         switch (args.mode) {
         case Mode::models:
@@ -169,7 +186,7 @@ int main(int argc, char** argv) {
             options.resume_id = args.resume_id;
             options.continue_last = args.continue_last;
             if (!config.ui.theme_file.empty()) options.theme_file = config.ui.theme_file;
-            return dagent::ui::run_interactive(make_setup(config, args), options, interrupts);
+            return dagent::ui::run_interactive(make_setup(config, args, host), options, interrupts);
         }
         case Mode::run: {
             dagent::agent::HeadlessOptions options;
@@ -181,7 +198,7 @@ int main(int argc, char** argv) {
             case dagent::app::OutputFormat::jsonl: options.output = dagent::agent::HeadlessOptions::Output::jsonl; break;
             case dagent::app::OutputFormat::text: options.output = dagent::agent::HeadlessOptions::Output::text; break;
             }
-            return dagent::agent::run_headless(make_setup(config, args), options, interrupts);
+            return dagent::agent::run_headless(make_setup(config, args, host), options, interrupts);
         }
         }
     } catch (const dagent::app::ConfigError& error) {

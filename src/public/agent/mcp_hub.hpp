@@ -33,6 +33,9 @@ public:
     /// 只在 agent 线程、模型请求之间调用：先为断开的 server 启动重连，再等连接中 / 重连中的 server 有结果
     /// （最多 connect_timeout，Notice(info) 提示正在等待），然后合并工具。取消时抛 McpError::cancelled。
     void apply_pending(tools::Registry&, const Sink&, std::stop_token);
+    /// @brief 只读快照：把当前已就绪 server 的工具合并进传入的注册表。
+    /// 不等待、不重连、不产生通知；供子 Agent 构造时调用一次（线程安全）。
+    void snapshot(tools::Registry& registry);
     /// 调度器看到 McpView::disconnected 时调用；返回追加给模型的说明（T12 / T13），不是新断开时返回空。
     std::string mark_disconnected(std::string_view server, std::string reason);
     /// 只交付尚未报告的警告，不刷新或等待连接，适合在一轮结束时调用。

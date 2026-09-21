@@ -192,6 +192,8 @@ add_library(dagent_agent STATIC
     private/agent/prompt.cpp
     private/agent/record.cpp
     private/agent/permission.cpp
+    private/agent/host.cpp
+    private/agent/subagent.cpp
     private/agent/agent.cpp
     private/agent/dispatch.cpp
     private/agent/headless.cpp

@@ -114,6 +114,13 @@ json to_json(const Event& event) {
                             {"interrupted", e.result.interrupted},
                             {"view", tools::to_json(e.result.display)}};
             },
+            [](const SubEvent& e) {
+                return json{{"type", "sub_event"},
+                            {"session", e.session},
+                            {"agent", e.agent},
+                            {"parent_call", e.call_id},
+                            {"event", to_json(e.event())}};
+            },
             [](const Retrying& e) {
                 return json{{"type", "retrying"},
                             {"attempt", e.attempt},

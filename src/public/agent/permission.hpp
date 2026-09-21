@@ -88,4 +88,18 @@ private:
 /// @brief docs/design/agent.md §6：只有直接放行的只读调用能进并行组。
 bool parallel(const Verdict&, const tools::Intent&);
 
+/// @brief 子 Agent 的权限派生结果。
+struct DerivedPermission {
+    PermissionMode mode = PermissionMode::workspace;
+    bool read_only = false;
+    bool planning = false;
+    bool may_ask = false; ///< false → 子 Agent 的 TurnContext::approver 传空
+};
+
+/// @brief 子 Agent 的权限派生：只能收窄不能放宽。
+/// parent_* 必须取父 Policy 的运行时当前值（policy_.mode() / planning() / read_only()），
+/// 不能取 Setup 里的初值——用户可能按过 Shift+Tab，或走过 exit_plan 切换了模式。
+DerivedPermission derive_permission(PermissionMode parent_mode, bool parent_planning,
+                                    bool parent_read_only, std::string_view def_permission);
+
 } // namespace dagent::agent

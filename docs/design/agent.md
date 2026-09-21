@@ -36,10 +36,13 @@ flowchart TD
 | 提示词 | `agent/prompt.hpp`、`prompt.cpp` | 内置模板与会话环境渲染 |
 | `Recorder` | `agent/record.hpp`、`record.cpp` | 核心记录格式、回放与崩溃闭合 |
 | `McpHub` | `agent/mcp_hub.hpp`、`mcp_hub.cpp` | 多服务连接、刷新、重连与状态快照 |
+| `AgentHost` | `agent/host.hpp`、`host.cpp` | 父子 Agent 共享运行时：Hub、环境快照、审批仲裁与子 Agent 定义表 |
+| `TaskTool` / `TaskCall` | `agent/subagent.hpp`、`subagent.cpp` | `task` 工具：派生子 Agent、收集最终文本与工具摘要 |
 | 非交互前端 | `agent/headless.hpp`、`headless.cpp` | 输出格式、进度、进程中断与退出码 |
 
 Agent 同时持有 `tools::Registry`、`tools::Context`、`TokenEstimator` 和渲染后的 system prompt。
-Registry 的 MCP 工具引用 Client，因此 **Registry 必须先于 McpHub 析构**；Hub 停止并等待连接线程后再销毁 Client。
+Registry 的 MCP 工具引用 Client，所以 `registry_` 在成员声明里位于 `hub_` 之前；Hub 实体由 `AgentHost`
+持有，比所有 Agent 活得久，Hub 析构时先停止并等待连接线程，再销毁 Client。
 
 ### 线程与取消
 
@@ -48,16 +51,20 @@ Registry 的 MCP 工具引用 Client，因此 **Registry 必须先于 McpHub 析
 | agent 线程 | 交互模式由 Shell 创建，run 模式就是主线程；执行模型请求、串行工具、记录写入和 Registry 更新 |
 | 渲染线程 | 交互模式主线程；只操作控件、Document 和事件处理器 |
 | 工具工作线程 | 每个只读并行组临时创建，同时最多 8 个；只执行 `Call::run` |
+| task 组线程 | 每个并发子 Agent 一个，同时最多 `run.max_parallel_tasks`（默认 4，夹取到 3–16）；在组内创建子 Agent 并执行其完整一轮 |
+| 子 Agent 内部线程 | 子 Agent 复用同一套调度器，它的只读组与 task 组线程在其 task 组线程下再分叉 |
 | MCP 连接线程 | 每个 server 一个；连接结果交给 Hub，不直接改 Registry 或调用前端 Sink |
 | MCP 读取线程 | stdio 传输内部线程；工具变化回调只置标志 |
 | 信号线程 | `sigwait` 接收 SIGINT / SIGTERM，触发进程中断 |
 
 Agent 的常规接口在同一个 agent 线程上串行调用。两个跨线程例外是原子的 `set_permission_mode` 和加锁复制的
 `mcp_states`；调用方仍须保证对象存活。`session::Writer` 的单写入者、HttpClient 不并发使用、Registry 不加锁等约束
-由这个线程归属保证。
+由这个线程归属保证。子 Agent 在 task 组线程上创建并运行，只读父 Setup 与 `AgentHost`；父子各自持有独立的
+Recorder / Conversation / Policy / Registry / FileTracker。
 
-`Sink` 必须线程安全：`ToolOutput` 可从工具线程发出，其余运行事件由 agent 线程交付。交互前端用 `Runtime::post`，
-非交互前端加锁输出。`Approver` 与 `Asker` 只在 agent 线程调用，同一时刻至多一个，不能反向重入 Agent。
+`Sink` 必须线程安全：`ToolOutput` 可从工具线程发出，子 Agent 的事件可以从任意 task 线程或孙工具线程发出，
+其余运行事件由 agent 线程交付。交互前端用 `Runtime::post`，非交互前端加锁输出。`Approver` 与 `Asker` 只在
+agent 线程调用，同一时刻至多一个，不能反向重入 Agent；并发子 Agent 的审批在 `AgentHost::approve` 里串行化。
 
 一轮使用调用方提供的 `stop_token`，贯穿模型、重试等待、权限等待、工具、摘要和 MCP 连接等待。
 MCP 后台连接使用自身线程的 token，一轮取消不关闭后台连接；Hub 析构才取消它们。
@@ -66,12 +73,14 @@ MCP 后台连接使用自身线程的 token，一轮取消不关闭后台连接�
 
 | 接口 | 行为 |
 | --- | --- |
-| `Agent::create(Setup)` | 渲染提示词、创建记录、注册内置工具，启动 MCP 后台连接 |
+| `Agent::create(Setup)` | 渲染提示词、创建记录、注册内置工具（含 `task`），启动 MCP 后台连接 |
+| `Agent::create_child(Setup)` | 子 Agent 构造路径：复用 host 环境、Hub 快照、带 `parent_id` / `agent_name` 的记录 |
 | `Agent::resume(Setup, id, replay_sink)` | 重建消息、补齐崩溃记录，用事件重画历史，并更新提示词 |
-| `run_turn(input, sink, approver, asker, stop)` | 阻塞完成一轮，返回 `TurnStatus` |
-| `compact(sink, stop)` | 手动摘要，返回 `TurnStatus`；不创建一轮，不追加用户消息或 `turn_end` |
+| `run_turn(input, TurnContext)` | 阻塞完成一轮，返回 `TurnStatus`；`TurnContext` 打包 sink / approver / asker / stop |
+| `compact(TurnContext)` | 手动摘要，返回 `TurnStatus`；不创建一轮，不追加用户消息或 `turn_end` |
 | `set_permission_mode(mode)` | 下一次权限决策生效 |
 | `set_read_only` / `set_plan_mode` | 正交地切换只读与规划状态 |
+| `current_turn()` / `setup()` / `tool_names()` | `task` 工具读取父轮接口、Setup 与注册工具名 |
 | `mcp_states()` / `meta()` | 连接状态快照 / 会话元信息；只有前者支持跨线程读取 |
 
 创建与恢复失败会抛异常，由入口报错。运行中的模型与 MCP 已知失败转换成结束状态；工具失败作为 `Result` 回填，
@@ -101,6 +110,7 @@ MCP 后台连接使用自身线程的 token，一轮取消不关闭后台连接�
 | `ToolStarted` / `tool_started` | `id, name, summary` 加实际 backend/profile、grant source、analysis version、读写/保护范围、network/local sockets/private tmp；已通过权限，开始执行 |
 | `ToolOutput` / `tool_output` | `id, chunk`；bash 原始输出块 |
 | `ToolFinished` / `tool_finished` | `id, name, summary, text, is_error, interrupted, view`；结果已提交 |
+| `SubEvent` / `sub_event` | `session, agent, parent_call` 加递归 `event`；子 Agent 事件信封，父前端按 `parent_call` 归位 |
 | `Retrying` / `retrying` | `attempt, max_attempts, wait_ms, reason`；重试次数从 1 开始 |
 | `Compacted` / `compacted` | `before, after, summarized`；压缩前后估算及是否摘要 |
 | `ModelChanged` / `model_changed` | `model`；恢复/切换时更新后续消息标签 |
@@ -201,6 +211,7 @@ idle timeout 看收到的字节，包括 SSE 注释。大上下文预填充期�
 
 1. 用户输入修复为合法 UTF-8，追加进历史并记录，发 `TurnStarted`。
 2. 检查模型调用上限；在下一步主请求前处理 MCP 连接、刷新与重连，再按整请求预算自动压缩。
+   MCP 的重连、等待与断线通知只由主 Agent 做（`subagent_depth == 0`）；子 Agent 只用构造时的工具快照。
 3. 发 `StepStarted`、请求前的 `ContextUpdate`，调用 Model，向 Sink 转发可见流事件。
 4. 返回后更新 usage 和估算校正，保存有效 assistant 回复；没有工具调用则结束。
 5. 有工具调用则交给调度器，有序回填结果；未中断、未被用户拒绝且未到上限时继续。
@@ -242,6 +253,16 @@ FileTracker，「edit a → edit a」的后一个 diff 基于前一个修改。�
 
 用户直接拒绝使本批余下调用跳过、本轮 `denied`；拒绝附说明只拒绝当前调用，本轮继续。策略拒绝同样只是工具错误
 结果，不直接结束一轮。MCP 断开在提交结果时标记，并附给模型的重连说明；Registry 留到下一安全点更新。
+
+### task 组
+
+`Intent::Kind::task` 在权限判定里直接放行（真正的检查发生在子 Agent 自己的 Policy），并单独成组：连续 task 调用
+不与只读组混跑，类别切换会先 flush 挂起组。组宽度取 `run.max_parallel_tasks`（默认 4），超出的调用分块排队，
+块内 join 完才开下一块，不退化为串行。
+
+组内每个线程执行一次 `TaskCall::do_run`：按定义派生 `Setup`、`create_child`、把子 Agent 的整轮跑完，再把结果按
+父调用 id 组装成 `TaskView`。子 Agent 的事件用 `SubEvent` 信封实时转发给父 Sink，但**不写进父历史**；父只收到
+最终文本与逐条工具摘要。子 Agent 自己的 `Recorder`、`Conversation`、`Policy`、`Registry` 与 FileTracker 完全独立。
 
 ## 7. 权限与沙箱
 
@@ -302,6 +323,24 @@ network 或未知目标扩大为全网访问。
 `Grant` 保存实际 profile、backend、来源（mode/once/session/unrestricted）、读写/保护范围、敏感名称规则、通信开关、
 私有临时空间和 analysis version。执行前先持久化版本化 `tool_started`，再发实时事件；`BashView` 在完成记录中保留同一执行事实。旧 view 缺字段时显示 unknown/空值，
 历史授权记录不会在恢复后重新生效。MCP 仍使用独立授权流程。
+
+### 子 Agent 的权限派生
+
+`derive_permission` 只收窄、不放宽。父的 `mode / planning / read_only` 必须取运行时当前值，因为用户可能按过
+Shift+Tab 或走过 `exit_plan`。
+
+| 父状态 | 定义 `read_only` | 定义 `inherit` | 定义 `ask` |
+| --- | --- | --- | --- |
+| planning | read_only + planning，不可询问 | 同左 | 同左 |
+| read_only | read_only，不可询问 | read_only，不可询问 | read_only，不可询问 |
+| ask | read_only，可询问 | ask，可询问 | ask，可询问 |
+| workspace | read_only，可询问 | workspace，可询问 | ask，可询问 |
+| unrestricted | read_only，可询问 | 降级 workspace，可询问 | ask，可询问 |
+
+`may_ask=false` 时子 Agent 的 approver 传空：需要批准的操作返回「当前运行方式没有审批器」的工具错误，模型自行
+收手，不新增禁用机制。unrestricted 不继承：用户给 unrestricted 是针对自己盯着的这个会话，不是对自主运行的
+子 Agent 的授权。会话授权双向不继承：子 Agent 新建 Policy、规则表为空；子 Agent 里点的「本会话允许」只记在子
+Policy，随子 Agent 销毁，一次 task 不会给父会话种规则。高危硬拦与用户显式拒绝在子 Agent 内同样生效。
 
 ### Asker、ask 与 plan
 
@@ -474,6 +513,10 @@ stateDiagram-v2
 连接线程只交接 Client、状态和警告，不保留一轮的 Sink。警告在安全点或轮末交付一次；失败服务不阻止其他服务使用。
 状态快照中的 ready 表示连接及工具发现完成，Registry 仍只在安全点更新，工具执行中途不变更。
 
+`snapshot(registry)` 供子 Agent 构造时调用一次：锁内读取 ready 服务的 Client，把工具合并进子 Agent 自己的
+Registry；不等待、不重连、不发通知。子 Agent 的默认工具集不含 `mcp__*`，定义里显式写出才会拿到。Client 指针的
+赋值与重置都在锁内，读指针的 `snapshot` 因此不会与重连线程竞争。
+
 锁内只交接状态、连接和警告；连接、刷新、Client 析构、join、Sink 均在锁外。
 关闭时先停止全部连接线程再逐一 join，Registry 已先销毁，避免工具引用失效 Client。
 界面显示及轮询见 [ui](ui.md#7-活动与状态)，run 模式在 stderr 报告失败，jsonl 同时保留结构化 Notice。
@@ -525,11 +568,41 @@ exec 在子进程中清空信号屏蔽，工具的 SIGTERM 清理因此仍然有
 | 参数或配置错误 | 2 |
 | run 被信号中断，或交互因进程中断信号退出 | 130 |
 
-## 13. 当前范围
+## 13. 子 Agent 与 task 工具
 
-当前提供单会话、每轮单模型的文本编码 Agent（空闲时可用 `/model` 在同一会话切换），支持 read/write/edit/bash/grep/glob/todo/ask/exit_plan、MCP tools、非交互与终端前端、记录恢复和上下文压缩。
-尚未实现子 Agent、多模型路由、图片输入、web_fetch、hooks、插件或会话全文搜索。
+`task(agent, prompt)` 把一段自足任务交给一个在独立上下文里运行的子 Agent，父只收回最终文本与 `TaskView` 里的
+逐条工具摘要。定义来自安装根 `home/agents/*.md` 的 frontmatter 与正文（正文是子 Agent 的 system prompt）；
+`app::load_subagents` 校验名字唯一、`permission` 取值、`model` 引用和上限，未知键只 warn。
+
+不变量：
+
+- 子 Agent 生命周期严格在一次 `do_run` 内，同步整组并发：一批 task 全部启动、全部完成后按原顺序回填结果。
+  不跨轮存活，不需要注册表或引用计数；`TurnContext` 在整轮内有效，dispatch 返回前所有 task 线程已 join。
+- 禁止二级子 Agent 有三重保险：`subagent_depth > 0` 不注册 task 工具；派生 `allowed_tools` 时剔除 `task`；
+  `TaskCall::do_run` 开头按 depth 直接返回错误。
+- `allowed_tools` 取定义里的 `tools`，缺省继承父注册工具名再剔除 `task` / `ask` / `exit_plan` 与 MCP 工具；
+  显式写 `mcp__*` 才会拿到对应 MCP 工具。
+- `Setup` 的其余字段原样继承：cwd、project / control / git root、工具与工作区选项、session、http、压缩提示词；
+  `subagents` 清空、`mcp_servers` 清空（只取快照）、`host` 用同一个 shared_ptr。
+- `parent_session_id` / `subagent_name` 进 Recorder Meta，子会话带 `parent_id` / `agent_name`，`sessions` 列表与
+  `/resume` 不显示子会话；`session::list_children` 按父会话升序列出，供界面切换与按需回放。
+
+中断与错误传播：父的 stop_token 透传给所有子 `run_turn`，各自返回 `interrupted`，task 组内 jthread 析构 join，
+父 dispatch 标记 interrupted；子 Agent 等审批时被中断，`AgentHost::approve` 的 stop_callback 立即完成 promise
+返回 deny 并释放审批锁，不死锁；子 Agent 创建失败、模型打不通或未产出结论都转成 `is_error` 的 Result；子 Agent
+触到自己的调用上限属正常收尾，父侧不视为错误。
+
+审批来源：子 Agent 需要询问时，`Approval` 带上 `agent` 与 `origin_call_id`，由 `AgentHost::approve` 串行化，
+任一时刻只有一个对话框；等待审批的子 Agent 阻塞，其余继续跑。
+
+## 14. 当前范围
+
+当前提供单会话、每轮单模型的文本编码 Agent（空闲时可用 `/model` 在同一会话切换），支持 read/write/edit/bash/grep/glob/todo/ask/exit_plan、
+MCP tools、并发子 Agent（`task` + `home/agents/*.md`）、非交互与终端前端、记录恢复和上下文压缩。
+尚未实现多模型路由、图片输入、web_fetch、hooks、插件或会话全文搜索。
 编解码器目前只有 OpenAI Chat Completions，MCP 的协议限制见其模块文档。
+
+子 Agent 之间不直接通信、不向父追问、不跨轮存活、不参与 MCP 重连与通知投递，也不支持多级嵌套与单独的凭据配置。
 
 构建与真实功能验证约定见 [文档索引](../README.md)。开发模型为本地 Qwen3.8-Flash-Next；文档和实现不依赖
 `temp/` 中的临时检测程序，也不依赖旧里程碑计划。

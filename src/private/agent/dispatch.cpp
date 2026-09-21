@@ -48,9 +48,11 @@ std::string available_tools(const tools::Registry& registry) {
 
 } // namespace
 
-Agent::DispatchOutcome Agent::dispatch(const std::vector<ToolCall>& calls, int budget, const Sink& sink,
-                                       const Approver& approver, const Asker& asker,
-                                       std::stop_token stop) {
+Agent::DispatchOutcome Agent::dispatch(const std::vector<ToolCall>& calls, int budget, const TurnContext& ctx) {
+    const Sink& sink = ctx.sink;
+    const Approver& approver = ctx.approver;
+    const Asker& asker = ctx.asker;
+    const std::stop_token stop = ctx.stop;
     struct Slot {
         const ToolCall* call = nullptr;
         std::string summary;
@@ -70,7 +72,12 @@ Agent::DispatchOutcome Agent::dispatch(const std::vector<ToolCall>& calls, int b
 
     DispatchOutcome outcome;
     std::size_t committed = 0;
+    enum class GroupKind { readonly, task };
     std::vector<Pending> group; ///< 挂起的并行组
+    GroupKind group_kind = GroupKind::readonly;
+    const auto kind_of = [](const tools::Intent& intent) {
+        return intent.kind == tools::Intent::Kind::task ? GroupKind::task : GroupKind::readonly;
+    };
 
     // 结果按 tool_calls 的原始顺序写入历史、写记录、发事件；能提交的前缀尽早提交（docs/design/agent.md §6）。
     const auto commit = [&] {
@@ -79,7 +86,7 @@ Agent::DispatchOutcome Agent::dispatch(const std::vector<ToolCall>& calls, int b
             if (const auto* view = std::get_if<tools::McpView>(&slot.result->display);
                 view && view->disconnected) {
                 // 告诉模型这个 server 会重连还是已不可用（T12 / T13），免得它在工具消失后反复寻找。
-                slot.result->text += hub_.mark_disconnected(view->server, slot.result->text);
+                slot.result->text += hub_->mark_disconnected(view->server, slot.result->text);
             }
             const std::int64_t ordinal =
                 conversation_.add_tool_result(slot.call->id, slot.result->text, slot.summary);
@@ -104,10 +111,13 @@ Agent::DispatchOutcome Agent::dispatch(const std::vector<ToolCall>& calls, int b
         slot.result = call.run(grant, make_on_output(*slot.call), stop);
     };
 
-    // 并行组：ToolStarted 按顺序在 agent 线程上发；执行分块、每块至多 8 个 jthread，
+    // 并行组：ToolStarted 按顺序在 agent 线程上发；执行分块、每块至多 width 个 jthread，
     // 块内 join 完才起下一块；每个线程只写自己的 slot（docs/design/agent.md §6）。
     const auto run_group = [&] {
         if (group.empty()) return;
+        const std::size_t width = group_kind == GroupKind::task
+                                      ? static_cast<std::size_t>(setup_.options.run.max_parallel_tasks)
+                                      : kGroupWidth;
         for (const Pending& p : group) {
             const Slot& slot = slots[p.slot];
             const ToolStarted started{slot.call->id, slot.call->name, slot.summary, p.grant};
@@ -115,8 +125,8 @@ Agent::DispatchOutcome Agent::dispatch(const std::vector<ToolCall>& calls, int b
             check_broken(sink);
             sink(started);
         }
-        for (std::size_t base = 0; base < group.size(); base += kGroupWidth) {
-            const std::size_t end = std::min(base + kGroupWidth, group.size());
+        for (std::size_t base = 0; base < group.size(); base += width) {
+            const std::size_t end = std::min(base + width, group.size());
             std::vector<std::jthread> threads;
             threads.reserve(end - base);
             for (std::size_t k = base; k < end; ++k) {
@@ -166,8 +176,10 @@ Agent::DispatchOutcome Agent::dispatch(const std::vector<ToolCall>& calls, int b
             return kind == tools::Intent::Kind::ask || kind == tools::Intent::Kind::exit_plan;
         };
         if (prepared && !interactive()) verdict = policy_.evaluate(*slot.call, prepared.value()->intent());
-        // 这个调用进不了并行组：先跑完挂起的组，再重新 prepare（prepare 无副作用，docs/design/agent.md §6）。
-        if (!group.empty() && !(prepared && verdict && parallel(*verdict, prepared.value()->intent()))) {
+        // 这个调用进不了并行组（或类别不同）：先跑完挂起的组，再重新 prepare（prepare 无副作用，docs/design/agent.md §6）。
+        if (!group.empty() &&
+            (!(prepared && verdict && parallel(*verdict, prepared.value()->intent())) ||
+             kind_of(prepared.value()->intent()) != group_kind)) {
             run_group();
             prepared = tool->prepare(slot.call->arguments, tool_ctx_);
             verdict.reset();
@@ -181,6 +193,7 @@ Agent::DispatchOutcome Agent::dispatch(const std::vector<ToolCall>& calls, int b
             continue;
         }
         slot.summary = prepared.value()->intent().summary; // 以最后一次 prepare 的 Intent 为准
+        prepared.value()->set_call_id(slot.call->id);
 
         if (prepared.value()->intent().kind == tools::Intent::Kind::ask) {
             sink(ToolStarted{slot.call->id, slot.call->name, slot.summary, {}});
@@ -283,6 +296,7 @@ Agent::DispatchOutcome Agent::dispatch(const std::vector<ToolCall>& calls, int b
             const tools::Intent& intent = prepared.value()->intent();
             if (parallel(v, intent)) {
                 group.push_back(Pending{i, std::move(prepared.value()), v.grant});
+                group_kind = kind_of(intent);
             } else {
                 run_serial(i, *prepared.value(), v.grant);
             }

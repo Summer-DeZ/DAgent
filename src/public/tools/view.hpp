@@ -94,9 +94,30 @@ struct AskView {
     bool cancelled = false;
 };
 
+/// @brief 子 Agent 一次工具调用的摘要（task 视图里逐条列出）。
+struct TaskStep {
+    std::string summary;
+    bool is_error = false;
+    bool operator==(const TaskStep&) const = default;
+};
+
+/// @brief task 工具的结果视图：session_id 是父到子的唯一跳转锚点。
+struct TaskView {
+    std::string agent;            ///< 子 Agent 名
+    std::string task;             ///< 任务 prompt
+    std::string session_id;       ///< 子会话 id
+    std::string result;           ///< 子 Agent 的最终文本
+    std::vector<TaskStep> steps;  ///< 逐条工具摘要
+    int model_calls = 0;          ///< 子 Agent 的模型请求数
+    int tool_calls = 0;           ///< 子 Agent 的工具调用数
+    double seconds = 0;
+    bool interrupted = false;
+    bool operator==(const TaskView&) const = default;
+};
+
 /// monostate：prepare 阶段就失败的调用（参数错误等），界面只显示 text。
 using View = std::variant<std::monostate, ReadView, FileChangeView, BashView, GrepView, GlobView,
-                          McpView, TodoView, AskView>;
+                          McpView, TodoView, AskView, TaskView>;
 
 /// 序列化成 {"kind": "read", ...}，给 session::Writer::append；kind 区分各分支。
 nlohmann::json to_json(const View&);

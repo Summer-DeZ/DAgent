@@ -29,7 +29,9 @@ struct Meta {
     std::string id;
     std::filesystem::path cwd, git_root;
     std::string model;
-    std::string created; ///< UTC ISO-8601，毫秒（展示/兼容字段）
+    std::string created;    ///< UTC ISO-8601，毫秒（展示/兼容字段）
+    std::string parent_id;  ///< 父会话 id；空表示顶层会话
+    std::string agent_name; ///< 子 Agent 名；顶层会话为空
 };
 
 struct Summary {
@@ -81,6 +83,9 @@ private:
 
 /// @brief 按规范化 cwd 过滤并按更新时间倒序。
 std::vector<Summary> list(const Options&, const std::filesystem::path& cwd, std::size_t limit);
+
+/// @brief 按父会话列出子会话，按创建时间升序；供界面切换与按需回放使用。
+std::vector<Summary> list_children(const Options&, std::string_view parent_id);
 
 /// @brief 按 seq 回放一个会话。
 void replay(const Options&, std::string_view id,

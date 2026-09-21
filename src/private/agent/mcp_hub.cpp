@@ -15,7 +15,7 @@ struct McpHub::Server {
     mcp::ServerConfig config;
     // 回调只访问此标志；它必须比两个 Client 活得久。
     std::atomic<bool> tools_changed{false};
-    std::unique_ptr<mcp::Client> client;   // 只在 agent 线程操作
+    std::unique_ptr<mcp::Client> client;   // agent 线程操作；snapshot 会跨线程读，指针本身受 mutex_ 保护
     std::unique_ptr<mcp::Client> incoming; // 受 mutex_ 保护
     ServerState state;                    // 受 mutex_ 保护
     bool retried = false;                 // 只在 agent 线程操作
@@ -106,6 +106,16 @@ void McpHub::apply_pending(tools::Registry& registry, const Sink& sink, std::sto
     report_pending(sink);
 }
 
+void McpHub::snapshot(tools::Registry& registry) {
+    const std::lock_guard lock(mutex_);
+    for (auto& pointer : servers_) {
+        Server& server = *pointer;
+        if (server.state.status != ServerState::Status::ready || server.client == nullptr) continue;
+        registry.remove_prefix("mcp__" + server.config.name + "__");
+        tools::add_mcp(registry, *server.client);
+    }
+}
+
 void McpHub::restart_disconnected(tools::Registry& registry) {
     for (auto& pointer : servers_) {
         Server& server = *pointer;
@@ -116,7 +126,10 @@ void McpHub::restart_disconnected(tools::Registry& registry) {
         }
         if (status != ServerState::Status::disconnected && status != ServerState::Status::failed) continue;
         registry.remove_prefix("mcp__" + server.config.name + "__"); // 必须在 Client 析构之前
-        server.client.reset();
+        {
+            std::lock_guard lock(mutex_);
+            server.client.reset();
+        }
         if (status == ServerState::Status::disconnected) {
             server.retried = true;
             {
@@ -170,7 +183,10 @@ bool McpHub::merge(tools::Registry& registry, std::stop_token stop) {
         }
         if (incoming) {
             registry.remove_prefix(prefix);
-            server.client = std::move(incoming);
+            {
+                std::lock_guard lock(mutex_);
+                server.client = std::move(incoming);
+            }
             tools::add_mcp(registry, *server.client);
         }
         if (!server.client || !server.tools_changed.exchange(false)) continue;

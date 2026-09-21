@@ -39,6 +39,12 @@ void Registry::remove_prefix(std::string_view prefix) {
     });
 }
 
+void Registry::retain(const std::vector<std::string>& names) {
+    std::erase_if(tools_, [&](const std::unique_ptr<Tool>& tool) {
+        return std::ranges::find(names, tool->spec().name) == names.end();
+    });
+}
+
 const Tool* Registry::find(std::string_view name) const {
     const auto it = std::find_if(tools_.begin(), tools_.end(), [&](const std::unique_ptr<Tool>& tool) {
         return std::string_view(tool->spec().name) == name;

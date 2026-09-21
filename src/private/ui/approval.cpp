@@ -31,6 +31,7 @@ public:
     std::unique_ptr<tui::ScrollbackMouse> mouse;
     const tui::ThemeTokens* current_theme = &tui::dark_theme();
     std::string tool;
+    std::string via; ///< 审批来自子 Agent 时的来源标记
     bool question = false;
 
     explicit Panel(tui::Runtime& rt) {
@@ -76,7 +77,7 @@ public:
         surface.put(w - 1, 0, "╮", current_theme->border_active);
         surface.put(0, h - 1, "╰", current_theme->border_active);
         surface.put(w - 1, h - 1, "╯", current_theme->border_active);
-        surface.text(2, 0, (question ? "Choose — " : std::string(ui::text().approve_title)) + tool + " ",
+        surface.text(2, 0, (question ? "Choose — " : std::string(ui::text().approve_title)) + tool + via + " ",
                      current_theme->text);
         surface.text(std::max(2, (w - display_width(ui::text().approve_cancel)) / 2), h - 1, std::string(ui::text().approve_cancel), current_theme->text_muted);
     }
@@ -98,6 +99,7 @@ void ApprovalDialog::open(const agent::Approval& approval,
     close(); approval_ = approval; answer_ = std::move(answer);
     auto panel = std::make_unique<Panel>(rt_); panel_ = panel.get();
     panel_->tool = approval.tool;
+    panel_->via = approval.agent.empty() ? std::string{} : format_text(ui::text().approve_via_task, approval.agent);
     panel_->theme(theme_);
     panel_->heading->set_text(" ");
     panel_->summary->set_text("  " + approval.reason);
@@ -115,6 +117,7 @@ void ApprovalDialog::open(const agent::Approval& approval,
         for (const auto& path : approval.intent.paths) preview += path.path.string() + '\n';
         break;
     case tools::Intent::Kind::external: kind = tui::BlockKind::code; break;
+    case tools::Intent::Kind::task: break;
     case tools::Intent::Kind::ask:
     case tools::Intent::Kind::exit_plan: break;
     }

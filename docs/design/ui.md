@@ -115,6 +115,7 @@ PromptBox 左侧是一根竖条（忙碌时换成 `primary`），底纹用 `back
 | Ctrl+O | Expand tool output（已完成工具输出展开/折叠） |
 | Ctrl+R | Expand thoughts（全部思考展开/折叠） |
 | Ctrl+T | 收起或展开右侧信息栏 |
+| Ctrl+A | Switch agent view（主会话与子 Agent Pane 切换） |
 | Ctrl+P | Command palette（命令面板） |
 | Ctrl+? | Keys and commands（帮助面板） |
 | PgUp/PgDn、Home/End | Page up/down、Go to top/bottom（翻页、回顶、回底） |
@@ -130,6 +131,7 @@ PromptBox 左侧是一根竖条（忙碌时换成 `primary`），底纹用 `back
 | `/new` | New session（清空对话和计划） |
 | `/compact` | Compact context（手动压缩，可取消） |
 | `/sessions` | Switch session（异步列出并恢复当前 cwd 的会话） |
+| `/agents` | Switch agent view（列出主会话与全部 task；恢复出来的子会话在选中时才回放） |
 | `/plan` | 进入或退出只读规划模式；新会话不继承 plan |
 | `/theme` | Switch theme（即时预览并切换） |
 | `/help` | Keys and commands（打开只读帮助） |
@@ -152,17 +154,30 @@ PromptBox 左侧是一根竖条（忙碌时换成 `primary`），底纹用 `back
 | `ToolFinished` | 用结构化 View 定稿名称、参数、右对齐统计和主体 |
 | `Compacted` | 永久的压缩前后 token 系统块 |
 | `Notice(error)` | 永久 error 块；info/warn 只进 toast |
+| `SubEvent` | 按 `parent_call` 归位：在对应 task 块正文追加子 Agent 的工具行，同时把内层事件喂给该子会话的 Pane |
 | `TurnEnded` | interrupted/denied/limit/failed 留系统块；done 追加 `▣ 模式 · 模型 · 耗时` 尾行 |
 
 工具标题是状态符 + 加粗名称、muted 参数、右对齐统计三段；参数过长时省略。主体每行用 `│ `，折叠行独立用
 `└ `，同一工具三个块共享 group 且只有标题有上边距。默认折叠：edit/write 20 行、bash 10 行、grep/glob/MCP 5 行、
-非结构化结果 3 行。Read 和 Plan 通常没有主体。
+非结构化结果 3 行。Read 和 Plan 通常没有主体。`TaskView` 的统计是 `N steps · M tools · S.Ss`，展开后先列逐条
+工具摘要（错误项用 ✗），空行后是子 Agent 的最终文本。
 
 思考正文默认收起（`collapsed_rows = 0`），Ctrl+R 统一展开或收起本会话的全部思考，标题前缀随之在 `+` 与 `-` 之间切换。
 
 `TodoView` 到达时，Transcript 把整份列表交给 SidePanel，对话只留下 Plan 工具标题；全部完成的首次更新追加一条
 `plan complete` 系统块。宽度少于 80 列时 SidePanel 让位，Transcript 原位替换一个计划块，不为每次更新新增消息；
 宽度恢复后该块清空并由侧栏接管。`/new` 清空列表，恢复会话依靠最后一次 TodoView 自然重建。
+
+### 子会话 Pane
+
+Shell 持有 `std::vector<Pane>`：索引 0 恒为主会话，task 首次发 `SubEvent` 时按 `call_id` 建一个子 Pane
+（标题 `task · agent`，记录子会话 id），之后该子会话的内层事件同时喂给这个 Pane 的 Transcript。Pane 的
+Scrollback 由 `ScrollFrame` 统一持有，`show()` disown 旧区、adopt 新区；鼠标处理器每个 Pane 一个，
+切换时解绑旧的、绑定新的。Ctrl+A / `/agents` 打开 Panel 列出主会话与全部 task；子 Pane 下输入框禁用，
+Ctrl+C 或再次切换回到主会话。
+
+活动期之外的子会话没有 Pane：恢复父会话时只还原 task 块，用户从 `/agents` 选中某个 task 时才用
+`session::replay` 在后台线程回放子会话记录，再把事件投影进新 Pane。
 
 ## 6. 状态、浮层与权限
 
@@ -183,7 +198,8 @@ ToastStack 是单一右上角 overlay，内部维护最多三条通知，新通�
 审批预览同时显示实际 cwd、模式和每项增量权限原因；敏感/受保护请求不显示 session 选项。
 底边单独预留一行，避免覆盖选项；紧凑选项为 `[y] allow / [a] session / [w] network / [n] deny / [e] explain`。
 同一模态骨架也显示 Question：数字或上下键选择，Enter 确认，多选用空格，Other 进入自由输入，Esc 取消。
-权限与问题浮层互斥。unrestricted 的输入/消息尾行使用 error 色，plan 使用 accent 色。长计划条目与通知按显示列宽截断。
+权限与问题浮层互斥。子 Agent 发起的审批在标题里追加 `· via task · <agent>`，与主 Agent 自己的请求区分。
+unrestricted 的输入/消息尾行使用 error 色，plan 使用 accent 色。长计划条目与通知按显示列宽截断。
 `/permissions` 复用 Panel 显示当前内存授权，Enter 撤销所选规则；空列表只显示不可选提示。
 
 ## 7. 退出与错误

@@ -22,6 +22,7 @@ constexpr std::string_view kGlob = "glob";
 constexpr std::string_view kMcp = "mcp";
 constexpr std::string_view kTodo = "todo";
 constexpr std::string_view kAsk = "ask";
+constexpr std::string_view kTask = "task";
 
 } // namespace
 
@@ -54,6 +55,9 @@ NLOHMANN_DEFINE_TYPE_NON_INTRUSIVE_WITH_DEFAULT(TodoView, items)
 NLOHMANN_DEFINE_TYPE_NON_INTRUSIVE_WITH_DEFAULT(AskOption, label, description)
 NLOHMANN_DEFINE_TYPE_NON_INTRUSIVE_WITH_DEFAULT(AskView, header, prompt, options, selected, other,
                                                 multi_select, allow_other, cancelled)
+NLOHMANN_DEFINE_TYPE_NON_INTRUSIVE_WITH_DEFAULT(TaskStep, summary, is_error)
+NLOHMANN_DEFINE_TYPE_NON_INTRUSIVE_WITH_DEFAULT(TaskView, agent, task, session_id, result, steps,
+                                                model_calls, tool_calls, seconds, interrupted)
 
 // BashView 的 exit_code / signal 是 std::optional<int>：本项目用的 nlohmann 开着隐式转换，
 // 这份配置不提供 optional 的序列化，BashView 手写（缺字段取默认值，null 表示没有）。
@@ -118,6 +122,7 @@ json to_json(const View& view) {
                    [&](const McpView& v) { out = json{{"kind", kMcp}}; out.update(json(v)); },
                    [&](const TodoView& v) { out = json{{"kind", kTodo}}; out.update(json(v)); },
                    [&](const AskView& v) { out = json{{"kind", kAsk}}; out.update(json(v)); },
+                   [&](const TaskView& v) { out = json{{"kind", kTask}}; out.update(json(v)); },
                },
                view);
     return out;
@@ -137,6 +142,7 @@ View view_from_json(const json& data) {
         if (name == kMcp) return data.get<McpView>();
         if (name == kTodo) return data.get<TodoView>();
         if (name == kAsk) return data.get<AskView>();
+        if (name == kTask) return data.get<TaskView>();
     } catch (const json::exception&) {
         return {}; // 会话文件损坏的条目按 monostate 显示
     }

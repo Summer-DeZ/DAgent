@@ -41,6 +41,7 @@ struct Strings {
     std::string_view act_resuming;
     std::string_view act_switching_model;
     std::string_view act_adding_model;
+    std::string_view act_task;
     std::string_view cmd_model;
     std::string_view panel_model;
     std::string_view panel_model_footer;
@@ -116,6 +117,12 @@ struct Strings {
     std::string_view approve_session;
     std::string_view approve_network;
     std::string_view approve_deny;
+    std::string_view approve_via_task;
+    std::string_view card_task;
+    std::string_view card_task_stats;
+    std::string_view cmd_agents;
+    std::string_view panel_agents;
+    std::string_view panel_agent_footer;
     std::string_view cmd_palette;
     std::string_view cmd_interrupt;
     std::string_view cmd_cancel;

@@ -5,6 +5,8 @@
 #include <utility>
 
 #include "agent/prompt.hpp"
+#include "agent/host.hpp"
+#include "agent/subagent.hpp"
 #include "base/log.hpp"
 #include "base/text.hpp"
 #include "workspace/context.hpp"
@@ -18,8 +20,7 @@ bool sandbox_available(const exec::Support& support) {
     return support.read_only_ready();
 }
 
-std::string render_prompt(const Setup& setup) {
-    const workspace::Environment env = workspace::collect_environment(setup.cwd);
+std::string render_prompt(const Setup& setup, const workspace::Environment& env) {
     PromptVars vars;
     vars.model = setup.provider.model;
     vars.project_root = setup.project_root;
@@ -49,7 +50,7 @@ Agent::Agent(Setup setup, std::string system_prompt, Recorder recorder, Conversa
           return std::move(setup);
       }()),
       recorder_(std::move(recorder)),
-      hub_(setup_.mcp_servers, setup_.mcp),
+      hub_(setup_.host->hub()),
       registry_(),
       tool_ctx_(setup_.cwd, setup_.tools, setup_.files, setup_.search, setup_.process),
       policy_(setup_.permission_mode, setup_.read_only, setup_.planning, setup_.sandbox,
@@ -63,6 +64,12 @@ Agent::Agent(Setup setup, std::string system_prompt, Recorder recorder, Conversa
                  workspace::render(setup_.compact_prompt, nlohmann::json::object())),
       system_prompt_(std::move(system_prompt)) {
     tools::add_builtin(registry_);
+    // 先取 MCP 快照再收窄：定义里没显式写 mcp__* 的子 Agent 默认看不到 MCP 工具。
+    if (setup_.subagent_depth > 0 && hub_) hub_->snapshot(registry_);
+    if (!setup_.allowed_tools.empty()) registry_.retain(setup_.allowed_tools);
+    if (setup_.subagent_depth == 0 && !setup_.subagents.empty()) {
+        if (auto tool = make_task_tool(*this)) registry_.add(std::move(tool));
+    }
     if (setup_.permission_mode == PermissionMode::unrestricted && !sandbox_available(setup_.sandbox))
         log_agent()->warn("sandbox support is unavailable; unrestricted commands run with full host access");
 }
@@ -72,7 +79,7 @@ std::unique_ptr<Agent> Agent::resume(Setup setup, std::string_view session_id,
     Restored restored = replay_into(setup.session, session_id, replay_sink);
     Recorder recorder = Recorder::resume(setup.session, session_id);
     const std::string previous_model = restored.model.empty() ? recorder.meta().model : restored.model;
-    std::string system_prompt = render_prompt(setup);
+    std::string system_prompt = render_prompt(setup, setup.host->environment());
 
     auto agent = std::unique_ptr<Agent>(new Agent(std::move(setup), std::move(system_prompt),
                                                   std::move(recorder),
@@ -118,7 +125,7 @@ std::unique_ptr<Agent> Agent::resume(Setup setup, std::string_view session_id,
 }
 
 std::unique_ptr<Agent> Agent::create(Setup setup) {
-    std::string system_prompt = render_prompt(setup);
+    std::string system_prompt = render_prompt(setup, setup.host->environment());
 
     session::Meta meta;
     meta.id = session::new_id();
@@ -135,12 +142,39 @@ std::unique_ptr<Agent> Agent::create(Setup setup) {
     return agent;
 }
 
+std::unique_ptr<Agent> Agent::create_child(Setup setup) {
+    std::string system_prompt = render_prompt(setup, setup.host->environment());
+
+    session::Meta meta;
+    meta.id = session::new_id();
+    meta.cwd = setup.cwd;
+    meta.git_root = setup.git_root.value_or(std::filesystem::path{});
+    meta.model = setup.provider.model;
+    meta.parent_id = setup.parent_session_id;
+    meta.agent_name = setup.subagent_name;
+    Recorder recorder = Recorder::create(setup.session, std::move(meta));
+
+    auto agent =
+        std::unique_ptr<Agent>(new Agent(std::move(setup), std::move(system_prompt), std::move(recorder)));
+    agent->recorder_.system(agent->system_prompt_, agent->setup_.provider.model);
+    if (agent->recorder_.broken()) log_agent()->error("Failed to write the session record: {}", agent->recorder_.error());
+    log_agent()->info("子会话已创建：id={} agent={} model={}", agent->meta().id, agent->setup_.subagent_name,
+                      agent->meta().model);
+    return agent;
+}
+
 std::vector<ToolDef> Agent::tool_defs() const {
     std::vector<ToolDef> defs;
     for (const tools::Spec* spec : registry_.specs()) {
         defs.push_back(ToolDef{spec->name, spec->description, spec->parameters});
     }
     return defs;
+}
+
+std::vector<std::string> Agent::tool_names() const {
+    std::vector<std::string> names;
+    for (const tools::Spec* spec : registry_.specs()) names.push_back(spec->name);
+    return names;
 }
 
 void Agent::report_stream(const StreamEvent& event, const Sink& sink) {
@@ -193,13 +227,16 @@ TurnStatus Agent::finish(TurnStatus status, std::string error, int steps, int ca
     recorder_.sync();
     log_agent()->info("本轮结束：status={} steps={} tool_calls={} prompt={} completion={}",
                       to_string(status), steps, calls, total.prompt, total.completion);
-    hub_.report_pending(sink);
+    if (setup_.subagent_depth == 0) hub_->report_pending(sink); // MCP 通知只由主 Agent 投递
     sink(TurnEnded{status, error, steps, calls, total});
+    turn_ = nullptr;
     return status;
 }
 
-TurnStatus Agent::run_turn(std::string input, const Sink& sink, const Approver& approver,
-                           const Asker& asker, std::stop_token stop) {
+TurnStatus Agent::run_turn(std::string input, const TurnContext& ctx) {
+    turn_ = &ctx;
+    const Sink& sink = ctx.sink;
+    const std::stop_token stop = ctx.stop;
     questions_this_turn_ = 0;
     input = base::to_valid_utf8(input);
     const std::int64_t user_ordinal = conversation_.add_user(input);
@@ -227,7 +264,8 @@ TurnStatus Agent::run_turn(std::string input, const Sink& sink, const Approver& 
         std::size_t estimated = 0;
         Reply reply;
         try {
-            hub_.apply_pending(registry_, sink, stop);
+            // MCP 的重连、等待、断线通报只由主 Agent 做；子 Agent 只用构造时的快照。
+            if (setup_.subagent_depth == 0) hub_->apply_pending(registry_, sink, stop);
             const RequestShape shape{system_prompt_, tool_defs(), setup_.provider};
             // 自动压缩在 StepStarted 之前（docs/design/agent.md §2）：界面在一步开始后作废的内容不含压缩提示。
             compactor_.maybe_compact(conversation_, shape, model_, estimator_, recorder_, sink, stop);
@@ -298,7 +336,7 @@ TurnStatus Agent::run_turn(std::string input, const Sink& sink, const Approver& 
         }
 
         const DispatchOutcome outcome =
-            dispatch(reply.message.tool_calls, max_tool_calls - calls, sink, approver, asker, stop);
+            dispatch(reply.message.tool_calls, max_tool_calls - calls, ctx);
         calls += outcome.handled;
         switch (outcome.stop) {
         case DispatchOutcome::Stop::interrupted:
@@ -313,7 +351,9 @@ TurnStatus Agent::run_turn(std::string input, const Sink& sink, const Approver& 
     }
 }
 
-TurnStatus Agent::compact(const Sink& sink, std::stop_token stop) {
+TurnStatus Agent::compact(const TurnContext& ctx) {
+    const Sink& sink = ctx.sink;
+    const std::stop_token stop = ctx.stop;
     TurnStatus status = TurnStatus::done;
     try {
         compactor_.summarize(conversation_, {system_prompt_, tool_defs(), setup_.provider}, model_,

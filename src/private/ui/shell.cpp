@@ -10,6 +10,7 @@
 #include <functional>
 #include <iostream>
 #include <mutex>
+#include <set>
 #include <thread>
 #include <utility>
 
@@ -51,34 +52,77 @@ public:
 
 class ScrollFrame final : public tui::Widget {
 public:
-    explicit ScrollFrame(std::unique_ptr<tui::Scrollback> scroll)
-        : scroll_(std::move(scroll)) { adopt(*this, *scroll_); }
-    ~ScrollFrame() override { disown(*scroll_); }
+    ScrollFrame() = default;
+    ~ScrollFrame() override { if (current_ != nullptr) disown(*current_); }
+
+    /// 新建一个滚动区；第一个自动成为当前显示的那个。
+    tui::Scrollback& create() {
+        auto scroll = std::make_unique<tui::Scrollback>();
+        tui::Scrollback* pointer = scroll.get();
+        scrolls_.push_back(std::move(scroll));
+        if (current_ == nullptr) show(*pointer);
+        return *pointer;
+    }
+    /// 切换显示的滚动区；旧的 disown、新的 adopt。
+    void show(tui::Scrollback& scroll) {
+        if (current_ == &scroll) return;
+        if (current_ != nullptr) disown(*current_);
+        current_ = &scroll;
+        adopt(*this, scroll);
+        invalidate_tree();
+    }
+    /// 删除一个滚动区；调用方必须先解绑它的鼠标处理器。
+    void destroy(tui::Scrollback& scroll) {
+        if (current_ == &scroll) {
+            disown(scroll);
+            current_ = nullptr;
+        }
+        std::erase_if(scrolls_, [&](const std::unique_ptr<tui::Scrollback>& item) {
+            return item.get() == &scroll;
+        });
+    }
+    tui::Scrollback* current() const { return current_; }
+
     tui::Size measure(tui::Size available) const override { return available; }
     void layout(tui::Rect area) override {
-        tui::Widget::layout(area); scroll_->layout({0, 0, area.w, area.h});
+        tui::Widget::layout(area);
+        if (current_ != nullptr) current_->layout({0, 0, area.w, area.h});
     }
     void render(tui::Surface& surface) override {
-        if (scroll_->dirty_tree()) {
-            scroll_->render(surface); scroll_->clear_dirty();
+        if (current_ == nullptr) return;
+        if (current_->dirty_tree()) {
+            current_->render(surface); current_->clear_dirty();
         }
-        if (!scroll_->pinned() && scroll_->unseen_rows() > 0 && surface.rows() > 0) {
-            const std::string text = format_text(ui::text().card_unseen, scroll_->unseen_rows());
+        if (!current_->pinned() && current_->unseen_rows() > 0 && surface.rows() > 0) {
+            const std::string text = format_text(ui::text().card_unseen, current_->unseen_rows());
             const int x = std::max(0, surface.cols() - display_width(text));
-            surface.text(x, surface.rows() - 1, text, scroll_->theme().text_muted);
+            surface.text(x, surface.rows() - 1, text, current_->theme().text_muted);
         }
         clear_dirty();
     }
-    bool dirty_tree() const noexcept override { return dirty_ || scroll_->dirty_tree(); }
-    bool needs_layout() const noexcept override { return layout_dirty_ || scroll_->needs_layout(); }
-    void invalidate_tree() noexcept override { invalidate(); scroll_->invalidate_tree(); }
-    void invalidate_rect(tui::Rect rect) override { scroll_->invalidate_rect(rect); Widget::invalidate_rect(rect); }
+    bool dirty_tree() const noexcept override {
+        return dirty_ || (current_ != nullptr && current_->dirty_tree());
+    }
+    bool needs_layout() const noexcept override {
+        return layout_dirty_ || (current_ != nullptr && current_->needs_layout());
+    }
+    void invalidate_tree() noexcept override {
+        invalidate();
+        if (current_ != nullptr) current_->invalidate_tree();
+    }
+    void invalidate_rect(tui::Rect rect) override {
+        if (current_ != nullptr) current_->invalidate_rect(rect);
+        Widget::invalidate_rect(rect);
+    }
     tui::Widget* hit_test(tui::Point point) const noexcept override {
-        if (auto* hit = scroll_->hit_test(point)) return hit;
+        if (current_ != nullptr) {
+            if (auto* hit = current_->hit_test(point)) return hit;
+        }
         return Widget::hit_test(point);
     }
 private:
-    std::unique_ptr<tui::Scrollback> scroll_;
+    std::vector<std::unique_ptr<tui::Scrollback>> scrolls_;
+    tui::Scrollback* current_ = nullptr;
 };
 
 class JobQueue {
@@ -148,11 +192,10 @@ public:
           mode_(setup_.permission_mode), planning_(setup_.planning),
           themes_(std::move(themes)),
           root_(layout()), rt_(terminal_, root_),
-          transcript_(scroll_->document(), [this](const tools::TodoView& value) { update_todo(value); }),
           prompt_(*input_, [this](std::string text) { submit(std::move(text)); },
                   [this] { recall(); }, [this] { prompt_changed(); },
                   [this] { return completion_.visible(); }),
-          keys_(rt_), mouse_(rt_, *scroll_), dialog_(rt_, [this] { interrupt(); }), model_dialog_(rt_),
+          keys_(rt_), dialog_(rt_, [this] { interrupt(); }), model_dialog_(rt_),
           toasts_(rt_), panel_(rt_),
           completion_(rt_, *input_, [this] { completion_kind_.clear();  }) {
         id_ = agent_->meta().id;
@@ -161,11 +204,11 @@ public:
         status_->set_trigger(setup_.options.context.compaction_trigger_percent);
         side_->set_project(project_path_, {});
         side_->set_version(DAGENT_VERSION);
-        transcript_.set_session(mode_label(), setup_.provider.model);
+        add_pane("main", id_, {});
         update_prompt_footer();
         rt_.set_focus(&prompt_, input_); rt_.set_global(*this);
         terminal_.set_mouse(true); // 不开这一行，滚轮与拖选的转义序列根本不会上报
-        rt_.bind_mouse(*scroll_, mouse_);
+        bind_active_mouse();
         register_commands();
         apply_theme(theme_for(theme_choice_));
         rt_.on_caps([this](const tui::Terminal::Caps&) {
@@ -188,7 +231,7 @@ public:
         turn_stop_.request_stop(); jobs_.close(); worker_.request_stop();
         rt_.cancel(file_debounce_); terminal_.restore();
         if (worker_.joinable()) worker_.join();
-        rt_.unbind_mouse(*scroll_);
+        unbind_active_mouse();
     }
 
     int run(const std::string& initial, agent::Interrupts& interrupts) {
@@ -210,7 +253,7 @@ public:
 
     bool on_event(const tui::Event& event) override {
         if (event.kind == tui::Event::Kind::resize) {
-            transcript_.set_todo_narrow(event.size.cols < 80);
+            active_transcript().set_todo_narrow(event.size.cols < 80);
             update_todo_status(event.size.cols);
         }
         return keys_.on_event(event);
@@ -225,8 +268,8 @@ private:
             auto widget = std::make_unique<T>(); target = widget.get();
             main->add(constraint, centered(std::move(widget), 88, theme_));
         };
-        auto scroll = std::make_unique<tui::Scrollback>(); scroll_ = scroll.get();
-        main->add({tui::Sizing::flex, 1}, centered(std::make_unique<ScrollFrame>(std::move(scroll)), 88, theme_));
+        auto frame = std::make_unique<ScrollFrame>(); frame_ = frame.get();
+        main->add({tui::Sizing::flex, 1}, centered(std::move(frame), 88, theme_));
         add_centered(activity_, {tui::Sizing::content});
         add_centered(queue_label_, {tui::Sizing::content, 0, 0, 3});
         add_centered(input_, {tui::Sizing::content, 0, 4, PromptBox::k_max_rows + 3});
@@ -258,13 +301,14 @@ private:
         add_command("permission.cycle", std::string(ui::text().cmd_permission), std::string(ui::text().cmd_permission_group), "shift+tab", {}, [this] { cycle_permission(); });
         add_command("permission.list", "Session permissions", std::string(ui::text().cmd_permission_group), {}, "/permissions", [this] { permissions_panel(); }, [this] { return !busy_; });
         add_command("mode.plan", "Toggle planning mode", std::string(ui::text().cmd_permission_group), "ctrl+g", "/plan", [this] { toggle_plan(); });
-        add_command("tools.expand", std::string(ui::text().cmd_tools), std::string(ui::text().cmd_transcript), "ctrl+o", {}, [this] { transcript_.toggle_tools(); });
-        add_command("thoughts.toggle", std::string(ui::text().cmd_thoughts), std::string(ui::text().cmd_transcript), "ctrl+r", {}, [this] { transcript_.toggle_thoughts(); });
+        add_command("tools.expand", std::string(ui::text().cmd_tools), std::string(ui::text().cmd_transcript), "ctrl+o", {}, [this] { active_transcript().toggle_tools(); });
+        add_command("thoughts.toggle", std::string(ui::text().cmd_thoughts), std::string(ui::text().cmd_transcript), "ctrl+r", {}, [this] { active_transcript().toggle_thoughts(); });
         add_command("todo.toggle", std::string(ui::text().cmd_todo), std::string(ui::text().cmd_view), "ctrl+t", {}, [this] { toggle_todo(); });
-        add_command("scroll.up", std::string(ui::text().cmd_page_up), std::string(ui::text().cmd_transcript), "pageup", {}, [this] { scroll_->scroll_pages(-1); });
-        add_command("scroll.down", std::string(ui::text().cmd_page_down), std::string(ui::text().cmd_transcript), "pagedown", {}, [this] { scroll_->scroll_pages(1); });
-        add_command("scroll.home", std::string(ui::text().cmd_home), std::string(ui::text().cmd_transcript), "home", {}, [this] { scroll_->scroll_home(); });
-        add_command("scroll.end", std::string(ui::text().cmd_end), std::string(ui::text().cmd_transcript), "end", {}, [this] { scroll_->scroll_end(); });
+        add_command("scroll.up", std::string(ui::text().cmd_page_up), std::string(ui::text().cmd_transcript), "pageup", {}, [this] { active_scroll().scroll_pages(-1); });
+        add_command("scroll.down", std::string(ui::text().cmd_page_down), std::string(ui::text().cmd_transcript), "pagedown", {}, [this] { active_scroll().scroll_pages(1); });
+        add_command("scroll.home", std::string(ui::text().cmd_home), std::string(ui::text().cmd_transcript), "home", {}, [this] { active_scroll().scroll_home(); });
+        add_command("scroll.end", std::string(ui::text().cmd_end), std::string(ui::text().cmd_transcript), "end", {}, [this] { active_scroll().scroll_end(); });
+        add_command("agent.switch", std::string(ui::text().cmd_agents), std::string(ui::text().cmd_view), "ctrl+a", "/agents", [this] { agent_panel(); });
         add_command("session.new", std::string(ui::text().cmd_new), std::string(ui::text().cmd_session), {}, "/new", [this] { new_session(); });
         add_command("session.compact", std::string(ui::text().cmd_compact), std::string(ui::text().cmd_session), {}, "/compact", [this] { compact(); });
         add_command("session.list", std::string(ui::text().cmd_sessions), std::string(ui::text().cmd_session), {}, "/sessions", [this] { session_panel(); });
@@ -281,11 +325,107 @@ private:
     }
 
     void reset_transcript(bool resumed = false, std::size_t messages = 0) {
-        transcript_.clear();
-        if (resumed) transcript_.resumed(id_, messages, std::string(ui::text().panel_just_now));
-        else transcript_.banner(DAGENT_VERSION, project_path_, branch_,
+        close_child_panes();
+        active_transcript().clear();
+        if (resumed) active_transcript().resumed(id_, messages, std::string(ui::text().panel_just_now));
+        else active_transcript().banner(DAGENT_VERSION, project_path_, branch_,
                                 static_cast<int>(setup_.mcp_servers.size()));
-        transcript_.set_todo_narrow(terminal_.size().cols < 80);
+        active_transcript().set_todo_narrow(terminal_.size().cols < 80);
+    }
+
+    // ---- 子会话 Pane：索引 0 恒为主会话，task 的子 Agent 各占一个 Pane ----
+    struct Pane {
+        tui::Scrollback* scroll = nullptr;
+        std::unique_ptr<Transcript> transcript;
+        std::unique_ptr<tui::ScrollbackMouse> mouse;
+        std::string title, session_id, call_id;
+    };
+    tui::Scrollback& active_scroll() { return *panes_[active_].scroll; }
+    Transcript& active_transcript() { return *panes_[active_].transcript; }
+    void bind_active_mouse() { rt_.bind_mouse(active_scroll(), *panes_[active_].mouse); }
+    void unbind_active_mouse() { rt_.unbind_mouse(active_scroll()); }
+
+    std::size_t add_pane(std::string title, std::string session_id, std::string call_id) {
+        tui::Scrollback& scroll = frame_->create();
+        const std::size_t index = panes_.size();
+        auto transcript = std::make_unique<Transcript>(
+            scroll.document(), [this, index](const tools::TodoView& value) {
+                if (index == 0) update_todo(value);
+            });
+        transcript->set_session(mode_label(), setup_.provider.model);
+        scroll.set_theme(theme_);
+        auto mouse = std::make_unique<tui::ScrollbackMouse>(rt_, scroll);
+        panes_.push_back({&scroll, std::move(transcript), std::move(mouse), std::move(title),
+                          std::move(session_id), std::move(call_id)});
+        return index;
+    }
+    void show_pane(std::size_t index) {
+        if (index == active_ || index >= panes_.size()) return;
+        unbind_active_mouse();
+        active_ = index;
+        frame_->show(active_scroll());
+        active_scroll().set_theme(theme_);
+        bind_active_mouse();
+        input_->set_active(!busy_ && active_ == 0);
+        update_prompt_footer();
+        root_.invalidate_tree();
+    }
+    void close_child_panes() {
+        if (active_ != 0) {
+            unbind_active_mouse();
+            active_ = 0;
+            frame_->show(active_scroll());
+            bind_active_mouse();
+        }
+        for (std::size_t i = 1; i < panes_.size(); ++i) {
+            panes_[i].transcript.reset();
+            panes_[i].mouse.reset();
+            frame_->destroy(*panes_[i].scroll);
+        }
+        panes_.resize(1);
+        task_panes_.clear();
+        input_->set_active(!busy_);
+    }
+    /// 恢复出来的 task 没有 Pane：切进去时再回放子会话记录。
+    void open_task_pane(const Transcript::TaskRef& task) {
+        const std::size_t index = add_pane("task · " + task.agent, task.session_id, task.call_id);
+        show_pane(index);
+        jobs_.push([this, index, id = task.session_id] {
+            try {
+                std::vector<agent::Event> history;
+                agent::replay_into(setup_.session, id,
+                                   [&](const agent::Event& event) { history.push_back(event); });
+                rt_.post([this, index, history = std::move(history)]() mutable {
+                    if (index >= panes_.size()) return;
+                    for (const auto& event : history) panes_[index].transcript->apply(event);
+                    root_.invalidate_tree();
+                });
+            } catch (const std::exception& error) {
+                rt_.post([this, message = std::string(error.what())] {
+                    toast(std::string(ui::text().toast_resume_failed) + message,
+                          tui::Notice::Severity::error);
+                });
+            }
+        });
+    }
+    void agent_panel() {
+        std::vector<Panel::Row> rows;
+        rows.push_back({"main", id_.substr(0, 8), active_ == 0 ? std::string(ui::text().panel_current) : "",
+                        true, [this] { show_pane(0); }});
+        std::set<std::string> seen;
+        for (std::size_t i = 1; i < panes_.size(); ++i) {
+            seen.insert(panes_[i].session_id);
+            rows.push_back({panes_[i].title, panes_[i].session_id.substr(0, 8),
+                            active_ == i ? std::string(ui::text().panel_current) : "", true,
+                            [this, i] { show_pane(i); }});
+        }
+        for (const Transcript::TaskRef& task : panes_[0].transcript->tasks()) {
+            if (!seen.insert(task.session_id).second) continue;
+            rows.push_back({"task · " + task.agent, task.session_id.substr(0, 8), "", true,
+                            [this, task] { open_task_pane(task); }});
+        }
+        panel_.open(std::string(ui::text().panel_agents), std::move(rows),
+                    std::string(ui::text().panel_agent_footer));
     }
     void refresh_project() {
         jobs_.push([this] {
@@ -303,7 +443,7 @@ private:
     void worker_failed(std::string error) {
         base::logger("ui")->error("agent thread exited: {}", error);
         rt_.post([this, error = std::move(error)] {
-            error_ = error; transcript_.apply(agent::Notice{agent::Notice::Level::error, error}); exit();
+            error_ = error; active_transcript().apply(agent::Notice{agent::Notice::Level::error, error}); exit();
         });
     }
     void toast(std::string text, tui::Notice::Severity severity = tui::Notice::Severity::info) {
@@ -311,7 +451,8 @@ private:
     }
     void apply_theme(const tui::ThemeTokens& selected) {
         theme_ = resolve_theme(selected); theme_.epoch = ++theme_epoch_;
-        scroll_->set_theme(theme_); activity_->set_theme(theme_);
+        for (Pane& pane : panes_) pane.scroll->set_theme(theme_);
+        activity_->set_theme(theme_);
         queue_label_->set_theme(theme_); queue_label_->set_style(theme_.text_muted);
         input_->set_theme(theme_); status_->set_theme(theme_);
         side_->set_theme(theme_); toasts_.set_theme(theme_); panel_.set_theme(theme_);
@@ -349,7 +490,7 @@ private:
     }
     void busy(bool value) {
         busy_ = value; rt_.cancel(activity_timer_); activity_timer_ = 0;
-        input_->set_active(value); update_prompt_footer();
+        input_->set_active(value && active_ == 0); update_prompt_footer();
         if (value) {
             step_begin_ = Clock::now(); phase_ = std::string(ui::text().act_thinking);
             activity_timer_ = rt_.every(100ms, [this] { activity(); activity_->tick(); return true; });
@@ -357,13 +498,25 @@ private:
         watch_mcp(); activity();
     }
     void apply(const agent::Event& event) {
-        transcript_.apply(event);
+        if (!std::holds_alternative<agent::SubEvent>(event)) active_transcript().apply(event);
         std::visit(Overloaded{
             [&](const agent::StepStarted&) { phase_ = std::string(ui::text().act_thinking); step_begin_ = Clock::now(); },
             [&](const agent::TextDelta&) { phase_ = std::string(ui::text().act_generating); },
             [&](const agent::ReasoningDelta&) { phase_ = std::string(ui::text().act_generating); },
             [&](const agent::ToolPending& e) { phase_ = std::string(ui::text().act_preparing) + e.name; },
             [&](const agent::ToolStarted& e) { running_.push_back({e.id, e.summary, Clock::now()}); },
+            [&](const agent::SubEvent& e) {
+                phase_ = format_text(ui::text().act_task, e.agent);
+                std::size_t index = 0;
+                if (const auto it = task_panes_.find(e.call_id); it != task_panes_.end()) {
+                    index = it->second;
+                } else {
+                    index = add_pane("task · " + e.agent, e.session, e.call_id);
+                    task_panes_.emplace(e.call_id, index);
+                }
+                panes_[0].transcript->apply(e); // 主会话的 task 块流式正文
+                if (index != 0) panes_[index].transcript->apply(e.event()); // 子 Pane 自己的记录
+            },
             [&](const agent::ToolFinished& e) {
                 std::erase_if(running_, [&](const Running& running) { return running.id == e.id; });
             },
@@ -382,7 +535,7 @@ private:
                 mode_ = e.mode == "ask" ? agent::PermissionMode::ask
                       : e.mode == "unrestricted" ? agent::PermissionMode::unrestricted
                                                    : agent::PermissionMode::workspace;
-                transcript_.set_session(mode_label(), setup_.provider.model);
+                active_transcript().set_session(mode_label(), setup_.provider.model);
                 update_prompt_footer();
             },
             [&](const agent::TurnEnded&) { dialog_.close(); busy(false); drain(); },
@@ -401,7 +554,7 @@ private:
     }
     void toggle_todo() {
         side_->set_collapsed(!side_->collapsed());
-        transcript_.set_todo_collapsed(side_->collapsed());
+        active_transcript().set_todo_collapsed(side_->collapsed());
         update_todo_status(terminal_.size().cols);
     }
     /// 输入框尾行与消息尾行共用同一份「模式 · 模型」。
@@ -461,11 +614,14 @@ private:
                 const agent::Sink sink = [this](const agent::Event& event) {
                     rt_.post([this, event] { if (!exiting_) apply(event); });
                 };
-                agent_->run_turn(text, sink, [this](const agent::Approval& approval, std::stop_token stop) {
+                const agent::Approver approver = [this](const agent::Approval& approval, std::stop_token stop) {
                     return approve(rt_, dialog_, approval, stop);
-                }, [this](const agent::Question& question, std::stop_token stop) {
+                };
+                const agent::Asker asker = [this](const agent::Question& question, std::stop_token stop) {
                     return ask(rt_, dialog_, question, stop);
-                }, token);
+                };
+                const agent::TurnContext ctx{sink, approver, asker, token};
+                agent_->run_turn(text, ctx);
             });
         }
     }
@@ -479,9 +635,13 @@ private:
         busy(true); phase_ = std::string(ui::text().act_compacting); activity(); turn_stop_ = std::stop_source{};
         const auto token = turn_stop_.get_token();
         jobs_.push([this, token] {
-            const auto status = agent_->compact([this](const agent::Event& event) {
+            const agent::Sink sink = [this](const agent::Event& event) {
                 rt_.post([this, event] { if (!exiting_) apply(event); });
-            }, token);
+            };
+            const agent::Approver approver{};
+            const agent::Asker asker{};
+            const agent::TurnContext ctx{sink, approver, asker, token};
+            const auto status = agent_->compact(ctx);
             rt_.post([this, status] {
                 if (exiting_) return;
                 if (status == agent::TurnStatus::interrupted) toast(std::string(ui::text().toast_compact_cancelled));
@@ -500,7 +660,7 @@ private:
             { std::lock_guard lock(agent_mutex_); next->set_permission_mode(mode_); next->set_plan_mode(false); agent_.swap(next); }
             rt_.post([this, id = std::move(id)] {
                 id_ = id; planning_ = false; reset_transcript(); side_->set_title({});
-                transcript_.set_session(mode_label(), setup_.provider.model); update_prompt_footer();
+                active_transcript().set_session(mode_label(), setup_.provider.model); update_prompt_footer();
                 refresh_project(); busy(false); drain();
             });
         });
@@ -584,7 +744,7 @@ private:
                 rt_.post([this, provider = std::move(setup.provider), updates = std::move(updates)]() mutable {
                     setup_.provider = std::move(provider);
                     models_[setup_.provider.name] = setup_.provider;
-                    transcript_.set_session(mode_label(), setup_.provider.model);
+                    active_transcript().set_session(mode_label(), setup_.provider.model);
                     update_prompt_footer();
                     for (const auto& event : updates) apply(event);
                     toast(std::string(ui::text().toast_model_selected) + setup_.provider.name);
@@ -763,6 +923,7 @@ private:
         if (completion_.visible()) { completion_.close(); return; }
         if (panel_.visible()) { panel_.close(); return; }
         if (busy_) { interrupt(); return; }
+        if (active_ != 0) { show_pane(0); return; }
         if (!input_->text().empty()) { input_->set_text({}); prompt_changed(); return; }
         const auto now = Clock::now();
         if (last_cancel_ && now - *last_cancel_ < 1s) { exit(); return; }
@@ -782,14 +943,14 @@ private:
             break;
         }
         agent_->set_permission_mode(mode_);
-        transcript_.set_session(mode_label(), setup_.provider.model); update_prompt_footer();
+        active_transcript().set_session(mode_label(), setup_.provider.model); update_prompt_footer();
     }
     void toggle_plan() {
         if (busy_) return;
         std::lock_guard lock(agent_mutex_);
         planning_ = !planning_;
         agent_->set_plan_mode(planning_);
-        transcript_.set_session(mode_label(), setup_.provider.model);
+        active_transcript().set_session(mode_label(), setup_.provider.model);
         update_prompt_footer();
     }
     void exit() {
@@ -810,7 +971,7 @@ private:
     uint32_t theme_epoch_ = 0;
     std::string theme_choice_ = "follow";
     bool theme_preview_ = false;
-    tui::Scrollback* scroll_ = nullptr;
+    ScrollFrame* frame_ = nullptr;
     tui::Activity* activity_ = nullptr;
     QueueLabel* queue_label_ = nullptr;
     PromptBox* input_ = nullptr;
@@ -820,10 +981,11 @@ private:
     tui::Terminal terminal_;
     tui::LayerStack root_;
     tui::Runtime rt_;
-    Transcript transcript_;
+    std::vector<Pane> panes_;
+    std::size_t active_ = 0;
+    std::map<std::string, std::size_t> task_panes_;
     PromptInput prompt_;
     tui::Keymap keys_;
-    tui::ScrollbackMouse mouse_;
     ApprovalDialog dialog_;
     ModelDialog model_dialog_;
     ToastStack toasts_;

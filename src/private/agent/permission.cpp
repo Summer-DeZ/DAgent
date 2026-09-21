@@ -106,6 +106,7 @@ std::optional<bool> Policy::matches_session(const Approval& approval, const tool
     }
     case tools::Intent::Kind::ask:
     case tools::Intent::Kind::exit_plan:
+    case tools::Intent::Kind::task:
         return std::nullopt;
     }
     return std::nullopt;
@@ -164,6 +165,9 @@ Verdict Policy::evaluate(const ToolCall& call, const tools::Intent& intent) cons
         verdict.kind = kind;
         return verdict;
     };
+
+    // task 本身不碰文件系统，真正的权限检查发生在子 Agent 自己的 Policy 里。
+    if (intent.kind == tools::Intent::Kind::task) return answer(Verdict::Kind::allow);
 
     if (intent.kind == tools::Intent::Kind::exec && exec::is_dangerous(intent.analysis)) {
         verdict.kind = Verdict::Kind::deny;
@@ -290,6 +294,8 @@ Verdict Policy::evaluate(const ToolCall& call, const tools::Intent& intent) cons
     case tools::Intent::Kind::ask:
     case tools::Intent::Kind::exit_plan:
         return answer(Verdict::Kind::allow);
+    case tools::Intent::Kind::task:
+        return answer(Verdict::Kind::allow);
     }
 
     if (verdict.kind != Verdict::Kind::ask) return verdict;
@@ -343,6 +349,7 @@ void Policy::remember(const Approval& approval, const Decision& decision) {
     }
     case tools::Intent::Kind::ask:
     case tools::Intent::Kind::exit_plan:
+    case tools::Intent::Kind::task:
         return;
     }
 }
@@ -392,9 +399,31 @@ bool Policy::planning() const { return planning_.load(); }
 
 bool parallel(const Verdict& verdict, const tools::Intent& intent) {
     if (verdict.kind != Verdict::Kind::allow) return false;
+    if (intent.kind == tools::Intent::Kind::task) return true;
     if (intent.kind == tools::Intent::Kind::read) return true;
     return intent.kind == tools::Intent::Kind::exec && intent.known_readonly &&
            verdict.grant.sandbox == exec::Mode::read_only;
+}
+
+DerivedPermission derive_permission(PermissionMode parent_mode, bool parent_planning,
+                                    bool parent_read_only, std::string_view def_permission) {
+    DerivedPermission out;
+    if (parent_planning || parent_read_only) {
+        out.mode = PermissionMode::workspace; // read_only 下模式只影响 workspace 之外的读取
+        out.read_only = true;
+        out.planning = parent_planning;
+        out.may_ask = false;
+        return out;
+    }
+    // unrestricted 不继承：用户给 unrestricted 是针对自己盯着的这个会话，不是对自主运行的子 Agent 的授权。
+    out.mode = parent_mode == PermissionMode::unrestricted ? PermissionMode::workspace : parent_mode;
+    out.may_ask = true;
+    if (def_permission == "read_only") {
+        out.read_only = true;
+    } else if (def_permission == "ask") {
+        out.mode = PermissionMode::ask;
+    }
+    return out;
 }
 
 } // namespace dagent::agent

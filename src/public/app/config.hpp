@@ -43,6 +43,7 @@ struct Config {
     agent::Options agent; ///< context / run / progress / permissions
     std::map<std::string, std::string> credentials;
     std::vector<mcp::ServerConfig> mcp_servers;
+    std::vector<agent::SubagentDef> subagents; ///< <root>/agents/*.md
     std::filesystem::path root;
     std::filesystem::path project_root;
 };
@@ -82,6 +83,10 @@ InstallationPaths installation_paths();
 
 /// @brief 读取安装目录中的两份 JSON，再叠加 overrides。未知键只记 warn。
 Config load_config(const LoadOptions&);
+
+/// @brief 读取 <root>/agents/*.md：frontmatter + 正文。目录不存在时返回空，不报错。
+std::vector<agent::SubagentDef> load_subagents(const std::filesystem::path& dir,
+                                               const std::map<std::string, agent::ProviderConfig>& models);
 
 /// @brief 校验并追加一个模型配置，原子重写 models.json（保持 0600）；重名时拒绝。
 /// 返回值中的 env:KEY 已解析，供当前进程立即切换使用。

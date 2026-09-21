@@ -162,6 +162,16 @@ private:
         }
         sqlite3_busy_timeout(db_, 5000);
     }
+    int user_version() {
+        Statement query(db_, "PRAGMA user_version");
+        return query.row() ? static_cast<int>(query.integer(0)) : 0;
+    }
+    bool has_column(std::string_view table, std::string_view name) {
+        Statement query(db_, "SELECT 1 FROM pragma_table_info(?) WHERE name=?");
+        query.text(1, table);
+        query.text(2, name);
+        return query.row();
+    }
     void initialize() {
         exec("PRAGMA foreign_keys=ON;");
         exec("PRAGMA journal_mode=WAL;");
@@ -174,7 +184,9 @@ CREATE TABLE IF NOT EXISTS sessions (
   title TEXT,
   created INTEGER NOT NULL,
   updated INTEGER NOT NULL,
-  open_turn INTEGER NOT NULL DEFAULT 0
+  open_turn INTEGER NOT NULL DEFAULT 0,
+  parent_id TEXT,
+  agent_name TEXT
 );
 CREATE INDEX IF NOT EXISTS sessions_by_cwd ON sessions(cwd, updated DESC);
 CREATE TABLE IF NOT EXISTS events (
@@ -185,6 +197,13 @@ CREATE TABLE IF NOT EXISTS events (
   PRIMARY KEY (session_id, seq)
 ) WITHOUT ROWID;
 )SQL");
+        // 该库的迁移机制：每次 schema 变更递增 user_version，旧库就地补齐。
+        if (user_version() < 1) {
+            if (!has_column("sessions", "parent_id")) exec("ALTER TABLE sessions ADD COLUMN parent_id TEXT;");
+            if (!has_column("sessions", "agent_name")) exec("ALTER TABLE sessions ADD COLUMN agent_name TEXT;");
+            exec("CREATE INDEX IF NOT EXISTS sessions_by_parent ON sessions(parent_id, created);");
+            exec("PRAGMA user_version=1;");
+        }
     }
     fs::path file_;
     sqlite3* db_ = nullptr;
@@ -205,7 +224,8 @@ private:
 };
 
 Meta read_meta(Database& db, std::string_view id, bool* open_turn = nullptr) {
-    Statement query(db.get(), "SELECT cwd,model,created,open_turn FROM sessions WHERE id=?");
+    Statement query(db.get(),
+                    "SELECT cwd,model,created,open_turn,parent_id,agent_name FROM sessions WHERE id=?");
     query.text(1, id);
     if (!query.row()) fail(SessionError::Kind::not_found, "session not found: " + std::string(id));
     Meta meta;
@@ -214,6 +234,8 @@ Meta read_meta(Database& db, std::string_view id, bool* open_turn = nullptr) {
     meta.model = query.string(1);
     meta.created = iso_from_ms(query.integer(2));
     if (open_turn != nullptr) *open_turn = query.integer(3) != 0;
+    if (!query.is_null(4)) meta.parent_id = query.string(4);
+    if (!query.is_null(5)) meta.agent_name = query.string(5);
     return meta;
 }
 
@@ -267,12 +289,15 @@ Writer Writer::create(const Options& options, Meta meta) {
     meta.created = iso_from_ms(timestamp);
     auto impl = std::make_unique<Impl>(options, std::move(meta));
     Statement insert(impl->db.get(),
-                     "INSERT INTO sessions(id,cwd,model,title,created,updated,open_turn) VALUES(?,?,?,NULL,?,?,0)");
+                     "INSERT INTO sessions(id,cwd,model,title,created,updated,open_turn,parent_id,agent_name) "
+                     "VALUES(?,?,?,NULL,?,?,0,?,?)");
     insert.text(1, impl->meta.id);
     insert.text(2, impl->meta.cwd.string());
     insert.text(3, impl->meta.model);
     insert.integer(4, timestamp);
     insert.integer(5, timestamp);
+    if (impl->meta.parent_id.empty()) insert.null(6); else insert.text(6, impl->meta.parent_id);
+    if (impl->meta.agent_name.empty()) insert.null(7); else insert.text(7, impl->meta.agent_name);
     insert.done();
     return Writer(std::move(impl));
 }
@@ -333,7 +358,7 @@ std::vector<Summary> list(const Options& options, const fs::path& cwd, std::size
     Database db(options.database);
     Statement query(db.get(),
                     "SELECT id,title,model,created,updated FROM sessions WHERE cwd=? "
-                    "ORDER BY updated DESC LIMIT ?");
+                    "AND (parent_id IS NULL OR parent_id='') ORDER BY updated DESC LIMIT ?");
     query.text(1, normalized(cwd).string());
     query.integer(2, limit == 0 ? -1 : static_cast<std::int64_t>(limit));
     std::vector<Summary> out;
@@ -345,6 +370,28 @@ std::vector<Summary> list(const Options& options, const fs::path& cwd, std::size
         summary.meta.model = query.string(2);
         summary.meta.created = iso_from_ms(query.integer(3));
         summary.updated = std::chrono::system_clock::time_point{std::chrono::milliseconds{query.integer(4)}};
+        out.push_back(std::move(summary));
+    }
+    return out;
+}
+
+std::vector<Summary> list_children(const Options& options, std::string_view parent_id) {
+    Database db(options.database);
+    Statement query(db.get(),
+                    "SELECT id,title,cwd,model,created,updated,agent_name FROM sessions "
+                    "WHERE parent_id=? ORDER BY created ASC");
+    query.text(1, parent_id);
+    std::vector<Summary> out;
+    while (query.row()) {
+        Summary summary;
+        summary.meta.id = query.string(0);
+        summary.title = query.is_null(1) ? std::string{} : query.string(1);
+        summary.meta.parent_id = std::string(parent_id);
+        summary.meta.cwd = query.string(2);
+        summary.meta.model = query.string(3);
+        summary.meta.created = iso_from_ms(query.integer(4));
+        summary.updated = std::chrono::system_clock::time_point{std::chrono::milliseconds{query.integer(5)}};
+        if (!query.is_null(6)) summary.meta.agent_name = query.string(6);
         out.push_back(std::move(summary));
     }
     return out;

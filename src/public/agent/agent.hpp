@@ -33,16 +33,19 @@ public:
     static std::unique_ptr<Agent> resume(Setup setup, std::string_view session_id,
                                          const Sink& replay_sink);
 
+    /// @brief 子 Agent：复用 host 的 Environment 渲染 prompt（不跑 git）、共享 Hub 只取快照、
+    /// Recorder 的 Meta 带 parent_id / agent_name、按 allowed_tools 收窄工具集。
+    static std::unique_ptr<Agent> create_child(Setup setup);
+
     ~Agent();
     Agent(const Agent&) = delete;
     Agent& operator=(const Agent&) = delete;
 
     /// @brief 一轮。阻塞到结束；除编程错误外不抛异常。
-    TurnStatus run_turn(std::string input, const Sink& sink, const Approver& approver,
-                        const Asker& asker, std::stop_token stop);
+    TurnStatus run_turn(std::string input, const TurnContext&);
 
     /// @brief 手动摘要；不追加用户消息或 turn_end，通过返回值报告完成状态。
-    TurnStatus compact(const Sink&, std::stop_token);
+    TurnStatus compact(const TurnContext&);
 
     /// @brief 权限模式（交互界面的 Shift+Tab）。线程安全，下一次决策生效；调用方保证对象仍存活。
     void set_permission_mode(PermissionMode mode);
@@ -50,13 +53,18 @@ public:
     bool read_only() const;
     void set_plan_mode(bool value);
     bool planning() const;
+    PermissionMode permission_mode() const { return policy_.mode(); }
     std::vector<Policy::SessionGrant> session_grants() const;
     bool revoke_permission(std::string_view id);
 
     /// @brief MCP 连接状态快照。线程安全，调用方保证 Agent 仍存活。
-    std::vector<ServerState> mcp_states() const { return hub_.states(); }
+    std::vector<ServerState> mcp_states() const { return hub_->states(); }
 
     const session::Meta& meta() const { return recorder_.meta(); }
+
+    const TurnContext* current_turn() const { return turn_; }
+    const Setup& setup() const { return setup_; }
+    std::vector<std::string> tool_names() const;
 
 private:
     struct DispatchOutcome {
@@ -69,8 +77,7 @@ private:
           Conversation conversation = {});
 
     std::vector<ToolDef> tool_defs() const;
-    DispatchOutcome dispatch(const std::vector<ToolCall>& calls, int budget, const Sink&,
-                             const Approver&, const Asker&, std::stop_token);
+    DispatchOutcome dispatch(const std::vector<ToolCall>& calls, int budget, const TurnContext&);
     TurnStatus finish(TurnStatus, std::string error, int steps, int calls, const Usage& total,
                       const Sink&);
     void keep_partial(const Reply&, const Sink&);
@@ -81,7 +88,7 @@ private:
     // 成员声明顺序即构造顺序，析构倒序：registry_ 先于任何持有 Client 的部件析构（docs/design/agent.md §1）。
     Setup setup_;
     Recorder recorder_;
-    McpHub hub_; ///< registry_ 先析构，确保 MCP 工具不再引用 Client
+    std::shared_ptr<McpHub> hub_; ///< registry_ 先析构，确保 MCP 工具不再引用 Client
     tools::Registry registry_;
     tools::Context tool_ctx_;
     Policy policy_;
@@ -90,6 +97,7 @@ private:
     TokenEstimator estimator_;
     Compactor compactor_;
     std::string system_prompt_;
+    const TurnContext* turn_ = nullptr; ///< 本轮的外部接口，供 task 工具取用；finish() 里清空
     bool broken_notified_ = false;
     int questions_this_turn_ = 0;
 };

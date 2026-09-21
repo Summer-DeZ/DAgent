@@ -377,6 +377,17 @@ void Transcript::finished(const agent::ToolFinished& event) {
             if (!v.other.empty()) body += "✓ Other — " + v.other + "\n";
             if (v.cancelled) body += "Cancelled\n";
             rows = 8;
+        },
+        [&](const tools::TaskView& v) {
+            name = std::string(ui::text().card_task);
+            param = v.agent;
+            stat = format_text(ui::text().card_task_stats, v.steps.size(), v.tool_calls, v.seconds);
+            for (const tools::TaskStep& step : v.steps)
+                body += (step.is_error ? "✗ " : "● ") + step.summary + "\n";
+            if (!v.steps.empty()) body += "\n";
+            body += v.result;
+            rows = 10;
+            tasks_.push_back({v.agent, v.session_id, event.id});
         }
     }, event.result.display);
     if (body.empty() && event.result.is_error) body = event.result.text;
@@ -425,6 +436,19 @@ void Transcript::apply(const agent::Event& event) {
             markdown_ = std::make_unique<tui::MarkdownStream>(doc_, 1);
         },
         [&](const agent::ToolStarted& e) { finish_message(); tool(e.id, e.name, e.summary); },
+        [&](const agent::SubEvent& e) {
+            // 子 Agent 的进度写进对应 task 块的流式正文；按父会话里的 call_id 分块，交错到达不会串。
+            const auto it = tools_.find(e.call_id);
+            if (it == tools_.end() || it->second.finished) return;
+            std::visit(Overloaded{
+                           [&](const agent::ToolStarted& started) {
+                               doc_.append(it->second.body, "● " + clean_field(started.summary) + "\n");
+                           },
+                           [&](const agent::ToolOutput& output) { doc_.append(it->second.body, output.chunk); },
+                           [&](const auto&) {},
+                       },
+                       e.event());
+        },
         [&](const agent::ToolOutput& e) {
             if (auto it = tools_.find(e.id); it != tools_.end()) doc_.append(it->second.body, e.chunk);
         },
@@ -461,7 +485,7 @@ void Transcript::apply(const agent::Event& event) {
 
 void Transcript::clear() {
     markdown_.reset(); reasoning_ = step_start_ = todo_block_ = thought_title_ = 0;
-    thoughts_.clear(); tools_.clear(); doc_.clear();
+    thoughts_.clear(); tools_.clear(); tasks_.clear(); doc_.clear();
     todo_.items.clear(); todo_complete_ = false; next_group_ = 1;
     if (on_todo_) on_todo_(todo_);
 }

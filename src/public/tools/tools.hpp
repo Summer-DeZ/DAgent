@@ -49,7 +49,8 @@ struct Spec {
 
 /// @brief 工具打算做什么：权限决策的输入，只描述，不决策。
 struct Intent {
-    enum class Kind { read, write, exec, external, ask, exit_plan }; ///< external：MCP 工具，语义未知
+    /// external：MCP 工具，语义未知；task：派发子 Agent，权限在子 Agent 内部判定
+    enum class Kind { read, write, exec, external, ask, exit_plan, task };
     Kind kind = Kind::read;
     std::vector<workspace::Resolved> paths; ///< read/write 涉及的路径，带 inside_workspace
     std::string command;                    ///< exec：原始命令
@@ -119,6 +120,10 @@ public:
 
     const Intent& intent() const { return intent_; }
 
+    /// @brief 核心在 prepare 之后写入本调用的 id；需要把子事件挂回父会话的工具用它。
+    void set_call_id(std::string id) { call_id_ = std::move(id); }
+    const std::string& call_id() const { return call_id_; }
+
     /// @brief 在调用线程上阻塞执行；on_output 只有 bash 会调用（原始输出块）。
     /// 不抛异常：取消返回 interrupted=true，其他失败（包括各种环境问题）都是 is_error 的 Result。
     Result run(const Grant& grant, const std::function<void(std::string_view)>& on_output,
@@ -130,6 +135,8 @@ protected:
 private:
     virtual Result do_run(const Grant&, const std::function<void(std::string_view)>&,
                           std::stop_token) = 0;
+
+    std::string call_id_;
 };
 
 /// @brief 一个工具：固定的 Spec + 把参数变成 Call 的 prepare。
@@ -147,6 +154,7 @@ class Registry {
 public:
     void add(std::unique_ptr<Tool>);             ///< 同名替换，保持原有位置
     void remove_prefix(std::string_view prefix); ///< 刷新某个 MCP server 前移除 mcp__<server>__
+    void retain(const std::vector<std::string>& names); ///< 只保留列表中的工具（子 Agent 工具集收窄）
     const Tool* find(std::string_view name) const;
     std::vector<const Spec*> specs() const;
 

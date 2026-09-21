@@ -6,6 +6,7 @@
 #include <chrono>
 #include <cstddef>
 #include <functional>
+#include <memory>
 #include <stop_token>
 #include <string>
 #include <string_view>
@@ -91,10 +92,27 @@ struct TurnEnded {
     Usage total;
 };
 
+struct EventBox; // 前向声明，定义在 Event 之后（variant 的 alternative 必须是完整类型）
+
+/// @brief 子 Agent 事件的信封：父 Sink 收到它时，内含的是子会话里真正发生的事。
+struct SubEvent {
+    std::string session;   ///< 子会话 id
+    std::string agent;     ///< 子 Agent 名
+    std::string call_id;   ///< 父会话里那次 task 调用的 id
+    std::shared_ptr<const EventBox> boxed;
+
+    /// 内联实现在 EventBox 定义之后；Event 是 alias，无法前置声明，故用占位返回类型。
+    const auto& event() const;
+};
+
 using Event = std::variant<TurnStarted, StepStarted, TextDelta, ReasoningDelta, StreamReset, ToolPending,
-                           ToolStarted, ToolOutput, ToolFinished, Retrying, Compacted, ContextUpdate,
-                           Notice, ModelChanged, ModeChanged, TurnEnded>;
+                           ToolStarted, ToolOutput, ToolFinished, SubEvent, Retrying, Compacted,
+                           ContextUpdate, Notice, ModelChanged, ModeChanged, TurnEnded>;
 using Sink = std::function<void(const Event&)>;
+
+struct EventBox { Event event; }; // 此处 Event 已完整
+
+inline const auto& SubEvent::event() const { return boxed->event; }
 
 // ---- 权限询问 ----
 
@@ -116,6 +134,8 @@ struct Approval {
     tools::Intent intent;     ///< 拷贝：交互界面要把它 post 到渲染线程
     std::string reason;       ///< 为什么要问，见 docs/design/agent.md §7
     std::string session_rule; ///< 选「本会话允许」会记住什么，给界面显示；为空表示不提供这个选项
+    std::string agent;          ///< 来源子 Agent 名；主 Agent 自己的审批为空
+    std::string origin_call_id; ///< 父会话里那次 task 调用的 id；主 Agent 为空
     bool can_network = false; ///< bash：是否提供「允许并联网」
     std::string cwd, mode;
     std::vector<Request> requests;
@@ -148,6 +168,14 @@ struct Answer {
 };
 
 using Asker = std::function<Answer(const Question&, std::stop_token)>;
+
+/// @brief 一轮运行所需的全部外部接口。调用方保证引用在整轮内有效。
+struct TurnContext {
+    const Sink& sink;
+    const Approver& approver; ///< 可为空：非交互运行，或权限派生判定子 Agent 不得询问
+    const Asker& asker;       ///< 子 Agent 恒为空
+    std::stop_token stop;
+};
 
 /// @brief 事件 → JSON（`--output jsonl` 的每一行）。
 nlohmann::json to_json(const Event&);

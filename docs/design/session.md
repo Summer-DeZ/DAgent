@@ -13,6 +13,7 @@
 | `Writer::append(type, payload)` | 脱敏并追加事件 |
 | `Writer::sync()` | 刷新 SQLite 页缓存 |
 | `list(options, cwd, limit)` | 精确按规范化 cwd 查询最近会话 |
+| `list_children(options, parent_id)` | 按父会话升序列出子会话，供界面切换与按需回放 |
 | `replay(options, id, callback)` | 按 seq 回放完整 payload |
 | `new_id()` | 生成 UUIDv7 |
 
@@ -29,9 +30,12 @@ CREATE TABLE sessions (
   title TEXT,
   created INTEGER NOT NULL,
   updated INTEGER NOT NULL,
-  open_turn INTEGER NOT NULL DEFAULT 0
+  open_turn INTEGER NOT NULL DEFAULT 0,
+  parent_id TEXT,
+  agent_name TEXT
 );
 CREATE INDEX sessions_by_cwd ON sessions(cwd, updated DESC);
+CREATE INDEX sessions_by_parent ON sessions(parent_id, created);
 
 CREATE TABLE events (
   session_id TEXT NOT NULL REFERENCES sessions(id) ON DELETE CASCADE,
@@ -43,7 +47,24 @@ CREATE TABLE events (
 ```
 
 时间为 Unix 毫秒。`payload` 是 UTF-8 JSON 文本的 BLOB；大工具输出直接存在同一数据库，不再有外置 blob。
-首条 user 事件写入时计算第一行标题（最多 60 个 UTF-8 字符），列表不读取事件正文。
+首条 user 事件写入时计算第一行标题（最多 60 个 UTF-8 字符），列表不读取事件正文。`parent_id` / `agent_name`
+标识子 Agent 会话，顶层会话为空。
+
+### schema 迁移
+
+`PRAGMA user_version` 是该库的迁移版本号。`initialize()` 在 `CREATE TABLE IF NOT EXISTS` 之后按版本补齐旧库：
+
+```cpp
+if (user_version() < 1) {
+    if (!has_column("sessions", "parent_id"))  exec("ALTER TABLE sessions ADD COLUMN parent_id TEXT;");
+    if (!has_column("sessions", "agent_name")) exec("ALTER TABLE sessions ADD COLUMN agent_name TEXT;");
+    exec("CREATE INDEX IF NOT EXISTS sessions_by_parent ON sessions(parent_id, created);");
+    exec("PRAGMA user_version=1;");
+}
+```
+
+后续所有 schema 变更都递增版本、在同一个块里就地迁移。不能用「捕获 duplicate column 异常」代替：构造函数里的
+`initialize()` 抛异常会把数据库当作损坏文件改名备份，那样用户会丢掉全部历史会话。
 
 ## 3. 写入与崩溃
 
@@ -57,14 +78,19 @@ CREATE TABLE events (
 Conversation，为尚未返回的工具调用补「意外中断」结果，再追加 crashed turn_end 并清零标记；之后可以继续新一轮。
 写入失败会让 Recorder 进入 broken 状态，发 Notice，但当前模型回合继续。
 
+父子会话各持独立的 sqlite3 连接（`Writer::Impl` 里有自己的 `Database`），并发写由 WAL + 5 秒 busy timeout
+覆盖，不需要额外加锁。
+
 ## 4. 读取
 
 列表执行：
 
 ```sql
 SELECT id,title,model,created,updated
-FROM sessions WHERE cwd=? ORDER BY updated DESC LIMIT ?;
+FROM sessions WHERE cwd=? AND (parent_id IS NULL OR parent_id='') ORDER BY updated DESC LIMIT ?;
 ```
+
+子会话不进 `/resume` 与 `sessions` 列表，避免用户的列表被并行子 Agent 淹没；需要时用 `list_children` 取。
 
 回放先确认 session 存在，再执行：
 

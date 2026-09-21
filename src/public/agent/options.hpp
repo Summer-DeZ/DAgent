@@ -5,6 +5,7 @@
 #include <chrono>
 #include <cstddef>
 #include <filesystem>
+#include <memory>
 #include <optional>
 #include <string>
 #include <vector>
@@ -23,6 +24,8 @@
 
 namespace dagent::agent {
 
+class AgentHost; ///< options.hpp 不能包含 host.hpp（host.hpp 要用 SubagentDef）；shared_ptr 允许不完整类型
+
 /// @brief 上下文预算，对应 config "context" 段（docs/design/agent.md §8）。
 struct ContextOptions {
     std::size_t window_tokens = 262144;
@@ -36,6 +39,7 @@ struct Limits {
     int max_model_calls = 24;
     int max_tool_calls = 35;
     int max_model_retries = 2;
+    int max_parallel_tasks = 4; ///< 并发子 Agent 上限，下限 3；每个都要打模型请求，故低于只读组的 8
 };
 
 /// @brief 进度提示间隔，对应 "progress" 段。
@@ -49,6 +53,18 @@ struct Options {
     ProgressOptions progress;
     PermissionMode permissions = PermissionMode::workspace;
     bool read_only = false;
+};
+
+/// @brief 子 Agent 定义（安装根 home/agents/<name>.md：frontmatter + 正文 system prompt）。
+struct SubagentDef {
+    std::string name;               ///< task 工具 agent 参数的取值，必须唯一
+    std::string description;        ///< 给主模型选择用的说明，写进 task 工具描述
+    std::string model;              ///< 空 = 继承父 provider；非空时必须是 models.json 里的名字
+    std::vector<std::string> tools; ///< 空 = 父工具集减 task/ask/exit_plan（默认不含 MCP 工具）
+    std::string permission = "inherit"; ///< inherit / read_only / ask
+    int max_model_calls = 0;        ///< 0 = 继承全局 run.max_model_calls
+    int max_tool_calls = 0;         ///< 0 = 继承全局 run.max_tool_calls
+    std::string system_prompt;      ///< frontmatter 之后的正文
 };
 
 /// @brief 一个 Agent 需要的全部输入（docs/design/agent.md §12）。
@@ -82,6 +98,14 @@ struct Setup {
     bool planning = false;
     std::string system_prompt;  ///< home/system.md 或配置指定文件的内容
     std::string compact_prompt; ///< home/compact.md 或配置指定文件的内容
+
+    // 子 Agent
+    std::shared_ptr<AgentHost> host;        ///< 共享运行时；入口创建一次，子 Agent 继承同一个
+    std::vector<SubagentDef> subagents;     ///< 可派发的定义；子 Agent 恒为空
+    int subagent_depth = 0;                 ///< 0 = 主 Agent；>0 不注册 task 工具
+    std::string parent_session_id;          ///< 子会话记录的 parent_id；顶层为空
+    std::string subagent_name;              ///< 子会话记录的 agent_name；顶层为空
+    std::vector<std::string> allowed_tools; ///< 子 Agent 的工具收窄列表；主 Agent 为空
 };
 
 } // namespace dagent::agent

@@ -94,6 +94,7 @@ struct TextOutput {
                                      << finished.summary << "\n";
                        },
                        [&](const ToolOutput&) {},
+                       [&](const SubEvent&) {}, // 子 Agent 的进度由界面消费；text/json 只报最终结果
                        [&](const Retrying& retrying) {
                            std::cerr << "retry " << retrying.attempt << "/" << retrying.max_attempts << ": "
                                      << retrying.reason << "\n";
@@ -263,17 +264,23 @@ int run_headless(Setup setup, const HeadlessOptions& options, Interrupts& interr
         output.write_line(
             nlohmann::json{{"type", "session"}, {"id", session_id}, {"resumed", resumed}});
         const Sink sink = [&output](const Event& event) { output(event); };
+        const Approver approver{};
+        const Asker asker{};
+        const TurnContext ctx{sink, approver, asker, interrupts.stop.get_token()};
         interrupts.graceful = true;
-        status = agent->run_turn(options.prompt, sink, Approver{}, Asker{}, interrupts.stop.get_token());
+        status = agent->run_turn(options.prompt, ctx);
         interrupts.graceful = false;
         const std::lock_guard lock(output.mutex);
         output_failed = output.failed;
     } else {
         TextOutput output;
         const Sink sink = [&output](const Event& event) { output(event); };
+        const Approver approver{};
+        const Asker asker{};
+        const TurnContext ctx{sink, approver, asker, interrupts.stop.get_token()};
         std::jthread ticker = start_ticker(output, heartbeat_interval);
         interrupts.graceful = true;
-        status = agent->run_turn(options.prompt, sink, Approver{}, Asker{}, interrupts.stop.get_token());
+        status = agent->run_turn(options.prompt, ctx);
         interrupts.graceful = false;
         const auto ms =
             std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::now() - begin)

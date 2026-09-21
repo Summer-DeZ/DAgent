@@ -15,6 +15,11 @@ namespace dagent::ui {
 /// 只在渲染线程使用；实时和恢复事件共用这一个文档投影。
 class Transcript {
 public:
+    /// @brief 一次已结束的 task：切进子会话时用 session_id 回放。
+    struct TaskRef {
+        std::string agent, session_id, call_id;
+    };
+
     explicit Transcript(tui::Document&, std::function<void(const tools::TodoView&)> todo = {});
     void apply(const agent::Event&);
     void clear();
@@ -26,6 +31,7 @@ public:
     void resumed(std::string id, std::size_t messages, std::string age);
     void set_todo_narrow(bool);
     void set_todo_collapsed(bool);
+    const std::vector<TaskRef>& tasks() const { return tasks_; }
 
 private:
     struct ToolBlocks {
@@ -60,6 +66,7 @@ private:
     bool expanded_ = false, thoughts_expanded_ = false;
     bool live_step_ = false, has_text_ = false;
     std::map<std::string, ToolBlocks> tools_;
+    std::vector<TaskRef> tasks_;
     std::function<void(const tools::TodoView&)> on_todo_;
     tools::TodoView todo_;
     uint64_t todo_block_ = 0;

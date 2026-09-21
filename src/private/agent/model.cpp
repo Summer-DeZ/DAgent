@@ -20,7 +20,7 @@ namespace {
 std::shared_ptr<spdlog::logger> log_agent() { return base::logger("agent"); }
 
 std::mt19937& rng() {
-    static std::mt19937 engine(std::random_device{}());
+    static thread_local std::mt19937 engine(std::random_device{}());
     return engine;
 }
 

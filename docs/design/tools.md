@@ -57,11 +57,11 @@ tools::Result result = (*prepared)->run(grant, on_output, stop);
 | --- | --- |
 | `Options` | `config.json` 的 `tools` 段：给模型的文本上限、read 默认行数与单行上限、grep/glob 数量上限、bash 最长超时、MCP 调用超时 |
 | `Spec` | 名字、说明、参数 JSON Schema；核心把它一一对应地转成 `agent::ToolDef` |
-| `Intent` | 工具打算做什么：`kind`（read / write / exec / external / ask / exit_plan）、路径、bash 分析、diff 预览、提问 View 和摘要 |
+| `Intent` | 工具打算做什么：`kind`（read / write / exec / external / ask / exit_plan / task）、路径、bash 分析、diff 预览、提问 View 和摘要 |
 | `Grant` | 核心的决定：bash 的沙箱模式与是否允许联网 |
 | `Result` | `text` 给模型、`is_error`、`interrupted`、`display`（View） |
 | `Context` | 会话级状态，核心每个会话建一个，所有调用共用，线程安全；持有工作区根、各模块的 Options 和 FileTracker |
-| `Registry` | 名字 → 工具；`specs()` 按注册顺序返回 |
+| `Registry` | 名字 → 工具；`specs()` 按注册顺序返回，`retain(names)` 收窄（子 Agent 工具集）|
 
 - **`run` 不抛异常**：核心对每个调用只需要处理一种返回值。取消返回 `interrupted = true`，`text` 里是已有的
   部分输出；环境问题（rg 没装、沙箱准备失败、MCP 断连）模型修不了，但也应该知道，同样作为 `is_error` 的
@@ -173,6 +173,13 @@ tools::Result result = (*prepared)->run(grant, on_output, stop);
 参数：`pattern`，`path`（目录或单个文件，默认工作区根），`glob`，`type`，`ignore_case`，`context`（至多 10），
 `files_only`。
 
+### task
+
+`task(agent, prompt)` 由核心实现（`agent/subagent.hpp`），不依赖任何外围模块：`agent` 取自 `home/agents/*.md`
+的定义表，`prompt` 必须自足。Intent 为 `task`，权限判定直接放行，真正的检查发生在子 Agent 自己的 Policy。
+`prepare` 只校验参数；`do_run` 在调度器的 task 组线程上创建子 Agent、跑完它的一整轮，把最终文本与逐条工具摘要
+组装成 TaskView。子 Agent 的工具输出不进入父消息历史，只通过 `SubEvent` 实时转发给界面。
+
 - 调 `workspace::grep`，`max_matches = grep_max_matches`；`path` 不存在时在 prepare 里报错。
 - 输出沿用 rg 默认格式，模型最熟悉：匹配行 `path:line:text`，上下文行 `path-line-text`，不连续的组之间用
   `--` 分隔；`files_only` 时每行一个路径。路径都**相对工作区根**，模型可以直接拿去 read。没有匹配时输出
@@ -228,12 +235,13 @@ tools::Result result = (*prepared)->run(grant, on_output, stop);
 | `GlobView` | `pattern`、`files`、`truncated` |
 | `McpView` | `server`、`tool`、`content`、`structured`、`disconnected` |
 | `TodoView` | `items` 整份列表；`TodoItem` 含 `text` 与四态 `state` |
+| `TaskView` | `agent`、`task`、`session_id`（父到子的跳转锚点）、`result`、`steps`（`TaskStep`：`summary`、`is_error`）、`model_calls`、`tool_calls`、`seconds`、`interrupted` |
 
-- `View = std::variant<std::monostate, ReadView, FileChangeView, BashView, GrepView, GlobView, McpView, TodoView>`；
+- `View = std::variant<std::monostate, ReadView, FileChangeView, BashView, GrepView, GlobView, McpView, TodoView, AskView, TaskView>`；
   `monostate` 表示 prepare 阶段就失败的调用（参数错误等），界面只显示 `text`。界面用 `std::visit` 处理，
   漏掉哪种 View 编译时就能发现。
 - `to_json(view)` 输出 `{"kind": ..., 各字段}`，给 `session::Writer::append`；`kind` 为 `read`、`change`、
-  `bash`、`grep`、`glob`、`mcp`、`todo`，`monostate` 为 `null`。`view_from_json` 在 `kind` 不认识或条目损坏时返回
+  `bash`、`grep`、`glob`、`mcp`、`todo`、`ask`、`task`，`monostate` 为 `null`。`view_from_json` 在 `kind` 不认识或条目损坏时返回
   `monostate`。
 - 反序列化时缺字段取默认值：以后给结构体加字段，旧会话照样读得出来。
 
@@ -245,7 +253,7 @@ tools::Result result = (*prepared)->run(grant, on_output, stop);
 
 - **每个 tool_call 都要有一条 tool 消息**，包括未知工具、参数错误、用户拒绝、被取消的调用；否则 OpenAI
   协议下一次请求直接 400。顺序与 `tool_calls` 一致。
-- 可以并行的只有 `Intent::Kind::read` 和 `known_readonly` 的 bash；write、edit、MCP 串行。
+- 可以并行的只有 `Intent::Kind::read` 和 `known_readonly` 的 bash；write、edit、MCP 串行，`task` 单独成组并发。
 - FileTracker 跟着会话走；恢复会话时不重建，模型需要重新 read 才能编辑——宁可多读一次，也不能拿旧 Stamp
   覆盖别人的改动。
 - read 可以读到 `.env` 这类文件，内容会发给模型。是否拦截由核心的权限策略决定（Intent 里有路径）。
