@@ -294,9 +294,9 @@ Agent::DispatchOutcome Agent::dispatch(const std::vector<ToolCall>& calls, int b
         case Verdict::Kind::ask: {
             const Approval& approval = v.approval;
             if (!approver) {
-                log_agent()->warn("需要询问但没有 Approver（编程错误）：{}", slot.call->name);
+                log_agent()->warn("需要用户批准，但当前运行方式没有交互审批器：{}", slot.call->name);
                 slot.result =
-                    make_result(std::format(texts::kPolicyDenied, approval.reason), true, false);
+                    make_result(std::format(texts::kApprovalUnavailable, approval.reason), true, false);
                 break;
             }
             const Decision decision = approver(approval, stop);

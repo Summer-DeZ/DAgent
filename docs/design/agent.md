@@ -189,7 +189,7 @@ idle timeout 看收到的字节，包括 SSE 注释。大上下文预填充期�
 | --- | --- |
 | T1 / T2 | 回复被中断 / 本轮中断使调用没有执行 |
 | T3 / T4 / T5 | 用户拒绝并等待指示 / 拒绝附说明、允许继续 / 同批前一调用被拒而未执行 |
-| T6 / T7 / T8 | 策略拒绝及原因 / 未知工具及可用列表 / 工具调用达到上限、要求总结进展 |
+| T6 / T7 / T8 | 策略拒绝或当前入口缺少审批器及原因 / 未知工具及可用列表 / 工具调用达到上限、要求总结进展 |
 | T9 | 崩溃时调用结果未知，修改性操作须先检查当前状态 |
 | T10 / T11 | 包装后的历史摘要 / 旧工具输出已省略、需要时重新调用 |
 | T12 / T13 | MCP 下一步将自动重连一次 / 本会话不再重连，不要再调用它的工具 |
@@ -253,11 +253,13 @@ Policy 是纯逻辑，不弹窗、不读配置。它依据 `Intent` 的规范化
 | 模式 | 未命中已有授权时的行为 |
 | --- | --- |
 | `ask` | 工作区内写入和非只读 bash 询问；已知只读 bash 在完整只读 profile 下自动执行 |
-| `workspace` | 工作区内普通文件工具放行；动态/写入型 bash 只有在完整 workspace profile 成立时自动执行 |
+| `workspace` | 工作区内普通文件工具放行；动态/写入型 bash 在完整 workspace profile 下自动执行，否则询问一次性 full_access |
 | `unrestricted` | 路径、网络和外部工具均直接放行，bash 使用 full_access；只保留高危命令硬拦 |
 
-路径分类包括：含 `.git` 路径段的受保护路径；`.env`、`.env.*`、
+路径分类包括：含 `.git` 路径段，以及控制根中的 `models.json`、`dagent.db`、`logs/` 的受保护路径；`.env`、`.env.*`、
 `*.pem`、`*.key`、`id_rsa*`、`id_ed25519*` 及含 `.ssh` / `.gnupg` 段的敏感路径；其余按工作区内外区分。
+开发目录把 `home/` 同时用作控制根时，受版本控制的普通配置、提示词和主题仍按工作区源码处理，不会把整个
+`home/` 树隐藏起来。
 分类是依次匹配，受保护和敏感分类优先于工作区外，不能把这些检查理解成彼此独立的文件系统隔离层。
 
 | 操作 | 默认决定 |
@@ -266,12 +268,15 @@ Policy 是纯逻辑，不弹窗、不读配置。它依据 `Intent` 的规范化
 | edit / write | ask 下询问；workspace 放行工作区内普通路径；unrestricted 全部放行 |
 | 已知只读 bash，沙箱可用 | 自动允许，但仍放进 `read_only` 沙箱；前置 `cd` 到 workspace 内不改变只读结论 |
 | 其他 bash，完整 workspace profile 可用 | ask 询问、workspace 自动；均使用明确范围且默认不联网 |
-| 所需 profile 不可用 | ask / workspace 直接拒绝且不执行；只有 unrestricted 明确使用 host |
+| 写入型 bash 的 workspace profile 不可用 | 交互入口询问一次性 full_access，明确提示可访问网络、受保护数据和 `.git`；headless 返回“需要批准”且不执行 |
 | MCP 工具 | ask / workspace 询问；unrestricted 放行；plan 拒绝 |
+
+这个 full_access 兼容路径不是自动降级：每个调用都必须由用户明确批准，不提供会话级复用；拒绝后不执行。
+真正的策略拒绝只保留给语法错误、高危硬拦、read-only / plan 限制等不可通过本次批准扩大的条件。
 
 沙箱能力由 `exec::Support` 分项报告；只读与 workspace profile 分别调用 `read_only_ready()`、
 `workspace_ready()`，不再用 Landlock/seccomp 两个布尔值冒充完整能力。workspace 不授予 bash 网络权限，
-失败也不会降级 full_access。具体限制见 [exec](exec.md)。
+能力缺失也不会自动降级 full_access；只有用户在上述明确风险说明后批准的单次调用使用 host。具体限制见 [exec](exec.md)。
 
 `read_only` 与三档正交：写入、非只读 bash 和 external 都走策略拒绝，已知只读 bash 强制 read_only 沙箱。
 plan 在此基础上给出规划专用反馈，使模型改为调研和提案而不结束本轮。`mkfs*`、裸写块设备、大范围 `rm -rf`、

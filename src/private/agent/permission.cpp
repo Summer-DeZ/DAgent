@@ -26,6 +26,11 @@ bool is_relative_to(const fs::path& path, const fs::path& base) {
     return relative.begin() == relative.end() || *relative.begin() != "..";
 }
 
+bool sensitive_control_path(const fs::path& path, const fs::path& root) {
+    return path == root / "models.json" || path == root / "dagent.db" ||
+           is_relative_to(path, root / "logs");
+}
+
 std::string exec_rule_id(std::string_view command, std::string_view cwd) {
     const std::size_t value = std::hash<std::string>{}(std::string(command) + '\0' + std::string(cwd));
     return std::format("exec-{:x}", value);
@@ -38,7 +43,8 @@ std::string read_rule_id(const fs::path& path) {
 bool single_use_only(const Approval& approval) {
     return std::ranges::any_of(approval.requests, [](const Approval::Request& request) {
         return request.kind == Approval::Request::Kind::sensitive_read ||
-               request.kind == Approval::Request::Kind::protected_write;
+               request.kind == Approval::Request::Kind::protected_write ||
+               request.kind == Approval::Request::Kind::host_access;
     });
 }
 
@@ -67,7 +73,7 @@ bool Policy::inside_dir(const fs::path& path, const fs::path& dir) const {
 
 Policy::PathClass Policy::classify(const workspace::Resolved& resolved) const {
     const fs::path& path = resolved.path;
-    if (inside_dir(path, control_root_)) return PathClass::guarded;
+    if (sensitive_control_path(path, control_root_)) return PathClass::guarded;
     for (const auto& part : path) {
         if (part == ".git") return PathClass::guarded;
         if (part == ".ssh" || part == ".gnupg") return PathClass::sensitive;
@@ -129,7 +135,8 @@ tools::Grant Policy::grant_for_exec(exec::Mode profile, tools::Grant::Source sou
         grant.writable.insert(grant.writable.end(), sandbox_options_.extra_writable.begin(),
                               sandbox_options_.extra_writable.end());
     }
-    grant.protected_read = {control_root_, workspace_root_ / ".env"};
+    grant.protected_read = {control_root_ / "models.json", control_root_ / "dagent.db",
+                            control_root_ / "logs", workspace_root_ / ".env"};
     if (const char* home = std::getenv("HOME")) {
         grant.protected_read.emplace_back(fs::path(home) / ".ssh");
         grant.protected_read.emplace_back(fs::path(home) / ".gnupg");
@@ -256,8 +263,14 @@ Verdict Policy::evaluate(const ToolCall& call, const tools::Intent& intent) cons
             return answer(Verdict::Kind::allow);
         }
         if (!sandbox_.workspace_ready()) {
-            verdict.kind = Verdict::Kind::deny;
-            verdict.reason = "required workspace sandbox capabilities are unavailable; command not executed";
+            verdict.approval.reason =
+                "The workspace sandbox is unavailable; running this command requires one-time full host access";
+            verdict.approval.requests.push_back({
+                Approval::Request::Kind::host_access,
+                intent.command,
+                "unsandboxed host access can reach the network, protected data, and git internals",
+            });
+            verdict.kind = Verdict::Kind::ask;
             return verdict;
         }
         verdict.approval.reason = intent.analysis.dynamic
@@ -302,6 +315,10 @@ Verdict Policy::evaluate(const ToolCall& call, const tools::Intent& intent) cons
 
 tools::Grant Policy::grant_for(const Approval& approval, const Decision& decision) const {
     if (approval.intent.kind != tools::Intent::Kind::exec) return {};
+    if (std::ranges::any_of(approval.requests, [](const Approval::Request& request) {
+            return request.kind == Approval::Request::Kind::host_access;
+        }))
+        return grant_for_exec(exec::Mode::full_access, tools::Grant::Source::once);
     tools::Grant grant = grant_for_exec(exec::Mode::workspace_write,
                                        decision.answer == Decision::Answer::allow_session
                                            ? tools::Grant::Source::session : tools::Grant::Source::once);

@@ -34,8 +34,11 @@ inline constexpr std::string_view kDenied =
 inline constexpr std::string_view kDeniedWithFeedback = "The user denied this call and said: {}";
 inline constexpr std::string_view kPriorDenied = "An earlier call in the same batch was denied; this call was not executed.";
 inline constexpr std::string_view kPolicyDenied =
-    "The permission policy denied this call: {}. This run is non-interactive, so the user cannot be asked. Use an approach that does not need this permission, "
+    "The permission policy denied this call: {}. Use an approach that does not need this permission, "
     "or say in your final reply what the user must do.";
+inline constexpr std::string_view kApprovalUnavailable =
+    "This call requires user approval: {}. This run has no interactive approver, so the call was not executed. "
+    "Retry it in an interactive session to approve once, or explicitly use unrestricted mode if full host access is intended.";
 inline constexpr std::string_view kUnknownTool = "Unknown tool {}. Available tools: {}";
 inline constexpr std::string_view kToolLimit =
     "This turn hit the tool call limit ({} calls); this call was not executed. Summarize what you finished and tell the user what is left.";

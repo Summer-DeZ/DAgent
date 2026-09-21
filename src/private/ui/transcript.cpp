@@ -203,7 +203,8 @@ private:
 
 bool not_executed(std::string_view text) {
     constexpr std::string_view skipped[] = {agent::texts::kDenied, agent::texts::kDeniedWithFeedback,
-                                            agent::texts::kPolicyDenied, agent::texts::kPriorDenied,
+                                            agent::texts::kPolicyDenied, agent::texts::kApprovalUnavailable,
+                                            agent::texts::kPriorDenied,
                                             agent::texts::kToolLimit};
     return std::ranges::any_of(skipped, [&](std::string_view value) {
         return text.starts_with(value.substr(0, value.find("{}")));

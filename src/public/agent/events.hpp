@@ -100,7 +100,15 @@ using Sink = std::function<void(const Event&)>;
 
 struct Approval {
     struct Request {
-        enum class Kind { dynamic_command, read_path, write_path, network, sensitive_read, protected_write };
+        enum class Kind {
+            dynamic_command,
+            read_path,
+            write_path,
+            network,
+            sensitive_read,
+            protected_write,
+            host_access,
+        };
         Kind kind = Kind::dynamic_command;
         std::string target, reason;
     };

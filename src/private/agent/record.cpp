@@ -165,6 +165,7 @@ void Recorder::permission(const Approval& approval, const Decision& decision) {
         case Approval::Request::Kind::network: kind = "network"; break;
         case Approval::Request::Kind::sensitive_read: kind = "sensitive_read"; break;
         case Approval::Request::Kind::protected_write: kind = "protected_write"; break;
+        case Approval::Request::Kind::host_access: kind = "host_access"; break;
         }
         requests.push_back({{"kind", kind}, {"target", request.target}, {"reason", request.reason}});
     }
