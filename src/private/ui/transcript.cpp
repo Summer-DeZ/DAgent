@@ -436,19 +436,6 @@ void Transcript::apply(const agent::Event& event) {
             markdown_ = std::make_unique<tui::MarkdownStream>(doc_, 1);
         },
         [&](const agent::ToolStarted& e) { finish_message(); tool(e.id, e.name, e.summary); },
-        [&](const agent::SubEvent& e) {
-            // 子 Agent 的进度写进对应 task 块的流式正文；按父会话里的 call_id 分块，交错到达不会串。
-            const auto it = tools_.find(e.call_id);
-            if (it == tools_.end() || it->second.finished) return;
-            std::visit(Overloaded{
-                           [&](const agent::ToolStarted& started) {
-                               doc_.append(it->second.body, "● " + clean_field(started.summary) + "\n");
-                           },
-                           [&](const agent::ToolOutput& output) { doc_.append(it->second.body, output.chunk); },
-                           [&](const auto&) {},
-                       },
-                       e.event());
-        },
         [&](const agent::ToolOutput& e) {
             if (auto it = tools_.find(e.id); it != tools_.end()) doc_.append(it->second.body, e.chunk);
         },

@@ -13,7 +13,7 @@
     },
     "local": {
       "base_url": "http://127.0.0.1:10009/v1",
-      "context_window": 262144,
+      "context_window": 120832,
       "extra_body": {
         "chat_template_kwargs": {
           "enable_thinking": true

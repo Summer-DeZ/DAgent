@@ -222,6 +222,12 @@ public:
             } catch (const std::exception& e) { worker_failed(e.what()); }
             catch (...) { worker_failed("agent thread crashed"); }
         });
+        // 回放走独立线程：一轮对话本身就是 jobs_ 里的一个 job，只读查询排在它后面会等到整轮结束。
+        io_worker_ = std::jthread([this](std::stop_token stop) {
+            try {
+                while (auto job = io_jobs_.pop(stop)) (*job)();
+            } catch (...) {} // 每个 job 自带 try/catch，这里只防线程意外终止
+        });
         refresh_project();
         watch_mcp();
 
@@ -229,8 +235,10 @@ public:
 
     ~Shell() override {
         turn_stop_.request_stop(); jobs_.close(); worker_.request_stop();
+        io_jobs_.close(); io_worker_.request_stop();
         rt_.cancel(file_debounce_); terminal_.restore();
         if (worker_.joinable()) worker_.join();
+        if (io_worker_.joinable()) io_worker_.join();
         unbind_active_mouse();
     }
 
@@ -242,8 +250,10 @@ public:
         if (!initial.empty()) submit(initial);
         rt_.run();
         turn_stop_.request_stop(); jobs_.close(); worker_.request_stop();
+        io_jobs_.close(); io_worker_.request_stop();
         terminal_.restore();
         if (worker_.joinable()) worker_.join();
+        if (io_worker_.joinable()) io_worker_.join();
         agent_.reset();
         interrupts.graceful = false;
         if (!error_.empty()) std::cerr << "failed: " << error_ << '\n';
@@ -390,7 +400,7 @@ private:
     void open_task_pane(const Transcript::TaskRef& task) {
         const std::size_t index = add_pane("task · " + task.agent, task.session_id, task.call_id);
         show_pane(index);
-        jobs_.push([this, index, id = task.session_id] {
+        io_jobs_.push([this, index, id = task.session_id] {
             try {
                 std::vector<agent::Event> history;
                 agent::replay_into(setup_.session, id,
@@ -413,15 +423,18 @@ private:
         rows.push_back({"main", id_.substr(0, 8), active_ == 0 ? std::string(ui::text().panel_current) : "",
                         true, [this] { show_pane(0); }});
         std::set<std::string> seen;
+        std::size_t no = 0;
         for (std::size_t i = 1; i < panes_.size(); ++i) {
             seen.insert(panes_[i].session_id);
-            rows.push_back({panes_[i].title, panes_[i].session_id.substr(0, 8),
+            rows.push_back({std::format("{}. {}", ++no, panes_[i].title),
+                            panes_[i].session_id.substr(0, 8),
                             active_ == i ? std::string(ui::text().panel_current) : "", true,
                             [this, i] { show_pane(i); }});
         }
         for (const Transcript::TaskRef& task : panes_[0].transcript->tasks()) {
             if (!seen.insert(task.session_id).second) continue;
-            rows.push_back({"task · " + task.agent, task.session_id.substr(0, 8), "", true,
+            rows.push_back({std::format("{}. task · {}", ++no, task.agent),
+                            task.session_id.substr(0, 8), "", true,
                             [this, task] { open_task_pane(task); }});
         }
         panel_.open(std::string(ui::text().panel_agents), std::move(rows),
@@ -490,7 +503,7 @@ private:
     }
     void busy(bool value) {
         busy_ = value; rt_.cancel(activity_timer_); activity_timer_ = 0;
-        input_->set_active(value && active_ == 0); update_prompt_footer();
+        input_->set_active(!value && active_ == 0); update_prompt_footer();
         if (value) {
             step_begin_ = Clock::now(); phase_ = std::string(ui::text().act_thinking);
             activity_timer_ = rt_.every(100ms, [this] { activity(); activity_->tick(); return true; });
@@ -514,7 +527,6 @@ private:
                     index = add_pane("task · " + e.agent, e.session, e.call_id);
                     task_panes_.emplace(e.call_id, index);
                 }
-                panes_[0].transcript->apply(e); // 主会话的 task 块流式正文
                 if (index != 0) panes_[index].transcript->apply(e.event()); // 子 Pane 自己的记录
             },
             [&](const agent::ToolFinished& e) {
@@ -593,6 +605,12 @@ private:
     }
     void submit(std::string text) {
         if (exiting_) return;
+        // 子视图是子会话的只读投影，消息属于主会话；命令（/agents、/exit 等）仍然放行。
+        if (active_ != 0 && !text.starts_with('/')) {
+            input_->set_text(std::move(text)); // 保留已输入的内容，不让用户白打一遍
+            toast(std::string(ui::text().toast_subview_readonly), tui::Notice::Severity::warn);
+            return;
+        }
         if (!text.starts_with('/')) set_session_title(text);
         if (busy_ && text == "/model") { toast(std::string(ui::text().toast_model_busy), tui::Notice::Severity::warn); return; }
         pending_.push_back(std::move(text)); refresh_queue();  drain();
@@ -955,7 +973,7 @@ private:
     }
     void exit() {
         exiting_ = true; pending_.clear(); turn_stop_.request_stop(); jobs_.close();
-        worker_.request_stop(); rt_.quit();
+        worker_.request_stop(); io_jobs_.close(); io_worker_.request_stop(); rt_.quit();
     }
 
     agent::Setup setup_;
@@ -993,6 +1011,8 @@ private:
     Completion completion_;
     JobQueue jobs_;
     std::jthread worker_;
+    JobQueue io_jobs_;      ///< 只读 SQLite 查询：子会话回放等；不排在 run_turn 后面
+    std::jthread io_worker_;
     std::stop_source turn_stop_;
     std::string id_, error_, phase_, project_path_, branch_, completion_kind_;
     std::deque<std::string> pending_;

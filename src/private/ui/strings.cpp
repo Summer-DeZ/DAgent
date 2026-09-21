@@ -41,6 +41,7 @@ constexpr Strings kEnglish{
     .panel_model = "Model",
     .panel_model_footer = "a add · enter switch · esc close",
     .toast_model_busy = "Model switching is unavailable while busy",
+    .toast_subview_readonly = "Subagent view is read-only - ctrl+a to go back to main",
     .toast_model_failed = "Cannot switch model: ",
     .toast_model_selected = "Model: ",
     .toast_model_added = "Model added: ",

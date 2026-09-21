@@ -46,6 +46,7 @@ struct Strings {
     std::string_view panel_model;
     std::string_view panel_model_footer;
     std::string_view toast_model_busy;
+    std::string_view toast_subview_readonly;
     std::string_view toast_model_failed;
     std::string_view toast_model_selected;
     std::string_view toast_model_added;
