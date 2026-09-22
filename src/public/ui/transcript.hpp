@@ -20,7 +20,7 @@ public:
         std::string agent, session_id, call_id;
     };
 
-    explicit Transcript(tui::Document&, std::function<void(const tools::TodoView&)> todo = {});
+    explicit Transcript(tui::Document&, std::function<void(const agent::TodoView&)> todo = {});
     void apply(const agent::Event&);
     void clear();
     void toggle_tools();
@@ -67,8 +67,8 @@ private:
     bool live_step_ = false, has_text_ = false;
     std::map<std::string, ToolBlocks> tools_;
     std::vector<TaskRef> tasks_;
-    std::function<void(const tools::TodoView&)> on_todo_;
-    tools::TodoView todo_;
+    std::function<void(const agent::TodoView&)> on_todo_;
+    agent::TodoView todo_;
     uint64_t todo_block_ = 0;
     uint32_t next_group_ = 1;
     bool todo_narrow_ = false, todo_collapsed_ = false, todo_complete_ = false;

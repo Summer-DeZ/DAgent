@@ -8,25 +8,24 @@ namespace {
 
 class TodoCall final : public Call {
 public:
-    explicit TodoCall(TodoView view) : view_(std::move(view)) {
-        intent_.kind = Intent::Kind::read;
-        intent_.known_readonly = true;
+    explicit TodoCall(agent::TodoView view) : view_(std::move(view)) {
+        intent_.kind = agent::ToolKind::read;
         intent_.summary = std::format("Update {} plan items", view_.items.size());
     }
 
 private:
     Result do_run(const Grant&, const std::function<void(std::string_view)>&,
                   std::stop_token) override {
-        const auto done = std::ranges::count_if(view_.items, [](const TodoItem& item) {
-            return item.state == TodoItem::State::done;
+        const auto done = std::ranges::count_if(view_.items, [](const agent::TodoItem& item) {
+            return item.state == agent::TodoItem::State::done;
         });
         Result result;
-        result.text = std::format("Plan updated: {}/{} done.", done, view_.items.size());
+        result.model_text = std::format("Plan updated: {}/{} done.", done, view_.items.size());
         result.display = view_;
         return result;
     }
 
-    TodoView view_;
+    agent::TodoView view_;
 };
 
 class TodoTool final : public Tool {
@@ -67,7 +66,7 @@ public:
         if (it == args->end() || !it->is_array())
             return std::unexpected(detail::error_result("items must be an array"));
 
-        TodoView view;
+        agent::TodoView view;
         for (const auto& raw : *it) {
             if (!raw.is_object())
                 return std::unexpected(detail::error_result("each item in items must be an object"));
@@ -82,13 +81,13 @@ public:
             if (!state->is_string())
                 return std::unexpected(detail::error_result("plan item state must be a string"));
 
-            TodoItem item;
+            agent::TodoItem item;
             item.text = text->get<std::string>();
             const std::string value = state->get<std::string>();
-            if (value == "todo") item.state = TodoItem::State::todo;
-            else if (value == "doing") item.state = TodoItem::State::doing;
-            else if (value == "done") item.state = TodoItem::State::done;
-            else if (value == "dropped") item.state = TodoItem::State::dropped;
+            if (value == "todo") item.state = agent::TodoItem::State::todo;
+            else if (value == "doing") item.state = agent::TodoItem::State::doing;
+            else if (value == "done") item.state = agent::TodoItem::State::done;
+            else if (value == "dropped") item.state = agent::TodoItem::State::dropped;
             else return std::unexpected(detail::error_result(
                 "plan item state must be todo, doing, done or dropped"));
             view.items.push_back(std::move(item));

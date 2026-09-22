@@ -1,10 +1,10 @@
 /// @file tools.hpp
 /// @brief 工具层：把外围模块包装成模型能调用的工具——定义名字、说明和参数 Schema，解析校验模型给的
-/// 参数，调用外围模块，把结果整理成「给模型的文本」和「给界面与会话的 View」。
+/// 参数，调用外围模块，把结果整理成「给模型的文本」和「给界面与会话的展示数据」。
 ///
 /// 两阶段：prepare 解析校验预演（无副作用），run 真正执行。权限决策、调度、消息历史都不在这里：
-/// 工具只陈述自己打算做什么（Intent），允许/询问/拒绝由核心决定。run 不抛异常，一切失败都是
-/// is_error 的 Result。
+/// 工具只陈述自己打算做什么（PreparedIntent 中立摘要），允许/询问/拒绝由核心决定。run 不抛异常，
+/// 一切失败都是 is_error 的 ToolResult。
 #pragma once
 
 #include <chrono>
@@ -19,16 +19,23 @@
 #include <string_view>
 #include <vector>
 
+#include "agent/grant.hpp"
+#include "agent/intent.hpp"
+#include "agent/message.hpp"
+#include "agent/tool_data.hpp"
 #include "exec/process.hpp"
 #include "exec/sandbox.hpp"
 #include "exec/shell.hpp"
 #include "lib/nlohmann/json.hpp"
 #include "mcp/client.hpp"
-#include "tools/view.hpp"
 #include "workspace/files.hpp"
 #include "workspace/search.hpp"
 
 namespace dagent::tools {
+
+using Spec = agent::ToolSpec;      ///< 工具描述与核心共用一个中立类型
+using Grant = agent::ExecutionGrant;
+using Result = agent::ToolResult;
 
 /// @brief 工具选项，对应 config/dagent.json 的 "tools" 段。
 struct Options {
@@ -39,53 +46,6 @@ struct Options {
     std::size_t glob_max_files = 200;
     std::chrono::milliseconds bash_max_timeout{600000}; ///< 模型能要求的最长超时
     std::chrono::milliseconds mcp_call_timeout{120000}; ///< 单次 MCP 工具调用的上限
-};
-
-/// @brief 给模型的工具描述。核心把它转成 agent::ToolDef（字段一一对应）。
-struct Spec {
-    std::string name, description;
-    nlohmann::json parameters = nlohmann::json::object(); ///< JSON Schema
-};
-
-/// @brief 工具打算做什么：权限决策的输入，只描述，不决策。
-struct Intent {
-    /// external：MCP 工具，语义未知；task：派发子 Agent，权限在子 Agent 内部判定
-    enum class Kind { read, write, exec, external, ask, exit_plan, task };
-    Kind kind = Kind::read;
-    std::vector<workspace::Resolved> paths; ///< read/write 涉及的路径，带 inside_workspace
-    std::string command;                    ///< exec：原始命令
-    exec::Analysis analysis;                ///< exec：prepare 时生成，后续策略和执行复用
-    bool known_readonly = false;            ///< exec：exec::is_known_readonly 的结果
-    std::string preview;                    ///< write/edit：unified diff，给确认对话框
-    std::string summary;                    ///< 一行描述，如「编辑 src/a.cpp（+3 −1）」
-    AskView ask;                            ///< ask / exit_plan 的交互内容
-    std::string plan_summary;               ///< exit_plan：模型提交的方案
-};
-
-/// @brief 核心的决定，执行时传回。
-struct Grant {
-    enum class Source { mode, once, session, unrestricted };
-    exec::Mode sandbox = exec::Mode::workspace_write; ///< 只对 bash 有意义
-    bool allow_network = false;
-    bool allow_local_sockets = false;
-    bool private_tmp = true;
-    bool protect_sensitive_names = false;
-    Source source = Source::mode;
-    std::string backend;
-    int analysis_version = 0;
-    std::vector<std::filesystem::path> readable;
-    std::vector<std::filesystem::path> writable;
-    std::vector<std::filesystem::path> protected_read;
-    std::vector<std::filesystem::path> protected_write;
-    std::vector<std::string> network_targets;
-};
-
-/// @brief 一次工具调用的结果。
-struct Result {
-    std::string text;         ///< 给模型：合法 UTF-8，已按 max_result_bytes 截断
-    bool is_error = false;    ///< 模型视角的失败：参数错、找不到、匹配失败、退出码非 0……
-    bool interrupted = false; ///< stop_token 触发；text 里是已有的部分输出
-    View display;             ///< 给界面与会话，见 tools/view.hpp
 };
 
 /// @brief 会话级状态：核心每个会话建一个，所有调用共用。线程安全。
@@ -113,12 +73,13 @@ private:
     std::unique_ptr<Impl> impl_;
 };
 
-/// @brief 一次已经通过 prepare 的调用。核心按 Intent 做完权限决策后执行。
+/// @brief 一次已经通过 prepare 的调用。核心按 PreparedIntent 做完权限决策后执行。
 class Call {
 public:
     virtual ~Call() = default;
 
-    const Intent& intent() const { return intent_; }
+    /// @brief 决定权限所需的中立摘要；底层分析细节（分析树、Client 指针）不在这里。
+    const agent::PreparedIntent& intent() const { return intent_; }
 
     /// @brief 核心在 prepare 之后写入本调用的 id；需要把子事件挂回父会话的工具用它。
     void set_call_id(std::string id) { call_id_ = std::move(id); }
@@ -130,7 +91,7 @@ public:
                std::stop_token stop);
 
 protected:
-    Intent intent_; ///< 由各实现的 prepare 填好
+    agent::PreparedIntent intent_; ///< 由各实现的 prepare 填好（中立摘要）
 
 private:
     virtual Result do_run(const Grant&, const std::function<void(std::string_view)>&,
@@ -168,5 +129,8 @@ void add_builtin(Registry&);
 /// @brief 把一个 MCP server 的所有工具包进 Registry（名字 mcp__<server>__<name>）。
 /// Client 要比这些工具活得久；refresh_tools 之后核心先 remove_prefix 再重新 add_mcp。
 void add_mcp(Registry&, mcp::Client&);
+
+/// @brief 把解析后的路径转成权限决策用的中立资源意图（tools 适配层的公共转换）。
+agent::ResourceIntent to_intent(const workspace::Resolved&, agent::Access);
 
 } // namespace dagent::tools

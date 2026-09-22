@@ -57,7 +57,7 @@ public:
             std::chrono::milliseconds timeout, std::size_t max_result_bytes)
         : client_(client), tool_(tool), args_(std::move(args)), timeout_(timeout),
           max_result_bytes_(max_result_bytes) {
-        intent_.kind = Intent::Kind::external;
+        intent_.kind = agent::ToolKind::external;
         intent_.summary = std::format("Call MCP tool {}", tool_.qualified_name);
     }
 
@@ -69,9 +69,9 @@ private:
         } catch (const mcp::McpError& e) {
             if (e.kind() == mcp::McpError::Kind::cancelled) {
                 Result result;
-                result.text = "interrupted by the user";
+                result.model_text = "interrupted by the user";
                 result.interrupted = true;
-                McpView view;
+                agent::McpView view;
                 view.server = tool_.server;
                 view.tool = tool_.qualified_name;
                 view.disconnected = false;
@@ -79,7 +79,7 @@ private:
                 return result;
             }
             base::logger("tools")->warn("MCP tool {} failed: {}", tool_.qualified_name, e.what());
-            McpView view;
+            agent::McpView view;
             view.server = tool_.server;
             view.tool = tool_.qualified_name;
             view.disconnected = e.kind() == mcp::McpError::Kind::disconnected;
@@ -87,7 +87,7 @@ private:
                                 std::move(view));
         }
 
-        McpView view;
+        agent::McpView view;
         view.server = tool_.server;
         view.tool = tool_.qualified_name;
         view.content = outcome.content;
@@ -101,7 +101,7 @@ private:
         text = base::truncate_middle(base::to_valid_utf8(std::move(text)), max_result_bytes_).text;
 
         Result result;
-        result.text = std::move(text);
+        result.model_text = std::move(text);
         result.is_error = outcome.is_error;
         result.display = std::move(view);
         return result;

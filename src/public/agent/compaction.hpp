@@ -1,6 +1,7 @@
 #pragma once
 
 #include "agent/conversation.hpp"
+#include "agent/tokens.hpp"
 #include "agent/options.hpp"
 #include "agent/record.hpp"
 
@@ -8,8 +9,8 @@ namespace dagent::agent {
 
 struct RequestShape {
     std::string system;
-    std::vector<ToolDef> tools;
-    ProviderConfig params;
+    std::vector<ToolSpec> tools;
+    ModelParams params; ///< 中立模型参数（model / max_tokens / temperature）
 };
 
 struct Budget {
@@ -26,17 +27,17 @@ class Compactor {
 public:
     Compactor(ContextOptions, std::size_t max_tokens, std::string compact_prompt);
 
-    void maybe_compact(Conversation&, const RequestShape&, Model&, TokenEstimator&, Recorder&,
+    void maybe_compact(Conversation&, const RequestShape&, ModelSession&, TokenEstimator&, Recorder&,
                        const Sink&, std::stop_token);
-    void force(Conversation&, const RequestShape&, Model&, TokenEstimator&, Recorder&,
+    void force(Conversation&, const RequestShape&, ModelSession&, TokenEstimator&, Recorder&,
                const Sink&, std::stop_token);
-    void summarize(Conversation&, const RequestShape&, Model&, TokenEstimator&, Recorder&,
+    void summarize(Conversation&, const RequestShape&, ModelSession&, TokenEstimator&, Recorder&,
                    const Sink&, std::stop_token);
     Budget budget() const { return budget_; }
 
 private:
     enum class Mode { automatic, forced, manual };
-    void compact(Mode, Conversation&, const RequestShape&, Model&, TokenEstimator&, Recorder&,
+    void compact(Mode, Conversation&, const RequestShape&, ModelSession&, TokenEstimator&, Recorder&,
                  const Sink&, std::stop_token);
 
     Budget budget_;

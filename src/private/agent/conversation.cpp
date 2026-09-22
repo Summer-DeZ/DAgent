@@ -5,7 +5,7 @@
 #include <set>
 #include <utility>
 
-#include "agent/llm.hpp"
+#include "agent/tokens.hpp"
 
 namespace dagent::agent {
 
@@ -75,8 +75,8 @@ std::size_t Conversation::tokens() const {
     return total;
 }
 
-Request Conversation::build(const std::string& system, const std::vector<ToolDef>& tools,
-                            const ProviderConfig& params) const {
+Request Conversation::build(const std::string& system, const std::vector<ToolSpec>& tools,
+                            const ModelParams& params) const {
     assert(!validate().has_value());
 
     Request request;

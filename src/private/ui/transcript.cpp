@@ -229,7 +229,7 @@ std::string title_name(std::string_view name) {
 }
 } // namespace
 
-Transcript::Transcript(tui::Document& doc, std::function<void(const tools::TodoView&)> todo)
+Transcript::Transcript(tui::Document& doc, std::function<void(const agent::TodoView&)> todo)
     : doc_(doc), on_todo_(std::move(todo)) {
     doc_.set_renderer(tui::BlockKind::text, std::make_unique<ChatRenderer>());
     doc_.set_renderer(tui::BlockKind::output,
@@ -313,16 +313,16 @@ void Transcript::finished(const agent::ToolFinished& event) {
     const auto elapsed = std::chrono::duration<double>(std::chrono::steady_clock::now() - blocks.began).count();
     stat = format_text(ui::text().card_elapsed, elapsed);
     std::visit(Overloaded{
-        [&](std::monostate) { body = event.result.text; },
-        [&](const tools::ReadView& v) {
+        [&](std::monostate) { body = event.result.model_text; },
+        [&](const agent::ReadView& v) {
             name = std::string(ui::text().card_read); param = v.path + (v.directory ? "/" : "");
             if (!v.directory) stat = format_text(ui::text().card_read_range, v.start_line, v.end_line, stat);
         },
-        [&](const tools::FileChangeView& v) {
+        [&](const agent::FileChangeView& v) {
             name = v.created ? std::string(ui::text().card_write) : std::string(ui::text().card_edit); param = v.path;
             stat = format_text(ui::text().card_changes, v.added, v.removed, stat); body = v.diff; rows = 20;
         },
-        [&](const tools::BashView& v) {
+        [&](const agent::BashView& v) {
             name = std::string(ui::text().card_bash); param = clean_field(v.command);
             const std::string state = v.interrupted ? std::string(ui::text().card_interrupted) : v.timed_out ? std::string(ui::text().card_timeout)
                 : v.signal ? format_text(ui::text().card_signal, *v.signal)
@@ -330,18 +330,18 @@ void Transcript::finished(const agent::ToolFinished& event) {
             stat = format_text(ui::text().card_state_time, state, v.elapsed_ms / 1000.0);
             body = v.output; rows = 10;
         },
-        [&](const tools::GrepView& v) {
+        [&](const agent::GrepView& v) {
             name = std::string(ui::text().card_grep); param = "\"" + v.pattern + "\"";
             stat = format_text(ui::text().card_matches, v.lines.size(), stat);
             for (const auto& line : v.lines) body += std::format("{}:{}: {}\n", line.path, line.line, line.text);
             rows = 5;
         },
-        [&](const tools::GlobView& v) {
+        [&](const agent::GlobView& v) {
             name = std::string(ui::text().card_glob); param = v.pattern; stat = format_text(ui::text().card_files, v.files.size(), stat);
             for (const auto& file : v.files) body += file + '\n';
             rows = 5;
         },
-        [&](const tools::McpView& v) {
+        [&](const agent::McpView& v) {
             name = v.server + "." + v.tool; param.clear();
             for (const auto& content : v.content) {
                 body += content.value("type", "") == "text" ? content.value("text", "")
@@ -350,10 +350,10 @@ void Transcript::finished(const agent::ToolFinished& event) {
             }
             rows = 5;
         },
-        [&](const tools::TodoView& v) {
+        [&](const agent::TodoView& v) {
             name = std::string(ui::text().card_plan); param = format_text(ui::text().card_items, v.items.size());
-            const auto done = std::ranges::count_if(v.items, [](const tools::TodoItem& item) {
-                return item.state == tools::TodoItem::State::done;
+            const auto done = std::ranges::count_if(v.items, [](const agent::TodoItem& item) {
+                return item.state == agent::TodoItem::State::done;
             });
             stat = format_text(ui::text().card_done, done, stat);
             todo_ = v; if (on_todo_) on_todo_(v); update_todo_block();
@@ -365,7 +365,7 @@ void Transcript::finished(const agent::ToolFinished& event) {
             }
             todo_complete_ = complete;
         },
-        [&](const tools::AskView& v) {
+        [&](const agent::AskView& v) {
             name = v.header.empty() ? "Question" : v.header;
             param = clean_field(v.prompt);
             body = v.prompt + "\n";
@@ -378,11 +378,11 @@ void Transcript::finished(const agent::ToolFinished& event) {
             if (v.cancelled) body += "Cancelled\n";
             rows = 8;
         },
-        [&](const tools::TaskView& v) {
+        [&](const agent::TaskView& v) {
             name = std::string(ui::text().card_task);
             param = v.agent;
             stat = format_text(ui::text().card_task_stats, v.steps.size(), v.tool_calls, v.seconds);
-            for (const tools::TaskStep& step : v.steps)
+            for (const agent::TaskStep& step : v.steps)
                 body += (step.is_error ? "✗ " : "● ") + step.summary + "\n";
             if (!v.steps.empty()) body += "\n";
             body += v.result;
@@ -390,9 +390,9 @@ void Transcript::finished(const agent::ToolFinished& event) {
             tasks_.push_back({v.agent, v.session_id, event.id});
         }
     }, event.result.display);
-    if (body.empty() && event.result.is_error) body = event.result.text;
+    if (body.empty() && event.result.is_error) body = event.result.model_text;
     const bool skipped = std::holds_alternative<std::monostate>(event.result.display) &&
-                         not_executed(event.result.text);
+                         not_executed(event.result.model_text);
     blocks.label = "\x1e" + name + "\t" + param + "\t" + stat;
     doc_.set_meta(blocks.title, event.result.interrupted || skipped ? "tool.stopped"
                                : event.result.is_error ? "tool.error" : "tool.done");
@@ -519,16 +519,16 @@ void Transcript::set_todo_collapsed(bool value) {
 void Transcript::update_todo_block() {
     if (todo_.items.empty() && !todo_block_) return;
     std::string value;
-    const auto done = std::ranges::count_if(todo_.items, [](const tools::TodoItem& item) {
-        return item.state == tools::TodoItem::State::done;
+    const auto done = std::ranges::count_if(todo_.items, [](const agent::TodoItem& item) {
+        return item.state == agent::TodoItem::State::done;
     });
     if (todo_narrow_ && !todo_.items.empty()) {
         value = format_text(ui::text().status_plan, done, todo_.items.size());
         if (todo_collapsed_) value += std::string(ui::text().todo_expand);
         else for (const auto& item : todo_.items) {
-            const std::string_view symbol = item.state == tools::TodoItem::State::done ? "✓"
-                : item.state == tools::TodoItem::State::doing ? "●"
-                : item.state == tools::TodoItem::State::dropped ? "✗" : "○";
+            const std::string_view symbol = item.state == agent::TodoItem::State::done ? "✓"
+                : item.state == agent::TodoItem::State::doing ? "●"
+                : item.state == agent::TodoItem::State::dropped ? "✗" : "○";
             value += "\n" + std::string(symbol) + " " + item.text;
         }
     }

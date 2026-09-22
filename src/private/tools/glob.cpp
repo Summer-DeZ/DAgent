@@ -24,8 +24,8 @@ public:
           max_files_(ctx.options().glob_max_files), max_result_bytes_(ctx.options().max_result_bytes) {
         // workspace::files 返回的路径相对查询根；拼上前缀才是相对工作区根、模型能直接 read 的路径
         path_prefix_ = detail::relative_prefix(root_.path, ctx.root());
-        intent_.kind = Intent::Kind::read;
-        intent_.paths = {root_};
+        intent_.kind = agent::ToolKind::read;
+        intent_.paths = {to_intent(root_, agent::Access::read)};
         intent_.summary = std::format("List {}", pattern_);
     }
 
@@ -42,7 +42,7 @@ private:
         } catch (const workspace::WorkspaceError& e) {
             if (e.kind() == workspace::WorkspaceError::Kind::cancelled) {
                 Result result;
-                result.text = "interrupted by the user";
+                result.model_text = "interrupted by the user";
                 result.interrupted = true;
                 return result;
             }
@@ -66,12 +66,12 @@ private:
             text += "[Result count limit reached; results may be incomplete.]\n";
         if (text.empty()) text = "(no matching files)\n";
 
-        GlobView view;
+        agent::GlobView view;
         view.pattern = pattern_;
         view.files = found;
         view.truncated = truncated;
         Result result;
-        result.text = base::to_valid_utf8(std::move(text));
+        result.model_text = base::to_valid_utf8(std::move(text));
         result.display = std::move(view);
         return result;
     }

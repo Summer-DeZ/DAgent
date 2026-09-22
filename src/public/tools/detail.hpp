@@ -35,7 +35,7 @@ std::optional<bool> get_bool(const nlohmann::json& args, std::string_view key, s
 
 // ---------------------------------------------------------------- 结果与路径
 
-Result error_result(std::string text, View display = std::monostate{});
+Result error_result(std::string text, agent::View display = std::monostate{});
 
 /// @brief 开头的 ~/ 展开成 $HOME，其余原样。
 std::string expand_home(std::string_view raw);
@@ -49,9 +49,6 @@ std::string display_path(const Context& ctx, const workspace::Resolved& resolved
 /// @brief grep / glob 结果路径的前缀：dir 相对 base 的形式（"sub/"），dir == base 时空串。
 /// workspace::grep/files 返回的路径相对查询根，拼上它才是模型可用的、相对工作区根的路径。
 std::string relative_prefix(const std::filesystem::path& dir, const std::filesystem::path& base);
-
-/// @brief exec::Mode 的稳定名字（存进 BashView 与会话）。
-std::string_view sandbox_name(exec::Mode mode);
 
 // ---------------------------------------------------------------- 文本组装
 

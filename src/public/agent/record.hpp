@@ -13,7 +13,7 @@
 
 #include "agent/events.hpp"
 #include "agent/conversation.hpp"
-#include "agent/model.hpp"
+#include "agent/reply.hpp"
 #include "agent/message.hpp"
 #include "lib/nlohmann/json.hpp"
 #include "session/session.hpp"

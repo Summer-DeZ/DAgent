@@ -1,17 +1,31 @@
-#include "agent/provider_detail.hpp"
-#include "session/session.hpp"
+#include "llm/provider_detail.hpp"
+
+#include <cstdio>
+#include <random>
 
 #include <map>
 #include <utility>
 
-namespace dagent::agent::provider_detail {
+namespace dagent::llm::provider_detail {
+using agent::Finish;
+using agent::Message;
+using agent::ReasoningDelta;
+using agent::Role;
+using agent::StreamEvent;
+using agent::TextDelta;
+using agent::ToolCall;
+using agent::ToolCallBegin;
+using agent::ToolCallDelta;
+using agent::ToolCallEnd;
+using agent::ToolSpec;
+using agent::Usage;
 namespace {
 using nlohmann::json;
 class OllamaCodec final : public Codec {
 public:
     explicit OllamaCodec(ProviderConfig config) : config_(std::move(config)) {}
 
-    net::HttpRequest encode(const Request& request) const override {
+    net::HttpRequest encode(const agent::Request& request) const override {
         json messages = json::array();
         std::map<std::string, std::string> tool_names;
         for (const auto& message : request.messages) {
@@ -82,10 +96,16 @@ private:
         out.emplace_back(Finish{Finish::Reason::error, std::move(message)});
     }
     ProviderConfig config_;
-    const std::string call_prefix_ = "call_" + session::new_id() + "_";
+    // ollama 不回传调用 ID：内部生成唯一前缀（运行时 ID，不要求与旧格式一致）。
+    const std::string call_prefix_ = [] {
+        std::random_device device;
+        char raw[17] = {};
+        std::snprintf(raw, sizeof raw, "%08x%08x", device(), device());
+        return std::string("call_") + raw + "_";
+    }();
     int next_call_ = 0;
     bool closed_ = false;
 };
 } // namespace
 std::unique_ptr<Codec> make_ollama(const ProviderConfig& config) { return std::make_unique<OllamaCodec>(config); }
-} // namespace dagent::agent::provider_detail
+} // namespace dagent::llm::provider_detail

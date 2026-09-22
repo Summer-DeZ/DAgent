@@ -1,12 +1,14 @@
 #pragma once
 
 #include <cstdint>
+#include <map>
 #include <memory>
 #include <span>
+#include <string>
 #include <string_view>
-#include "agent/llm.hpp"
+#include "llm/codec.hpp"
 
-namespace dagent::agent {
+namespace dagent::llm {
 
 struct ProviderConfig {
     std::string kind = "openai-chat";
@@ -35,4 +37,4 @@ std::span<const ProviderInfo> providers() noexcept;
 const ProviderInfo* find_provider(std::string_view kind) noexcept;
 std::unique_ptr<Codec> make_codec(const ProviderConfig&);
 
-} // namespace dagent::agent
+} // namespace dagent::llm

@@ -1,4 +1,5 @@
-#include "agent/model.hpp"
+#include "llm/model.hpp"
+#include "agent/public_model.hpp"
 
 #include <algorithm>
 #include <condition_variable>
@@ -15,6 +16,28 @@
 #include "net/sse.hpp"
 
 namespace dagent::agent {
+ModelError::ModelError(Kind kind, Reply partial, const std::string& what)
+    : std::runtime_error(what), kind_(kind), partial_(std::move(partial)) {}
+} // namespace dagent::agent
+
+namespace dagent::llm {
+using agent::Finish;
+using agent::Message;
+using agent::ModelError;
+using agent::Reply;
+using agent::Request;
+using agent::RetryInfo;
+using agent::StreamEvent;
+using agent::TextDelta;
+using agent::ToolCall;
+using agent::ToolCallBegin;
+using agent::ToolCallDelta;
+using agent::ToolCallEnd;
+using agent::ToolSpec;
+using agent::Usage;
+using agent::ReasoningDelta;
+using agent::Role;
+using namespace std::chrono_literals;
 namespace {
 
 std::shared_ptr<spdlog::logger> log_agent() { return base::logger("agent"); }
@@ -55,10 +78,8 @@ void append_arguments(AttemptState& state, const ToolCallDelta& event) {
 
 } // namespace
 
-ModelError::ModelError(Kind kind, Reply partial, const std::string& what)
-    : std::runtime_error(what), kind_(kind), partial_(std::move(partial)) {}
-
-Model::Model(std::function<std::unique_ptr<Codec>()> codec_factory, net::HttpOptions http, RetryOptions retry, Framing framing)
+Model::Model(std::function<std::unique_ptr<Codec>()> codec_factory, net::HttpOptions http,
+             agent::RetryOptions retry, Framing framing)
     : codec_factory_(std::move(codec_factory)), http_(http), retry_(retry), framing_(framing) {}
 
 Model::AttemptOutcome Model::attempt(const Request& request,
@@ -188,7 +209,8 @@ Model::AttemptOutcome Model::attempt(const Request& request,
     return out;
 }
 
-Reply Model::complete(const Request& request, const std::function<void(const StreamEvent&)>& on_event,
+agent::Reply Model::complete(const agent::Request& request,
+                             const std::function<void(const agent::StreamEvent&)>& on_event,
                       const std::function<void(const RetryInfo&)>& on_retry, std::stop_token stop) {
     for (int retries = 0;; ++retries) {
         const auto started = std::chrono::steady_clock::now();
@@ -243,4 +265,25 @@ Reply Model::complete(const Request& request, const std::function<void(const Str
     }
 }
 
-} // namespace dagent::agent
+} // namespace dagent::llm
+
+namespace dagent::llm {
+std::shared_ptr<agent::ModelSession> make_session(const ProviderConfig& provider, net::HttpOptions http,
+                                                  agent::RetryOptions retry) {
+    return std::make_shared<Model>([provider] { return make_codec(provider); }, std::move(http),
+                                   retry, find_provider(provider.kind)->framing);
+}
+
+agent::PublicModel to_public(const ProviderConfig& provider) {
+    agent::PublicModel out;
+    out.name = provider.name;
+    out.kind = provider.kind;
+    out.model = provider.model;
+    out.base_url = provider.base_url;
+    out.max_tokens = provider.max_tokens;
+    out.temperature = provider.temperature;
+    out.context_window = provider.context_window;
+    out.has_key = !provider.api_key.empty();
+    return out;
+}
+} // namespace dagent::llm

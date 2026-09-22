@@ -37,8 +37,8 @@ public:
         std::error_code ec;
         const bool single_file = !std::filesystem::is_directory(root_.path, ec);
         path_prefix_ = detail::relative_prefix(single_file ? root_.path.parent_path() : root_.path, ctx.root());
-        intent_.kind = Intent::Kind::read;
-        intent_.paths = {root_};
+        intent_.kind = agent::ToolKind::read;
+        intent_.paths = {to_intent(root_, agent::Access::read)};
         intent_.summary = std::format("Search {}", query_.pattern);
     }
 
@@ -56,7 +56,7 @@ private:
         for (workspace::Match& match : found.matches) match.path = path_prefix_ + match.path;
 
         constexpr std::size_t kNoteRoom = 64;
-        GrepView view;
+        agent::GrepView view;
         view.pattern = query_.pattern;
         view.truncated = found.truncated;
 
@@ -78,7 +78,7 @@ private:
             for (const workspace::Match& match : found.matches) {
                 if (match.path == last_file) continue;
                 last_file = match.path;
-                view.lines.push_back(GrepLine{.path = match.path, .text = {}, .line = 0,
+                view.lines.push_back(agent::GrepLine{.path = match.path, .text = {}, .line = 0,
                                               .spans = {}, .is_context = false});
                 if (!append(match.path)) break;
             }
@@ -90,7 +90,7 @@ private:
                     break;
                 last_path = match.path;
                 last_line = match.line;
-                view.lines.push_back(GrepLine{.path = match.path, .text = match.text,
+                view.lines.push_back(agent::GrepLine{.path = match.path, .text = match.text,
                                               .line = match.line, .spans = match.spans,
                                               .is_context = match.is_context});
                 const std::string_view sep = match.is_context ? "-" : ":";
@@ -103,7 +103,7 @@ private:
         if (text.empty()) text = "(no matches)\n";
 
         Result result;
-        result.text = base::to_valid_utf8(std::move(text));
+        result.model_text = base::to_valid_utf8(std::move(text));
         result.display = std::move(view);
         return result;
     }
@@ -117,7 +117,7 @@ private:
 
     static Result interrupted_result() {
         Result result;
-        result.text = "interrupted by the user";
+        result.model_text = "interrupted by the user";
         result.interrupted = true;
         return result;
     }

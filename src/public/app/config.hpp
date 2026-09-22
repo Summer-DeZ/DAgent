@@ -12,6 +12,7 @@
 #include <vector>
 
 #include "agent/options.hpp"
+#include "llm/provider.hpp"
 #include "base/log.hpp"
 #include "exec/process.hpp"
 #include "lib/nlohmann/json.hpp"
@@ -26,7 +27,7 @@ namespace dagent::app {
 
 struct Config {
     struct Ui { std::filesystem::path theme_file; } ui;
-    std::map<std::string, agent::ProviderConfig> models;
+    std::map<std::string, llm::ProviderConfig> models;
     std::string model;
     std::vector<std::string> model_selection_log; ///< 日志初始化后输出 CLI 选择/覆盖路径
     std::filesystem::path system_prompt_file;
@@ -86,12 +87,12 @@ Config load_config(const LoadOptions&);
 
 /// @brief 读取 <root>/agents/*.md：frontmatter + 正文。目录不存在时返回空，不报错。
 std::vector<agent::SubagentDef> load_subagents(const std::filesystem::path& dir,
-                                               const std::map<std::string, agent::ProviderConfig>& models);
+                                               const std::map<std::string, llm::ProviderConfig>& models);
 
 /// @brief 校验并追加一个模型配置，原子重写 models.json（保持 0600）；重名时拒绝。
 /// 返回值中的 env:KEY 已解析，供当前进程立即切换使用。
-agent::ProviderConfig add_model(const std::filesystem::path& root,
-                                const agent::ProviderConfig& model);
+llm::ProviderConfig add_model(const std::filesystem::path& root,
+                                const llm::ProviderConfig& model);
 
 /// @brief git 根（`git rev-parse --show-toplevel`），不在仓库里或 git 不可用时退回 cwd。
 std::filesystem::path project_root(const std::filesystem::path& cwd);

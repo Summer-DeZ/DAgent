@@ -20,7 +20,7 @@ std::shared_ptr<spdlog::logger> log_agent() { return base::logger("agent"); }
 
 tools::Result make_result(std::string text, bool is_error, bool interrupted) {
     tools::Result result;
-    result.text = std::move(text);
+    result.model_text = std::move(text);
     result.is_error = is_error;
     result.interrupted = interrupted;
     return result;
@@ -75,21 +75,21 @@ Agent::DispatchOutcome Agent::dispatch(const std::vector<ToolCall>& calls, int b
     enum class GroupKind { readonly, task };
     std::vector<Pending> group; ///< 挂起的并行组
     GroupKind group_kind = GroupKind::readonly;
-    const auto kind_of = [](const tools::Intent& intent) {
-        return intent.kind == tools::Intent::Kind::task ? GroupKind::task : GroupKind::readonly;
+    const auto kind_of = [](const agent::PreparedIntent& intent) {
+        return intent.kind == agent::ToolKind::task ? GroupKind::task : GroupKind::readonly;
     };
 
     // 结果按 tool_calls 的原始顺序写入历史、写记录、发事件；能提交的前缀尽早提交（docs/design/agent.md §6）。
     const auto commit = [&] {
         while (committed < slots.size() && slots[committed].result.has_value()) {
             Slot& slot = slots[committed];
-            if (const auto* view = std::get_if<tools::McpView>(&slot.result->display);
+            if (const auto* view = std::get_if<McpView>(&slot.result->display);
                 view && view->disconnected) {
                 // 告诉模型这个 server 会重连还是已不可用（T12 / T13），免得它在工具消失后反复寻找。
-                slot.result->text += hub_->mark_disconnected(view->server, slot.result->text);
+                slot.result->model_text += hub_->mark_disconnected(view->server, slot.result->model_text);
             }
             const std::int64_t ordinal =
-                conversation_.add_tool_result(slot.call->id, slot.result->text, slot.summary);
+                conversation_.add_tool_result(slot.call->id, slot.result->model_text, slot.summary);
             recorder_.tool(ordinal, *slot.call, slot.summary, *slot.result);
             check_broken(sink);
             sink(ToolFinished{slot.call->id, slot.call->name, slot.summary, *slot.result});
@@ -173,7 +173,7 @@ Agent::DispatchOutcome Agent::dispatch(const std::vector<ToolCall>& calls, int b
         const auto interactive = [&] {
             if (!prepared) return false;
             const auto kind = prepared.value()->intent().kind;
-            return kind == tools::Intent::Kind::ask || kind == tools::Intent::Kind::exit_plan;
+            return kind == agent::ToolKind::ask || kind == agent::ToolKind::exit_plan;
         };
         if (prepared && !interactive()) verdict = policy_.evaluate(*slot.call, prepared.value()->intent());
         // 这个调用进不了并行组（或类别不同）：先跑完挂起的组，再重新 prepare（prepare 无副作用，docs/design/agent.md §6）。
@@ -183,8 +183,8 @@ Agent::DispatchOutcome Agent::dispatch(const std::vector<ToolCall>& calls, int b
             run_group();
             prepared = tool->prepare(slot.call->arguments, tool_ctx_);
             verdict.reset();
-            if (prepared && prepared.value()->intent().kind != tools::Intent::Kind::ask &&
-                prepared.value()->intent().kind != tools::Intent::Kind::exit_plan)
+            if (prepared && prepared.value()->intent().kind != agent::ToolKind::ask &&
+                prepared.value()->intent().kind != agent::ToolKind::exit_plan)
                 verdict = policy_.evaluate(*slot.call, prepared.value()->intent());
         }
         if (!prepared) {
@@ -195,9 +195,9 @@ Agent::DispatchOutcome Agent::dispatch(const std::vector<ToolCall>& calls, int b
         slot.summary = prepared.value()->intent().summary; // 以最后一次 prepare 的 Intent 为准
         prepared.value()->set_call_id(slot.call->id);
 
-        if (prepared.value()->intent().kind == tools::Intent::Kind::ask) {
+        if (prepared.value()->intent().kind == agent::ToolKind::ask) {
             sink(ToolStarted{slot.call->id, slot.call->name, slot.summary, {}});
-            tools::AskView view = prepared.value()->intent().ask;
+            AskView view = prepared.value()->intent().ask;
             if (++questions_this_turn_ > 3) {
                 slot.result = make_result(
                     "Question limit reached for this turn. Make the most reasonable choice, state the assumption, and continue.",
@@ -243,9 +243,9 @@ Agent::DispatchOutcome Agent::dispatch(const std::vector<ToolCall>& calls, int b
             continue;
         }
 
-        if (prepared.value()->intent().kind == tools::Intent::Kind::exit_plan) {
+        if (prepared.value()->intent().kind == agent::ToolKind::exit_plan) {
             sink(ToolStarted{slot.call->id, slot.call->name, slot.summary, {}});
-            tools::AskView view = prepared.value()->intent().ask;
+            AskView view = prepared.value()->intent().ask;
             if (!policy_.planning()) {
                 slot.result = make_result("exit_plan is only available while planning.", true, false);
             } else if (!asker) {
@@ -293,7 +293,7 @@ Agent::DispatchOutcome Agent::dispatch(const std::vector<ToolCall>& calls, int b
 
         switch (v.kind) {
         case Verdict::Kind::allow: {
-            const tools::Intent& intent = prepared.value()->intent();
+            const agent::PreparedIntent& intent = prepared.value()->intent();
             if (parallel(v, intent)) {
                 group.push_back(Pending{i, std::move(prepared.value()), v.grant});
                 group_kind = kind_of(intent);

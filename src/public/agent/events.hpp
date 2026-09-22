@@ -13,9 +13,11 @@
 #include <variant>
 #include <vector>
 
-#include "agent/llm.hpp"
+#include "agent/grant.hpp"
+#include "agent/intent.hpp"
+#include "agent/reply.hpp"
+#include "agent/tool_data.hpp"
 #include "lib/nlohmann/json.hpp"
-#include "tools/tools.hpp"
 
 namespace dagent::agent {
 
@@ -38,7 +40,7 @@ struct StepStarted {
     int step = 0; ///< 第几次模型请求，从 1 开始
 };
 
-// TextDelta、ReasoningDelta：复用 llm.hpp 的类型
+// TextDelta、ReasoningDelta：见 reply.hpp
 
 struct StreamReset {}; ///< 这一步要重来：丢弃这一步已显示的内容
 
@@ -48,7 +50,7 @@ struct ToolPending {
 
 struct ToolStarted {
     std::string id, name, summary;
-    tools::Grant grant;
+    ExecutionGrant grant;
 };
 
 struct ToolOutput {
@@ -57,7 +59,7 @@ struct ToolOutput {
 
 struct ToolFinished {
     std::string id, name, summary;
-    tools::Result result;
+    ToolResult result;
 };
 
 struct Retrying {
@@ -131,7 +133,7 @@ struct Approval {
         std::string target, reason;
     };
     std::string call_id, tool;
-    tools::Intent intent;     ///< 拷贝：交互界面要把它 post 到渲染线程
+    PreparedIntent intent;    ///< 拷贝：交互界面要把它 post 到渲染线程
     std::string reason;       ///< 为什么要问，见 docs/design/agent.md §7
     std::string session_rule; ///< 选「本会话允许」会记住什么，给界面显示；为空表示不提供这个选项
     std::string agent;          ///< 来源子 Agent 名；主 Agent 自己的审批为空

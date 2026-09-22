@@ -51,7 +51,7 @@ add_library(dagent_ui STATIC
     private/ui/side_panel.cpp
 )
 
-target_link_libraries(dagent_ui PUBLIC dagent_tui dagent_agent)
+target_link_libraries(dagent_ui PUBLIC dagent_tui dagent_agent_legacy)
 target_compile_options(dagent_ui PRIVATE -Wall -Wextra)
 target_compile_definitions(dagent_ui PRIVATE DAGENT_VERSION="${PROJECT_VERSION}")
 
@@ -140,7 +140,6 @@ add_library(tools STATIC
     private/tools/context.cpp
     private/tools/detail.cpp
     private/tools/registry.cpp
-    private/tools/view.cpp
     private/tools/read.cpp
     private/tools/write.cpp
     private/tools/edit.cpp
@@ -173,25 +172,48 @@ if(DAGENT_DEV_HOME)
     target_compile_definitions(dagent_app PRIVATE DAGENT_DEV_HOME="${DAGENT_DEV_HOME}")
 endif()
 target_link_libraries(dagent_app
-    PUBLIC dagent_agent dagent_base dagent_exec dagent_workspace dagent_net dagent_session dagent_mcp tools
+    PUBLIC dagent_agent_legacy dagent_base dagent_exec dagent_workspace dagent_net dagent_session dagent_mcp tools
     PRIVATE CLI11::CLI11
 )
 
 # 核心 agent：中立消息模型、LLM 编解码、事件接口与一轮循环。
 add_library(dagent_agent STATIC
-    private/agent/llm.cpp
-    private/agent/provider.cpp
-    private/agent/provider_chat.cpp
-    private/agent/provider_anthropic.cpp
-    private/agent/provider_ollama.cpp
-    private/agent/events.cpp
-    private/agent/model.cpp
+    private/agent/tokens.cpp
+    private/agent/tool_data.cpp
     private/agent/conversation.cpp
+    private/agent/events.cpp
+    private/agent/permission.cpp
+)
+
+target_include_directories(dagent_agent PUBLIC ${CMAKE_SOURCE_DIR}/src/public)
+target_compile_features(dagent_agent PUBLIC cxx_std_23)
+target_compile_options(dagent_agent PRIVATE -Wall -Wextra)
+target_link_libraries(dagent_agent PUBLIC dagent_base)
+
+# llm 适配：Model 实际请求、provider 编解码、HTTP/SSE；实现核心 ModelSession 端口。
+add_library(dagent_llm STATIC
+    private/llm/model.cpp
+    private/llm/provider.cpp
+    private/llm/provider_chat.cpp
+    private/llm/provider_anthropic.cpp
+    private/llm/provider_ollama.cpp
+)
+
+target_include_directories(dagent_llm PUBLIC ${CMAKE_SOURCE_DIR}/src/public)
+target_compile_features(dagent_llm PUBLIC cxx_std_23)
+target_compile_options(dagent_llm PRIVATE -Wall -Wextra)
+target_link_libraries(dagent_llm
+    PUBLIC dagent_agent dagent_net
+    PRIVATE CURL::libcurl
+)
+
+# 过渡装配（R13 删除）：模型/记录/工具/子 Agent 的具体实现，经 dagent_agent 的中立类型工作。
+# 每个任务迁走一部分实现，最终只剩纯核心目标。
+add_library(dagent_agent_legacy STATIC
     private/agent/compaction.cpp
     private/agent/mcp_hub.cpp
     private/agent/prompt.cpp
     private/agent/record.cpp
-    private/agent/permission.cpp
     private/agent/host.cpp
     private/agent/subagent.cpp
     private/agent/agent.cpp
@@ -199,11 +221,11 @@ add_library(dagent_agent STATIC
     private/agent/headless.cpp
 )
 
-target_include_directories(dagent_agent PUBLIC ${CMAKE_SOURCE_DIR}/src/public)
-target_compile_features(dagent_agent PUBLIC cxx_std_23)
-target_compile_options(dagent_agent PRIVATE -Wall -Wextra)
-target_link_libraries(dagent_agent
-    PUBLIC dagent_base dagent_net dagent_exec dagent_workspace dagent_session dagent_mcp tools
+target_include_directories(dagent_agent_legacy PUBLIC ${CMAKE_SOURCE_DIR}/src/public)
+target_compile_features(dagent_agent_legacy PUBLIC cxx_std_23)
+target_compile_options(dagent_agent_legacy PRIVATE -Wall -Wextra)
+target_link_libraries(dagent_agent_legacy
+    PUBLIC dagent_agent dagent_llm dagent_net dagent_exec dagent_workspace dagent_session dagent_mcp tools
 )
 
 # 可执行文件：只编 main.cpp，其余代码都在库里（docs/design/agent.md §1）。

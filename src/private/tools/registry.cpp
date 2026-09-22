@@ -75,4 +75,12 @@ void add_mcp(Registry& registry, mcp::Client& client) {
     for (const mcp::Tool& tool : client.tools()) registry.add(detail::make_mcp_tool(client, tool));
 }
 
+agent::ResourceIntent to_intent(const workspace::Resolved& resolved, agent::Access access) {
+    agent::ResourceIntent intent;
+    intent.path = resolved.path;
+    intent.access = access;
+    intent.inside_workspace = resolved.inside_workspace;
+    return intent;
+}
+
 } // namespace dagent::tools

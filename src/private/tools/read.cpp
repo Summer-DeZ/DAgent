@@ -56,8 +56,8 @@ public:
              bool directory)
         : ctx_(ctx), target_(std::move(target)), display_(std::move(display)), offset_(offset),
           limit_(limit), directory_(directory) {
-        intent_.kind = Intent::Kind::read;
-        intent_.paths = {target_};
+        intent_.kind = agent::ToolKind::read;
+        intent_.paths = {to_intent(target_, agent::Access::read)};
         intent_.summary = std::format("{} {}", directory_ ? "List directory" : "Read", display_);
     }
 
@@ -95,19 +95,19 @@ private:
         if (cut) text += "[Directory listing exceeded the budget and was truncated.]\n";
         if (too_many) text += std::format("[Too many entries; showing the first {} entries.]\n", max_files());
 
-        ReadView view;
+        agent::ReadView view;
         view.path = display_;
         view.directory = true;
         view.truncated = too_many || cut;
         Result result;
-        result.text = base::to_valid_utf8(std::move(text));
+        result.model_text = base::to_valid_utf8(std::move(text));
         result.display = std::move(view);
         return result;
     }
 
     Result read_file() {
         const workspace::TextFile file = workspace::read_text(target_.path, ctx_.files());
-        ReadView view;
+        agent::ReadView view;
         view.path = display_;
         view.truncated = file.truncated;
 
@@ -159,7 +159,7 @@ private:
                                 ctx_.files().max_read_bytes);
 
         Result result;
-        result.text = base::to_valid_utf8(std::move(text));
+        result.model_text = base::to_valid_utf8(std::move(text));
         result.display = std::move(view);
         ctx_.track(target_, file.stamp); // 部分Read也算读过
         return result;

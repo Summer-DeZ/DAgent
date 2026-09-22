@@ -28,11 +28,28 @@ public:
     BashCall(const Context& ctx, std::string command, exec::Analysis analysis,
              std::optional<std::chrono::milliseconds> timeout)
         : root_(ctx.root()), process_options_(ctx.process()), max_result_bytes_(ctx.options().max_result_bytes),
-          command_(std::move(command)), timeout_(timeout) {
-        intent_.kind = Intent::Kind::exec;
-        intent_.command = command_;
-        intent_.analysis = std::move(analysis);
-        intent_.known_readonly = exec::is_known_readonly(intent_.analysis, root_);
+          command_(std::move(command)), analysis_(std::move(analysis)), timeout_(timeout) {
+        intent_.kind = agent::ToolKind::exec;
+        agent::CommandIntent cmd;
+        cmd.command = command_;
+        cmd.analysis_version = analysis_.version;
+        cmd.syntax = analysis_.syntax == exec::SyntaxStatus::valid   ? agent::SyntaxState::valid
+                     : analysis_.syntax == exec::SyntaxStatus::error ? agent::SyntaxState::error
+                                                                     : agent::SyntaxState::incomplete;
+        cmd.syntax_message = analysis_.syntax_message;
+        cmd.dynamic = analysis_.dynamic;
+        cmd.cwd_unknown = analysis_.cwd_unknown;
+        cmd.known_readonly = exec::is_known_readonly(analysis_, root_);
+        cmd.dangerous = exec::is_dangerous(analysis_);
+        cmd.impacts.reserve(analysis_.impacts.size());
+        for (const exec::Impact& impact : analysis_.impacts) {
+            const agent::ImpactKind kind = impact.kind == exec::ImpactKind::read   ? agent::ImpactKind::read
+                                           : impact.kind == exec::ImpactKind::write ? agent::ImpactKind::write
+                                           : impact.kind == exec::ImpactKind::network ? agent::ImpactKind::network
+                                                                                      : agent::ImpactKind::special;
+            cmd.impacts.push_back(agent::CommandImpact{kind, impact.target, impact.reason, impact.dynamic});
+        }
+        intent_.command = std::move(cmd);
         auto line = command_;
         if (const auto nl = line.find('\n'); nl != std::string::npos) line = line.substr(0, nl);
         if (line.size() > 100) line = line.substr(0, 100);
@@ -42,11 +59,14 @@ public:
 private:
     Result do_run(const Grant& grant, const std::function<void(std::string_view)>& on_output,
                   std::stop_token stop) override {
-        const bool sandboxed = grant.sandbox != exec::Mode::full_access;
+        const exec::Mode mode = grant.sandbox == agent::SandboxProfile::read_only    ? exec::Mode::read_only
+                                : grant.sandbox == agent::SandboxProfile::full_access ? exec::Mode::full_access
+                                                                                      : exec::Mode::workspace_write;
+        const bool sandboxed = mode != exec::Mode::full_access;
         std::unique_ptr<exec::Prepared> prepared;
         if (sandboxed) {
             exec::Policy policy;
-            policy.mode = grant.sandbox;
+            policy.mode = mode;
             policy.allow_network = grant.allow_network;
             policy.allow_local_sockets = grant.allow_local_sockets;
             policy.private_tmp = grant.private_tmp;
@@ -114,16 +134,11 @@ private:
         const auto elapsed = std::chrono::duration_cast<std::chrono::milliseconds>(
             std::chrono::steady_clock::now() - started);
 
-        BashView view;
+        agent::BashView view;
         view.command = command_;
-        view.sandbox = std::string(detail::sandbox_name(grant.sandbox));
+        view.sandbox = std::string(agent::to_string(grant.sandbox));
         view.backend = grant.backend;
-        switch (grant.source) {
-        case Grant::Source::mode: view.grant_source = "mode"; break;
-        case Grant::Source::once: view.grant_source = "once"; break;
-        case Grant::Source::session: view.grant_source = "session"; break;
-        case Grant::Source::unrestricted: view.grant_source = "unrestricted"; break;
-        }
+        view.grant_source = std::string(agent::to_string(grant.source));
         view.analysis_version = grant.analysis_version;
         view.allow_network = grant.allow_network;
         view.allow_local_sockets = grant.allow_local_sockets;
@@ -168,7 +183,7 @@ private:
             view.interrupted = true;
         } else if (spawn_failed || run_failed) {
             text += std::format("\n[{}: {}]", spawn_failed ? "command could not be executed" : "command failed", failure);
-            result.text = std::move(text);
+            result.model_text = std::move(text);
             result.is_error = true;
             result.display = std::move(view);
             return result;
@@ -181,7 +196,7 @@ private:
             else if (outcome->exit_code && *outcome->exit_code != 0)
                 text += std::format("\n[exit code {}]", *outcome->exit_code);
         }
-        result.text = std::move(text);
+        result.model_text = std::move(text);
         result.is_error = !interrupted && outcome.has_value() &&
                           ((outcome->exit_code.has_value() && *outcome->exit_code != 0) ||
                            outcome->signal.has_value() || outcome->timed_out);
@@ -194,6 +209,7 @@ private:
     exec::Options process_options_;
     std::size_t max_result_bytes_ = 0;
     std::string command_;
+    exec::Analysis analysis_; ///< 完整分析树只在实现里；核心只看 CommandIntent 摘要
     std::optional<std::chrono::milliseconds> timeout_;
 };
 

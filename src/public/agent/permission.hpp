@@ -1,7 +1,8 @@
 /// @file permission.hpp
-/// @brief 权限策略：按 Intent 判定允许 / 询问 / 拒绝，以及允许时给 bash 什么沙箱。
+/// @brief 权限策略：按 PreparedIntent 判定允许 / 询问 / 拒绝，以及允许时给 bash 什么沙箱。
 ///
 /// 纯逻辑：不读文件、不弹对话框；需要询问时由调度器调 Approver（docs/design/agent.md §6）。
+/// 输入是中立意图摘要与沙箱支持值；exec 分析、workspace 解析都发生在工具准备阶段。
 #pragma once
 
 #include <atomic>
@@ -12,10 +13,9 @@
 #include <vector>
 
 #include "agent/events.hpp"
+#include "agent/grant.hpp"
+#include "agent/intent.hpp"
 #include "agent/message.hpp"
-#include "exec/sandbox.hpp"
-#include "tools/tools.hpp"
-#include "workspace/files.hpp"
 
 namespace dagent::agent {
 
@@ -31,23 +31,24 @@ std::string_view to_string(PermissionMode); ///< "ask" / "workspace" / "unrestri
 struct Verdict {
     enum class Kind { allow, ask, deny };
     Kind kind = Kind::deny;
-    tools::Grant grant;    ///< allow 时有效
-    Approval approval;     ///< ask 时有效：reason、session_rule、can_network 已填好
-    std::string reason;    ///< deny 时有效，进 T6
+    ExecutionGrant grant; ///< allow 时有效
+    Approval approval;    ///< ask 时有效：reason、session_rule、can_network 已填好
+    std::string reason;   ///< deny 时有效，进 T6
 };
 
 /// @brief 按模式与规则表判定。线程安全：set_mode 是 atomic，下一次决策生效。
 class Policy {
 public:
-    Policy(PermissionMode mode, bool read_only, bool planning, exec::Support sandbox,
+    Policy(PermissionMode mode, bool read_only, bool planning, SandboxSupport sandbox,
+           SandboxConfig sandbox_options, int analysis_version,
            std::filesystem::path workspace_root, std::filesystem::path project_root,
-           std::filesystem::path control_root, exec::SandboxOptions options);
+           std::filesystem::path control_root);
 
-    Verdict evaluate(const ToolCall&, const tools::Intent&) const;
+    Verdict evaluate(const ToolCall&, const PreparedIntent&) const;
 
     /// @brief allow_session 时记下规则（本会话授权，只在内存里）。
     void remember(const Approval&, const Decision&);
-    tools::Grant grant_for(const Approval&, const Decision&) const;
+    ExecutionGrant grant_for(const Approval&, const Decision&) const;
 
     void set_mode(PermissionMode mode);
     PermissionMode mode() const;
@@ -63,17 +64,18 @@ public:
 private:
     enum class PathClass { normal, sensitive, outside, guarded };
 
-    PathClass classify(const workspace::Resolved&) const;
+    PathClass classify(const ResourceIntent&) const;
     bool inside_dir(const std::filesystem::path&, const std::filesystem::path&) const;
     /// 命中会话授权时返回 allow_network（exec 之外恒为 false），未命中返回 nullopt。
-    std::optional<bool> matches_session(const Approval&, const tools::Intent&) const;
-    tools::Grant grant_for_exec(exec::Mode, tools::Grant::Source) const;
+    std::optional<bool> matches_session(const Approval&, const PreparedIntent&) const;
+    ExecutionGrant grant_for_exec(SandboxProfile, GrantSource) const;
 
     std::atomic<PermissionMode> mode_;
     std::atomic<bool> read_only_;
     std::atomic<bool> planning_;
-    exec::Support sandbox_;
-    exec::SandboxOptions sandbox_options_;
+    SandboxSupport sandbox_;
+    SandboxConfig sandbox_options_;
+    int analysis_version_;
     std::filesystem::path workspace_root_, project_root_, control_root_;
 
     bool session_edits_ = false;
@@ -86,7 +88,7 @@ private:
 };
 
 /// @brief docs/design/agent.md §6：只有直接放行的只读调用能进并行组。
-bool parallel(const Verdict&, const tools::Intent&);
+bool parallel(const Verdict&, const PreparedIntent&);
 
 /// @brief 子 Agent 的权限派生结果。
 struct DerivedPermission {

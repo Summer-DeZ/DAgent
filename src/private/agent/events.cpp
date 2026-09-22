@@ -20,21 +20,21 @@ json usage_json(const Usage& usage) {
     return json{{"prompt", usage.prompt}, {"completion", usage.completion}, {"cached", usage.cached}};
 }
 
-const char* sandbox_name(exec::Mode mode) {
+const char* sandbox_name(SandboxProfile mode) {
     switch (mode) {
-    case exec::Mode::read_only: return "read_only";
-    case exec::Mode::workspace_write: return "workspace_write";
-    case exec::Mode::full_access: return "full_access";
+    case SandboxProfile::read_only: return "read_only";
+    case SandboxProfile::workspace_write: return "workspace_write";
+    case SandboxProfile::full_access: return "full_access";
     }
     return "unknown";
 }
 
-const char* grant_source_name(tools::Grant::Source source) {
+const char* grant_source_name(GrantSource source) {
     switch (source) {
-    case tools::Grant::Source::mode: return "mode";
-    case tools::Grant::Source::once: return "once";
-    case tools::Grant::Source::session: return "session";
-    case tools::Grant::Source::unrestricted: return "unrestricted";
+    case GrantSource::mode: return "mode";
+    case GrantSource::once: return "once";
+    case GrantSource::session: return "session";
+    case GrantSource::unrestricted: return "unrestricted";
     }
     return "mode";
 }
@@ -109,10 +109,10 @@ json to_json(const Event& event) {
                             {"id", e.id},
                             {"name", e.name},
                             {"summary", e.summary},
-                            {"text", e.result.text},
+                            {"text", e.result.model_text},
                             {"is_error", e.result.is_error},
                             {"interrupted", e.result.interrupted},
-                            {"view", tools::to_json(e.result.display)}};
+                            {"view", to_json(e.result.display)}};
             },
             [](const SubEvent& e) {
                 return json{{"type", "sub_event"},

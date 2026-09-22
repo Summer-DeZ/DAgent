@@ -27,16 +27,26 @@ struct Message {
     std::string tool_call_id;            ///< role == tool 时有效
 };
 
-struct ToolDef {
+struct ToolSpec {
     std::string name;
     std::string description;
     nlohmann::json parameters = nlohmann::json::object(); ///< JSON Schema
 };
 
+/// 过渡别名：旧的模型侧工具描述与 ToolSpec 同字段（R13 删除清单）。
+using ToolDef = ToolSpec;
+
+/// @brief 构造请求的模型参数；不含密钥、HTTP 或 provider 配置。
+struct ModelParams {
+    std::string model;
+    std::size_t max_tokens = 0; ///< 0 表示不发送，交给服务端默认值
+    double temperature = -1.0;  ///< < 0 表示不发送
+};
+
 struct Request {
     std::string model;
     std::vector<Message> messages;
-    std::vector<ToolDef> tools;
+    std::vector<ToolSpec> tools;
     std::size_t max_tokens = 0;   ///< 0 表示不发送，交给服务端默认值
     double temperature = -1.0;    ///< < 0 表示不发送
     bool stream = true;

@@ -50,7 +50,7 @@ std::size_t summary_cut(const Conversation& conversation, std::size_t protection
 }
 
 Request summary_request(const Conversation& conversation, std::size_t cut,
-                         const ProviderConfig& params, const std::string& prompt,
+                         const ModelParams& params, const std::string& prompt,
                          TokenEstimator& estimator, std::size_t limit) {
     Request request;
     request.model = params.model;
@@ -122,23 +122,23 @@ std::string texts::summary_message(std::string_view summary) {
 Compactor::Compactor(ContextOptions options, std::size_t max_tokens, std::string compact_prompt)
     : budget_(Budget::from(options, max_tokens)), prompt_(std::move(compact_prompt)) {}
 
-void Compactor::maybe_compact(Conversation& c, const RequestShape& s, Model& m, TokenEstimator& e,
+void Compactor::maybe_compact(Conversation& c, const RequestShape& s, ModelSession& m, TokenEstimator& e,
                               Recorder& r, const Sink& sink, std::stop_token stop) {
     compact(Mode::automatic, c, s, m, e, r, sink, stop);
 }
 
-void Compactor::force(Conversation& c, const RequestShape& s, Model& m, TokenEstimator& e,
+void Compactor::force(Conversation& c, const RequestShape& s, ModelSession& m, TokenEstimator& e,
                       Recorder& r, const Sink& sink, std::stop_token stop) {
     compact(Mode::forced, c, s, m, e, r, sink, stop);
 }
 
-void Compactor::summarize(Conversation& c, const RequestShape& s, Model& m, TokenEstimator& e,
+void Compactor::summarize(Conversation& c, const RequestShape& s, ModelSession& m, TokenEstimator& e,
                           Recorder& r, const Sink& sink, std::stop_token stop) {
     compact(Mode::manual, c, s, m, e, r, sink, stop);
 }
 
 void Compactor::compact(Mode mode, Conversation& conversation, const RequestShape& shape,
-                        Model& model, TokenEstimator& estimator, Recorder& recorder,
+                        ModelSession& model, TokenEstimator& estimator, Recorder& recorder,
                         const Sink& sink, std::stop_token stop) {
     check_stop(stop);
     const auto estimate = [&](const Conversation& c) {

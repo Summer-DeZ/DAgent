@@ -80,12 +80,12 @@ class EditCall final : public Call {
 public:
     EditCall(Context& ctx, workspace::Resolved target, std::string path, std::string new_content,
              workspace::Eol eol, bool bom, workspace::Stamp expect, std::string success_text,
-             FileChangeView view)
+             agent::FileChangeView view)
         : ctx_(ctx), target_(std::move(target)), path_(std::move(path)),
           new_content_(std::move(new_content)), eol_(eol), bom_(bom), expect_(expect),
           success_text_(std::move(success_text)), view_(std::move(view)) {
-        intent_.kind = Intent::Kind::write;
-        intent_.paths = {target_};
+        intent_.kind = agent::ToolKind::write;
+        intent_.paths = {to_intent(target_, agent::Access::write)};
         intent_.preview = view_.diff;
         intent_.summary = std::format("Edit {} (+{} -{})", path_, view_.added, view_.removed);
     }
@@ -102,7 +102,7 @@ private:
         }
         if (const auto stamp = workspace::stamp_of(target_.path)) ctx_.track(target_, *stamp);
         Result result;
-        result.text = success_text_;
+        result.model_text = success_text_;
         result.display = view_;
         return result;
     }
@@ -115,7 +115,7 @@ private:
     bool bom_ = false;
     workspace::Stamp expect_;
     std::string success_text_;
-    FileChangeView view_;
+    agent::FileChangeView view_;
 };
 
 /// 改动处前后各 4 行（带行号），多处改动时总量按预算截断。返回放不下的区域数。
@@ -285,7 +285,7 @@ public:
                                                    ctx.options().read_max_line_bytes, snippets);
         if (dropped > 0) snippets += std::format("({} additional changes not displayed)\n", dropped);
 
-        FileChangeView view;
+        agent::FileChangeView view;
         view.path = display;
         view.diff = diff.text;
         view.added = static_cast<int>(diff.stat.added);

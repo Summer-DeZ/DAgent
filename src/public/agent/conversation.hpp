@@ -13,7 +13,6 @@
 #include <vector>
 
 #include "agent/message.hpp"
-#include "agent/model.hpp"
 
 namespace dagent::agent {
 
@@ -66,7 +65,8 @@ public:
     std::int64_t next_ordinal() const { return next_ordinal_; }
 
     /// @brief system 放最前面，其后是全部 entries 的 message。要求闭合。
-    Request build(const std::string& system, const std::vector<ToolDef>& tools, const ProviderConfig&) const;
+    Request build(const std::string& system, const std::vector<ToolSpec>& tools,
+                  const ModelParams& params) const;
 
     /// @brief 检查 I1–I4；返回第一条违反的描述。debug 构建里 build 开头 assert 它为空。
     std::optional<std::string> validate() const;

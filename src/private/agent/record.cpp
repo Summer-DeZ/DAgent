@@ -148,10 +148,10 @@ void Recorder::tool(std::int64_t n, const ToolCall& call, std::string_view summa
                         {"call_id", call.id},
                         {"name", call.name},
                         {"summary", summary},
-                        {"text", result.text},
+                        {"text", result.model_text},
                         {"is_error", result.is_error},
                         {"interrupted", result.interrupted},
-                        {"view", tools::to_json(result.display)}});
+                        {"view", to_json(result.display)}});
 }
 
 void Recorder::permission(const Approval& approval, const Decision& decision) {
@@ -292,16 +292,16 @@ Restored replay_into(const session::Options& options, std::string_view id, const
             if (integer_field(type, payload, "schema") != 1) corrupt(type, "unknown schema");
             tools::Grant grant;
             const std::string sandbox = string_field(type, payload, "sandbox");
-            if (sandbox == "read_only") grant.sandbox = exec::Mode::read_only;
-            else if (sandbox == "workspace_write") grant.sandbox = exec::Mode::workspace_write;
-            else if (sandbox == "full_access") grant.sandbox = exec::Mode::full_access;
+            if (sandbox == "read_only") grant.sandbox = SandboxProfile::read_only;
+            else if (sandbox == "workspace_write") grant.sandbox = SandboxProfile::workspace_write;
+            else if (sandbox == "full_access") grant.sandbox = SandboxProfile::full_access;
             else corrupt(type, "unknown sandbox profile");
             grant.backend = string_field(type, payload, "backend");
             const std::string source = string_field(type, payload, "grant_source");
-            if (source == "mode") grant.source = tools::Grant::Source::mode;
-            else if (source == "once") grant.source = tools::Grant::Source::once;
-            else if (source == "session") grant.source = tools::Grant::Source::session;
-            else if (source == "unrestricted") grant.source = tools::Grant::Source::unrestricted;
+            if (source == "mode") grant.source = GrantSource::mode;
+            else if (source == "once") grant.source = GrantSource::once;
+            else if (source == "session") grant.source = GrantSource::session;
+            else if (source == "unrestricted") grant.source = GrantSource::unrestricted;
             else corrupt(type, "unknown grant source");
             grant.analysis_version = static_cast<int>(integer_field(type, payload, "analysis_version"));
             grant.allow_network = bool_field(type, payload, "network");
@@ -343,12 +343,12 @@ Restored replay_into(const session::Options& options, std::string_view id, const
             const std::string summary = string_field(type, payload, "summary");
             const std::string text = string_field(type, payload, "text");
             tools::Result result;
-            result.text = text;
+            result.model_text = text;
             result.is_error = bool_field(type, payload, "is_error");
             result.interrupted = bool_field(type, payload, "interrupted");
             const auto view = payload.find("view");
             if (view == payload.end() || !view->is_object()) corrupt(type, "field view must be an object");
-            result.display = tools::view_from_json(*view);
+            result.display = view_from_json(*view);
 
             Entry entry;
             entry.message.role = Role::tool;

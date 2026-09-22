@@ -1,9 +1,21 @@
-#include "agent/provider_detail.hpp"
+#include "llm/provider_detail.hpp"
 
 #include <map>
 #include <utility>
 
-namespace dagent::agent::provider_detail {
+namespace dagent::llm::provider_detail {
+using agent::Finish;
+using agent::Message;
+using agent::ReasoningDelta;
+using agent::Role;
+using agent::StreamEvent;
+using agent::TextDelta;
+using agent::ToolCall;
+using agent::ToolCallBegin;
+using agent::ToolCallDelta;
+using agent::ToolCallEnd;
+using agent::ToolSpec;
+using agent::Usage;
 namespace {
 using nlohmann::json;
 
@@ -11,7 +23,7 @@ class AnthropicCodec final : public Codec {
 public:
     explicit AnthropicCodec(ProviderConfig config) : config_(std::move(config)) {}
 
-    net::HttpRequest encode(const Request& request) const override {
+    net::HttpRequest encode(const agent::Request& request) const override {
         json messages = json::array();
         std::string system;
         for (const auto& message : request.messages) {
@@ -134,4 +146,4 @@ private:
 };
 } // namespace
 std::unique_ptr<Codec> make_anthropic(const ProviderConfig& config) { return std::make_unique<AnthropicCodec>(config); }
-} // namespace dagent::agent::provider_detail
+} // namespace dagent::llm::provider_detail

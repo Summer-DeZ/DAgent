@@ -3,6 +3,7 @@
 /// 线程安全：所有方法可从任意 Agent 线程调用。由入口创建一次，比所有 Agent 实例活得久。
 #pragma once
 
+#include <functional>
 #include <map>
 #include <memory>
 #include <mutex>
@@ -12,17 +13,20 @@
 #include "agent/events.hpp"
 #include "agent/mcp_hub.hpp"
 #include "agent/options.hpp"
-#include "agent/provider.hpp"
+#include "llm/provider.hpp"
 #include "workspace/context.hpp"
 
 namespace dagent::agent {
 
 class AgentHost {
 public:
+    /// http/retry 是模型客户端装配参数；model_factory 由 llm 模块在装配层注入。
     static std::shared_ptr<AgentHost> create(std::vector<mcp::ServerConfig> servers, mcp::Options mcp,
                                              workspace::Environment env,
                                              std::vector<SubagentDef> subagents,
-                                             std::map<std::string, ProviderConfig> models);
+                                             std::map<std::string, llm::ProviderConfig> models,
+                                             std::function<std::shared_ptr<ModelSession>(const llm::ProviderConfig&)>
+                                                 model_factory);
     ~AgentHost();
     AgentHost(const AgentHost&) = delete;
     AgentHost& operator=(const AgentHost&) = delete;
@@ -39,16 +43,21 @@ public:
 
     const std::vector<SubagentDef>& subagents() const { return subagents_; }
     const SubagentDef* find_subagent(std::string_view name) const;
-    const std::map<std::string, ProviderConfig>& models() const { return models_; }
+    const std::map<std::string, llm::ProviderConfig>& models() const { return models_; }
+
+    /// 按内部配置构造一个已配置的模型客户端（子 Agent 模型选择用）。
+    std::shared_ptr<ModelSession> make_model_session(const llm::ProviderConfig&) const;
 
 private:
     AgentHost(std::shared_ptr<McpHub>, workspace::Environment, std::vector<SubagentDef>,
-              std::map<std::string, ProviderConfig>);
+              std::map<std::string, llm::ProviderConfig>,
+              std::function<std::shared_ptr<ModelSession>(const llm::ProviderConfig&)>);
 
     std::shared_ptr<McpHub> hub_;
     workspace::Environment env_;
     std::vector<SubagentDef> subagents_;
-    std::map<std::string, ProviderConfig> models_;
+    std::map<std::string, llm::ProviderConfig> models_;
+    std::function<std::shared_ptr<ModelSession>(const llm::ProviderConfig&)> model_factory_;
     std::mutex approval_mutex_; ///< ApprovalDialog 是单模态，并发 open 会互相覆盖
 };
 

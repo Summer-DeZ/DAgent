@@ -1,4 +1,5 @@
 #include "app/config.hpp"
+#include "llm/llm.hpp"
 
 #include <algorithm>
 #include <array>
@@ -250,18 +251,18 @@ std::string expand_env(const std::string& text, const std::string& where) {
     return out;
 }
 
-std::map<std::string, agent::ProviderConfig> map_models(const Node& node) {
+std::map<std::string, llm::ProviderConfig> map_models(const Node& node) {
     if (!node.has() || !node.raw().is_object() || node.raw().empty())
         fail(ConfigError::Kind::invalid, "models: at least one named model is required");
-    std::map<std::string, agent::ProviderConfig> out;
+    std::map<std::string, llm::ProviderConfig> out;
     for (const auto& [name, entry] : node.raw().items()) {
         const std::string key = "/models/" + name;
         if (name.empty() || !entry.is_object()) fail(ConfigError::Kind::type, key + " must be an object");
         const Node value(entry, key);
-        agent::ProviderConfig model;
+        llm::ProviderConfig model;
         model.name = name;
         model.kind = value.child("kind").str(model.kind);
-        const auto* info = agent::find_provider(model.kind);
+        const auto* info = llm::find_provider(model.kind);
         if (!info) fail(ConfigError::Kind::invalid, key + "/kind: unknown provider " + model.kind);
         model.model = value.child("model").str();
         if (model.model.empty()) fail(ConfigError::Kind::invalid, key + "/model must not be empty");
@@ -444,7 +445,7 @@ int parse_int(const fs::path& file, std::size_t line, std::string_view value, st
 }
 
 agent::SubagentDef parse_subagent(const fs::path& file, const std::string& text,
-                                  const std::map<std::string, agent::ProviderConfig>& models) {
+                                  const std::map<std::string, llm::ProviderConfig>& models) {
     const auto fail_at = [&](ConfigError::Kind kind, std::size_t line, const std::string& what) {
         fail(kind, std::format("{}:{}: {}", file.filename().string(), line, what));
     };
@@ -689,7 +690,7 @@ Config load_config(const LoadOptions& options) {
 }
 
 std::vector<agent::SubagentDef> load_subagents(
-    const fs::path& dir, const std::map<std::string, agent::ProviderConfig>& models) {
+    const fs::path& dir, const std::map<std::string, llm::ProviderConfig>& models) {
     std::vector<agent::SubagentDef> out;
     std::error_code ec;
     if (!fs::is_directory(dir, ec)) return out;
@@ -712,8 +713,8 @@ std::vector<agent::SubagentDef> load_subagents(
     return out;
 }
 
-agent::ProviderConfig add_model(const fs::path& root_path,
-                                const agent::ProviderConfig& model) {
+llm::ProviderConfig add_model(const fs::path& root_path,
+                                const llm::ProviderConfig& model) {
     const fs::path root = absolute_path(root_path);
     const fs::path file = root / "models.json";
     require_private_file(file);

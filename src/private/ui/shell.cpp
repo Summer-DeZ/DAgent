@@ -1,4 +1,5 @@
 #include "ui/shell.hpp"
+
 #include "ui/strings.hpp"
 #include "ui/display.hpp"
 
@@ -188,6 +189,7 @@ public:
           bool resumed,
           const InteractiveOptions& options)
         : setup_(std::move(setup)), agent_(std::move(agent)), models_(options.models),
+          provider_kinds_(options.provider_kinds),
           resolve_model_(options.resolve_model), add_model_(options.add_model),
           mode_(setup_.permission_mode), planning_(setup_.planning),
           themes_(std::move(themes)),
@@ -359,7 +361,7 @@ private:
         tui::Scrollback& scroll = frame_->create();
         const std::size_t index = panes_.size();
         auto transcript = std::make_unique<Transcript>(
-            scroll.document(), [this, index](const tools::TodoView& value) {
+            scroll.document(), [this, index](const agent::TodoView& value) {
                 if (index == 0) update_todo(value);
             });
         transcript->set_session(mode_label(), setup_.provider.model);
@@ -556,7 +558,7 @@ private:
         activity();
     }
 
-    void update_todo(const tools::TodoView& value) {
+    void update_todo(const agent::TodoView& value) {
         side_->set_items(value.items);
         update_todo_status(terminal_.size().cols);
     }
@@ -730,13 +732,13 @@ private:
     }
     void add_model() {
         if (busy_ || !add_model_) return;
-        model_dialog_.open(setup_.options.context.window_tokens,
-                           [this](agent::ProviderConfig model) {
+        model_dialog_.open(setup_.options.context.window_tokens, provider_kinds_,
+                           [this](agent::ModelInput model) {
             busy(true); phase_ = std::string(ui::text().act_adding_model); activity();
             jobs_.push([this, model = std::move(model)]() mutable {
                 try {
-                    agent::ProviderConfig saved = add_model_(std::move(model));
-                    rt_.post([this, saved = std::move(saved)]() mutable {
+                    ModelSelection selection = add_model_(std::move(model));
+                    rt_.post([this, saved = std::move(selection.provider)]() mutable {
                         const std::string name = saved.name;
                         models_[name] = std::move(saved);
                         toast(std::string(ui::text().toast_model_added) + name);
@@ -759,7 +761,9 @@ private:
         auto setup = setup_;
         jobs_.push([this, name, setup = std::move(setup)]() mutable {
             try {
-                setup.provider = resolve_model_ ? resolve_model_(name) : models_.at(name);
+                const ModelSelection pick = resolve_model_(name);
+                setup.provider = pick.provider;
+                setup.model_session = pick.session;
                 { std::lock_guard lock(agent_mutex_); setup.permission_mode = mode_; setup.planning = planning_; }
                 std::vector<agent::Event> updates;
                 auto next = agent::Agent::resume(setup, id_, [&](const agent::Event& event) {
@@ -768,9 +772,10 @@ private:
                 });
                 { std::lock_guard lock(agent_mutex_); next->set_permission_mode(mode_); agent_.swap(next); }
                 next.reset(); // 可能等待 MCP 线程，在锁外、工作线程销毁。
-                rt_.post([this, provider = std::move(setup.provider), updates = std::move(updates)]() mutable {
+                rt_.post([this, provider = std::move(setup.provider), internal = pick.provider,
+                          updates = std::move(updates)]() mutable {
                     setup_.provider = std::move(provider);
-                    models_[setup_.provider.name] = setup_.provider;
+                    models_[internal.name] = std::move(internal);
                     active_transcript().set_session(mode_label(), setup_.provider.model);
                     update_prompt_footer();
                     for (const auto& event : updates) apply(event);
@@ -987,9 +992,10 @@ private:
 
     agent::Setup setup_;
     std::unique_ptr<agent::Agent> agent_;
-    std::map<std::string, agent::ProviderConfig> models_;
-    std::function<agent::ProviderConfig(const std::string&)> resolve_model_;
-    std::function<agent::ProviderConfig(agent::ProviderConfig)> add_model_;
+    std::map<std::string, agent::PublicModel> models_;
+    std::vector<agent::ProviderKindInfo> provider_kinds_;
+    std::function<ModelSelection(const std::string&)> resolve_model_;
+    std::function<ModelSelection(agent::ModelInput)> add_model_;
     std::mutex agent_mutex_;
     agent::PermissionMode mode_ = agent::PermissionMode::ask;
     bool planning_ = false;

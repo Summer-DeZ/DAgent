@@ -5,7 +5,7 @@
 #include <utility>
 #include <vector>
 
-#include "tools/view.hpp"
+#include "agent/tool_data.hpp"
 #include "tui/widget.hpp"
 
 namespace dagent::ui {
@@ -16,7 +16,7 @@ class SidePanel final : public tui::Widget {
 public:
     void set_title(std::string);
     void set_context(std::size_t used, std::size_t limit);
-    void set_items(std::vector<tools::TodoItem>);
+    void set_items(std::vector<agent::TodoItem>);
     void set_mcp(std::string);
     void set_project(std::string path, std::string branch);
     void set_version(std::string);
@@ -31,7 +31,7 @@ public:
     void render(tui::Surface&) override;
 
 private:
-    std::vector<tools::TodoItem> items_;
+    std::vector<agent::TodoItem> items_;
     std::string title_, mcp_, project_, version_;
     std::size_t used_ = 0, limit_ = 0;
     bool collapsed_ = false;

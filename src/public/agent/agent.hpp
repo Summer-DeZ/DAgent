@@ -14,7 +14,7 @@
 #include "agent/conversation.hpp"
 #include "agent/compaction.hpp"
 #include "agent/events.hpp"
-#include "agent/model.hpp"
+#include "agent/reply.hpp"
 #include "agent/mcp_hub.hpp"
 #include "agent/options.hpp"
 #include "agent/permission.hpp"
@@ -77,6 +77,7 @@ private:
           Conversation conversation = {});
 
     std::vector<ToolDef> tool_defs() const;
+    ModelParams model_params() const; ///< 中立请求参数，来自当前 provider 公开值
     DispatchOutcome dispatch(const std::vector<ToolCall>& calls, int budget, const TurnContext&);
     TurnStatus finish(TurnStatus, std::string error, int steps, int calls, const Usage& total,
                       const Sink&);
@@ -92,7 +93,7 @@ private:
     tools::Registry registry_;
     tools::Context tool_ctx_;
     Policy policy_;
-    Model model_;
+    std::shared_ptr<ModelSession> model_; ///< 已配置的模型客户端（llm 实现，经端口调用）
     Conversation conversation_;
     TokenEstimator estimator_;
     Compactor compactor_;

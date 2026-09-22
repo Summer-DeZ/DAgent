@@ -1,4 +1,4 @@
-#include "agent/provider_detail.hpp"
+#include "llm/provider_detail.hpp"
 
 #include <algorithm>
 #include <cctype>
@@ -14,7 +14,10 @@
 #include <utility>
 #include <vector>
 
-namespace dagent::agent::provider_detail {
+namespace dagent::llm {
+using agent::Role;
+using agent::ToolSpec;
+namespace provider_detail {
 using nlohmann::json;
 
 std::string join_url(std::string_view base, std::string_view path) {
@@ -109,7 +112,7 @@ bool looks_like_context_overflow(std::string_view detail) {
                        [&](std::string_view needle) { return lower.find(needle) != std::string::npos; });
 }
 
-std::string_view role_name(Role role) {
+std::string_view role_name(agent::Role role) {
     switch (role) {
         case Role::system: return "system";
         case Role::user: return "user";
@@ -119,9 +122,9 @@ std::string_view role_name(Role role) {
     return "user";
 }
 
-json encode_tools(const std::vector<ToolDef>& tools) {
+json encode_tools(const std::vector<agent::ToolSpec>& tools) {
     json out = json::array();
-    for (const ToolDef& tool : tools) {
+    for (const agent::ToolSpec& tool : tools) {
         out.push_back({{"type", "function"},
                        {"function",
                         {{"name", tool.name},
@@ -169,9 +172,10 @@ void merge_extra(json& body, const json& extra) {
     for (auto it = extra.begin(); it != extra.end(); ++it)
         if (!body.contains(it.key())) body[it.key()] = it.value();
 }
-} // namespace dagent::agent::provider_detail
+} // namespace provider_detail
+} // namespace dagent::llm
 
-namespace dagent::agent {
+namespace dagent::llm {
 std::span<const ProviderInfo> providers() noexcept {
     static constexpr ProviderInfo entries[] = {
         {"openai-chat", "https://api.openai.com/v1", Framing::sse, false, false},
@@ -193,4 +197,4 @@ std::unique_ptr<Codec> make_codec(const ProviderConfig& config) {
     if (resolved.kind == "anthropic") return provider_detail::make_anthropic(resolved);
     return provider_detail::make_ollama(resolved);
 }
-} // namespace dagent::agent
+} // namespace dagent::llm

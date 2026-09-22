@@ -1,4 +1,4 @@
-#include "agent/provider_detail.hpp"
+#include "llm/provider_detail.hpp"
 
 #include <algorithm>
 #include <cctype>
@@ -14,7 +14,21 @@
 #include <utility>
 #include <vector>
 
-namespace dagent::agent {
+namespace dagent::llm {
+using agent::Finish;
+using agent::Message;
+using agent::Role;
+using agent::StreamEvent;
+using agent::TextDelta;
+using agent::ToolCall;
+using agent::ToolCallBegin;
+using agent::ToolCallDelta;
+using agent::ToolCallEnd;
+using agent::ToolDef;
+using agent::ToolSpec;
+using agent::ReasoningDelta;
+using agent::Request;
+using agent::Usage;
 namespace {
 
 using nlohmann::json;
@@ -78,7 +92,7 @@ class OpenAiChatCodec final : public Codec {
 public:
     explicit OpenAiChatCodec(ProviderConfig options) : opt_(std::move(options)) {}
 
-    net::HttpRequest encode(const Request& request) const override {
+    net::HttpRequest encode(const agent::Request& request) const override {
         json body = json::object();
         body["model"] = request.model;
         body["messages"] = encode_messages(request.messages, opt_.send_reasoning_content);
@@ -202,4 +216,4 @@ std::unique_ptr<Codec> provider_detail::make_chat(const ProviderConfig& options)
     return std::make_unique<OpenAiChatCodec>(options);
 }
 
-} // namespace dagent::agent
+} // namespace dagent::llm

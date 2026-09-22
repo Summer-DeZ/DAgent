@@ -8,11 +8,11 @@ namespace {
 
 class InteractiveCall final : public Call {
 public:
-    InteractiveCall(Intent::Kind kind, AskView view, std::string summary = {}) {
+    InteractiveCall(agent::ToolKind kind, agent::AskView view, std::string summary = {}) {
         intent_.kind = kind;
         intent_.ask = std::move(view);
         intent_.plan_summary = std::move(summary);
-        intent_.summary = kind == Intent::Kind::exit_plan ? "Submit implementation plan"
+        intent_.summary = kind == agent::ToolKind::exit_plan ? "Submit implementation plan"
                                                           : "Ask the user: " + intent_.ask.prompt;
     }
 
@@ -56,7 +56,7 @@ public:
         auto args = detail::parse_arguments(arguments);
         if (!args) return std::unexpected(detail::error_result(args.error()));
         std::string error;
-        AskView view;
+        agent::AskView view;
         view.header = detail::require_string(*args, "header", error);
         view.prompt = detail::require_string(*args, "prompt", error);
         const auto multi = detail::get_bool(*args, "multi_select", error);
@@ -79,7 +79,7 @@ public:
             }
             view.options.push_back({label->get<std::string>(), description->get<std::string>()});
         }
-        return std::make_unique<InteractiveCall>(Intent::Kind::ask, std::move(view));
+        return std::make_unique<InteractiveCall>(agent::ToolKind::ask, std::move(view));
     }
 
 private:
@@ -106,14 +106,14 @@ public:
         std::string error;
         std::string summary = detail::require_string(*args, "summary", error);
         if (!error.empty()) return std::unexpected(detail::error_result(error));
-        AskView view;
+        agent::AskView view;
         view.header = "Plan ready";
         view.prompt = summary;
         view.allow_other = false;
         view.options = {{"Accept and start", "Switch to workspace mode and implement now"},
                         {"Accept with confirmations", "Switch to ask mode and implement with approvals"},
                         {"Continue planning", "Stay read-only and refine the plan"}};
-        return std::make_unique<InteractiveCall>(Intent::Kind::exit_plan, std::move(view), std::move(summary));
+        return std::make_unique<InteractiveCall>(agent::ToolKind::exit_plan, std::move(view), std::move(summary));
     }
 private:
     Spec spec_;

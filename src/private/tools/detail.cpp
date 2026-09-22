@@ -108,9 +108,9 @@ std::optional<bool> get_bool(const json& args, std::string_view key, std::string
     return std::nullopt;
 }
 
-Result error_result(std::string text, View display) {
+Result error_result(std::string text, agent::View display) {
     Result result;
-    result.text = std::move(text);
+    result.model_text = std::move(text);
     result.is_error = true;
     result.display = std::move(display);
     return result;
@@ -145,15 +145,6 @@ std::string relative_prefix(const fs::path& dir, const fs::path& base) {
     if (text.empty() || text == ".") return {};
     if (!text.ends_with('/')) text += '/';
     return text;
-}
-
-std::string_view sandbox_name(exec::Mode mode) {
-    switch (mode) {
-    case exec::Mode::read_only: return "read_only";
-    case exec::Mode::workspace_write: return "workspace_write";
-    case exec::Mode::full_access: return "full_access";
-    }
-    return "unknown";
 }
 
 // ---------------------------------------------------------------- 文本组装

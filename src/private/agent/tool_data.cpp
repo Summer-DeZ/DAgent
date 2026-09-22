@@ -1,8 +1,8 @@
-#include "tools/view.hpp"
+#include "agent/tool_data.hpp"
 
 #include <utility>
 
-namespace dagent::tools {
+namespace dagent::agent {
 namespace {
 
 using json = nlohmann::json;
@@ -26,7 +26,7 @@ constexpr std::string_view kTask = "task";
 
 } // namespace
 
-// 序列化函数必须生成在 dagent::tools 名字空间里（ADL 才找得到）。缺字段时取默认值：
+// 序列化函数必须生成在 dagent::agent 名字空间里（ADL 才找得到）。缺字段时取默认值：
 // 以后给结构体加字段，旧会话照样读得出来。
 NLOHMANN_DEFINE_TYPE_NON_INTRUSIVE_WITH_DEFAULT(ReadView, path, start_line, end_line, total_lines,
                                                 truncated, directory)
@@ -149,4 +149,4 @@ View view_from_json(const json& data) {
     return {};
 }
 
-} // namespace dagent::tools
+} // namespace dagent::agent

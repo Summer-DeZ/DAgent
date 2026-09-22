@@ -10,13 +10,12 @@
 #include <string>
 #include <vector>
 
-#include "agent/model.hpp"
-#include "agent/provider.hpp"
+#include "agent/port_model.hpp"
 #include "agent/permission.hpp"
+#include "agent/public_model.hpp"
 #include "exec/process.hpp"
 #include "exec/sandbox.hpp"
 #include "mcp/client.hpp"
-#include "net/http.hpp"
 #include "session/session.hpp"
 #include "tools/tools.hpp"
 #include "workspace/files.hpp"
@@ -71,9 +70,9 @@ struct SubagentDef {
 struct Setup {
     Options options;
 
-    // 模型
-    ProviderConfig provider; ///< 含 api_key
-    net::HttpOptions http;   ///< 已按 docs/design/agent.md §3 调整：timeout = 0
+    // 模型：公开描述与已配置的客户端；密钥与 HTTP 细节留在 llm/app 装配侧
+    PublicModel provider; ///< 公开模型描述（名字、模型 ID、窗口与输出预算、温度）
+    std::shared_ptr<ModelSession> model_session; ///< 已配置的模型客户端；寿命由装配层与 Session 共同保证
 
     // 工作区
     std::filesystem::path cwd;          ///< 工作区根（Args::cwd）

@@ -1,4 +1,4 @@
-#include "agent/llm.hpp"
+#include "agent/tokens.hpp"
 
 namespace dagent::agent {
 
@@ -24,7 +24,7 @@ std::size_t estimate_prompt_tokens(const Request& request) {
             total += 8 + estimate_tokens(call.id) + estimate_tokens(call.name) + estimate_tokens(call.arguments);
         }
     }
-    for (const ToolDef& tool : request.tools) {
+    for (const ToolSpec& tool : request.tools) {
         total += 8 + estimate_tokens(tool.name) + estimate_tokens(tool.description) +
                  estimate_tokens(tool.parameters.dump());
     }

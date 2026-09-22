@@ -111,22 +111,22 @@ void ApprovalDialog::open(const agent::Approval& approval,
     auto kind = tui::BlockKind::text;
     std::string preview = approval.intent.preview;
     switch (approval.intent.kind) {
-    case tools::Intent::Kind::write: kind = tui::BlockKind::diff; break;
-    case tools::Intent::Kind::exec: kind = tui::BlockKind::code; preview = approval.intent.command; break;
-    case tools::Intent::Kind::read:
+    case agent::ToolKind::write: kind = tui::BlockKind::diff; break;
+    case agent::ToolKind::exec: kind = tui::BlockKind::code; preview = approval.intent.command->command; break;
+    case agent::ToolKind::read:
         for (const auto& path : approval.intent.paths) preview += path.path.string() + '\n';
         break;
-    case tools::Intent::Kind::external: kind = tui::BlockKind::code; break;
-    case tools::Intent::Kind::task: break;
-    case tools::Intent::Kind::ask:
-    case tools::Intent::Kind::exit_plan: break;
+    case agent::ToolKind::external: kind = tui::BlockKind::code; break;
+    case agent::ToolKind::task: break;
+    case agent::ToolKind::ask:
+    case agent::ToolKind::exit_plan: break;
     }
     std::string scope = approval.intent.summary;
     if (!approval.cwd.empty()) scope += "\ncwd: " + approval.cwd;
     if (!approval.mode.empty()) scope += "\nmode: " + approval.mode;
     for (const auto& request : approval.requests) {
         scope += "\n- " + request.reason;
-        if (!request.target.empty() && request.target != approval.intent.command)
+        if (!request.target.empty() && request.target != approval.intent.command->command)
             scope += ": " + request.target;
     }
     if (approval.partially_executed) scope += "\nWarning: part of this call has already executed.";

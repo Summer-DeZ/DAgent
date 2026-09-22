@@ -7,6 +7,7 @@
 #include <utility>
 
 #include "agent/host.hpp"
+#include "llm/llm.hpp"
 #include "base/log.hpp"
 #include "base/text.hpp"
 
@@ -31,7 +32,7 @@ std::string first_characters(std::string_view text, std::size_t count) {
 
 tools::Result error_result(std::string text) {
     tools::Result result;
-    result.text = std::move(text);
+    result.model_text = std::move(text);
     result.is_error = true;
     return result;
 }
@@ -118,7 +119,7 @@ private:
 
 TaskCall::TaskCall(const TaskTool& owner, std::string agent, std::string prompt)
     : owner_(owner), agent_(std::move(agent)), prompt_(std::move(prompt)) {
-    intent_.kind = tools::Intent::Kind::task;
+    intent_.kind = agent::ToolKind::task;
     intent_.summary = "task(" + agent_ + "): " + first_characters(prompt_, 60);
 }
 
@@ -138,7 +139,7 @@ tools::Result TaskCall::do_run(const tools::Grant&, const std::function<void(std
     Setup child_setup = derive_child_setup(owner_.owner().setup(), *def, derived,
                                            owner_.owner().meta().id, owner_.parent_tools());
 
-    tools::TaskView view;
+    TaskView view;
     view.agent = def->name;
     view.task = prompt_;
 
@@ -203,11 +204,11 @@ tools::Result TaskCall::do_run(const tools::Grant&, const std::function<void(std
     tools::Result result;
     result.interrupted = view.interrupted;
     if (view.result.empty()) {
-        result.text = std::format("Subagent {} produced no conclusion", def->name);
-        if (!failure.empty()) result.text += ": " + failure;
+        result.model_text = std::format("Subagent {} produced no conclusion", def->name);
+        if (!failure.empty()) result.model_text += ": " + failure;
         result.is_error = true;
     } else {
-        result.text = view.result;
+        result.model_text = view.result;
         result.is_error = !failure.empty();
     }
     result.display = std::move(view);
@@ -220,7 +221,12 @@ Setup derive_child_setup(const Setup& parent, const SubagentDef& def, const Deri
                          std::string_view parent_session_id,
                          const std::vector<std::string>& parent_tool_names) {
     Setup child = parent;
-    child.provider = def.model.empty() ? parent.provider : parent.host->models().at(def.model);
+    if (!def.model.empty()) {
+        const llm::ProviderConfig& child_provider = parent.host->models().at(def.model);
+        child.provider = llm::to_public(child_provider);
+        child.model_session = parent.host->make_model_session(child_provider);
+    }
+    // def.model 为空：直接继承父的 provider/model_session（已随 Setup 拷贝），不查 host 的模型表。
     child.options.run.max_model_calls =
         def.max_model_calls != 0 ? def.max_model_calls : parent.options.run.max_model_calls;
     child.options.run.max_tool_calls =

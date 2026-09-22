@@ -20,6 +20,16 @@ bool sandbox_available(const exec::Support& support) {
     return support.read_only_ready();
 }
 
+/// Setup 里的 exec 探测结果与沙箱配置转成核心的中立值；映射点只在装配边界。
+SandboxSupport to_support(const exec::Support& support) {
+    return SandboxSupport{support.backend, support.read_only_ready(), support.workspace_ready(),
+                          support.missing};
+}
+
+SandboxConfig to_config(const exec::SandboxOptions& options) {
+    return SandboxConfig{options.version, options.extra_readable, options.extra_writable};
+}
+
 std::string render_prompt(const Setup& setup, const workspace::Environment& env) {
     PromptVars vars;
     vars.model = setup.provider.model;
@@ -53,11 +63,11 @@ Agent::Agent(Setup setup, std::string system_prompt, Recorder recorder, Conversa
       hub_(setup_.host->hub()),
       registry_(),
       tool_ctx_(setup_.cwd, setup_.tools, setup_.files, setup_.search, setup_.process),
-      policy_(setup_.permission_mode, setup_.read_only, setup_.planning, setup_.sandbox,
-              setup_.cwd, setup_.project_root, setup_.control_root, setup_.sandbox_options),
-      model_([provider = setup_.provider] { return make_codec(provider); }, setup_.http,
-             RetryOptions{setup_.options.run.max_model_retries},
-             find_provider(setup_.provider.kind)->framing),
+      policy_(setup_.permission_mode, setup_.read_only, setup_.planning,
+              to_support(setup_.sandbox), to_config(setup_.sandbox_options),
+              exec::kShellAnalysisVersion,
+              setup_.cwd, setup_.project_root, setup_.control_root),
+      model_(setup_.model_session),
       conversation_(std::move(conversation)),
       estimator_(),
       compactor_(setup_.options.context, setup_.provider.max_tokens,
@@ -91,7 +101,7 @@ std::unique_ptr<Agent> Agent::resume(Setup setup, std::string_view session_id,
             const std::int64_t ordinal =
                 agent->conversation_.add_tool_result(call.id, text, summary);
             tools::Result result;
-            result.text = text;
+            result.model_text = text;
             result.is_error = true;
             result.interrupted = true;
             agent->recorder_.tool(ordinal, call, summary, result);
@@ -119,7 +129,7 @@ std::unique_ptr<Agent> Agent::resume(Setup setup, std::string_view session_id,
     log_agent()->info("会话已恢复：id={} model={}", agent->meta().id, agent->setup_.provider.model);
     replay_sink(ModelChanged{agent->setup_.provider.model});
     replay_sink(ContextUpdate{{}, agent->estimator_.estimate(agent->conversation_.build(
-                                      agent->system_prompt_, agent->tool_defs(), agent->setup_.provider)),
+                                      agent->system_prompt_, agent->tool_defs(), agent->model_params())),
                                agent->compactor_.budget().limit});
     return agent;
 }
@@ -171,6 +181,10 @@ std::vector<ToolDef> Agent::tool_defs() const {
     return defs;
 }
 
+ModelParams Agent::model_params() const {
+    return ModelParams{setup_.provider.model, setup_.provider.max_tokens, setup_.provider.temperature};
+}
+
 std::vector<std::string> Agent::tool_names() const {
     std::vector<std::string> names;
     for (const tools::Spec* spec : registry_.specs()) names.push_back(spec->name);
@@ -218,7 +232,7 @@ TurnStatus Agent::finish(TurnStatus status, std::string error, int steps, int ca
         const std::string text(texts::kInterruptedCall);
         const std::int64_t ordinal = conversation_.add_tool_result(call.id, text, "interrupted");
         tools::Result result;
-        result.text = text;
+        result.model_text = text;
         result.interrupted = true;
         recorder_.tool(ordinal, call, "interrupted", result);
     }
@@ -266,9 +280,9 @@ TurnStatus Agent::run_turn(std::string input, const TurnContext& ctx) {
         try {
             // MCP 的重连、等待、断线通报只由主 Agent 做；子 Agent 只用构造时的快照。
             if (setup_.subagent_depth == 0) hub_->apply_pending(registry_, sink, stop);
-            const RequestShape shape{system_prompt_, tool_defs(), setup_.provider};
+            const RequestShape shape{system_prompt_, tool_defs(), model_params()};
             // 自动压缩在 StepStarted 之前（docs/design/agent.md §2）：界面在一步开始后作废的内容不含压缩提示。
-            compactor_.maybe_compact(conversation_, shape, model_, estimator_, recorder_, sink, stop);
+            compactor_.maybe_compact(conversation_, shape, *model_, estimator_, recorder_, sink, stop);
             check_broken(sink);
             sink(StepStarted{steps});
             for (int attempt = 0; ; ++attempt) {
@@ -276,13 +290,13 @@ TurnStatus Agent::run_turn(std::string input, const TurnContext& ctx) {
                 estimated = estimator_.estimate(request);
                 sink(ContextUpdate{{}, estimated, context_limit});
                 try {
-                    reply = model_.complete(request, on_stream, on_retry, stop);
+                    reply = model_->complete(request, on_stream, on_retry, stop);
                     break;
                 } catch (const ModelError& error) {
                     if (error.kind() != ModelError::Kind::context_too_long || attempt != 0) throw;
                     log_agent()->warn("服务端报上下文超长（估算 {} tokens），强制压缩后重发：{}", estimated,
                                       error.what());
-                    compactor_.force(conversation_, shape, model_, estimator_, recorder_, sink, stop);
+                    compactor_.force(conversation_, shape, *model_, estimator_, recorder_, sink, stop);
                     check_broken(sink);
                 }
             }
@@ -356,10 +370,10 @@ TurnStatus Agent::compact(const TurnContext& ctx) {
     const std::stop_token stop = ctx.stop;
     TurnStatus status = TurnStatus::done;
     try {
-        compactor_.summarize(conversation_, {system_prompt_, tool_defs(), setup_.provider}, model_,
+        compactor_.summarize(conversation_, {system_prompt_, tool_defs(), model_params()}, *model_,
                              estimator_, recorder_, sink, stop);
         sink(ContextUpdate{{}, estimator_.estimate(conversation_.build(system_prompt_, tool_defs(),
-                                                                       setup_.provider)),
+                                                                       model_params())),
                             compactor_.budget().limit});
     } catch (const ModelError& error) {
         status = error.kind() == ModelError::Kind::cancelled ? TurnStatus::interrupted : TurnStatus::failed;

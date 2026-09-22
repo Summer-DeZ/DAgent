@@ -22,6 +22,7 @@
 #include "app/config.hpp"
 #include "base/log.hpp"
 #include "exec/sandbox.hpp"
+#include "llm/llm.hpp"
 #include "tui/grapheme.hpp"
 #include "ui/shell.hpp"
 #include "workspace/files.hpp"
@@ -30,6 +31,7 @@ namespace {
 
 namespace fs = std::filesystem;
 using dagent::app::Mode;
+using dagent::llm::ProviderConfig;
 
 // docs/design/agent.md §12：整个进程忽略 SIGPIPE，写关闭的管道得到 EPIPE 而不是被信号杀死。
 // exec 层只会在 SIGPIPE 仍是默认处理时设置它，两者不冲突。
@@ -52,13 +54,9 @@ dagent::agent::Setup make_setup(const dagent::app::Config& config, const dagent:
 
     agent::Setup setup;
     setup.options = config.agent;
-    setup.provider = config.models.at(config.model);
-
-    setup.http = config.http;
-    setup.http.timeout = std::chrono::seconds{0};
-    if (setup.http.idle_timeout == std::chrono::seconds{0}) {
-        setup.http.idle_timeout = std::chrono::seconds{120};
-    }
+    const ProviderConfig& selected = config.models.at(config.model);
+    setup.provider = dagent::llm::to_public(selected);
+    setup.model_session = host->make_model_session(selected);
 
     setup.cwd = args.cwd;
     setup.project_root = config.project_root;
@@ -154,9 +152,19 @@ int main(int argc, char** argv) {
         }
 
         // 共享运行时只创建一次：环境事实只收集一次，MCP 连接全进程共用，审批在 host 里串行化。
+        // 模型客户端工厂持有 HTTP 调整与重试参数；密钥只经过 llm 内部配置，不进入公开描述。
+        auto make_session = [http = config.http,
+                             retries = config.agent.run.max_model_retries](const ProviderConfig& provider) {
+            dagent::net::HttpOptions adjusted = http;
+            adjusted.timeout = std::chrono::seconds{0};
+            if (adjusted.idle_timeout == std::chrono::seconds{0}) {
+                adjusted.idle_timeout = std::chrono::seconds{120};
+            }
+            return dagent::llm::make_session(provider, adjusted, dagent::agent::RetryOptions{retries});
+        };
         auto host = dagent::agent::AgentHost::create(
             config.mcp_servers, config.mcp, dagent::workspace::collect_environment(args.cwd, {}),
-            config.subagents, config.models);
+            config.subagents, config.models, make_session);
 
         switch (args.mode) {
         case Mode::models:
@@ -171,16 +179,33 @@ int main(int argc, char** argv) {
             return 0;
         case Mode::interactive: {
             dagent::ui::InteractiveOptions options;
-            options.models = config.models;
-            options.resolve_model = [args, root = paths.root](const std::string& name) {
+            for (const auto& [name, model] : config.models) options.models.emplace(name, dagent::llm::to_public(model));
+            for (const dagent::llm::ProviderInfo& info : dagent::llm::providers()) {
+                options.provider_kinds.push_back({std::string(info.kind), std::string(info.default_base_url),
+                                                  info.needs_api_key});
+            }
+            const auto selection = [host](const ProviderConfig& provider) {
+                return dagent::ui::ModelSelection{dagent::llm::to_public(provider),
+                                                  host->make_model_session(provider)};
+            };
+            options.resolve_model = [args, root = paths.root, selection](const std::string& name) {
                 auto overrides = args.overrides;
                 overrides.push_back("@model=" + name);
                 auto config = dagent::app::load_config({root, args.cwd, overrides});
                 for (const auto& note : config.model_selection_log) dagent::base::logger("app")->info("{}", note);
-                return config.models.at(name);
+                return selection(config.models.at(name));
             };
-            options.add_model = [root = paths.root](dagent::agent::ProviderConfig model) {
-                return dagent::app::add_model(root, model);
+            options.add_model = [root = paths.root, selection](dagent::agent::ModelInput input) {
+                // 凭据只在此处进入内部配置；保存后立即以公开视图返回。
+                ProviderConfig model;
+                model.kind = std::move(input.kind);
+                model.name = std::move(input.name);
+                model.base_url = std::move(input.base_url);
+                model.model = std::move(input.model);
+                model.api_key = std::move(input.credential);
+                model.max_tokens = input.max_tokens;
+                model.context_window = input.context_window;
+                return selection(dagent::app::add_model(root, model));
             };
             options.initial_prompt = args.prompt;
             options.resume_id = args.resume_id;
