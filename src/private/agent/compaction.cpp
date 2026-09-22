@@ -122,24 +122,28 @@ std::string texts::summary_message(std::string_view summary) {
 Compactor::Compactor(ContextOptions options, std::size_t max_tokens, std::string compact_prompt)
     : budget_(Budget::from(options, max_tokens)), prompt_(std::move(compact_prompt)) {}
 
-void Compactor::maybe_compact(Conversation& c, const RequestShape& s, ModelSession& m, TokenEstimator& e,
-                              Recorder& r, const Sink& sink, std::stop_token stop) {
-    compact(Mode::automatic, c, s, m, e, r, sink, stop);
+std::optional<CompactionChange> Compactor::maybe_compact(const Conversation& c, const RequestShape& s,
+                                                         ModelSession& m, TokenEstimator& e,
+                                                         const Sink& sink, std::stop_token stop) {
+    return compact(Mode::automatic, c, s, m, e, sink, stop);
 }
 
-void Compactor::force(Conversation& c, const RequestShape& s, ModelSession& m, TokenEstimator& e,
-                      Recorder& r, const Sink& sink, std::stop_token stop) {
-    compact(Mode::forced, c, s, m, e, r, sink, stop);
+std::optional<CompactionChange> Compactor::force(const Conversation& c, const RequestShape& s,
+                                                 ModelSession& m, TokenEstimator& e, const Sink& sink,
+                                                 std::stop_token stop) {
+    return compact(Mode::forced, c, s, m, e, sink, stop);
 }
 
-void Compactor::summarize(Conversation& c, const RequestShape& s, ModelSession& m, TokenEstimator& e,
-                          Recorder& r, const Sink& sink, std::stop_token stop) {
-    compact(Mode::manual, c, s, m, e, r, sink, stop);
+std::optional<CompactionChange> Compactor::summarize(const Conversation& c, const RequestShape& s,
+                                                     ModelSession& m, TokenEstimator& e, const Sink& sink,
+                                                     std::stop_token stop) {
+    return compact(Mode::manual, c, s, m, e, sink, stop);
 }
 
-void Compactor::compact(Mode mode, Conversation& conversation, const RequestShape& shape,
-                        ModelSession& model, TokenEstimator& estimator, Recorder& recorder,
-                        const Sink& sink, std::stop_token stop) {
+std::optional<CompactionChange> Compactor::compact(Mode mode, const Conversation& conversation,
+                                                   const RequestShape& shape, ModelSession& model,
+                                                   TokenEstimator& estimator, const Sink& sink,
+                                                   std::stop_token stop) {
     check_stop(stop);
     const auto estimate = [&](const Conversation& c) {
         return estimator.estimate(c.build(shape.system, shape.tools, shape.params));
@@ -149,7 +153,7 @@ void Compactor::compact(Mode mode, Conversation& conversation, const RequestShap
         throw ModelError(ModelError::Kind::context_too_long, {},
                          "context budget is zero; increase context.window_tokens or reduce reserved tokens");
     }
-    if (mode == Mode::automatic && before <= budget_.trigger) return;
+    if (mode == Mode::automatic && before <= budget_.trigger) return std::nullopt;
 
     // 摘要取消时连第一级裁剪也回滚；记录只在最终提交时写入。
     Conversation pending = conversation;
@@ -231,24 +235,21 @@ void Compactor::compact(Mode mode, Conversation& conversation, const RequestShap
             throw ModelError(ModelError::Kind::context_too_long, {},
                              "No history can be safely compacted; start a new session with /new");
         }
-        return;
+        return std::nullopt;
     }
     after = estimate(pending);
-    conversation = std::move(pending);
-    if (!pruned.empty()) recorder.prune(pruned);
-    if (keep_from >= 0) recorder.compaction(keep_from, summary);
-    base::logger("agent")->info("上下文已压缩（{}）：{} → {} tokens，裁剪 {} 条，{}",
-                                mode == Mode::automatic ? "自动" : mode == Mode::forced ? "强制" : "手动",
-                                before, after, pruned.size(),
-                                !summary.empty() ? "已摘要"
-                                : discarded > 0  ? std::format("摘要失败，丢弃 {} 条", discarded)
-                                                 : std::string("未摘要"));
-    if (discarded > 0) {
-        sink(Notice{Notice::Level::warn,
-                    std::format("Summary failed; discarded the earliest {} messages", discarded)});
-    }
-    sink(Compacted{before, after, !summary.empty()});
-    sink(ContextUpdate{{}, after, budget_.limit});
+    CompactionChange change;
+    change.conversation = std::move(pending);
+    change.pruned = std::move(pruned);
+    change.keep_from = keep_from;
+    change.summary = std::move(summary);
+    change.discarded = discarded;
+    change.before = before;
+    change.after = after;
+    change.limit = budget_.limit;
+    change.mode_label = mode == Mode::automatic ? "自动" : mode == Mode::forced ? "强制" : "手动";
+    change.summarized = !change.summary.empty();
+    return change;
 }
 
 } // namespace dagent::agent

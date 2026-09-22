@@ -13,6 +13,7 @@
 #include <vector>
 
 #include "lib/nlohmann/json.hpp"
+#include "agent/session_meta.hpp"
 
 namespace dagent::agent {
 
@@ -44,6 +45,9 @@ public:
 
     /// @brief 刷盘；调用节奏由提交器决定（不是每条 fsync）。失败抛 RecordError。
     virtual void sync() = 0;
+
+    /// @brief 会话元信息（id/父关系/创建时间）；由打开它的存储提供。
+    virtual const SessionMeta& meta() const = 0;
 };
 
 } // namespace dagent::agent

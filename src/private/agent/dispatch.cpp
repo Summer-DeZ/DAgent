@@ -1,3 +1,5 @@
+#include "agent/dispatch.hpp"
+
 #include <algorithm>
 #include <cassert>
 #include <format>
@@ -8,7 +10,9 @@
 #include <utility>
 #include <vector>
 
-#include "agent/agent.hpp"
+#include "agent/catalog.hpp"
+#include "agent/committer.hpp"
+#include "agent/permission.hpp"
 #include "base/log.hpp"
 
 namespace dagent::agent {
@@ -18,8 +22,8 @@ constexpr std::size_t kGroupWidth = 8; ///< 并行组每块的线程数上限（
 
 std::shared_ptr<spdlog::logger> log_agent() { return base::logger("agent"); }
 
-tools::Result make_result(std::string text, bool is_error, bool interrupted) {
-    tools::Result result;
+ToolResult make_result(std::string text, bool is_error, bool interrupted) {
+    ToolResult result;
     result.model_text = std::move(text);
     result.is_error = is_error;
     result.interrupted = interrupted;
@@ -37,31 +41,32 @@ std::string fallback_summary(const ToolCall& call) {
     return call.name.empty() ? args : call.name;
 }
 
-std::string available_tools(const tools::Registry& registry) {
-    std::string names;
-    for (const tools::Spec* spec : registry.specs()) {
-        if (!names.empty()) names += "、";
-        names += spec->name;
+std::string summary_of(const PreparedAction& action) {
+    if (const auto* control = std::get_if<ControlRequest>(&action)) {
+        return std::visit([](const auto& request) { return request.summary; }, *control);
     }
-    return names;
+    return std::get<std::unique_ptr<PreparedTool>>(action)->intent().summary;
 }
 
 } // namespace
 
-Agent::DispatchOutcome Agent::dispatch(const std::vector<ToolCall>& calls, int budget, const TurnContext& ctx) {
-    const Sink& sink = ctx.sink;
-    const Approver& approver = ctx.approver;
-    const Asker& asker = ctx.asker;
-    const std::stop_token stop = ctx.stop;
+ActionDispatcher::Outcome ActionDispatcher::dispatch(const std::vector<ToolCall>& calls, int budget) {
+    SessionCommitter& committer = session_.committer();
+    Policy& policy = session_.policy();
+    ControlActionExecutor& control = session_.control();
+    ActionCatalog& catalog = session_.catalog();
+    SessionResources* resources = services_.resources;
+    const Sink& sink = services_.sink;
+    const std::stop_token stop = services_.stop;
     struct Slot {
         const ToolCall* call = nullptr;
         std::string summary;
-        std::optional<tools::Result> result; ///< 有值 = 可以提交
+        std::optional<PreparedAction> action; ///< 已准备的动作（普通工具或控制请求）
+        std::optional<ToolResult> result;     ///< 有值 = 可以提交
     };
     struct Pending {
         std::size_t slot;
-        std::unique_ptr<tools::Call> call;
-        tools::Grant grant;
+        ExecutionGrant grant;
     };
 
     std::vector<Slot> slots(calls.size());
@@ -70,29 +75,49 @@ Agent::DispatchOutcome Agent::dispatch(const std::vector<ToolCall>& calls, int b
         slots[i].summary = fallback_summary(calls[i]);
     }
 
-    DispatchOutcome outcome;
+    Outcome outcome;
     std::size_t committed = 0;
     enum class GroupKind { readonly, task };
     std::vector<Pending> group; ///< 挂起的并行组
     GroupKind group_kind = GroupKind::readonly;
-    const auto kind_of = [](const agent::PreparedIntent& intent) {
-        return intent.kind == agent::ToolKind::task ? GroupKind::task : GroupKind::readonly;
+
+    // 并行资格：普通工具按既有 parallel()；控制动作按类型（todo 只读组、task 任务组、问答串行等待）。
+    const auto parallel_kind = [](const std::expected<PreparedAction, ToolResult>& prepared,
+                                  const std::optional<Verdict>& verdict) -> std::optional<GroupKind> {
+        if (!prepared) return std::nullopt;
+        if (const auto* control = std::get_if<ControlRequest>(&prepared.value())) {
+            if (std::holds_alternative<PlanReplacement>(*control)) return GroupKind::readonly;
+            if (std::holds_alternative<DelegationRequest>(*control)) return GroupKind::task;
+            return std::nullopt;
+        }
+        if (!verdict) return std::nullopt;
+        const auto& tool = std::get<std::unique_ptr<PreparedTool>>(prepared.value());
+        if (!parallel(*verdict, tool->intent())) return std::nullopt;
+        return GroupKind::readonly;
     };
 
     // 结果按 tool_calls 的原始顺序写入历史、写记录、发事件；能提交的前缀尽早提交（docs/design/agent.md §6）。
     const auto commit = [&] {
         while (committed < slots.size() && slots[committed].result.has_value()) {
             Slot& slot = slots[committed];
-            if (const auto* view = std::get_if<McpView>(&slot.result->display);
-                view && view->disconnected) {
-                // 告诉模型这个 server 会重连还是已不可用（T12 / T13），免得它在工具消失后反复寻找。
-                slot.result->model_text += hub_->mark_disconnected(view->server, slot.result->model_text);
+            for (const ExecutionSignal& signal : slot.result->signals) {
+                if (const auto* disconnected = std::get_if<McpDisconnected>(&signal)) {
+                    // 告诉模型这个 server 会重连还是已不可用（T12 / T13），免得它在工具消失后反复寻找。
+                    if (resources != nullptr) {
+                        slot.result->model_text +=
+                            resources->mark_disconnected(disconnected->server, slot.result->model_text);
+                    }
+                }
             }
-            const std::int64_t ordinal =
-                conversation_.add_tool_result(slot.call->id, slot.result->model_text, slot.summary);
-            recorder_.tool(ordinal, *slot.call, slot.summary, *slot.result);
-            check_broken(sink);
-            sink(ToolFinished{slot.call->id, slot.call->name, slot.summary, *slot.result});
+            const TodoView* plan = nullptr;
+            if (slot.action) {
+                if (const auto* control_request = std::get_if<ControlRequest>(&slot.action.value())) {
+                    if (const auto* replacement = std::get_if<PlanReplacement>(control_request)) {
+                        plan = &replacement->plan; // L13：与 tool 记录同一次提交
+                    }
+                }
+            }
+            committer.commit_tool(*slot.call, slot.summary, *slot.result, plan);
             ++committed;
         }
     };
@@ -101,28 +126,37 @@ Agent::DispatchOutcome Agent::dispatch(const std::vector<ToolCall>& calls, int b
         return [&sink, id = call.id](std::string_view chunk) { sink(ToolOutput{id, std::string(chunk)}); };
     };
 
-    // 串行执行：agent 线程上跑（docs/design/agent.md §6）。
-    const auto run_serial = [&](std::size_t i, tools::Call& call, const tools::Grant& grant) {
+    const auto execute = [&](Slot& slot, const ExecutionGrant& grant) {
+        if (const auto* control_request = std::get_if<ControlRequest>(&slot.action.value()))
+            return control.execute(*control_request, stop);
+        return std::get<std::unique_ptr<PreparedTool>>(slot.action.value())
+            ->execute(grant, make_on_output(*slot.call), stop);
+    };
+
+    // 串行执行：普通工具写 tool_started 审计；ask/exit_plan 按 L12 只发实时开始、不写记录。
+    const auto run_serial = [&](std::size_t i, const ExecutionGrant& grant) {
         Slot& slot = slots[i];
+        const bool ordinary = std::holds_alternative<std::unique_ptr<PreparedTool>>(slot.action.value());
         const ToolStarted started{slot.call->id, slot.call->name, slot.summary, grant};
-        recorder_.tool_started(started);
-        check_broken(sink);
+        if (ordinary) committer.commit_tool_started(started);
         sink(started);
-        slot.result = call.run(grant, make_on_output(*slot.call), stop);
+        slot.result = execute(slot, grant);
+        if (!ordinary && slot.result->interrupted) outcome.stop = Outcome::Stop::interrupted;
     };
 
     // 并行组：ToolStarted 按顺序在 agent 线程上发；执行分块、每块至多 width 个 jthread，
     // 块内 join 完才起下一块；每个线程只写自己的 slot（docs/design/agent.md §6）。
     const auto run_group = [&] {
         if (group.empty()) return;
+        if (group_kind == GroupKind::task) run_.enter_phase(RunPhase::waiting_children);
         const std::size_t width = group_kind == GroupKind::task
-                                      ? static_cast<std::size_t>(setup_.options.run.max_parallel_tasks)
+                                      ? static_cast<std::size_t>(
+                                            session_.config().options.run.max_parallel_tasks)
                                       : kGroupWidth;
         for (const Pending& p : group) {
-            const Slot& slot = slots[p.slot];
+            Slot& slot = slots[p.slot];
             const ToolStarted started{slot.call->id, slot.call->name, slot.summary, p.grant};
-            recorder_.tool_started(started);
-            check_broken(sink);
+            committer.commit_tool_started(started);
             sink(started);
         }
         for (std::size_t base = 0; base < group.size(); base += width) {
@@ -132,154 +166,72 @@ Agent::DispatchOutcome Agent::dispatch(const std::vector<ToolCall>& calls, int b
             for (std::size_t k = base; k < end; ++k) {
                 Pending& p = group[k];
                 Slot& slot = slots[p.slot];
-                tools::Call* call = p.call.get();
-                threads.emplace_back([&, call, grant = p.grant] {
-                    slot.result = call->run(grant, make_on_output(*slot.call), stop);
+                threads.emplace_back([&, grant = p.grant] {
+                    slot.result = execute(slot, grant);
                 });
             }
         } // jthread 析构时 join：这一块全部结束才开始下一块
         group.clear();
+        if (group_kind == GroupKind::task) run_.enter_phase(RunPhase::dispatching);
     };
 
     for (std::size_t i = 0; i < slots.size(); ++i) {
         Slot& slot = slots[i];
-        if (outcome.stop == DispatchOutcome::Stop::interrupted || stop.stop_requested()) {
-            outcome.stop = DispatchOutcome::Stop::interrupted;
+        if (outcome.stop == Outcome::Stop::interrupted || stop.stop_requested()) {
+            outcome.stop = Outcome::Stop::interrupted;
             slot.result = make_result(std::string(texts::kInterruptedCall), false, true);
             continue;
         }
-        if (outcome.stop == DispatchOutcome::Stop::denied) {
+        if (outcome.stop == Outcome::Stop::denied) {
             slot.result = make_result(std::string(texts::kPriorDenied), true, false);
             continue;
         }
         if (outcome.handled == budget) {
-            slot.result = make_result(std::format(texts::kToolLimit, setup_.options.run.max_tool_calls), true, false);
+            slot.result = make_result(
+                std::format(texts::kToolLimit, session_.config().options.run.max_tool_calls), true, false);
             outcome.hit_limit = true;
             continue;
         }
         ++outcome.handled;
 
-        const tools::Tool* tool = registry_.find(slot.call->name);
-        if (tool == nullptr) {
-            // 未知工具没有 prepare，不触发跑组（docs/design/agent.md §6）。
-            slot.result = make_result(
-                std::format(texts::kUnknownTool, slot.call->name, available_tools(registry_)), true, false);
+        const InvocationContext invocation{session_.next_invocation_id(), slot.call->id};
+        auto prepared = catalog.prepare(slot.call->name, slot.call->arguments, invocation);
+        std::optional<Verdict> verdict;
+        if (prepared) {
+            if (const auto* tool = std::get_if<std::unique_ptr<PreparedTool>>(&prepared.value()))
+                verdict = policy.evaluate(*slot.call, (*tool)->intent());
+        }
+        if (!prepared && !catalog.contains(slot.call->name)) {
+            slot.result = std::move(prepared.error());
             commit();
             continue;
         }
-
-        auto prepared = tool->prepare(slot.call->arguments, tool_ctx_);
-        std::optional<Verdict> verdict;
-        const auto interactive = [&] {
-            if (!prepared) return false;
-            const auto kind = prepared.value()->intent().kind;
-            return kind == agent::ToolKind::ask || kind == agent::ToolKind::exit_plan;
-        };
-        if (prepared && !interactive()) verdict = policy_.evaluate(*slot.call, prepared.value()->intent());
         // 这个调用进不了并行组（或类别不同）：先跑完挂起的组，再重新 prepare（prepare 无副作用，docs/design/agent.md §6）。
-        if (!group.empty() &&
-            (!(prepared && verdict && parallel(*verdict, prepared.value()->intent())) ||
-             kind_of(prepared.value()->intent()) != group_kind)) {
+        std::optional<GroupKind> kind = parallel_kind(prepared, verdict);
+        if (!group.empty() && (!kind || *kind != group_kind)) {
             run_group();
-            prepared = tool->prepare(slot.call->arguments, tool_ctx_);
+            prepared = catalog.prepare(slot.call->name, slot.call->arguments, invocation);
             verdict.reset();
-            if (prepared && prepared.value()->intent().kind != agent::ToolKind::ask &&
-                prepared.value()->intent().kind != agent::ToolKind::exit_plan)
-                verdict = policy_.evaluate(*slot.call, prepared.value()->intent());
+            if (prepared) {
+                if (const auto* tool = std::get_if<std::unique_ptr<PreparedTool>>(&prepared.value()))
+                    verdict = policy.evaluate(*slot.call, (*tool)->intent());
+            }
+            kind = parallel_kind(prepared, verdict);
         }
         if (!prepared) {
             slot.result = std::move(prepared.error());
             commit();
             continue;
         }
-        slot.summary = prepared.value()->intent().summary; // 以最后一次 prepare 的 Intent 为准
-        prepared.value()->set_call_id(slot.call->id);
+        slot.action = std::move(prepared.value());
+        slot.summary = summary_of(*slot.action); // 以最后一次 prepare 的 Intent 为准
 
-        if (prepared.value()->intent().kind == agent::ToolKind::ask) {
-            sink(ToolStarted{slot.call->id, slot.call->name, slot.summary, {}});
-            AskView view = prepared.value()->intent().ask;
-            if (++questions_this_turn_ > 3) {
-                slot.result = make_result(
-                    "Question limit reached for this turn. Make the most reasonable choice, state the assumption, and continue.",
-                    true, false);
-                slot.result->display = view;
-            } else if (!asker) {
-                slot.result = make_result(
-                    "Non-interactive run: cannot ask the user. Pick the most reasonable option, state the assumption you made, and continue.",
-                    true, false);
-                slot.result->display = view;
+        if (std::holds_alternative<ControlRequest>(*slot.action)) {
+            if (kind) {
+                group.push_back(Pending{i, {}});
+                group_kind = *kind;
             } else {
-                Question question;
-                question.call_id = slot.call->id;
-                question.header = view.header;
-                question.prompt = view.prompt;
-                question.multi_select = view.multi_select;
-                question.allow_other = view.allow_other;
-                for (const auto& option : view.options)
-                    question.options.push_back({option.label, option.description});
-                const Answer answer = asker(question, stop);
-                view.selected = answer.selected;
-                view.other = answer.other;
-                view.cancelled = answer.cancelled;
-                if (answer.cancelled || stop.stop_requested()) {
-                    outcome.stop = DispatchOutcome::Stop::interrupted;
-                    slot.result = make_result("The user cancelled the question.", false, true);
-                } else {
-                    std::string choices;
-                    for (const int index : answer.selected) {
-                        if (index < 0 || static_cast<std::size_t>(index) >= view.options.size()) continue;
-                        if (!choices.empty()) choices += ", ";
-                        choices += view.options[static_cast<std::size_t>(index)].label;
-                    }
-                    if (!answer.other.empty()) {
-                        if (!choices.empty()) choices += ", ";
-                        choices += answer.other;
-                    }
-                    slot.result = make_result("User chose: " + choices, false, false);
-                }
-                slot.result->display = std::move(view);
-            }
-            commit();
-            continue;
-        }
-
-        if (prepared.value()->intent().kind == agent::ToolKind::exit_plan) {
-            sink(ToolStarted{slot.call->id, slot.call->name, slot.summary, {}});
-            AskView view = prepared.value()->intent().ask;
-            if (!policy_.planning()) {
-                slot.result = make_result("exit_plan is only available while planning.", true, false);
-            } else if (!asker) {
-                slot.result = make_result(
-                    "Non-interactive planning run: the plan cannot be confirmed. Present the final plan and stop without making changes.",
-                    true, false);
-                slot.result->display = view;
-            } else {
-                Question question;
-                question.call_id = slot.call->id;
-                question.header = view.header;
-                question.prompt = view.prompt;
-                question.allow_other = false;
-                for (const auto& option : view.options)
-                    question.options.push_back({option.label, option.description});
-                const Answer answer = asker(question, stop);
-                view.selected = answer.selected;
-                view.cancelled = answer.cancelled;
-                if (answer.cancelled || stop.stop_requested()) {
-                    outcome.stop = DispatchOutcome::Stop::interrupted;
-                    slot.result = make_result("Plan confirmation was cancelled.", false, true);
-                } else if (answer.selected.empty() || answer.selected.front() == 2) {
-                    slot.result = make_result("Continue planning. Refine the proposal and submit it again when ready.", false, false);
-                } else {
-                    const PermissionMode next = answer.selected.front() == 0
-                                                    ? PermissionMode::workspace
-                                                    : PermissionMode::ask;
-                    policy_.set_mode(next);
-                    policy_.set_planning(false);
-                    policy_.set_read_only(setup_.read_only);
-                    sink(ModeChanged{std::string(to_string(next)), false});
-                    slot.result = make_result("Plan accepted. Begin implementation now.", false, false);
-                }
-                slot.result->display = std::move(view);
+                run_serial(i, {});
             }
             commit();
             continue;
@@ -292,46 +244,45 @@ Agent::DispatchOutcome Agent::dispatch(const std::vector<ToolCall>& calls, int b
                                                              : "deny");
 
         switch (v.kind) {
-        case Verdict::Kind::allow: {
-            const agent::PreparedIntent& intent = prepared.value()->intent();
-            if (parallel(v, intent)) {
-                group.push_back(Pending{i, std::move(prepared.value()), v.grant});
-                group_kind = kind_of(intent);
+        case Verdict::Kind::allow:
+            if (kind) {
+                group.push_back(Pending{i, v.grant});
+                group_kind = *kind;
             } else {
-                run_serial(i, *prepared.value(), v.grant);
+                run_serial(i, v.grant);
             }
             break;
-        }
         case Verdict::Kind::deny:
             slot.result = make_result(std::format(texts::kPolicyDenied, v.reason), true, false);
             break;
         case Verdict::Kind::ask: {
             const Approval& approval = v.approval;
-            if (!approver) {
+            if (!services_.approver) {
                 log_agent()->warn("需要用户批准，但当前运行方式没有交互审批器：{}", slot.call->name);
                 slot.result =
                     make_result(std::format(texts::kApprovalUnavailable, approval.reason), true, false);
                 break;
             }
-            const Decision decision = approver(approval, stop);
+            run_.enter_phase(RunPhase::waiting_approval);
+            const Decision decision = services_.approver(approval, stop);
+            run_.enter_phase(RunPhase::dispatching);
             if (stop.stop_requested()) {
-                outcome.stop = DispatchOutcome::Stop::interrupted;
+                outcome.stop = Outcome::Stop::interrupted;
                 slot.result = make_result(std::string(texts::kInterruptedCall), false, true);
                 break;
             }
-            recorder_.permission(approval, decision);
-            check_broken(sink);
+            committer.commit_permission(approval, decision);
             switch (decision.answer) {
             case Decision::Answer::allow:
             case Decision::Answer::allow_session:
                 if (decision.answer == Decision::Answer::allow_session) {
-                    policy_.remember(approval, decision);
+                    policy.remember(approval, decision);
                 }
-                run_serial(i, *prepared.value(), policy_.grant_for(approval, decision));
+                run_serial(i, policy.grant_for(approval, decision));
                 break;
             case Decision::Answer::deny:
                 slot.result = make_result(std::string(texts::kDenied), true, false);
-                outcome.stop = DispatchOutcome::Stop::denied;
+                outcome.stop = Outcome::Stop::denied;
                 break;
             case Decision::Answer::deny_with_feedback:
                 slot.result =
@@ -346,8 +297,8 @@ Agent::DispatchOutcome Agent::dispatch(const std::vector<ToolCall>& calls, int b
     run_group();
     commit();
     // 最后一个调用执行中被中断时，循环里没有下一个调用来发现 stop。
-    if (outcome.stop == DispatchOutcome::Stop::none && stop.stop_requested()) {
-        outcome.stop = DispatchOutcome::Stop::interrupted;
+    if (outcome.stop == Outcome::Stop::none && stop.stop_requested()) {
+        outcome.stop = Outcome::Stop::interrupted;
     }
     assert(committed == slots.size());
     return outcome;

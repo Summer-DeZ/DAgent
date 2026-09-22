@@ -23,12 +23,13 @@ constexpr std::string_view kDescription = R"(Run a bash command in the workspace
 
 constexpr std::size_t kCollectCap = 4 << 20; // 内部收集上限：状态行提示与中断输出够用
 
-class BashCall final : public Call {
+class BashCall final : public PreparedTool {
 public:
-    BashCall(const Context& ctx, std::string command, exec::Analysis analysis,
-             std::optional<std::chrono::milliseconds> timeout)
-        : root_(ctx.root()), process_options_(ctx.process()), max_result_bytes_(ctx.options().max_result_bytes),
-          command_(std::move(command)), analysis_(std::move(analysis)), timeout_(timeout) {
+    BashCall(const agent::InvocationContext& invocation, const Context& ctx, std::string command,
+             exec::Analysis analysis, std::optional<std::chrono::milliseconds> timeout)
+        : PreparedTool(invocation), root_(ctx.root()), process_options_(ctx.process()),
+          max_result_bytes_(ctx.options().max_result_bytes), command_(std::move(command)),
+          analysis_(std::move(analysis)), timeout_(timeout) {
         intent_.kind = agent::ToolKind::exec;
         agent::CommandIntent cmd;
         cmd.command = command_;
@@ -57,8 +58,8 @@ public:
     }
 
 private:
-    Result do_run(const Grant& grant, const std::function<void(std::string_view)>& on_output,
-                  std::stop_token stop) override {
+    Result do_execute(const Grant& grant, const std::function<void(std::string_view)>& on_output,
+                      std::stop_token stop) override {
         const exec::Mode mode = grant.sandbox == agent::SandboxProfile::read_only    ? exec::Mode::read_only
                                 : grant.sandbox == agent::SandboxProfile::full_access ? exec::Mode::full_access
                                                                                       : exec::Mode::workspace_write;
@@ -230,8 +231,9 @@ public:
 
     const Spec& spec() const override { return spec_; }
 
-    std::expected<std::unique_ptr<Call>, Result> prepare(std::string_view arguments,
-                                                         Context& ctx) const override {
+    std::expected<std::unique_ptr<PreparedTool>, Result> prepare(
+        std::string_view arguments, Context& ctx,
+        const agent::InvocationContext& invocation) const override {
         auto args = detail::parse_arguments(arguments);
         if (!args) return std::unexpected(error_result(args.error()));
         std::string err;
@@ -254,7 +256,7 @@ public:
         } else {
             timeout = ctx.process().default_timeout; // exec 里 0 表示不限
         }
-        return std::make_unique<BashCall>(ctx, command, std::move(analysis), timeout);
+        return std::make_unique<BashCall>(invocation, ctx, command, std::move(analysis), timeout);
     }
 
 private:

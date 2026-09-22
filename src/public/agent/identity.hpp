@@ -8,7 +8,7 @@
 
 namespace dagent::agent {
 
-/// 持久会话身份（session::Meta::id，UUIDv7）。
+/// 持久会话身份（storage::Meta::id，UUIDv7）。
 using SessionId = std::string;
 
 /// 一次 turn / compact 的运行身份；后端实例前缀加计数，不落库。

@@ -15,12 +15,6 @@
 
 #include "agent/port_journal.hpp"
 
-namespace dagent::session {
-struct Meta;
-struct Summary;
-struct Options;
-} // namespace dagent::session
-
 namespace dagent::agent {
 
 /// @brief 一条从存储读出的记录：seq、类型与未解释的 payload（RecordCodec 在核心）。
@@ -43,10 +37,8 @@ public:
     virtual std::int64_t max_seq(std::string_view session_id) = 0;
 
     /// @brief 打开一个追加写入器；实现决定 create/resume 语义与事务边界。
-    virtual std::unique_ptr<JournalWriter> open_writer_create(const session::Options&,
-                                                              const session::Meta&) = 0;
-    virtual std::unique_ptr<JournalWriter> open_writer_resume(const session::Options&,
-                                                              std::string_view session_id) = 0;
+    virtual std::unique_ptr<JournalWriter> open_writer_create(const SessionMeta&) = 0;
+    virtual std::unique_ptr<JournalWriter> open_writer_resume(std::string_view session_id) = 0;
 };
 
 } // namespace dagent::agent

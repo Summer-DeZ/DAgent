@@ -5,6 +5,7 @@
 #include <filesystem>
 #include <iomanip>
 #include <iostream>
+#include <memory>
 #include <sstream>
 #include <string>
 #include <string_view>
@@ -15,15 +16,21 @@
 #include <signal.h>
 
 #include "agent/headless.hpp"
-#include "agent/host.hpp"
-#include "agent/options.hpp"
-#include "agent/record.hpp"
+#include "agent/setup.hpp"
+#include "app/assembly.hpp"
 #include "app/cli.hpp"
-#include "app/config.hpp"
+#include "app/configuration.hpp"
+#include "app/history.hpp"
+#include "app/launcher.hpp"
+#include "app/queries.hpp"
+#include "app/session_assembly.hpp"
 #include "base/log.hpp"
 #include "exec/sandbox.hpp"
 #include "llm/llm.hpp"
+#include "runtime/runtime.hpp"
 #include "tui/grapheme.hpp"
+#include "protocol/dto.hpp"
+#include "protocol/rpc.hpp"
 #include "ui/shell.hpp"
 #include "workspace/files.hpp"
 
@@ -49,14 +56,14 @@ permission_mode(const dagent::app::Config& config, const dagent::app::Args& args
 }
 
 dagent::agent::Setup make_setup(const dagent::app::Config& config, const dagent::app::Args& args,
-                                const std::shared_ptr<dagent::agent::AgentHost>& host) {
+                                const std::shared_ptr<dagent::app::Assembly>& assembly) {
     namespace agent = dagent::agent;
 
     agent::Setup setup;
     setup.options = config.agent;
     const ProviderConfig& selected = config.models.at(config.model);
     setup.provider = dagent::llm::to_public(selected);
-    setup.model_session = host->make_model_session(selected);
+    setup.model_session = assembly->make_model_session(selected);
 
     setup.cwd = args.cwd;
     setup.project_root = config.project_root;
@@ -72,7 +79,7 @@ dagent::agent::Setup make_setup(const dagent::app::Config& config, const dagent:
     setup.session = config.session;
     setup.mcp = config.mcp;
     setup.mcp_servers = config.mcp_servers;
-    setup.host = host;
+    setup.assembly = assembly;
     setup.subagents = config.subagents;
 
     setup.sandbox = dagent::exec::probe();
@@ -108,18 +115,22 @@ std::string local_minute(std::chrono::system_clock::time_point time) {
     return out.str();
 }
 
-void print_sessions(const dagent::app::Config& config, const fs::path& cwd) {
-    const std::vector<dagent::session::Summary> sessions =
-        dagent::session::list(config.session, cwd, 20);
-    if (sessions.empty()) {
+time_t local_from_ms(std::int64_t milliseconds) {
+    return static_cast<std::time_t>(milliseconds / 1000);
+}
+
+void print_sessions(const nlohmann::json& sessions) {
+    if (sessions.empty() || !sessions.is_array()) {
         std::cout << "no sessions for this working directory\n";
         return;
     }
-    for (const dagent::session::Summary& summary : sessions) {
-        auto [title, width] = fit_title(summary.title, 50);
-        std::cout << local_minute(summary.updated) << "   " << title
-                  << std::string(static_cast<std::size_t>(50 - width), ' ') << "   "
-                  << summary.meta.id << '\n';
+    for (const auto& session : sessions) {
+        const std::string title_value = session.value("title", "");
+        auto [title, width] = fit_title(title_value, 50);
+        const std::int64_t updated = session.value("updated", std::int64_t{0});
+        std::cout << local_minute(std::chrono::system_clock::from_time_t(local_from_ms(updated)))
+                  << "   " << title << std::string(static_cast<std::size_t>(50 - width), ' ')
+                  << "   " << session.value("id", "") << '\n';
     }
 }
 
@@ -136,6 +147,36 @@ int main(int argc, char** argv) {
 
     try {
         const dagent::app::InstallationPaths paths = dagent::app::installation_paths();
+
+        // 查询模式：启动本前端独占的后端，经私有协议完成初始化与查询（R09）。
+        // 启动配置与密钥只在后端解析；前端不读配置文件。
+        if (args.mode == Mode::models || args.mode == Mode::sessions) {
+            dagent::app::BackendLaunch launch;
+            launch.root = paths.root;
+            launch.cwd = args.cwd;
+            launch.overrides = args.overrides;
+            launch.mode = args.mode == Mode::models ? "models" : "sessions";
+            launch.log_level = args.log_level;
+            dagent::app::BackendSession session =
+                dagent::app::BackendSession::start(launch, dagent::client::Client::Callbacks{});
+            if (args.mode == Mode::models) {
+                const nlohmann::json models = session.client().call("model.list");
+                const std::string default_name = models.value("default_name", "");
+                std::cout << "NAME\tKIND\tMODEL\tBASE_URL\tKEY\n";
+                for (const auto& model : models["models"]) {
+                    const std::string name = model.value("name", "");
+                    std::cout << name << (name == default_name ? " *" : "") << '\t'
+                              << model.value("kind", "") << '\t' << model.value("model", "") << '\t'
+                              << model.value("base_url", "") << '\t'
+                              << (model.value("has_key", false) ? "yes" : "no") << '\n';
+                }
+            } else {
+                const nlohmann::json sessions = session.client().call("session.list", {{"limit", 20}});
+                print_sessions(sessions["sessions"]);
+            }
+            return 0;
+        }
+
         dagent::app::Config config = dagent::app::load_config({paths.root, args.cwd, args.overrides});
         if (args.log_level) config.log.level = *args.log_level;
         // 全屏界面下写 stderr 会弄花画面；run 模式按 log.also_stderr 配置。
@@ -151,7 +192,6 @@ int main(int argc, char** argv) {
             dagent::base::logger("app")->info("loaded {} subagent definitions: {}", config.subagents.size(), names);
         }
 
-        // 共享运行时只创建一次：环境事实只收集一次，MCP 连接全进程共用，审批在 host 里串行化。
         // 模型客户端工厂持有 HTTP 调整与重试参数；密钥只经过 llm 内部配置，不进入公开描述。
         auto make_session = [http = config.http,
                              retries = config.agent.run.max_model_retries](const ProviderConfig& provider) {
@@ -162,58 +202,48 @@ int main(int argc, char** argv) {
             }
             return dagent::llm::make_session(provider, adjusted, dagent::agent::RetryOptions{retries});
         };
-        auto host = dagent::agent::AgentHost::create(
-            config.mcp_servers, config.mcp, dagent::workspace::collect_environment(args.cwd, {}),
-            config.subagents, config.models, make_session);
 
         switch (args.mode) {
-        case Mode::models:
-            std::cout << "NAME\tKIND\tMODEL\tBASE_URL\tKEY\n";
-            for (const auto& [name, model] : config.models)
-                std::cout << name << (name == config.model ? " *" : "") << '\t' << model.kind << '\t'
-                          << model.model << '\t' << model.base_url << '\t'
-                          << (model.api_key.empty() ? "no" : "yes") << '\n';
-            return 0;
         case Mode::sessions:
-            print_sessions(config, args.cwd);
-            return 0;
+        case Mode::models:
+            break; // 查询模式已在上面的后端分支返回
         case Mode::interactive: {
+            // 共享运行时只创建一次：环境事实只收集一次，MCP 连接全进程共用。
+            auto assembly = dagent::app::Assembly::create(
+                config.mcp_servers, config.mcp, dagent::workspace::collect_environment(args.cwd, {}),
+                config.subagents, config.models, make_session);
+
+            auto configuration = std::make_shared<dagent::app::Configuration>(
+                paths.root, args.cwd, args.overrides, config, make_session);
+            auto queries = std::make_shared<dagent::app::QueryGatewayImpl>(
+                config.session, args.cwd, config.project_root, config.search);
+
+            const dagent::agent::Setup setup = make_setup(config, args, assembly);
+            dagent::app::SessionAssembly::Options factory_options;
+            factory_options.assembly = assembly;
+            factory_options.base = setup;
+            factory_options.resolve_model = [configuration](const std::string& name) {
+                return configuration->resolve(name);
+            };
+
+            dagent::runtime::Runtime::Deps deps;
+            deps.configuration = configuration;
+            deps.queries = queries;
+            deps.factory = std::make_unique<dagent::app::SessionAssembly>(std::move(factory_options));
+            deps.interactive = true;
+            dagent::runtime::Runtime runtime(std::move(deps));
+            dagent::runtime::StartResult started = runtime.start({args.resume_id, args.continue_last});
+
             dagent::ui::InteractiveOptions options;
-            for (const auto& [name, model] : config.models) options.models.emplace(name, dagent::llm::to_public(model));
-            for (const dagent::llm::ProviderInfo& info : dagent::llm::providers()) {
-                options.provider_kinds.push_back({std::string(info.kind), std::string(info.default_base_url),
-                                                  info.needs_api_key});
-            }
-            const auto selection = [host](const ProviderConfig& provider) {
-                return dagent::ui::ModelSelection{dagent::llm::to_public(provider),
-                                                  host->make_model_session(provider)};
-            };
-            options.resolve_model = [args, root = paths.root, selection](const std::string& name) {
-                auto overrides = args.overrides;
-                overrides.push_back("@model=" + name);
-                auto config = dagent::app::load_config({root, args.cwd, overrides});
-                for (const auto& note : config.model_selection_log) dagent::base::logger("app")->info("{}", note);
-                return selection(config.models.at(name));
-            };
-            options.add_model = [root = paths.root, selection](dagent::agent::ModelInput input) {
-                // 凭据只在此处进入内部配置；保存后立即以公开视图返回。
-                ProviderConfig model;
-                model.kind = std::move(input.kind);
-                model.name = std::move(input.name);
-                model.base_url = std::move(input.base_url);
-                model.model = std::move(input.model);
-                model.api_key = std::move(input.credential);
-                model.max_tokens = input.max_tokens;
-                model.context_window = input.context_window;
-                return selection(dagent::app::add_model(root, model));
-            };
             options.initial_prompt = args.prompt;
-            options.resume_id = args.resume_id;
-            options.continue_last = args.continue_last;
-            if (!config.ui.theme_file.empty()) options.theme_file = config.ui.theme_file;
-            return dagent::ui::run_interactive(make_setup(config, args, host), options, interrupts);
+            options.resumed = started.resumed;
+            options.replay = std::move(started.replay);
+            return dagent::ui::run_interactive(runtime, options, interrupts);
         }
         case Mode::run: {
+            auto assembly = dagent::app::Assembly::create(
+                config.mcp_servers, config.mcp, dagent::workspace::collect_environment(args.cwd, {}),
+                config.subagents, config.models, make_session);
             dagent::agent::HeadlessOptions options;
             options.prompt = args.prompt;
             options.resume_id = args.resume_id;
@@ -223,12 +253,16 @@ int main(int argc, char** argv) {
             case dagent::app::OutputFormat::jsonl: options.output = dagent::agent::HeadlessOptions::Output::jsonl; break;
             case dagent::app::OutputFormat::text: options.output = dagent::agent::HeadlessOptions::Output::text; break;
             }
-            return dagent::agent::run_headless(make_setup(config, args, host), options, interrupts);
+            return dagent::agent::run_headless(make_setup(config, args, assembly), options, interrupts);
         }
         }
     } catch (const dagent::app::ConfigError& error) {
         std::cerr << "config error: " << error.what() << "\n";
         return 2;
+    } catch (const dagent::client::RpcFailure& error) {
+        const bool config_error = error.error().kind == dagent::protocol::error_kind::kConfigError;
+        std::cerr << (config_error ? "config error: " : "startup failed: ") << error.what() << "\n";
+        return config_error ? 2 : 1;
     } catch (const std::exception& error) {
         std::cerr << "startup failed: " << error.what() << "\n";
         return 1;

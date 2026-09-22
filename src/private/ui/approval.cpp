@@ -117,9 +117,6 @@ void ApprovalDialog::open(const agent::Approval& approval,
         for (const auto& path : approval.intent.paths) preview += path.path.string() + '\n';
         break;
     case agent::ToolKind::external: kind = tui::BlockKind::code; break;
-    case agent::ToolKind::task: break;
-    case agent::ToolKind::ask:
-    case agent::ToolKind::exit_plan: break;
     }
     std::string scope = approval.intent.summary;
     if (!approval.cwd.empty()) scope += "\ncwd: " + approval.cwd;

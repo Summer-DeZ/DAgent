@@ -81,9 +81,6 @@ std::unique_ptr<Tool> make_edit_tool();
 std::unique_ptr<Tool> make_bash_tool();
 std::unique_ptr<Tool> make_grep_tool();
 std::unique_ptr<Tool> make_glob_tool();
-std::unique_ptr<Tool> make_todo_tool();
-std::unique_ptr<Tool> make_ask_tool();
-std::unique_ptr<Tool> make_exit_plan_tool();
-std::unique_ptr<Tool> make_mcp_tool(mcp::Client& client, const mcp::Tool& tool);
+std::unique_ptr<Tool> make_mcp_tool(std::shared_ptr<mcp::Client> client, const mcp::Tool& tool);
 
 } // namespace dagent::tools::detail

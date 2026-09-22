@@ -12,13 +12,14 @@
 #include <vector>
 
 #include "agent/options.hpp"
+#include "agent/subagent_def.hpp"
 #include "llm/provider.hpp"
 #include "base/log.hpp"
 #include "exec/process.hpp"
 #include "lib/nlohmann/json.hpp"
 #include "mcp/client.hpp"
 #include "net/http.hpp"
-#include "session/session.hpp"
+#include "storage/storage.hpp"
 #include "tools/tools.hpp"
 #include "workspace/files.hpp"
 #include "workspace/search.hpp"
@@ -37,7 +38,7 @@ struct Config {
     exec::SandboxOptions sandbox;
     workspace::FileOptions files;
     workspace::SearchOptions search;
-    session::Options session;
+    storage::Options session;
     base::LogOptions log;
     mcp::Options mcp;
     tools::Options tools;

@@ -8,3 +8,5 @@
 #include "agent/port_journal.hpp"
 #include "agent/port_store.hpp"
 #include "agent/port_interaction.hpp"
+#include "agent/port_tool.hpp"
+#include "agent/port_delegation.hpp"

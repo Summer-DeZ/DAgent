@@ -26,12 +26,13 @@ constexpr std::string_view kDescription = R"(Search file contents in the workspa
 - files_only=true returns one matching path per line, useful before reading the matching files.
 - Results are bounded. If truncated, narrow the scope with a more precise pattern, deeper directory or files_only.)";
 
-class GrepCall final : public Call {
+class GrepCall final : public PreparedTool {
 public:
-    GrepCall(const Context& ctx, workspace::Resolved root, workspace::GrepQuery query,
-             bool files_only)
-        : root_(std::move(root)), search_options_(ctx.search()), files_only_(files_only),
-          max_result_bytes_(ctx.options().max_result_bytes), query_(std::move(query)) {
+    GrepCall(const agent::InvocationContext& invocation, const Context& ctx, workspace::Resolved root,
+             workspace::GrepQuery query, bool files_only)
+        : PreparedTool(invocation), root_(std::move(root)), search_options_(ctx.search()),
+          files_only_(files_only), max_result_bytes_(ctx.options().max_result_bytes),
+          query_(std::move(query)) {
         // workspace::grep 返回的路径相对查询根（查询根是文件时相对它所在的目录）；
         // 拼上前缀才是相对工作区根、模型能直接 read 的路径
         std::error_code ec;
@@ -43,7 +44,7 @@ public:
     }
 
 private:
-    Result do_run(const Grant&, const std::function<void(std::string_view)>&, std::stop_token stop) override {
+    Result do_execute(const Grant&, const std::function<void(std::string_view)>&, std::stop_token stop) override {
         workspace::GrepResult found;
         try {
             found = workspace::grep(query_, search_options_, stop);
@@ -144,8 +145,9 @@ public:
 
     const Spec& spec() const override { return spec_; }
 
-    std::expected<std::unique_ptr<Call>, Result> prepare(std::string_view arguments,
-                                                         Context& ctx) const override {
+    std::expected<std::unique_ptr<PreparedTool>, Result> prepare(
+        std::string_view arguments, Context& ctx,
+        const agent::InvocationContext& invocation) const override {
         auto args = detail::parse_arguments(arguments);
         if (!args) return std::unexpected(error_result(args.error()));
         std::string err;
@@ -171,7 +173,8 @@ public:
         if (context && *context > 0) query.context = static_cast<int>(std::min<std::int64_t>(*context, 10));
         query.max_matches = ctx.options().grep_max_matches;
 
-        return std::make_unique<GrepCall>(ctx, root, std::move(query), files_only.value_or(false));
+        return std::make_unique<GrepCall>(invocation, ctx, root, std::move(query),
+                                          files_only.value_or(false));
     }
 
 private:

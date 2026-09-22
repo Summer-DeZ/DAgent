@@ -18,12 +18,13 @@ constexpr std::string_view kDescription = R"(Create a file or completely overwri
 - Before overwriting an existing file, you must read it. Its newline style and BOM are preserved; overwriting an unread file is denied.
 - Do not include read output's line number prefixes. Prefer edit when changing only part of a file.)";
 
-class WriteCall final : public Call {
+class WriteCall final : public PreparedTool {
 public:
-    WriteCall(Context& ctx, workspace::Resolved target, std::string path, std::string content,
-              workspace::Eol eol, bool bom, std::optional<workspace::Stamp> expect,
-              std::string success_text, agent::FileChangeView view)
-        : ctx_(ctx), target_(std::move(target)), path_(std::move(path)),
+    WriteCall(const agent::InvocationContext& invocation, Context& ctx, workspace::Resolved target,
+              std::string path, std::string content, workspace::Eol eol, bool bom,
+              std::optional<workspace::Stamp> expect, std::string success_text,
+              agent::FileChangeView view)
+        : PreparedTool(invocation), ctx_(ctx), target_(std::move(target)), path_(std::move(path)),
           content_(std::move(content)), eol_(eol), bom_(bom), expect_(expect),
           success_text_(std::move(success_text)), view_(std::move(view)) {
         intent_.kind = agent::ToolKind::write;
@@ -34,7 +35,7 @@ public:
     }
 
 private:
-    Result do_run(const Grant&, const std::function<void(std::string_view)>&, std::stop_token) override {
+    Result do_execute(const Grant&, const std::function<void(std::string_view)>&, std::stop_token) override {
         try {
             workspace::write_text(target_.path, content_, eol_, bom_, expect_, ctx_.files());
         } catch (const workspace::WorkspaceError& e) {
@@ -77,8 +78,9 @@ public:
 
     const Spec& spec() const override { return spec_; }
 
-    std::expected<std::unique_ptr<Call>, Result> prepare(std::string_view arguments,
-                                                         Context& ctx) const override {
+    std::expected<std::unique_ptr<PreparedTool>, Result> prepare(
+        std::string_view arguments, Context& ctx,
+        const agent::InvocationContext& invocation) const override {
         auto args = detail::parse_arguments(arguments);
         if (!args) return std::unexpected(error_result(args.error()));
         std::string err;
@@ -141,8 +143,8 @@ public:
         const std::string success =
             existed ? std::format("Overwrote {} (+{} -{}).", display, diff.stat.added, diff.stat.removed)
                     : std::format("Created {} ({} lines).", display, count_lines(new_content));
-        return std::make_unique<WriteCall>(ctx, resolved, display, new_content, eol, bom, expect,
-                                           success, std::move(view));
+        return std::make_unique<WriteCall>(invocation, ctx, resolved, display, new_content, eol, bom,
+                                           expect, success, std::move(view));
     }
 
 private:

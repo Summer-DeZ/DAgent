@@ -7,7 +7,7 @@
 #include <stop_token>
 #include <string>
 
-#include "agent/options.hpp"
+#include "agent/setup.hpp"
 
 namespace dagent::agent {
 

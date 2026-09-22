@@ -124,10 +124,6 @@ std::optional<bool> Policy::matches_session(const Approval& approval, const Prep
         });
         return rule == exec_rules_.end() ? std::nullopt : std::optional<bool>{false};
     }
-    case ToolKind::ask:
-    case ToolKind::exit_plan:
-    case ToolKind::task:
-        return std::nullopt;
     }
     return std::nullopt;
 }
@@ -169,6 +165,7 @@ ExecutionGrant Policy::grant_for_exec(SandboxProfile profile, GrantSource source
 }
 
 Verdict Policy::evaluate(const ToolCall& call, const PreparedIntent& intent) const {
+    const std::lock_guard lock(rules_mutex_);
     Verdict verdict;
     verdict.approval.call_id = call.id;
     verdict.approval.tool = call.name;
@@ -185,9 +182,6 @@ Verdict Policy::evaluate(const ToolCall& call, const PreparedIntent& intent) con
         verdict.kind = kind;
         return verdict;
     };
-
-    // task 本身不碰文件系统，真正的权限检查发生在子 Agent 自己的 Policy 里。
-    if (intent.kind == ToolKind::task) return answer(Verdict::Kind::allow);
 
     if (intent.kind == ToolKind::exec && intent.command && intent.command->dangerous) {
         verdict.kind = Verdict::Kind::deny;
@@ -314,11 +308,6 @@ Verdict Policy::evaluate(const ToolCall& call, const PreparedIntent& intent) con
         verdict.approval.session_rule = std::format("Allow {} for this session", call.name);
         verdict.kind = Verdict::Kind::ask;
         break;
-    case ToolKind::ask:
-    case ToolKind::exit_plan:
-        return answer(Verdict::Kind::allow);
-    case ToolKind::task:
-        return answer(Verdict::Kind::allow);
     }
 
     if (verdict.kind != Verdict::Kind::ask) return verdict;
@@ -357,6 +346,7 @@ ExecutionGrant Policy::grant_for(const Approval& approval, const Decision& decis
 
 void Policy::remember(const Approval& approval, const Decision& decision) {
     if (decision.answer != Decision::Answer::allow_session || single_use_only(approval)) return;
+    const std::lock_guard lock(rules_mutex_);
     switch (approval.intent.kind) {
     case ToolKind::write: session_edits_ = true; return;
     case ToolKind::read:
@@ -371,14 +361,11 @@ void Policy::remember(const Approval& approval, const Decision& decision) {
             exec_rules_.push_back({id, approval.intent.command->command, workspace_root_.string()});
         return;
     }
-    case ToolKind::ask:
-    case ToolKind::exit_plan:
-    case ToolKind::task:
-        return;
     }
 }
 
 std::vector<Policy::SessionGrant> Policy::session_grants() const {
+    const std::lock_guard lock(rules_mutex_);
     std::vector<SessionGrant> grants;
     if (session_edits_) grants.push_back({"workspace-edits", "Workspace file edits"});
     for (const auto& path : read_dirs_)
@@ -393,6 +380,7 @@ std::vector<Policy::SessionGrant> Policy::session_grants() const {
 }
 
 bool Policy::revoke(std::string_view id) {
+    const std::lock_guard lock(rules_mutex_);
     if (id == "workspace-edits" && session_edits_) { session_edits_ = false; return true; }
     if (id.starts_with("read-")) {
         const auto it = std::ranges::find_if(read_dirs_, [&](const fs::path& path) {
@@ -423,7 +411,6 @@ bool Policy::planning() const { return planning_.load(); }
 
 bool parallel(const Verdict& verdict, const PreparedIntent& intent) {
     if (verdict.kind != Verdict::Kind::allow) return false;
-    if (intent.kind == ToolKind::task) return true;
     if (intent.kind == ToolKind::read) return true;
     return intent.kind == ToolKind::exec && intent.command && intent.command->known_readonly &&
            verdict.grant.sandbox == SandboxProfile::read_only;

@@ -10,12 +10,10 @@
 #include <string>
 #include <vector>
 
-#include "agent/tool_data.hpp"
-
 namespace dagent::agent {
 
-/// 工具调用的类别；与既有权限/调度语义一一对应。
-enum class ToolKind { read, write, exec, external, ask, exit_plan, task };
+/// 工具调用的类别；与既有权限/调度语义一一对应。ask/exit_plan/todo/task 是控制动作，不在此枚举。
+enum class ToolKind { read, write, exec, external };
 
 /// 资源访问方向。
 enum class Access { read, write };
@@ -61,8 +59,6 @@ struct PreparedIntent {
     std::optional<CommandIntent> command; ///< exec 时有效
     std::string preview;                ///< write/edit：unified diff，给确认对话框
     std::string summary;                ///< 一行描述，如「编辑 src/a.cpp（+3 −1）」
-    AskView ask;                        ///< ask / exit_plan 的交互内容
-    std::string plan_summary;           ///< exit_plan：模型提交的方案
 };
 
 } // namespace dagent::agent

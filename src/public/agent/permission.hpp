@@ -7,6 +7,7 @@
 
 #include <atomic>
 #include <filesystem>
+#include <mutex>
 #include <optional>
 #include <string>
 #include <string_view>
@@ -36,7 +37,8 @@ struct Verdict {
     std::string reason;   ///< deny 时有效，进 T6
 };
 
-/// @brief 按模式与规则表判定。线程安全：set_mode 是 atomic，下一次决策生效。
+/// @brief 按模式与规则表判定。线程安全：规则容器与模式快照由同一把短锁保护，
+/// 锁内不调用用户交互、模型、存储或 socket；下一次决策生效。
 class Policy {
 public:
     Policy(PermissionMode mode, bool read_only, bool planning, SandboxSupport sandbox,
@@ -73,6 +75,7 @@ private:
     std::atomic<PermissionMode> mode_;
     std::atomic<bool> read_only_;
     std::atomic<bool> planning_;
+    mutable std::mutex rules_mutex_; ///< 保护下面的规则容器；evaluate/remember/revoke/快照共用
     SandboxSupport sandbox_;
     SandboxConfig sandbox_options_;
     int analysis_version_;

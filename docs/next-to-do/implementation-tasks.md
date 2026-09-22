@@ -17,12 +17,12 @@ flowchart LR
 | R01 | 基线与真实行为记录 | 真实验收通过 | 无 |
 | R02 | 中立业务类型与依赖底座 | 真实验收通过 | R01 |
 | R03 | 模型端口与 llm 适配 | 真实验收通过 | R02 |
-| R04 | 普通工具与控制动作分离 | 未开始 | R03 |
-| R05 | Session / Run / 核心循环与统一提交 | 未开始 | R04 |
-| R06 | storage / 记录解码 / 恢复与历史投影 | 未开始 | R05 |
-| R07 | 会话控制、输入队列与交互协调 | 未开始 | R06 |
-| R08 | 子 Agent 与 MCP 生命周期收敛 | 未开始 | R07 |
-| R09 | 私有 IPC 与正式后端 | 未开始 | R08 |
+| R04 | 普通工具与控制动作分离 | 真实验收通过 | R03 |
+| R05 | Session / Run / 核心循环与统一提交 | 真实验收通过 | R04 |
+| R06 | storage / 记录解码 / 恢复与历史投影 | 真实验收通过 | R05 |
+| R07 | 会话控制、输入队列与交互协调 | 真实验收通过 | R06 |
+| R08 | 子 Agent 与 MCP 生命周期收敛 | 真实验收通过 | R07 |
+| R09 | 私有 IPC 与正式后端 | 真实验收通过 | R08 |
 | R10 | 命令行切换协议路径 | 未开始 | R09 |
 | R11 | TUI 完全切换协议路径 | 未开始 | R10 |
 | R12 | 所有权、关闭与故障收尾 | 未开始 | R11 |
@@ -441,3 +441,285 @@ MCP/模型异常场景只操纵本次验收创建且有权限操作的资源；�
 - 覆盖：V01、V03、V07（可触发场景）、V09（压缩与恢复部分）、V11；B02/B16/B25/B26 装配与运行侧回归。
 - 未验项：V07 的 retrying 展示（需服务端瞬时故障，未真实制造）；V13/V14 子 Agent/MCP 场景属 R08。
 - 下一任务：R04。
+
+### R04：普通工具与控制动作分离 — 真实验收通过（2026-09-22，版本 d614700 + 工作树改动）
+
+- 状态：真实验收通过（V03 六工具真实回合；V05 非交互审批缺失路径；V08 todo/ask/exit_plan 的
+  非交互与每轮上限路径；工具顺序与 baseline 一致）。
+- 新增核心契约：agent/action.hpp（PreparedTool：invocation 身份构造时固定、只读 intent、execute 接
+  Grant/输出/stop）、agent/control.hpp（AskRequest/PlanConfirmation/PlanReplacement/DelegationRequest
+  的和类型、固定 Schema 与 ControlActionExecutor）、agent/catalog.hpp（ActionCatalog：内置顺序 +
+  控制动作 + 动态 MCP）、agent/port_tool.hpp（ToolSession）、agent/port_delegation.hpp
+  （DelegationChannel，R08 换 SubagentExecutor）、agent/work_plan.hpp（WorkPlan 整份替换）。
+- 删除旧结构：tools/ask.cpp、tools/todo.cpp（InteractiveCall 的错误占位 do_run 与 todo 普通工具）、
+  tools/detail.hpp 的 make_todo/ask/exit_plan_tool、ToolKind 的 ask/exit_plan/task 分支、
+  Policy::matches_session/evaluate/remember 与 parallel 的控制动作特判、approval.cpp 的控制动作
+  预览分支；dispatch 不再按工具名解析问答选项、不读 TaskView、不直接改 policy/plan。
+- 实现：agent/action.cpp（execute 唯一异常边界）、agent/control.cpp（解析与执行、ask 计数、
+  exit_plan 三选项语义、todo 计划替换事实、task 摘要）、agent/catalog.cpp（prepare 与未知工具
+  文本）；tools::ToolSession 适配 Registry+Context；todo 结果 text/view 与 baseline 逐字一致。
+- 正式构建：`cmake --preset dev && cmake --build --preset dev --target dagent -j2` 通过。
+- 真实运行（temp/refactor-equivalence/home-r04-run，本地 qwen3.8 127.0.0.1:10009，workspace-r04）：
+  - V03 六工具回合（logs/r04-tools-v03.{out,err}，session 01a0c91d…）：write→read→bash cat→edit→
+    bash cat→grep→glob 全部 ✓；磁盘 hello-r04.txt 最终为 hello-r04-edited，与 tool 记录
+    （read 显示 hello-r04、edit 显示 +1 −1、grep 命中、glob 列表）一致；记录序列 system/user/
+    assistant/tool_started/tool/turn_end 与 L06/L08 一致，todo 有 tool_started、ask/exit_plan 无。
+  - V08 todo（session 01a0c91e-6fe7）：tool text「Plan updated: 0/2 done.」view.kind=todo，无额外
+    plan 记录（L13）。
+  - V08 ask 非交互（01a0c91e-8376）：「Non-interactive run: cannot ask the user.…」is_error，
+    view.kind=ask；四连调用（01a0c91e-cf6d）第 4 次得到「Question limit reached for this turn.…」。
+  - V08 exit_plan：--plan 非交互（01a0c91f-10c2）得到「Non-interactive planning run: the plan cannot
+    be confirmed.…」；非 planning（01a0c91f-2f28）得到「exit_plan is only available while planning.」
+    且无 display（与 baseline 分支一致）。
+  - V05 非交互审批缺失：`--permissions ask` + mkdir（01a0c91f-581e）→ 工具未执行、目录未创建，
+    tool 记录为 T7「This call requires user approval: …no interactive approver…」is_error，未写
+    permission 记录。
+  - 工具顺序：请求体（logs/r04-proxy-bodies.jsonl）为 read、write、edit、bash、grep、glob、todo、
+    ask、exit_plan、task，与 baseline 一致；say-hi 回合新旧 exit 0（logs/r04-{new,baseline}-sayhi.txt）。
+- 结构检查：dispatch 无 do_run/ask 选项解析/TaskView；questions_this_turn_ 只在 control.*；普通
+  PreparedTool 全部有 do_execute。
+- 2026-09-22 审查修复：重新 prepare 和重新判权后重算并行类别，避免前序 task 改变准备依赖时使用旧类别；
+  未知工具恢复为直接记录错误、不拆开待执行组。正式构建通过；这两个边界依代码路径核对，尚无模型恰好生成该
+  并行批次的真实样本，不能把普通工具回合作为这两个边界的运行验收。
+- 覆盖：V03、V05（非交互路径）、V08（非交互路径）；B09/B10/B15/B21；L06/L08/L12/L13。
+- 未验项：V04/V05/V08 的交互（允许/会话允许/拒绝/反馈、问答多选/其他/取消、plan 三选项）需要真实
+  TUI 对话框，按任务图归 R07 真实验收；子执行暂经 LegacyDelegation，R08 收口。
+- 下一任务：R05。
+
+### R05：Session / Run / 核心循环与统一提交 — 真实验收通过（2026-09-22，版本 d614700 + 工作树改动）
+
+- 状态：真实验收通过（V03、V07、V09、V15；R04 的 V03/V08 场景在新结构上重跑一致）。
+- 新增核心对象（dagent_agent 纯核心目标内，只依赖 dagent_base）：
+  - agent/session.hpp+cpp：SessionConfig（已解析配置，沙箱只留中立 SandboxSupport/SandboxConfig）、
+    Session（Conversation/WorkPlan/Policy/ModelSession/ToolSession 引用/Compactor/Estimator/
+    ControlActionExecutor/SessionCommitter；build_request、request_shape、estimated_tokens、
+    next_invocation_id、begin_run/end_run、snapshot）。
+  - agent/committer.hpp+cpp：SessionCommitter 成为 user/assistant/tool/partial/审计/压缩/收尾/
+    lifecycle 的唯一提交入口，按 L03–L20 固定路线顺序执行，broken/error 唯一持有并只通知一次。
+  - agent/record_codec.hpp+cpp：记录 payload 唯一编码入口（字段与 schema 不变）。
+  - agent/run.hpp：Run（kind/id/phase/steps/calls/usage/grace/stop_source，begin 绑定外部取消链，
+    finish 一次性返回 RunOutcome）。
+  - agent/run_services.hpp：RunServices（Sink/Approver/Asker/DelegationChannel/SessionResources/
+    stop）与 SessionResources（MCP 步骤边界、断连文本、收尾通知）+ ResourceError（核心不引用 MCP 类型）。
+  - agent/turn_runner.hpp+cpp：阻塞循环算法与唯一 turn 收尾 finish；compact 走同一 Run 收尾约束。
+  - agent/dispatch.hpp + dispatch.cpp 移入核心：ActionDispatcher 不再写对话/计划/记录，全部经提交器；
+    MCP 断连文本经 SessionResources。
+- 压缩改造：Compactor 只读会话并在副本上计算 CompactionChange（候选 Conversation/pruned/keep_from/
+  summary/discarded/before/after/limit），成功后由 SessionCommitter::commit_compaction 一次安装并
+  按原顺序写 prune/compaction、发 Notice/Compacted/ContextUpdate；取消/超窗仍抛原 ModelError。
+- Policy：规则容器与模式快照共用一把短锁，session_grants/revoke 可跨线程调用，锁内不等待 IO/用户。
+- Agent 收敛为兼容装配点：只装配工具/MCP/子 Agent 环境、打开 JournalWriter（record.cpp 的
+  SessionJournal 适配 SQLite Writer）、把 TurnContext 转成 RunServices 并调用 TurnRunner；
+  旧 UI/headless 接口（create/resume/create_child/run_turn/compact/权限控制/meta）保持不变。
+  record.hpp 的 Recorder 已删除；控制动作 commit 从 ControlActionExecutor 移除（L13 由提交器完成）。
+- 删除/迁移：dagent_agent_legacy 只剩 mcp_hub/prompt/record/host/subagent/agent/headless；
+  dispatch.cpp、compaction.cpp 归核心目标；循环不再访问 Setup（只传 SessionConfig/RunOptions/RunServices）。
+- 正式构建：`cmake --preset dev && cmake --build --preset dev --target dagent -j2` 通过。
+- 真实运行（home-r04-run，本地 qwen3.8 10009，workspace-r04）：
+  - V03 六工具回合（logs/r05-tools-v03.{out,err}）：write/read/bash/edit/bash/grep/glob 全 ✓，
+    磁盘 hello-r04-edited 与 tool 记录一致；记录序列与 R04 相同。
+  - V07 中断：SIGINT 得 exit 130；模型已有正文时落「正文+[response interrupted by the user]」的
+    assistant（L15）与 interrupted turn_end（01a0c933）；工具未出结果时同样 interrupted（01a0c934）。
+  - V09 压缩：home-r05-compact2 真实触发自动压缩（t3）：prune ordinals [2,6] + compaction
+    keep_from=9（真实模型摘要 864 字符），日志「12544 → 9435 tokens，裁剪 2 条，已摘要」；
+    随后 --continue 第四轮成功读取压缩历史并继续（seq 23–26 system/user/assistant/turn_end）；
+    home-r05-compact 另一组为摘要失败退化「6982 → 5285，丢弃 4 条」（原 Notice/Compacted 语义）。
+  - V15 记录写入失败：另一进程持 SQLite EXCLUSIVE 锁期间追加 assistant → 「database is locked」
+    进入 broken，stderr 只出现一次「subsequent content will not be saved」，当前回合继续并正常输出，
+    记录停在该轮 user（logs/r05-broken.{out,err}，B23）。
+  - R04 回归：todo/ask 非交互/exit_plan(--plan) 文本与 R04 逐字一致；task→explore 子会话
+    parent_id/agent_name、父 TaskView 记录正常（L02/L14）。
+  - B25 回归：run --output json 字段与 jsonl 事件形状不变。
+- 结构检查：Conversation 只由 SessionCommitter 修改（record.cpp 的 replay 校验副本除外）；
+  run.finish 只在 TurnRunner 的 turn/compact 收尾调用；核心 .cpp 无 tools::/sqlite/HTTP/tui 引用；
+  TurnRunner 只经 Session/Run/RunServices 工作。
+- 2026-09-22 审查修复：把外围 Setup 移到 setup.hpp，核心 Options 只留中立运行值；会话元信息由核心
+  SessionMeta 定义，storage::Meta 保留同类型兼容别名，SessionStore 打开写入器只接收核心值/会话 ID；
+  shell 分析版本由兼容装配注入 SessionConfig。Session 不再返回可写 WorkPlan。Run 在审批、问答、
+  子任务组与收尾实际进入相应阶段，phase 用原子值供将来的只读观察。options/session/port_journal/
+  port_store 这些核心头与 session.cpp 不再包含 storage/exec/tools/workspace/mcp 具体头；正式构建通过。
+- 修复后真实运行（temp/r05-repair）：独立安装根下的 write→read 回合 status=done、2 次工具调用，
+  hello.txt 为 `R05-repair`，两条 tool 记录与磁盘一致；同一 session resume 后再 read 成功、追加第二条
+  turn_end。另真实触发 task→explore，生成带正确 parent_id 的子会话；子会话因 headless 审批不可用以
+  denied 结束，故只证明委派/子会话路径可用，不计为子任务完整成功验收。
+- 覆盖：V03、V07、V09、V15；B17/B21/B22/B23/B25；L03–L19。
+- 未验项：V04（忙时输入/取回/drain）与交互问答/审批仍是 UI 行为，归 R07；Session::snapshot 只在
+  执行线程即时读取，R07 的 SessionController 负责向跨线程查询发布同步快照；V07 的 retrying 展示同 R03；
+  V13/V14 子 Agent/MCP 完整路径归 R08。
+- 下一任务：R06。
+
+### R06：分离 storage、恢复与历史展示 — 真实验收通过（2026-09-22，版本 d614700 + 工作树改动）
+
+- 状态：真实验收通过（V10、V11；旧库继续、真实崩溃闭合、只读浏览与只读查询行为）。
+- 模块重命名：`src/public/session/session.hpp` → `storage/storage.hpp`、
+  `src/private/session/session.cpp` → `storage/storage.cpp`，namespace `dagent::session` →
+  `dagent::storage`、`SessionError` → `StorageError`，目标 `dagent_session` → `dagent_storage`
+  （link dagent_agent 以使用端口）。数据库 schema、user_version、记录类型与 payload 均未改变，
+  未新增 runtime_* 表；会话锁文件在安装根 `.runtime/session-locks/<id>.lock`。
+- RecordCodec（agent/record_codec.*）：编码保持原字段；新增 10 类记录的集中类型化解码
+  （system/user/assistant/tool_started/tool/permission/permission_revoked/prune/compaction/turn_end），
+  旧字段兼容保持（system.model、reasoning_signature、usage 可缺省；protect_sensitive_names 缺失为
+  false；旧 permission 只要求原 call_id/answer/rule/network；crashed→failed 与错误文本映射一处）。
+- SessionRecovery（agent/recovery.*）：只重建 Conversation、WorkPlan（旧 Todo View）、最近模型、
+  next_ordinal、unfinished/open_calls、高水位；应用 prune/compaction；在副本上做崩溃闭合校验；
+  不执行工具、不调模型、不写库、不发事件。
+- HistoryProjector + HistoryCursor（agent/history.*）：每记录产生 0/1 条 HistoryItem
+  （system/user/assistant/tool_started/tool/turn_end）；跨页只保存 ordinal/角色/开放调用/裁剪目标
+  等必要元数据，校验 ordinal 连续、工具配对、prune 目标与 compaction 安全切点。
+- storage 新能力：`open_store` 返回 SessionStore 实现（read_records/max_seq/open_writer_create/
+  open_writer_resume）；JournalWriter 实现（SqliteJournal）从 record.cpp 移入 storage；
+  只读连接不 initialize/不修复/不重命名损坏库；SessionWriteLease（flock，同进程按路径复用，
+  跨进程冲突报 in_use，CLOEXEC，不 unlink）；HistoryRead 固定高水位分页（每页最多扫描 100 条、
+  游标不透明、无显示项也推进、读完/close/失败即释放、已释放返回 invalid_state）。
+- record.cpp：删除 Recorder 与 replay_into；新增只读 `project_history`（HistoryRead 分页 +
+  HistoryItem→旧实时事件），不恢复 Session、不构造模型/MCP。Agent::resume 改为：取得写租约 →
+  store 读取全部记录 → SessionRecovery → 打开 resume Writer → 崩溃闭合 → 校验 → 追加 system。
+  TUI 的启动恢复与 /resume 先调 project_history 再显式恢复；子 Pane 浏览只用 project_history。
+- 正式构建：`cmake --preset dev && cmake --build --preset dev --target dagent -j2` 通过。
+- 真实运行：
+  - V11 旧库（R01 基线一致备份 76 sessions/1475 events，home-r06-old）：`run --resume
+    01a0c374…b598`（cwd /home/jyt/DAgent）读取旧历史并继续，追加 system/user/assistant/turn_end
+    （seq 18–21；二次恢复 22–25），exit 0；记录字段形状不变。
+  - V11 崩溃闭合：两次真实 kill -9——(a) 工具已结束但无 turn_end：恢复写入 crashed turn_end
+    （seq 5）与新 system，未重跑工具；(b) 工具执行中崩溃（assistant tool_calls + tool_started 无
+    tool）：恢复写入 kCrashed 结果（summary「Recover interrupted bash」，is_error/interrupted）
+    + crashed turn_end + 新 system，stderr 无该命令再次执行（L20）。
+  - V10 只读浏览：tmux 真实 TUI 恢复父会话后 ctrl+a 打开 Agent 视图并进入 `task · explore`
+    Pane；Pane 显示子会话历史（read/glob 卡片与正文）。子会话 events=10、updated 不变；进程日志
+    无模型调用；父会话只新增显式恢复的 system 记录（L21/L22）。
+  - 只读查询：无数据库时 `sessions` 输出 no sessions、exit 0 且不创建数据库；损坏数据库直接报
+    `file is not a database`、exit 1，文件未被重命名（不修复）。
+  - 写租约：另一进程正在恢复同一 session 时，第二个进程启动即报
+    `session … is already in use by another process`，exit 1；持有者不受影响。
+  - 回归：home-r05-compact2 含 prune/compaction 的会话 `--continue` 正常（摘要信息保留）；
+    六工具回合 V03 结果与文件一致。
+- 结构检查：无函数同时恢复可写 Session 又重画 UI（Agent::resume 只恢复；project_history 只投影）；
+  Recorder/replay_into 已删除；src 无 session 命名空间/旧目标残留；storage 查询不取写锁。
+- 覆盖：V10、V11；B21/B23/B24；L01/L02/L20/L21/L22 的核心实现；D05。
+- 未验项：协议层的 history/history_close 分页与 invalid_state 映射属 R09/R11；V19 的完整双后端
+  场景属 R12（本任务已验证同 session 跨进程拒绝写入）。
+- 下一任务：R07。
+
+### R07：把会话控制与交互从 UI 迁入 Runtime — 真实验收通过（2026-09-22，版本 d614700 + 工作树改动）
+
+- 状态：真实验收通过（V04–V06、V08、V12；V13 的并发/取消/子 Pane 与 MCP 场景在同一实现中由 R08 收口）。
+- 新增 runtime 目标（`src/public/runtime/`，只依赖 dagent_agent）：
+  - `controller.hpp/cpp`：SessionController——当前 Session 实例与写租约、普通输入 FIFO、recall、
+    串行执行线程、一个当前操作与 generation；new/resume/select_model/add_model/compact 作为命令
+    只在空闲入队，取消/权限档/plan/撤销走即时路径；Run 在输入真正出队时创建，TurnEnded 在提交器
+    通知前先把状态置回 ready（B06 drain 语义不变）。
+  - `interaction.hpp/cpp`：InteractionBroker——pending → answered/cancelled 一次性终结、单模态排队、
+    取消唤醒等待；回答/取消不经业务队列（状态机 §6）。
+  - `runtime.hpp/cpp`：Runtime 外观（快照、控制操作、异步只读查询线程、事件/交互出口）与
+    SubagentExecutor（R08）。
+  - `factory.hpp`：SessionInstance / SessionFactory / ConfigurationGateway / QueryGateway /
+    HistoryReader 端口；`agent/port_lease.hpp` 让 runtime 只持有写租约寿命。
+- 新增 app 装配目标（`dagent_app_config`）：`app/Assembly`（原 host，去掉审批仲裁）、
+  `app/SessionAssembly`（原 Agent 的 create/resume/切模型/子会话装配）、`app/Configuration`
+  （模型清单/添加/解析）、`app/QueryGatewayImpl`（列表/历史分页/项目/补全）、`app/Bootstrap`
+  （共享的 Setup/model factory/权限初值）、`app/prompt`、`app/history`；config.cpp 归 app_config。
+- UI 迁移：Shell 只持 Runtime 与只读快照（id/模型/模式/planning/队列/MCP/trigger/window），
+  删除 pending_/drain/recall/Agent 置换、jobs/io 工作线程、agent_mutex_、approve/ask future 组织；
+  审批/问答改为实现 runtime::Frontend（interaction.requested/closed）；列表/历史/项目/补全经
+  查询回调；空输入上键取回、斜杠命令按原 busy 条件立即分派保持不变。
+- 删除/退出：`agent/host.hpp/cpp`、`agent/prompt.*`、`agent/record.*`、`agent/mcp_hub.*`、
+  `agent/subagent.*`（后两者为 R08 内容，随同一次结构收敛删除）；UI 的 Agent/Setup/工作线程。
+- 正式构建：`cmake --preset dev && cmake --build --preset dev --target dagent dagent-backend -j2` 通过。
+- 真实运行（home-r07，workspace-r07，本地 qwen3.8，TUI/tmux）：
+  - V04：忙时 `queued-one`/`queued-two` 排队显示 `⇡ 2 queued`；上键取回最后一条后原序执行
+    （logs/r07 会话与 temp/refactor-equivalence/r07-r09-runs.md）。
+  - V05：write 审批 `allow_session`（permission seq 3）；`/permissions` 撤销（permission_revoked seq 17）
+    后重新弹窗；`e`+反馈 → `deny_with_feedback`（seq 23），模型按反馈停止。
+  - V06：`/new`、`/sessions` 恢复、`/model` 切到 deepseek-flash（同一 session_id、Transcript 保留、
+    权限档保持）再切回、`/compact`（记录 seq 40 compaction，界面 `compacted 4559 → 4221`）；
+    忙时 new/model/compact 仍被拒。
+  - V08：ask 多选真实记录 `selected:[0,1]`（seq 29）；exit_plan 选 1 后 ModeChanged 到 workspace、
+    planning 关闭（seq 34）；非交互/上限路径沿用 R04。
+  - V12：窄屏、主题预览、思考折叠与工具卡片保持；UI 不再含 agent/tools/storage/llm 头。
+- 覆盖：V04/V05/V06/V08/V12；B04–B10、B13/B14；L01–L05、L12/L13、L21/L22 的 UI 侧。
+- 审查修复（2026-09-22）：执行线程只从队首 `ready=true` 的输入出队，使 input.submit 的接受响应
+  先于 TurnStarted；命令的空闲检查和入队合为同一锁边界，待执行命令占用空闲入口，普通输入不能越过
+  new/resume/select/add/compact。成功安装候选后调用一次命令完成回调；model.add 保存成功但切换失败
+  时回报已保存模型及 selection_error。构建通过，修复后的真实协议回合见 R09 补充记录；这些竞争
+  交错与命令成功 RPC 尚未用独立真实样本逐项触发。
+- 未验项：V05 的「允许并联网」（本轮未产生需要网络的命令）；V12 的滚动/鼠标细节沿用冻结原语未重测；
+  切模型失败保留旧状态的失败分支未用真实失败候选触发（候选准备路径按 R06 的 lease/校验）。
+- 下一任务：R08（已完成）。
+
+### R08：整理单次子执行与 MCP 资源 — 真实验收通过（2026-09-22，版本 d614700 + 工作树改动）
+
+- 状态：真实验收通过（V13、V14：真实并发 task、父等待/取消传播、子 Pane 隔离、真实 MCP 调用与
+  断连重连/不可用、显式子 MCP 快照、退出清理）。
+- 子执行：`agent/port_delegation.hpp` 新增不可变 `DelegationContext`（父 session/run/call、执行时
+  权限快照、父工具名单、模型名、父 Sink/Approver、stop），由 ControlActionExecutor 在调用时构造；
+  `runtime/SubagentExecutor` 在 task 组线程创建 ChildExecution（子 SessionInstance + 子 Run），
+  父等待结果，作用域结束统一回收，不残留可再运行句柄、无 detached 线程。
+- 子审批：`derived.may_ask` 时包装父 Approver（带 agent/origin_call_id），经同一 InteractionBroker
+  单模态排队；子 Asker 恒空；子默认工具名册/显式 MCP 规则与 B18 一致（默认去 task/ask/exit_plan
+  与未显式允许的 mcp__*）。
+- MCP 资源：hub 移入 tools（`tools/mcp_hub.hpp`），状态值改为核心 `agent::McpServerState`；
+  MCP 工具项持有 `shared_ptr<mcp::Client>`，注册表快照本身就是显式 lease：目录刷新/重连不再让
+  子快照引用悬空；连通性回调标志改为 Client 与被引用者共享的 `shared_ptr<atomic<bool>>`。
+- 删除：`agent/subagent.*`（派生/兼容委派）、`agent/mcp_hub.*`、`agent/host.*`；`Agent` 兼容点改为
+  经 app::SessionAssembly + runtime::SubagentExecutor 工作（headless 暂用，R10 走协议后 R13 删除）。
+- 正式构建：同 R07 命令通过。
+- 真实运行（home-r07/home-r08）：
+  - V13：同一消息两个 explore task 并发（父会话 01a0c980 seq 21/22），Esc 取消父 Run → 子未完成项
+    `interrupted=true`、父 turn_end interrupted；implement 子会话 01a0c988… 两次子 host_access 审批
+    串行弹窗后创建 child-created.txt，父结果携带子结论；子 Pane 独立显示子记录。
+  - V14：MCP `fs` 连接并发现 14 个工具；工具调用真实返回 `mcp-file-content`（tool seq 5，审批
+    permission seq 3）；杀 server 后调用失败、Hub 自动重连后重试成功（seq 11/14）；二次断连后
+    `unavailable … tools removed` 不再重试（seq 20）；agent probe（显式 `mcp__fs__read_text_file`）
+    子会话 01a0c99e… 经子审批成功调用 MCP；TUI 退出后 MCP 进程为 0。
+- 覆盖：V13/V14；B18–B20；L02/L14。
+- 未验项：多个子 Agent 同时申请审批的排队次序仅观察到串行场景；MCP 断连后的子快照重连行为按设计
+  「子只用创建时快照」，未单独构造子运行中重连样本。
+- 下一任务：R09（已完成）。
+
+### R09：建立私有 IPC 与正式后端 — 真实验收通过（2026-09-22，版本 d614700 + 工作树改动）
+
+- 状态：真实验收通过（V02 的查询/退出部分）；模型执行路径按任务图在 R10 切换。
+- 新增目标：
+  - `dagent_protocol`：JSON-RPC 2.0 编解码、固定错误码、业务错误 kind；纯 DTO（SessionSnapshot、
+    HistoryItem、Event 信封、InteractionRequest、PublicModel/Usage），只依赖 base。
+  - `dagent_ipc`：AF_UNIX socketpair 通道（LF 分帧、短写、EOF/错误）、`spawn_backend`
+    （fork/exec 同目录 dagent-backend，独立进程组，先关父端再 dup2 到 fd 3 并清 CLOEXEC，
+    `close_range` 关闭其余 FD）、宽限终止/回收。
+  - `dagent_client`：读取线程匹配响应与通知、同步/异步请求、连接结束一次性失败。
+  - `dagent_backend`：RPC 方法分发（读线程即时：取消/回答/快照；命令线程：initialize/new/resume/
+    select/add/compact；查询线程：list/children/history/history_close/workspace）、单一有序 Publisher
+    （快照取值 + 事件序号 + 入队同一短锁；容量不足先锁外等待）、核心事件→DTO 转换、每个 bash 调用的
+    UTF-8 边界缓冲；`dagent-backend` 可执行只接受 `--ipc-fd`。
+  - `app/launcher`：前端 launcher（hello 10 秒超时、initialize、shutdown、宽限回收）；main 的
+    `--list-models`/`sessions` 改走独占后端，且查询模式前端不再读配置。
+- 正式构建：`cmake --preset dev && cmake --build --preset dev --target dagent dagent-backend -j2` 通过；
+  后端链接行不含 dagent_ui/dagent_tui。
+- 真实运行（home-r07）：
+  - `--list-models` 与基线输出一致（logs/r09-list-models.txt，exit 0）；`sessions` 输出历史列表
+    （logs/r09-sessions.txt，exit 0）；两者退出后无残留后端进程。
+  - 40 个并发 `sessions` 前端观测到最多 38 个同时存在的独占后端（各自 socketpair，无监听/发现）；
+    `--help/--version` 不启动后端。
+  - 损坏 models.json → 后端返回 `config_error`，前端 `config error: …`、exit 2。
+  - headless（仍在进程内 Agent）`run --output json` 回归一致（logs/r09-run.json）。
+- 协议交互路径真实验收（temp 一次性驱动，使用正式 client/launcher 与真实模型，不属于构建目标）：
+  - `initialize(interactive)` → `input.submit` → 事件实时流（turn_started/step_started/reasoning/text/
+    context/turn_ended）→ 结果 `protocol-ok`，`session.snapshot` busy=0、recording broken=false
+    （logs/r09-protocol-turn.txt）。
+  - `--permissions ask` 下 write 审批经 `interaction.requested` 送达，`interaction.answer`
+    allow_session 被接受，工具真实创建 protocol-approval.txt，回合 done（logs/r09-protocol-approval.txt）。
+  - 结束经 `backend.shutdown`，前后均无残留 dagent-backend 进程。
+- 覆盖：V02（查询/退出、独立后端、退出回收）；协议 §1–§5 的方法/错误映射、事件出口、交互应答与
+  输入接受响应先于 TurnStarted 的顺序约束；L23 的 shutdown 收尾入口。
+- 审查修复（2026-09-22）：run.cancel 只对匹配的当前 run_id 发取消，旧身份返回 already_finished；
+  Client 主动关闭时唤醒并失败化未完成请求，异步回调不在 Client 锁内调用；Publisher 按编码上界
+  计量事件、在容量条件变量释放锁等待后原子入队，发送失败唤醒等待方；快照在容量等待后取值，
+  若取值到入队间有新事件序号则重取，避免旧快照携带新 state_seq。构建 dagent/dagent-backend 通过。
+- 修复后真实运行（temp/r09-repair，独立安装根/工作区）：复用已有 temp 真实协议驱动，
+  initialize → input.submit → 模型返回 `protocol-repair-ok` → turn_ended done → session.snapshot
+  busy=0/recording_broken=false；库中 system/user/assistant/turn_end 各一条；`--list-models` 与
+  `sessions` 经后端 exit 0，后者列出同一会话；退出后无残留 dagent-backend 进程。临时编译的驱动
+  可执行文件与配套符号链接已删除，未添加测试源码或构建目标。
+- 未验项：TUI 经协议的事件投影与页面（R11）；run 的 stdout/stderr/退出码经协议（R10）；
+  进程信号/宽限强杀矩阵与双写锁（R12）；长时间发送背压场景未人为制造；修复后的
+  new/resume/select/add 成功 RPC、旧 run_id 取消交错与关闭时未完成请求尚未分别用真实协议样本触发。
+- 下一任务：R10。

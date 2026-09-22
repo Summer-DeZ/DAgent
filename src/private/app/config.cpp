@@ -340,8 +340,8 @@ workspace::SearchOptions map_search(const Node& n) {
     return o;
 }
 
-session::Options map_session(const Node& n) {
-    session::Options o;
+storage::Options map_session(const Node& n) {
+    storage::Options o;
     if (auto v = n.child("redact_fields"); v.has()) o.redact_fields = v.strings();
     return o;
 }

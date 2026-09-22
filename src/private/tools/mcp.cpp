@@ -51,21 +51,22 @@ std::string blocks_to_text(const std::vector<nlohmann::json>& content) {
     return text;
 }
 
-class McpCall final : public Call {
+class McpCall final : public PreparedTool {
 public:
-    McpCall(mcp::Client& client, const mcp::Tool& tool, nlohmann::json args,
-            std::chrono::milliseconds timeout, std::size_t max_result_bytes)
-        : client_(client), tool_(tool), args_(std::move(args)), timeout_(timeout),
-          max_result_bytes_(max_result_bytes) {
+    McpCall(const agent::InvocationContext& invocation, std::shared_ptr<mcp::Client> client,
+            const mcp::Tool& tool, nlohmann::json args, std::chrono::milliseconds timeout,
+            std::size_t max_result_bytes)
+        : PreparedTool(invocation), client_(std::move(client)), tool_(tool), args_(std::move(args)),
+          timeout_(timeout), max_result_bytes_(max_result_bytes) {
         intent_.kind = agent::ToolKind::external;
         intent_.summary = std::format("Call MCP tool {}", tool_.qualified_name);
     }
 
 private:
-    Result do_run(const Grant&, const std::function<void(std::string_view)>&, std::stop_token stop) override {
+    Result do_execute(const Grant&, const std::function<void(std::string_view)>&, std::stop_token stop) override {
         mcp::CallResult outcome;
         try {
-            outcome = client_.call(tool_.qualified_name, args_, timeout_, stop);
+            outcome = client_->call(tool_.qualified_name, args_, timeout_, stop);
         } catch (const mcp::McpError& e) {
             if (e.kind() == mcp::McpError::Kind::cancelled) {
                 Result result;
@@ -79,12 +80,16 @@ private:
                 return result;
             }
             base::logger("tools")->warn("MCP tool {} failed: {}", tool_.qualified_name, e.what());
+            const bool disconnected = e.kind() == mcp::McpError::Kind::disconnected;
             agent::McpView view;
             view.server = tool_.server;
             view.tool = tool_.qualified_name;
-            view.disconnected = e.kind() == mcp::McpError::Kind::disconnected;
-            return error_result(std::format("MCP tool call failed ({}): {}", tool_.qualified_name, e.what()),
-                                std::move(view));
+            view.disconnected = disconnected;
+            Result result = error_result(
+                std::format("MCP tool call failed ({}): {}", tool_.qualified_name, e.what()),
+                std::move(view));
+            if (disconnected) result.signals.push_back(agent::McpDisconnected{tool_.server});
+            return result;
         }
 
         agent::McpView view;
@@ -107,7 +112,7 @@ private:
         return result;
     }
 
-    mcp::Client& client_;
+    std::shared_ptr<mcp::Client> client_; // lease：连接与这次调用同寿
     mcp::Tool tool_;
     nlohmann::json args_;
     std::chrono::milliseconds timeout_;
@@ -116,8 +121,8 @@ private:
 
 class McpTool final : public Tool {
 public:
-    McpTool(mcp::Client& client, const mcp::Tool& tool)
-        : client_(client),
+    McpTool(std::shared_ptr<mcp::Client> client, const mcp::Tool& tool)
+        : client_(std::move(client)),
           spec_([ & ] {
               Spec spec;
               spec.name = tool.qualified_name;
@@ -132,24 +137,25 @@ public:
 
     const Spec& spec() const override { return spec_; }
 
-    std::expected<std::unique_ptr<Call>, Result> prepare(std::string_view arguments,
-                                                         Context& ctx) const override {
+    std::expected<std::unique_ptr<PreparedTool>, Result> prepare(
+        std::string_view arguments, Context& ctx,
+        const agent::InvocationContext& invocation) const override {
         auto args = detail::parse_arguments(arguments);
         if (!args) return std::unexpected(error_result(args.error()));
-        return std::make_unique<McpCall>(client_, tool_, std::move(*args), ctx.options().mcp_call_timeout,
-                                         ctx.options().max_result_bytes);
+        return std::make_unique<McpCall>(invocation, client_, tool_, std::move(*args),
+                                         ctx.options().mcp_call_timeout, ctx.options().max_result_bytes);
     }
 
 private:
-    mcp::Client& client_;
+    std::shared_ptr<mcp::Client> client_; // 快照 lease：注册表持有期间连接不销毁
     Spec spec_;
     mcp::Tool tool_;
 };
 
 } // namespace
 
-std::unique_ptr<Tool> detail::make_mcp_tool(mcp::Client& client, const mcp::Tool& tool) {
-    return std::make_unique<McpTool>(client, tool);
+std::unique_ptr<Tool> detail::make_mcp_tool(std::shared_ptr<mcp::Client> client, const mcp::Tool& tool) {
+    return std::make_unique<McpTool>(std::move(client), tool);
 }
 
 } // namespace dagent::tools

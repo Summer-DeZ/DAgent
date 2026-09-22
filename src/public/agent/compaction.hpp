@@ -1,9 +1,18 @@
+/// @file compaction.hpp
+/// @brief 上下文预算与压缩：在副本上计算候选变化，成功且未取消后由 SessionCommitter 一次性提交。
+///
+/// 保留当前工具事实保留、safe_cuts、摘要前缀和退化策略；Compactor 不再直接改 Conversation 或写记录。
 #pragma once
 
+#include <optional>
+#include <stop_token>
+#include <string>
+#include <vector>
+
 #include "agent/conversation.hpp"
-#include "agent/tokens.hpp"
 #include "agent/options.hpp"
-#include "agent/record.hpp"
+#include "agent/port_model.hpp"
+#include "agent/tokens.hpp"
 
 namespace dagent::agent {
 
@@ -23,22 +32,38 @@ std::string pruned_output(std::string_view summary);
 std::string summary_message(std::string_view summary);
 } // namespace texts
 
+/// @brief 一次压缩的候选结果：内存安装与记录写入都由提交器完成（L16）。
+struct CompactionChange {
+    Conversation conversation;            ///< 候选结果，直接替换会话历史
+    std::vector<std::int64_t> pruned;     ///< 需要写 prune 的 tool ordinal
+    std::int64_t keep_from = -1;          ///< 需要写 compaction 的切点；<0 表示无摘要记录
+    std::string summary;                  ///< 空表示原有丢弃前缀退化
+    std::size_t discarded = 0;            ///< 摘要失败时丢弃的条数，用于原 Notice
+    std::size_t before = 0, after = 0;    ///< 估算 tokens，日志与 Compacted 事件用
+    std::size_t limit = 0;                ///< 本轮上下文预算上限
+    std::string_view mode_label;          ///< 日志用：自动/强制/手动
+    bool summarized = false;
+};
+
 class Compactor {
 public:
     Compactor(ContextOptions, std::size_t max_tokens, std::string compact_prompt);
 
-    void maybe_compact(Conversation&, const RequestShape&, ModelSession&, TokenEstimator&, Recorder&,
-                       const Sink&, std::stop_token);
-    void force(Conversation&, const RequestShape&, ModelSession&, TokenEstimator&, Recorder&,
-               const Sink&, std::stop_token);
-    void summarize(Conversation&, const RequestShape&, ModelSession&, TokenEstimator&, Recorder&,
-                   const Sink&, std::stop_token);
+    /// @brief 自动压缩：低于触发阈值返回 nullopt；取消/超窗抛原 ModelError。
+    std::optional<CompactionChange> maybe_compact(const Conversation&, const RequestShape&, ModelSession&,
+                                                  TokenEstimator&, const Sink&, std::stop_token);
+    /// @brief 服务端报上下文超长后的强制压缩。
+    std::optional<CompactionChange> force(const Conversation&, const RequestShape&, ModelSession&,
+                                          TokenEstimator&, const Sink&, std::stop_token);
+    /// @brief 手动 /compact：不追加 user/turn_end。
+    std::optional<CompactionChange> summarize(const Conversation&, const RequestShape&, ModelSession&,
+                                              TokenEstimator&, const Sink&, std::stop_token);
     Budget budget() const { return budget_; }
 
 private:
     enum class Mode { automatic, forced, manual };
-    void compact(Mode, Conversation&, const RequestShape&, ModelSession&, TokenEstimator&, Recorder&,
-                 const Sink&, std::stop_token);
+    std::optional<CompactionChange> compact(Mode, const Conversation&, const RequestShape&, ModelSession&,
+                                            TokenEstimator&, const Sink&, std::stop_token);
 
     Budget budget_;
     std::string prompt_;

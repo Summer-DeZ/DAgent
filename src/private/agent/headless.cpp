@@ -17,7 +17,7 @@
 
 #include "agent/agent.hpp"
 #include "agent/conversation.hpp"
-#include "agent/record.hpp"
+#include "app/history.hpp"
 
 namespace dagent::agent {
 namespace {
@@ -242,7 +242,7 @@ int run_headless(Setup setup, const HeadlessOptions& options, Interrupts& interr
                                                                ? std::optional<std::string_view>(*options.resume_id)
                                                                : std::nullopt;
             const std::string session_id =
-                resolve_session_id(setup.session, setup.cwd, prefix);
+                app::resolve_session_id(setup.session, setup.cwd, prefix);
             agent = Agent::resume(std::move(setup), session_id, [](const Event&) {});
         } else {
             agent = Agent::create(std::move(setup));
