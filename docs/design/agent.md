@@ -1,90 +1,81 @@
-# agent：运行时与程序入口
+# agent：核心业务对象与执行循环
 
-DAgent 的核心负责把用户输入变成「请求模型 → 执行工具 → 回填结果」的循环，并维护权限、上下文、会话记录和
-MCP 连接。头文件在 `src/public/agent/`，实现在 `src/private/agent/`，命名空间 `dagent::agent`，库为
-`dagent_agent`。本文描述当前实现；模型协议见 [llm](llm.md)，交互前端见 [ui](ui.md)。
+DAgent 的核心负责把用户输入变成「请求模型 → 执行动作 → 回填结果」的循环，并维护权限、上下文、会话记录语义与
+控制动作规则。头文件在 `src/public/agent/`，实现在 `src/private/agent/`，命名空间 `dagent::agent`，库为
+`dagent_agent`，**只依赖 base**。模型请求、工具、存储和 MCP 通过核心定义的端口由外层实现；会话控制与交互等待见
+[runtime](runtime.md)，前后端进程与协议见 [protocol](protocol.md)，模型协议见 [llm](llm.md)。
 
-## 1. 分层与状态归属
+## 1. 分层与对象
 
 ```mermaid
 flowchart TD
-    Main[dagent / main.cpp] --> App[app：配置与命令行]
-    Main --> UI[ui：交互前端]
-    Main --> Headless[agent / headless：非交互前端]
-    App --> Agent[agent：运行时]
-    UI --> Agent
-    UI --> TUI[tui：终端框架]
-    Headless --> Agent
-    Agent --> Tools[tools：工具语义与 View]
-    Agent --> Peripheral[session / mcp / workspace / exec / net / base]
+    FE[dagent：app 前端 + ui] -->|私有 JSON-RPC| BE[dagent-backend：backend]
+    BE --> RT[runtime：会话控制、交互、子执行]
+    RT --> AG[agent：Session / Run / TurnRunner / 规则]
+    APP[app_config：配置与装配] -. 实现端口 .-> RT
+    LLM[llm] -. ModelSession .-> AG
+    TOOLS[tools] -. ToolSession / PreparedTool .-> AG
+    ST[storage] -. JournalWriter / SessionStore / Lease .-> AG
 ```
 
-`main.cpp` 只编进可执行目标，负责把 app 的配置映射为 `Setup` 并选择前端。`dagent_agent` 不依赖 app、ui 或 tui；
-两个前端通过 `Sink` 接收事件，通过 `Approver` 回答权限询问，通过 `Asker` 回答选项问题。`sessions` 命令排版借用 tui 的字素宽度计算。
+核心不包含 HTTP、SQLite、shell 分析树、MCP Client、终端控件或配置文件读取。外层实现的端口（`agent/port_*.hpp`，
+`ports.hpp` 仅作导航）：
 
-一个 `Agent` 对应一个会话，持有以下部件：
-
-| 部件 | 头文件 / 实现 | 职责 |
+| 端口 | 能力 | 实现 |
 | --- | --- | --- |
-| `Setup`、`Options` | `agent/options.hpp` | 已解析的模型、工作区、外围模块配置和运行环境 |
-| `Model` | `agent/model.hpp`、`model.cpp` | 一次完整的流式调用、累积与重试 |
-| `Conversation` | `agent/conversation.hpp`、`conversation.cpp` | 有序消息、协议不变式与请求组装 |
-| `Agent` | `agent/agent.hpp`、`agent.cpp` | 一轮循环、计数、中断与收尾 |
-| 调度器 | `dispatch.cpp`，Agent 私有部分 | prepare、权限、并行组与有序提交 |
-| `Policy` | `agent/permission.hpp`、`permission.cpp` | 权限规则和内存中的会话授权 |
-| `Compactor` | `agent/compaction.hpp`、`compaction.cpp` | 预算、裁剪、摘要与失败退化 |
-| 提示词 | `agent/prompt.hpp`、`prompt.cpp` | 内置模板与会话环境渲染 |
-| `Recorder` | `agent/record.hpp`、`record.cpp` | 核心记录格式、回放与崩溃闭合 |
-| `McpHub` | `agent/mcp_hub.hpp`、`mcp_hub.cpp` | 多服务连接、刷新、重连与状态快照 |
-| `AgentHost` | `agent/host.hpp`、`host.cpp` | 父子 Agent 共享运行时：Hub、环境快照、审批仲裁与子 Agent 定义表 |
-| `TaskTool` / `TaskCall` | `agent/subagent.hpp`、`subagent.cpp` | `task` 工具：派生子 Agent、收集最终文本与工具摘要 |
-| 非交互前端 | `agent/headless.hpp`、`headless.cpp` | 输出格式、进度、进程中断与退出码 |
+| `ModelSession` | 中立请求 + 流接收器 + 取消 → `Reply` 或分类的 `ModelError` | `llm::Model` |
+| `ToolSession` / `PreparedTool` | 普通工具描述、按名准备、带授权执行 | `tools::ToolSession` |
+| `JournalWriter` / `SessionStore` / `SessionLease` | 追加已编码记录与同步；读取记录与高水位；写所有权 | storage |
+| `DelegationChannel` | 一次 task 委派 → 原 task 结果 | `runtime::SubagentExecutor` |
+| `SessionResources` | 主会话步骤边界的 MCP 等待/刷新/重连、断连说明、轮末通知 | app 装配（包装 `tools::McpHub`） |
 
-Agent 同时持有 `tools::Registry`、`tools::Context`、`TokenEstimator` 和渲染后的 system prompt。
-Registry 的 MCP 工具引用 Client，所以 `registry_` 在成员声明里位于 `hub_` 之前；Hub 实体由 `AgentHost`
-持有，比所有 Agent 活得久，Hub 析构时先停止并等待连接线程，再销毁 Client。
+主要对象：
+
+| 对象 | 头文件 | 职责 |
+| --- | --- | --- |
+| `Session` | `session.hpp` | 一份对话的长期状态：Conversation、WorkPlan、Policy、模型与工具环境、Compactor、控制动作执行器、提交器；只暴露构造请求、快照与策略控制 |
+| `SessionConfig` | `session.hpp` | 已解析的会话配置：Options、公开模型、提示词文本、cwd/项目根/控制根、沙箱中立值、权限档、只读/planning、是否主会话 |
+| `Run` | `run.hpp` | 一次 turn 或 compact：id、阶段、steps/tool_calls/usage、取消源、一次性 `finish` 返回 `RunOutcome`；不落库 |
+| `TurnRunner` | `turn_runner.hpp` | 阻塞循环算法与唯一收尾；无跨会话状态，只经 Session/Run/RunServices 工作 |
+| `ActionCatalog` | `catalog.hpp` | 稳定的动作顺序与准备入口：普通工具、控制动作、动态 MCP |
+| `ActionDispatcher` | `dispatch.hpp` | 一批调用的准备、权限、分组执行与有序提交 |
+| `ControlActionExecutor` | `control.hpp` | ask / exit_plan / todo / task 的类型化规则 |
+| `Policy` | `permission.hpp` | 权限规则、会话授权与模式快照（短锁，跨线程可切换/撤销） |
+| `Compactor` | `compaction.hpp` | 预算、裁剪、摘要与失败退化，只产出候选变化 |
+| `SessionCommitter` | `committer.hpp` | 内存状态、记录与通知的唯一提交入口；唯一持有 broken |
+| `RecordCodec` | `record_codec.hpp` | 10 种记录的编码与类型化解码 |
+| `SessionRecovery` / `HistoryProjector` | `recovery.hpp` / `history.hpp` | 从记录重建可执行状态 / 生成只读历史条目 |
+
+`RunServices`（`run_services.hpp`）是一轮所需的全部外部能力：Sink、Approver、Asker、DelegationChannel、SessionResources、
+stop_token；不含配置、终端、数据库路径或查找任意对象的方法。
 
 ### 线程与取消
 
 | 线程 | 工作与边界 |
 | --- | --- |
-| agent 线程 | 交互模式由 Shell 创建，run 模式就是主线程；执行模型请求、串行工具、记录写入和 Registry 更新 |
-| 渲染线程 | 交互模式主线程；只操作控件、Document 和事件处理器 |
-| 工具工作线程 | 每个只读并行组临时创建，同时最多 8 个；只执行 `Call::run` |
-| task 组线程 | 每个并发子 Agent 一个，同时最多 `run.max_parallel_tasks`（默认 4，夹取到 3–16）；在组内创建子 Agent 并执行其完整一轮 |
-| 子 Agent 内部线程 | 子 Agent 复用同一套调度器，它的只读组与 task 组线程在其 task 组线程下再分叉 |
-| MCP 连接线程 | 每个 server 一个；连接结果交给 Hub，不直接改 Registry 或调用前端 Sink |
-| MCP 读取线程 | stdio 传输内部线程；工具变化回调只置标志 |
-| 信号线程 | `sigwait` 接收 SIGINT / SIGTERM，触发进程中断 |
+| 会话执行线程 | runtime 控制器的串行线程；执行模型请求、串行工具、记录写入和工具目录更新 |
+| 工具工作线程 | 每个只读并行组临时创建，同时最多 8 个；只执行 `PreparedTool::execute` |
+| task 组线程 | 每个并发子 Agent 一个，同时最多 `run.max_parallel_tasks`（默认 4，夹取到 3–16）；在组内创建并运行子会话 |
+| MCP 连接/读取线程 | 由 tools 的 McpHub 与 mcp Client 持有；只交接状态与标志，不直接改工具目录或调用 Sink |
 
-Agent 的常规接口在同一个 agent 线程上串行调用。两个跨线程例外是原子的 `set_permission_mode` 和加锁复制的
-`mcp_states`；调用方仍须保证对象存活。`session::Writer` 的单写入者、HttpClient 不并发使用、Registry 不加锁等约束
-由这个线程归属保证。子 Agent 在 task 组线程上创建并运行，只读父 Setup 与 `AgentHost`；父子各自持有独立的
-Recorder / Conversation / Policy / Registry / FileTracker。
+Session 只在所属执行线程推进对话、工具目录、模型和记录。跨线程只开放 Policy 的模式切换/撤销、Run 的取消和发布出去的快照。
+`Sink` 必须线程安全：`ToolOutput` 可从工具线程发出，子 Agent 事件可从 task 线程发出。`Approver` / `Asker` 可能阻塞等待，
+由 runtime 的交互代理实现；持有 Policy 锁时不调用它们。
 
-`Sink` 必须线程安全：`ToolOutput` 可从工具线程发出，子 Agent 的事件可以从任意 task 线程或孙工具线程发出，
-其余运行事件由 agent 线程交付。交互前端用 `Runtime::post`，非交互前端加锁输出。`Approver` 与 `Asker` 只在
-agent 线程调用，同一时刻至多一个，不能反向重入 Agent；并发子 Agent 的审批在 `AgentHost::approve` 里串行化。
+一轮使用 Run 的 stop_token（绑定外部取消链），贯穿模型、重试等待、权限等待、工具、摘要和 MCP 连接等待；
+子 Run 共享父的取消。MCP 后台连接使用自身线程的 token，一轮取消不关闭后台连接。
 
-一轮使用调用方提供的 `stop_token`，贯穿模型、重试等待、权限等待、工具、摘要和 MCP 连接等待。
-MCP 后台连接使用自身线程的 token，一轮取消不关闭后台连接；Hub 析构才取消它们。
+## 2. 执行入口与事件
 
-## 2. 对外接口与事件
-
-| 接口 | 行为 |
+| 入口 | 行为 |
 | --- | --- |
-| `Agent::create(Setup)` | 渲染提示词、创建记录、注册内置工具（含 `task`），启动 MCP 后台连接 |
-| `Agent::create_child(Setup)` | 子 Agent 构造路径：复用 host 环境、Hub 快照、带 `parent_id` / `agent_name` 的记录 |
-| `Agent::resume(Setup, id, replay_sink)` | 重建消息、补齐崩溃记录，用事件重画历史，并更新提示词 |
-| `run_turn(input, TurnContext)` | 阻塞完成一轮，返回 `TurnStatus`；`TurnContext` 打包 sink / approver / asker / stop |
-| `compact(TurnContext)` | 手动摘要，返回 `TurnStatus`；不创建一轮，不追加用户消息或 `turn_end` |
-| `set_permission_mode(mode)` | 下一次权限决策生效 |
-| `set_read_only` / `set_plan_mode` | 正交地切换只读与规划状态 |
-| `current_turn()` / `setup()` / `tool_names()` | `task` 工具读取父轮接口、Setup 与注册工具名 |
-| `mcp_states()` / `meta()` | 连接状态快照 / 会话元信息；只有前者支持跨线程读取 |
+| `TurnRunner::run(Session&, Run&, RunServices, input)` | 阻塞完成一轮，返回 `RunOutcome{kind, TurnStatus, error, steps, tool_calls, usage}` |
+| `TurnRunner::compact(...)` | 手动摘要；不追加 user 或 turn_end，使用同一收尾约束 |
+| `Session::begin_run` / `end_run` | 绑定本轮 Sink 与控制动作能力、重置本轮提问计数 / 解除绑定 |
+| `Session::snapshot` | 执行线程上的即时快照（模型、模式、计划、授权、用量），由 runtime 发布给其他线程 |
 
-创建与恢复失败会抛异常，由入口报错。运行中的模型与 MCP 已知失败转换成结束状态；工具失败作为 `Result` 回填，
-记录失败由 Recorder 停用写入。未预期异常仍可传播，调用方的最外层负责收尾，不能把接口理解成 `noexcept`。
+运行中的模型与 MCP 已知失败转换成结束状态；工具失败作为 `ToolResult` 回填；记录失败由提交器进入 broken。
+未预期异常仍可传播，调用方最外层负责收尾。
 
 | `TurnStatus` | 含义 |
 | --- | --- |
@@ -94,10 +85,10 @@ MCP 后台连接使用自身线程的 token，一轮取消不关闭后台连接�
 | `limit` | 达到模型或工具调用上限 |
 | `failed` | 模型不可用、上下文仍超长等；原因在 `TurnEnded::error` |
 
-### Event 与 JSONL
+### Event
 
-`agent/events.hpp` 定义值类型的 `Event`；`to_json(Event)` 使用以下 `type` 和字段。
-这份实时事件流与第 10 节的持久化记录是两种格式。
+`agent/events.hpp` 定义值类型的 `Event`；`to_json(Event)` 给出原实时 JSON 形状，backend 用它作为协议事件的 data，
+`run --output jsonl` 由前端还原同一形状。这份实时事件流与第 10 节的持久记录是两种格式。
 
 | 事件 / JSON type | 主要字段与用途 |
 | --- | --- |
@@ -141,31 +132,21 @@ TurnEnded
 `ToolStarted`。并行调用的 `ToolOutput` 可交错，同一调用内部保持顺序。`ToolPending` 可能随重试或中断作废，
 不能据此认为调用已经执行。
 
-回放只发 `TurnStarted`、正文与思考、`ToolFinished`、`TurnEnded`；恢复完成后另外发上下文估算及必要的提示。
-手动压缩不发轮开始/结束事件，前端依据返回值结束忙碌状态。
+每轮只有一个 `TurnStarted` 和最后一个 `TurnEnded`。`Notice` 可穿插；记录写入失败时也可能在 `TurnStarted` 前提示。
+`StreamReset` 只在 `Retrying` 之后、且失败尝试已有可见事件时发出。自动压缩发生在 `StepStarted` 之前，
+不会随这一步的流式重试被前端清除。服务端报超长后的强制压缩与重发留在同一步内。
 
-## 3. 模型调用
+进入历史的一批工具调用按原序得到 `ToolFinished`，包括参数错误、拒绝和未执行的调用；没有执行的调用不发
+`ToolStarted`。并行调用的 `ToolOutput` 可交错，同一调用内部保持顺序。`ToolPending` 可能随重试或中断作废，
+不能据此认为调用已经执行。手动压缩不发轮开始/结束事件，由 runtime 的 `operation_finished` 结束忙碌状态。
+历史显示不重放实时事件，而是由 `HistoryProjector` 生成 `HistoryItem`（第 10 节）。
 
-`Model::complete` 把中立 `Request` 经 Codec 和流式 HTTP 转成 `Reply{message, finish, usage}`。
-协议翻译由 [llm](llm.md) 负责；Model 负责累计正文、思考、工具参数和 usage，并判断请求是否完整结束。
+## 3. 模型端口
 
-每次尝试使用新的 Codec 和 SSE 解析器；HttpClient 在同一线程上复用。工具调用按 index 归集参数，按首次出现顺序
-进入回复，补齐空 id、处理重复 id。参数 JSON 留给工具的 `prepare` 解析，报错可回填给模型修正。
-
-| 失败 | 处理 |
-| --- | --- |
-| stop 已请求 | `ModelError::cancelled`，带当前尝试的部分回复 |
-| 连接失败、传输中断、超时；HTTP 408 / 429 / 5xx；流错误或缺正常结束标记 | 整个请求重试 |
-| HTTP 分类为上下文超长 | `context_too_long`，交给 Agent 压缩 |
-| TLS 问题、不可重试 HTTP 错误、2xx 却没有 SSE 事件 | `rejected` |
-| 重试次数耗尽或 Retry-After 太长 | `exhausted` |
-
-默认最多重试 2 次，即最多 3 次尝试。退避从 1 秒开始指数增长，以 30 秒为基础上限，增加 0.8–1.2 倍随机抖动；
-服务端的 Retry-After 更长时采用它，超过 300 秒则直接失败。等待可取消；已输出过内容的失败尝试通知前端清除，
-不写入历史。重试期间取消不会保存已作废尝试的半截内容。
-
-入口把模型 HTTP 的总超时设为 0；配置的 idle timeout 为 0 时补成 120 秒。连接超时和 TLS 选项沿用配置。
-idle timeout 看收到的字节，包括 SSE 注释。大上下文预填充期间没有字节时仍可能超时，需按实际模型调整配置。
+`ModelSession::complete` 接收中立 `Request`、流事件接收器与 stop，返回 `Reply{message, finish, usage}` 或抛
+`ModelError{cancelled, context_too_long, rejected, exhausted}`。流式累积、重试退避与 Retry-After 由 llm 实现，见
+[llm §6](llm.md#6-model一次完整调用与重试)。核心只决定：`context_too_long` 触发同一步的强制压缩与一次重发，
+`cancelled` 按取消收尾并按 L15 保存部分正文，其余错误以 failed 结束本轮。
 
 ## 4. 消息历史与协议不变式
 
@@ -184,7 +165,7 @@ idle timeout 看收到的字节，包括 SSE 注释。大上下文预填充期�
 | I6 文本 | 发给模型的文本须是合法 UTF-8；用户输入和工具输出在各自入口处理 |
 
 `validate()` 检查 I1–I4，Debug 构建在 `build` 前断言；I5–I6 由组装与文本边界维持。
-加进带调用的 assistant 后，历史暂时打开；调度器必须为每个调用回填结果后才能再次请求模型。
+加进带调用的 assistant 后，历史暂时打开；ActionDispatcher 必须为每个调用回填结果后才能再次请求模型。
 `safe_cuts()` 提供 user / assistant 之前的边界，在闭合历史上不会拆开一个工具批。
 
 `build` 复制 system、有效历史和当前工具定义，填上模型参数。历史通常只追加，system 在本次会话打开期间固定，
@@ -193,7 +174,7 @@ idle timeout 看收到的字节，包括 SSE 注释。大上下文预填充期�
 ### 给模型的状态说明
 
 标准说明集中在 `agent/conversation.hpp` 的 `texts` 常量及 `agent/compaction.*` 的格式化函数。
-调用方与回放共用它们；不在文档里复制一份可变的实现文本。
+实时提交与恢复共用它们；不在文档里复制一份可变的实现文本。
 
 | 标记 | 语义 |
 | --- | --- |
@@ -211,11 +192,11 @@ idle timeout 看收到的字节，包括 SSE 注释。大上下文预填充期�
 
 1. 用户输入修复为合法 UTF-8，追加进历史并记录，发 `TurnStarted`。
 2. 检查模型调用上限；在下一步主请求前处理 MCP 连接、刷新与重连，再按整请求预算自动压缩。
-   MCP 的重连、等待与断线通知只由主 Agent 做（`subagent_depth == 0`）；子 Agent 只用构造时的工具快照。
-3. 发 `StepStarted`、请求前的 `ContextUpdate`，调用 Model，向 Sink 转发可见流事件。
+   MCP 的重连、等待与断线通知只由主会话做（`SessionConfig::is_main`，经 `SessionResources::begin_step`）；子会话只用创建时的工具快照。
+3. 发 `StepStarted`、请求前的 `ContextUpdate`，调用 `ModelSession::complete`，向 Sink 转发可见流事件。
 4. 返回后更新 usage 和估算校正，保存有效 assistant 回复；没有工具调用则结束。
-5. 有工具调用则交给调度器，有序回填结果；未中断、未被用户拒绝且未到上限时继续。
-6. 所有正常及已知错误退出路径汇入 `finish`：补齐仍打开的调用、记录并同步 `turn_end`、交付待报告 MCP 警告，
+5. 有工具调用则交给 ActionDispatcher，有序回填结果；未中断、未被用户拒绝且未到上限时继续。
+6. 所有正常及已知错误退出路径汇入 `TurnRunner::finish`，`Run::finish` 只成功一次：补齐仍打开的调用、记录并同步 `turn_end`、交付待报告 MCP 警告，
    最后发 `TurnEnded`。记录停用时只能保证内存与事件收尾，不能保证落盘成功。
 
 执行工具看 `tool_calls` 是否为空，不依赖服务端的 finish reason。正文因 `length` 或 `content_filter` 截断时提示后
@@ -231,42 +212,41 @@ idle timeout 看收到的字节，包括 SSE 注释。大上下文预填充期�
 
 ## 6. 工具调度
 
-工具语义见 [tools](tools.md)。调度器只决定顺序、权限和并行：
+工具语义见 [tools](tools.md)。ActionDispatcher 只决定顺序、权限和并行：
 
 ```text
-tool_calls → 查 Registry → prepare → Intent → Policy
-                                               ├─ 允许 → 串行执行或加入只读并行组
-                                               ├─ 询问 → Approver → 执行或拒绝
-                                               ├─ ask / exit_plan → Asker（不进工具线程）
-                                               └─ 拒绝 → 生成结果
-结果按原调用顺序 → Conversation → Recorder → ToolFinished
+tool_calls → ActionCatalog.prepare → 普通 PreparedTool ── PreparedIntent → Policy
+                                   │                                 ├─ 允许 → 串行执行或加入只读并行组
+                                   │                                 ├─ 询问 → Approver → 执行或拒绝
+                                   │                                 └─ 拒绝 → 生成结果
+                                   └─ ControlRequest → ControlActionExecutor（不进工具线程）
+结果按原调用顺序 → SessionCommitter（Conversation + 记录 + ToolFinished）
 ```
 
 可并行的是 Policy 直接放行的 read 意图，以及获准使用 `read_only` 沙箱的 bash；写入、编辑、MCP 和经过询问的调用
 串行执行。连续的可并行调用构成一组，分块创建线程，每块最多 8 个。
 
-遇到不能加入挂起组的调用，先运行并等待整个组，再重新 prepare 当前调用。这样「read a → edit a」能使用刚读到的
-FileTracker，「edit a → edit a」的后一个 diff 基于前一个修改。权限对话框也只在前面的挂起组结束后出现。
+遇到不能加入挂起组的调用，先运行并等待整个组，再重新 prepare 当前调用并重新判权、重算并行类别。这样「read a → edit a」
+能使用刚读到的 FileTracker，「edit a → edit a」的后一个 diff 基于前一个修改。权限对话框也只在前面的挂起组结束后出现。
 
-执行顺序可并行，结果提交顺序固定。调度器只提交已有结果的连续前缀，能提交就尽早落盘，避免后续崩溃丢掉已完成
-调用的结果。未知工具不需要 prepare，不触发挂起组执行；其结果仍按原序提交。
+执行顺序可并行，结果提交顺序固定。只提交已有结果的连续前缀，能提交就尽早落盘，避免后续崩溃丢掉已完成调用的结果。
+并行组的 tool_started 在父执行线程上按原顺序先写，再分块执行（L07）。未知工具不需要 prepare，不触发挂起组执行；
+其结果仍按原序提交。
 
 用户直接拒绝使本批余下调用跳过、本轮 `denied`；拒绝附说明只拒绝当前调用，本轮继续。策略拒绝同样只是工具错误
-结果，不直接结束一轮。MCP 断开在提交结果时标记，并附给模型的重连说明；Registry 留到下一安全点更新。
+结果，不直接结束一轮。MCP 断连是工具结果里的执行信号（`McpDisconnected`），提交时经 `SessionResources::mark_disconnected`
+追加 T12/T13；工具目录留到下一步边界更新。
 
 ### task 组
 
-`Intent::Kind::task` 在权限判定里直接放行（真正的检查发生在子 Agent 自己的 Policy），并单独成组：连续 task 调用
-不与只读组混跑，类别切换会先 flush 挂起组。组宽度取 `run.max_parallel_tasks`（默认 4），超出的调用分块排队，
-块内 join 完才开下一块，不退化为串行。
-
-组内每个线程执行一次 `TaskCall::do_run`：按定义派生 `Setup`、`create_child`、把子 Agent 的整轮跑完，再把结果按
-父调用 id 组装成 `TaskView`。子 Agent 的事件用 `SubEvent` 信封实时转发给父 Sink，但**不写进父历史**；父只收到
-最终文本与逐条工具摘要。子 Agent 自己的 `Recorder`、`Conversation`、`Policy`、`Registry` 与 FileTracker 完全独立。
+task 在权限判定里直接放行（真正的检查发生在子会话自己的 Policy），并单独成组：连续 task 调用不与只读组混跑，类别切换
+会先执行挂起组。组宽度取 `run.max_parallel_tasks`（默认 4），超出的调用分块排队，块内 join 完才开下一块，不退化为串行。
+组内每个线程构造一次 `DelegationContext` 并调用 `DelegationChannel::delegate`，结果按父调用 id 组装成 `TaskView`。
+子 Agent 的事件用 `SubEvent` 信封实时转发给父 Sink，但**不写进父历史**；父只收到最终文本与逐条工具摘要。
 
 ## 7. 权限与沙箱
 
-Policy 是纯逻辑，不弹窗、不读配置。它依据 `Intent` 的规范化路径、命令分析和外部工具名给出 allow / ask / deny；
+Policy 是纯逻辑，不弹窗、不读配置。它依据 `PreparedIntent` 的规范化路径、命令意图（`CommandIntent`）和外部工具名给出 allow / ask / deny；
 允许时的 `Grant` 决定 bash 沙箱和网络权限。工作区根决定写入范围。
 
 ### 模式和默认规则
@@ -289,7 +269,7 @@ Policy 是纯逻辑，不弹窗、不读配置。它依据 `Intent` 的规范化
 | edit / write | ask 下询问；workspace 放行工作区内普通路径；unrestricted 全部放行 |
 | 已知只读 bash，沙箱可用 | 自动允许，但仍放进 `read_only` 沙箱；前置 `cd` 到 workspace 内不改变只读结论 |
 | 其他 bash，完整 workspace profile 可用 | ask 询问、workspace 自动；均使用明确范围且默认不联网 |
-| 写入型 bash 的 workspace profile 不可用 | 交互入口询问一次性 full_access，明确提示可访问网络、受保护数据和 `.git`；headless 返回“需要批准”且不执行 |
+| 写入型 bash 的 workspace profile 不可用 | 交互入口询问一次性 full_access，明确提示可访问网络、受保护数据和 `.git`；非交互运行返回“需要批准”且不执行 |
 | MCP 工具 | ask / workspace 询问；unrestricted 放行；plan 拒绝 |
 
 这个 full_access 兼容路径不是自动降级：每个调用都必须由用户明确批准，不提供会话级复用；拒绝后不执行。
@@ -305,7 +285,7 @@ plan 在此基础上给出规划专用反馈，使模型改为调研和提案而
 
 ### Approver 与会话授权
 
-`Approval` 携带 call id、完整 Intent、实际 cwd、当前模式、增量权限请求、原因、部分执行状态和有效期选项。
+`Approval` 携带 call id、完整 PreparedIntent、实际 cwd、当前模式、增量权限请求、原因、部分执行状态和有效期选项。
 `Decision` 支持单次允许、会话允许、拒绝、拒绝附说明；执行前记录用户回答。Approver 应在 stop 后立即结束等待，
 核心按取消处理而非普通拒绝。run 模式传空 Approver；需要询问的操作得到策略拒绝结果并让本轮继续。
 
@@ -337,19 +317,25 @@ Shift+Tab 或走过 `exit_plan`。
 | workspace | read_only，可询问 | workspace，可询问 | ask，可询问 |
 | unrestricted | read_only，可询问 | 降级 workspace，可询问 | ask，可询问 |
 
-`may_ask=false` 时子 Agent 的 approver 传空：需要批准的操作返回「当前运行方式没有审批器」的工具错误，模型自行
+`may_ask=false` 时子会话的 RunServices 不带审批出口：需要批准的操作返回「当前运行方式没有审批器」的工具错误，模型自行
 收手，不新增禁用机制。unrestricted 不继承：用户给 unrestricted 是针对自己盯着的这个会话，不是对自主运行的
 子 Agent 的授权。会话授权双向不继承：子 Agent 新建 Policy、规则表为空；子 Agent 里点的「本会话允许」只记在子
 Policy，随子 Agent 销毁，一次 task 不会给父会话种规则。高危硬拦与用户显式拒绝在子 Agent 内同样生效。
 
-### Asker、ask 与 plan
+### 控制动作：ask、exit_plan、todo、task
 
-`Question` 带 2–4 个选项、单/多选和自由输入开关；`Answer` 保存下标、自由文本或取消。内置 `ask` 的 prepare
-生成交互 Intent，调度器直接调用 Asker 并把答案转成普通工具 Result/AskView，因此会话回放自然保留题目和选择。
-每轮第四次提问被拒；headless 没有 Asker 时返回说明，要求模型自行选择、声明假设并继续。
+这四个动作的名字、Schema 和说明与原工具一致，但不是普通工具：`ActionCatalog::prepare` 把它们解析成类型化的
+`ControlRequest`（AskRequest / PlanConfirmation / PlanReplacement / DelegationRequest），由 `ControlActionExecutor`
+按各自规则执行，权限层、循环和前端不再按工具名判断。
 
-plan = planning 状态 + read_only。`exit_plan(summary)` 的三个选项由核心固定：切 workspace 开始、切 ask 开始、
-或留在 plan 继续。取消结束本轮并保留 plan。headless 的 exit_plan 返回无法确认的工具错误，模型仍可给出最终方案。
+- **ask**：`Question` 带 2–4 个选项、单/多选和自由输入开关；经 Asker 等待 `Answer`（下标、自由文本或取消），结果为普通
+  ToolResult + AskView，因此历史里保留题目和选择。每轮第四次提问被拒；非交互运行没有 Asker 时返回说明，要求模型自行选择、声明假设并继续。
+- **exit_plan**：plan = planning 状态 + read_only。`exit_plan(summary)` 的三个选项由核心固定：切 workspace 开始、切 ask 开始、
+  或留在 plan 继续；接受时先发 `ModeChanged` 再提交工具结果。取消结束本轮并保留 plan；非 planning 状态或非交互运行返回原有错误文本。
+- **todo**：整份计划替换；到原序提交点由 SessionCommitter 同时更新 WorkPlan 并写带 TodoView 的 tool 记录（见第 10 节）。
+- **task**：经 `DelegationChannel` 委派，见第 12 节。
+
+ask/exit_plan 实时发 ToolStarted，但不写 tool_started 记录（L12）。
 
 ## 8. 上下文预算与压缩
 
@@ -361,7 +347,7 @@ trigger = limit × compaction_trigger_percent / 100
 target  = limit × compaction_target_percent / 100
 ```
 
-有效窗口优先取 ProviderConfig.context_window，0 时回落全局。ContextOptions 默认窗口 262144、安全余量 8192、触发 80%、目标 60%。若 max_tokens 为 4096，则 limit 为 249856。
+有效窗口优先取模型公开描述 `PublicModel::context_window`，0 时回落全局。ContextOptions 默认窗口 262144、安全余量 8192、触发 80%、目标 60%。若 max_tokens 为 4096，则 limit 为 249856。
 预留量用尽窗口时预算为零，非空历史不能继续请求。估算包含 system、工具定义和历史；不能只统计消息正文。
 
 `TokenEstimator` 用真实 prompt usage 校正上一次请求估算。摘要单独 estimate / observe；主请求在压缩后重新 build
@@ -401,7 +387,8 @@ target  = limit × compaction_target_percent / 100
 
 ### 提交、失败与触发
 
-裁剪和摘要先在历史副本上完成，最终才提交历史、写记录、发 `Compacted` 与 `ContextUpdate`。
+`Compactor` 只读会话，在副本上算出 `CompactionChange`（候选历史、裁剪序号、keep_from、摘要）；成功后由
+`SessionCommitter::commit_compaction` 一次安装内存历史，再按顺序写 prune / compaction、发 `Compacted` 与 `ContextUpdate`。
 **摘要取消不提交历史或压缩记录**，也不会把半截摘要当主对话回复保存。
 
 摘要为空、被拒或重试耗尽时，退化为整批丢弃旧历史并警告。已有摘要留在最前；没有摘要只能丢到下一条 user 之前，
@@ -418,8 +405,8 @@ target  = limit × compaction_target_percent / 100
 
 ## 9. 提示词与环境快照
 
-[system.md](../../home/system.md) 和 [compact.md](../../home/compact.md) 位于安装根，由入口在创建或恢复会话前
-读取到 Setup。`config.json` 的 `prompts.system` 与 `prompts.compact` 可以改名或指向其它文件，相对路径规则见
+[system.md](../../home/system.md) 和 [compact.md](../../home/compact.md) 位于安装根，由 app 装配在创建或恢复会话前
+读取并渲染（`app/prompt`）。`config.json` 的 `prompts.system` 与 `prompts.compact` 可以改名或指向其它文件，相对路径规则见
 [app](app.md)。提示词不再编入二进制，修改后下一次会话立即生效。模板都经 workspace 的 inja 渲染，模板错误
 或文件读取失败会使启动失败。
 
@@ -430,7 +417,7 @@ system 在创建或恢复时渲染一次，之后不随日期、git 状态或权
 | `cwd, os, shell, date` | workspace 环境采集 |
 | `git` | 仓库根、分支、状态、近期提交；不可用时 null |
 | `instructions` | 全局到当前目录的 AGENTS.md，包含来源、内容和截断标记 |
-| `model, project_root, sandbox, workspace_sandbox, sandbox_backend, sandbox_missing, permission_mode` | Setup 与启动环境及实际后端能力 |
+| `model, project_root, sandbox, workspace_sandbox, sandbox_backend, sandbox_missing, permission_mode` | 装配配置、启动环境及实际沙箱能力 |
 
 内置 system / compact 模板与核心给模型的文本固定英文，不随界面语言切换。
 主模板明确 `Reply in the user's language.`，即界面英文、模型回复跟随用户语言。
@@ -442,50 +429,72 @@ compact 模板保留六段结构，标题为 `User requests`、`Decisions made`�
 用户原话和路径逐字保留，优先于 1500 字的建议长度；从可见工具原文提取任务所需事实，省略占位不代表调用失败。
 渲染后的 system 写进会话记录供排查，恢复时仍按当前环境重新渲染。
 
-## 10. 会话记录与恢复
+## 10. 会话记录、恢复与历史投影
 
-[session](session.md) 负责 SQLite 顺序事件、脱敏和崩溃标记；`Recorder` 定义 payload，且只追加写入。
-消息序号 `n` 与 session 的事件序号 `seq` 不同：只有 user / assistant / tool 消耗 n，权限与压缩事件不消耗。
+[storage](storage.md) 负责 SQLite 顺序事件、脱敏、写锁和只读分页；核心定义记录字段与顺序。四条出口：
+
+1. `SessionCommitter` → `RecordCodec` → `JournalWriter`：持久历史。
+2. 核心事件 → backend 适配 → 协议事件：当前 UI/CLI 的实时信息。
+3. 只读存储 → `RecordCodec` → `HistoryProjector` → `HistoryItem`：历史显示。
+4. 只读存储 → `RecordCodec` → `SessionRecovery` → 显式恢复提交：继续执行。
+
+3 不调用 4。消息序号 `n` 与存储的 `seq` 不同：只有 user / assistant / tool 消耗 n，system、权限与压缩记录不消耗；
+摘要前缀在内存中用 ordinal −1，不另写记录。
 
 | type | payload 的主要字段 |
 | --- | --- |
-| `system` | `schema: 1, text` |
-| `user` | `n, text` |
-| `assistant` | `n, content, reasoning, tool_calls, finish`，有 usage 时另存 `usage` |
+| `system` | `schema: 1, text, model` |
+| `user` | `n, text`（首条决定列表标题） |
+| `assistant` | `n, content, reasoning, reasoning_signature, tool_calls, finish`，有 usage 时另存 `usage` |
+| `tool_started` | `schema: 1`、id/name/summary、实际 sandbox/backend/grant_source、analysis_version、读写/保护范围、通信开关 |
 | `tool` | `n, call_id, name, summary, text, is_error, interrupted, view` |
-| `permission` | `call_id, answer, rule, network`；只记录用户回答，不存为持久授权 |
+| `permission` | `schema: 2`、call_id、answer、rule、cwd、mode、network、partially_executed、requests；只记录用户回答，不恢复为授权 |
+| `permission_revoked` | `schema: 1, id` |
 | `prune` | `ordinals`；恢复时用工具摘要生成同样的占位 |
 | `compaction` | `keep_from, summary`；空 summary 表示丢弃前缀、保留既有摘要 |
-| `turn_end` | `status, error, steps, tool_calls, usage`；另允许记录状态 `crashed` |
+| `turn_end` | `status, error, steps, tool_calls, usage`；恢复闭合另用 `crashed` |
 
-usage 内字段是 `prompt, completion, cached`，避免被 session 按 `token` 等敏感键名脱敏。
-工具调用记录包含 `id, name, arguments`；View 使用 tools 的序列化。权限决定在对应 tool 记录之前写入。
-每轮结束、手动压缩结束及 Agent 析构时同步，不对每条消息 fsync。
+usage 内字段是 `prompt, completion, cached`，避免被按 `token` 等敏感键名脱敏。不存在 plan/mode/interaction 等额外记录类型：
+计划的持久来源是 todo 的 tool.view，规划确认的来源是 exit_plan 的调用与结果。
 
-写入或同步失败时 Recorder 记录错误并永久停用后续写入；Agent 通过 `broken()` 报告一次记录不可用，当前工作仍继续。
+### 提交路线
 
-### 回放与崩溃闭合
+SessionCommitter 为每种变化固定一条路线（完整清单见 [记录路线 L01–L23](../next-to-do/record-routes.md#4-逐入口路线表)）：
+user 出队时先加内存再写记录（L03）；完整回复写 assistant（L05）；普通动作执行前写 tool_started 再发 ToolStarted（L06/L07）；
+结果按槽位写 tool 并发 ToolFinished（L08）；审批有回答时先写 permission（L09），回答前取消则不写（L10）；撤销授权写
+permission_revoked（L11）；todo 在同一提交内更新 WorkPlan 并写 tool（L13）；取消时只保存「正文 + 中断标记」（L15）；
+压缩按 prune → compaction 顺序（L16）；收尾补齐仍打开的调用、写 turn_end 并 sync（L17/L18）。
+每轮结束、手动压缩结束和会话销毁时同步，不对每条消息 fsync。
 
-`replay_into` 校验 schema、字段和消息序号，重建 Conversation，同时发历史显示事件。
-`prune` 和 `compaction` 只改变有效上下文；已发生的工具显示仍从原始记录回放。因此界面可以保留旧工具详情，
-模型只看到压缩后的历史。切点必须安全，裁剪对象必须是 tool；`next_ordinal` 从全记录序列继续。
+第一次写入或同步失败后提交器进入 broken：停用后续写入、只发一次 error Notice，当前回合与内存状态继续（B23）。
+UI 显示完成不代表记录可靠保存；broken 状态进入会话快照。
 
-最后一轮没有 `turn_end` 时，先在内存副本中投影缺失结果并验证历史，确认合法后才打开 Writer 续写：
-为没结果的调用补 T9，再追加 `turn_end{crashed}` 并同步；第二次恢复不会重复补齐。T9 表示结果未知，
-不能声称没有执行，因为修改可能已完成但结果尚未落盘。
+### 恢复与崩溃闭合
 
-恢复后使用当前配置重新渲染 system、写新的 system 记录；模型与最近 system 记录（旧记录回落到 meta）不同会提示。system 记录包含当前模型名，
-回放发出 ModelChanged 更新后续消息的模型标签。
-FileTracker 和会话授权均从空开始，MCP 重新连接；旧读取状态不能用于覆盖已被外部改动的文件。
-不认识的 schema 或不一致历史直接报错，不猜测修复。
+`SessionRecovery::restore` 按 seq 读取全部记录，经 RecordCodec 解码后重建 Conversation、WorkPlan（旧 TodoView）、
+最近模型、next_ordinal 与仍打开的调用，并在副本上校验协议不变式。它不执行工具、不调模型、不写库、不发事件。
+`prune` 和 `compaction` 只改变有效上下文，切点必须安全、裁剪对象必须是 tool。
 
-`resolve_session_id` 只搜索当前规范化 cwd，接受完整 id 或唯一前缀，歧义时列候选；完整 id 也不能跨 cwd 恢复。
-`--continue` 选当前 cwd 最近更新的会话。标题来自首条用户输入第一行，截到 60 个字符，列表再按显示宽度排版。
+显式恢复（L20）在取得写租约后打开续写器：为没结果的调用补 T9 结果、追加 `turn_end{crashed}` 并同步，再按当前环境
+重新渲染 system 并写新的 system 记录。T9 表示结果未知，不能声称没有执行，因为修改可能已完成但结果尚未落盘；
+不根据任何记录自动重做工具。第二次恢复不会重复补齐。FileTracker 和会话授权从空开始，MCP 使用当前连接。
+不认识的类型、非法必需字段或不一致历史直接报 corrupt，不猜测修复；旧记录缺 system.model、reasoning_signature、usage、
+protect_sensitive_names 或旧 permission 形状时按兼容规则读取。
+
+### 历史投影
+
+`HistoryProjector` 把每条记录投影为 0 或 1 个 `HistoryItem`（user、assistant 含正文与思考、tool_started、tool、system 的模型标签、
+turn_end）；`HistoryCursor` 跨页只保存 ordinal、角色、开放调用与裁剪目标等元数据，校验 ordinal 连续、工具配对、
+prune 目标和 compaction 切点。投影不构造 Session、模型或 MCP，也不追加记录；压缩不删除可见历史，历史 turn_end 不触发当前队列 drain。
+
+会话 ID 解析只搜索当前规范化 cwd，接受完整 id 或唯一前缀，歧义时列候选；完整 id 也不能跨 cwd 恢复。
+`--continue` 选当前 cwd 最近更新的顶层会话。
 
 ## 11. MCP 生命周期
 
-协议和单个 Client 见 [mcp](mcp.md)，工具包装见 [tools](tools.md)。McpHub 在构造时为每个 server 启动后台连接，
-立即返回；**启动不等 MCP，每一步模型请求前等待连接结果**，防止模型因首轮没有工具而直接放弃任务。
+协议和单个 Client 见 [mcp](mcp.md)，Hub 与工具包装见 [tools](tools.md)。`tools::McpHub` 在后端装配时为每个 server
+启动后台连接并立即返回；**启动不等 MCP，主会话每一步模型请求前经 `SessionResources::begin_step` 等待连接结果**，
+防止模型因首轮没有工具而直接放弃任务。
 
 ```mermaid
 stateDiagram-v2
@@ -499,110 +508,36 @@ stateDiagram-v2
     ready --> failed: 重连后再次断开
 ```
 
-每个 server 在当前 Hub 生命周期里只自动重连一次；初始连接失败不重试。新建或恢复会话会创建新 Hub。
-断开调用的结果追加 T12 / T13，告诉模型下一步会重连还是已不可用；同批重复断开只标记一次。
+每个 server 在当前 Hub 生命周期里只自动重连一次；初始连接失败不重试。断开调用的结果追加 T12 / T13，告诉模型下一步
+会重连还是已不可用；同批重复断开只标记一次。步骤边界依次：移除 failed / disconnected 服务的旧工具并为首次断开启动重连；
+有 connecting / reconnecting 时发等待 Notice 并可取消地等待，至多 `mcp.connect_timeout_ms`；合并已完成连接，
+`on_tools_changed` 只置原子标志、在此处刷新。连接线程只交接 Client、状态和警告；警告在边界或轮末交付一次。
 
-`apply_pending` 是 agent 线程上、两次主模型请求之间的安全点：
+子会话创建时调用一次 `snapshot`：把当前 ready 服务的工具合并进子注册表，不等待、不重连、不发通知。工具项持有 Client 的
+`shared_ptr`，因此目录刷新或重连不会让仍被子快照引用的连接悬空。子 Agent 的默认工具集不含 `mcp__*`，定义里显式写出才有。
 
-1. 移除 failed / disconnected 服务的旧工具，再销毁 Client；为首次断开启动重连。
-2. 有 connecting / reconnecting 时发等待 Notice，可取消地等待，至多 `mcp.connect_timeout_ms`。
-   等待到期仍未完成的连接暂不带工具继续，后来连接成功可在下一步合并；连接本身另有超时。
-3. 合并已完成连接；`on_tools_changed` 只置原子标志，在这里 refresh 后替换该服务的工具。
-4. 刷新失败沿同一状态机重连或停用，在本次安全点内继续处理；刷新取消保留标志，不消耗重连机会。
-
-连接线程只交接 Client、状态和警告，不保留一轮的 Sink。警告在安全点或轮末交付一次；失败服务不阻止其他服务使用。
-状态快照中的 ready 表示连接及工具发现完成，Registry 仍只在安全点更新，工具执行中途不变更。
-
-`snapshot(registry)` 供子 Agent 构造时调用一次：锁内读取 ready 服务的 Client，把工具合并进子 Agent 自己的
-Registry；不等待、不重连、不发通知。子 Agent 的默认工具集不含 `mcp__*`，定义里显式写出才会拿到。Client 指针的
-赋值与重置都在锁内，读指针的 `snapshot` 因此不会与重连线程竞争。
-
-锁内只交接状态、连接和警告；连接、刷新、Client 析构、join、Sink 均在锁外。
-关闭时先停止全部连接线程再逐一 join，Registry 已先销毁，避免工具引用失效 Client。
-界面显示及轮询见 [ui](ui.md#7-活动与状态)，run 模式在 stderr 报告失败，jsonl 同时保留结构化 Notice。
-
-## 12. 配置装配与非交互入口
-
-`Setup` 是 Agent 的全部输入，包含 `Options`、`ProviderConfig`、HTTP、工作区与项目根、外围 Options、MCP server
-列表、沙箱探测结果、权限模式、只读/plan 状态及两份提示词文本。Agent 不读配置文件；安装根与密钥归 app 管理。
-
-`main` 在任何线程创建前安装信号处理，然后解析参数、读取安装根中的配置、初始化日志，分派三种模式：
-
-| 模式 | 入口行为 |
-| --- | --- |
-| 交互 | 新建或恢复会话，调用 `ui::run_interactive` |
-| `run` | 新建或恢复会话，按三档权限、`--read-only` / `--plan` 完成一轮后退出 |
-| `sessions` | 精确列当前 cwd 最近 20 个会话，本地时间、50 列标题、完整 id |
-
-进程不 chdir；所有模块显式接收 `Args::cwd`。权限优先用 `--permissions`，再用配置，默认 workspace。
-交互强制关闭日志的 `also_stderr`，避免污染全屏；run 沿用配置。
-
-### 输出格式
-
-| `--output` | stdout | stderr |
-| --- | --- | --- |
-| `text` | 结束时打印最后一步正文，不流式写入 | 工具进度、Notice、重试及等待模型的心跳 |
-| `json` | 结束时一个结果对象 | 同 text |
-| `jsonl` | 第一行 session 元信息，随后实时 Event，一行一个 JSON | 启动错误及 warn / error Notice；info 留在 jsonl |
-
-json 结果字段为 `session_id, status, error, result, steps, tool_calls, usage, duration_ms`。
-jsonl 的首行为 `{"type":"session","id":"…","resumed":false}`。恢复时非交互前端不输出历史回放。
-text / json 的结果缓冲在新步和流重试时重置，使重试的半截输出不会混入最终结果。
-
-`ToolOutput` 的任意字节分片可能截断 UTF-8 字符，jsonl 按调用 id 暂存尾部字节，与下一片拼接；调用结束仍不完整才
-替换为 U+FFFD。stdout 被关闭时 jsonl 取消本轮并返回 1，text / json 最终写出失败不改变运行状态。
-
-### 信号与退出码
-
-main 忽略 SIGPIPE，并在其他线程启动前屏蔽 SIGINT / SIGTERM，由 sigwait 线程处理。
-可优雅结束期间第一个信号请求 stop，第二个信号直接 `_Exit(130)`；加载配置、读取 stdin 等轮外阶段直接退出。
-exec 在子进程中清空信号屏蔽，工具的 SIGTERM 清理因此仍然有效。
-
-交互的 raw 模式 Ctrl+C 是按键，行为由 ui 决定；全屏期间的进程信号走退出流程，先还原终端，再等待任务结束。
-工具取消的实际时延取决于底层取消和进程清理，不能把「即时触发 stop」理解成所有任务固定在某时限内结束。
-
-| 情况 | 退出码 |
-| --- | --- |
-| run 的 done；正常关闭交互；列表成功 | 0 |
-| run 的 failed / limit / denied，启动失败，jsonl 写出失败，交互工作线程异常 | 1 |
-| 参数或配置错误 | 2 |
-| run 被信号中断，或交互因进程中断信号退出 | 130 |
-
-## 13. 子 Agent 与 task 工具
+## 12. 子 Agent 与 task
 
 `task(agent, prompt)` 把一段自足任务交给一个在独立上下文里运行的子 Agent，父只收回最终文本与 `TaskView` 里的
-逐条工具摘要。定义来自安装根 `home/agents/*.md` 的 frontmatter 与正文（正文是子 Agent 的 system prompt）；
-`app::load_subagents` 校验名字唯一、`permission` 取值、`model` 引用和上限，未知键只 warn。
+逐条工具摘要。定义来自安装根 `agents/*.md` 的 frontmatter 与正文（正文是子 Agent 的 system prompt）；
+app 校验名字唯一、`permission` 取值、`model` 引用和上限，未知键只 warn。
 
-不变量：
+- `DelegationContext` 是执行时构造的不可变值：父 session/run/call、父当前权限快照、子定义、允许工具、模型名、
+  父 Sink/Approver 与 stop；不含可写父 Session。子会话生命周期严格在一次 `delegate` 内，父等待整组结束，按原顺序回填。
+- 禁止二级子 Agent：子会话的动作目录不含 task；子会话也不能使用 ask / exit_plan（没有 Asker，也不参与规划确认）。
+- `allowed_tools` 取定义里的 `tools`，缺省继承父工具名再剔除 `task` / `ask` / `exit_plan` 与 MCP 工具。
+- 定义未指定模型时继承父当前模型；显式指定时按配置名解析。
+- 子会话记录带 `parent_id` / `agent_name`，不进 `sessions` 列表与 `/resume`，按父会话列出供界面浏览。
 
-- 子 Agent 生命周期严格在一次 `do_run` 内，同步整组并发：一批 task 全部启动、全部完成后按原顺序回填结果。
-  不跨轮存活，不需要注册表或引用计数；`TurnContext` 在整轮内有效，dispatch 返回前所有 task 线程已 join。
-- 禁止二级子 Agent 有三重保险：`subagent_depth > 0` 不注册 task 工具；派生 `allowed_tools` 时剔除 `task`；
-  `TaskCall::do_run` 开头按 depth 直接返回错误。
-- `allowed_tools` 取定义里的 `tools`，缺省继承父注册工具名再剔除 `task` / `ask` / `exit_plan` 与 MCP 工具；
-  显式写 `mcp__*` 才会拿到对应 MCP 工具。
-- `Setup` 的其余字段原样继承：cwd、project / control / git root、工具与工作区选项、session、http、压缩提示词；
-  `subagents` 清空、`mcp_servers` 清空（只取快照）、`host` 用同一个 shared_ptr。
-- `parent_session_id` / `subagent_name` 进 Recorder Meta，子会话带 `parent_id` / `agent_name`，`sessions` 列表与
-  `/resume` 不显示子会话；`session::list_children` 按父会话升序列出，供界面切换与按需回放。
+中断与错误：父的取消传到全部子 Run，各自以 interrupted 收尾，父标记 interrupted；子等待审批时被中断会立即结束等待；
+子会话创建失败、模型打不通或未产出结论都转成 `is_error` 的结果；子触到自己的调用上限属正常收尾。
+子会话需要询问时，`Approval` 带上 `agent` 与 `origin_call_id`，经同一交互代理串行显示；等待审批的子会话阻塞，其余继续。
 
-中断与错误传播：父的 stop_token 透传给所有子 `run_turn`，各自返回 `interrupted`，task 组内 jthread 析构 join，
-父 dispatch 标记 interrupted；子 Agent 等审批时被中断，`AgentHost::approve` 的 stop_callback 立即完成 promise
-返回 deny 并释放审批锁，不死锁；子 Agent 创建失败、模型打不通或未产出结论都转成 `is_error` 的 Result；子 Agent
-触到自己的调用上限属正常收尾，父侧不视为错误。
+## 13. 当前范围
 
-审批来源：子 Agent 需要询问时，`Approval` 带上 `agent` 与 `origin_call_id`，由 `AgentHost::approve` 串行化，
-任一时刻只有一个对话框；等待审批的子 Agent 阻塞，其余继续跑。
-
-## 14. 当前范围
-
-当前提供单会话、每轮单模型的文本编码 Agent（空闲时可用 `/model` 在同一会话切换），支持 read/write/edit/bash/grep/glob/todo/ask/exit_plan、
-MCP tools、并发子 Agent（`task` + `home/agents/*.md`）、非交互与终端前端、记录恢复和上下文压缩。
+当前提供单会话、每轮单模型的文本编码 Agent（空闲时可在同一会话切换模型），支持 read/write/edit/bash/grep/glob、
+todo/ask/exit_plan/task 控制动作、MCP tools、并发子 Agent、终端与非交互前端、记录恢复和上下文压缩。
 尚未实现多模型路由、图片输入、web_fetch、hooks、插件或会话全文搜索。
-编解码器目前只有 OpenAI Chat Completions，MCP 的协议限制见其模块文档。
 
 子 Agent 之间不直接通信、不向父追问、不跨轮存活、不参与 MCP 重连与通知投递，也不支持多级嵌套与单独的凭据配置。
-
-构建与真实功能验证约定见 [文档索引](../README.md)。开发模型为本地 Qwen3.8-Flash-Next；文档和实现不依赖
-`temp/` 中的临时检测程序，也不依赖旧里程碑计划。
+构建与真实功能验证约定见 [文档索引](../README.md)。

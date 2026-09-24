@@ -2,7 +2,7 @@
 /// @brief InteractionBroker：审批/问答等待的一次性终结与单模态排队。
 ///
 /// 核心只请求交互；等待期间不持有队列锁、Policy 锁或控制器锁。回答/取消走即时路径，
-/// 不经过被 run_turn 阻塞的业务队列（状态机 §6/§9）。前端出口由 UI/协议适配实现。
+/// 不经过被当前 Run 阻塞的业务队列（状态机 §6/§9）。前端出口由 UI/协议适配实现。
 #pragma once
 
 #include <condition_variable>

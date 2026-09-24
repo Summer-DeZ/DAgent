@@ -1,7 +1,8 @@
 # ui：应用层交互界面
 
 `dagent` 不带子命令时进入全屏终端界面。公开头文件在 `src/public/ui/`，实现在 `src/private/ui/`，
-库为 `dagent_ui`。界面只消费 agent Event、提交输入并返回权限决定；模型循环、工具执行和权限规则仍属于核心。
+库为 `dagent_ui`，只依赖 client、protocol、tui 与 base。界面运行在前端进程，只持有 `client::Client`、协议 DTO
+与页面状态：业务操作都经 [私有协议](protocol.md) 发给自己的后端，执行状态、队列、模式与模型的真值都在后端 runtime。
 它只使用冻结的 [TUI 框架](tui-framework.md)，没有为应用视觉增加框架原语。
 
 界面 chrome 使用英文，统一来自 `ui/strings.hpp` 的 `Strings` 和 `ui/strings.cpp` 的常量表。
@@ -11,20 +12,23 @@
 
 ## 1. 组成与控件树
 
-公开入口 `run_interactive(agent::Setup, InteractiveOptions, agent::Interrupts&)` 负责加载主题、创建或恢复 Agent，
-然后进入内部 `Shell`。主要部件如下。
+公开入口 `run_interactive(Client&, FrontendBridge&, InteractiveOptions, stop_token)` 在后端已完成 initialize 后调用：
+加载 initialize 返回的主题文件，按初始快照建立页面，恢复启动时经 `session.history` 分页取回并回放历史，然后进入内部 `Shell`。
+`FrontendBridge` 把 Client 读线程上的事件、交互请求和断连转交到渲染线程；Shell 创建前到达的通知直接丢弃（此时尚无执行）。
+主要部件如下。
 
 | 部件 | 职责 |
 | --- | --- |
-| `Shell` | 控件寿命、工作队列、Agent 替换、命令、事件分派和退出 |
-| `Transcript` | Event 到 Document 块的实时/回放共用投影 |
+| `Shell` | 控件寿命、命令映射到 RPC、事件分派、快照/generation 跟踪、页面状态和退出 |
+| `Transcript` | 协议事件与历史条目到 Document 块的投影：`apply_live` 处理实时事件，`append_history` 回放历史且不触发当前 Run 收尾 |
 | `PromptBox`、`PromptInput` | 自动折行、按行数增高的多行输入；左侧竖条与框内尾行；发送、排队和取回 |
 | `StatusLine` | 底部一行：项目路径、上下文用量与命令面板提示 |
 | `Completion` | `/` 命令和 `@` 文件的贴输入框补全浮层 |
 | `Panel` | 命令、会话、主题和帮助共用的居中列表浮层 |
 | `ToastStack` | 右上角最多三条、五秒到期的瞬时通知 |
 | `SidePanel` | 右侧常驻信息栏：会话标题、上下文用量、MCP、最近一份 `TodoView`、项目与版本 |
-| `ApprovalDialog` | 权限审批与选项提问共用的模态骨架、输入和跨线程回答 |
+| `ApprovalDialog` | 权限审批与选项提问共用的模态骨架与输入；回答经 `interaction.answer` 提交 |
+| `projection` | 协议 DTO / View JSON → UI 自己的投影类型；不包含核心类型 |
 
 ```text
 LayerStack
@@ -71,20 +75,18 @@ panel 背景，不在底纹上打孔；底部状态栏沿用主背景。切换�
 
 ## 3. 线程与生命周期
 
-控件、Document、浮层和事件处理器只由渲染线程访问。Shell 有一个串行工作线程；以下操作进入其阻塞队列：
+控件、Document、浮层和事件处理器只由渲染线程访问。前端没有业务工作线程：
 
-- `Agent::run_turn`、手动压缩、新建和恢复会话；
-- `session::list`、git 环境收集和文件补全扫描；
-- Agent 产生的 Event 按值捕获后用 `Runtime::post` 回到渲染线程。
-
-审批由工作线程等待一次性 future，渲染线程打开模态对话框；回答与 stop callback 争用同一原子完成标志。
-`/new` 和会话恢复都在工作线程构建新 Agent，锁内交换指针、锁外析构旧对象。恢复成功后清空当前投影并用
-同一个 `Transcript::apply` 回放；失败只弹 error toast，保留当前会话。
+- 输入、命令、权限切换、回答等发 RPC；同步等待只用于启动阶段，运行中都用 `call_async`，结果 `post` 回渲染线程。
+- 后端事件由 Client 读线程经 `FrontendBridge` post 到渲染线程；`CallbackGate` 保证 Shell 析构后在途回调不再触碰页面。
+- Shell 记录当前 session_id 与 generation，丢弃旧 generation 的事件；`session.changed` 后取 `session.snapshot` 刷新标签。
+  new/resume 时清空投影并用 `session.history` 分页回放；切模型保留 Transcript，只更新标签与上下文。
+- 列表、历史、项目信息与文件补全都是后端查询；主会话与子 Pane 各有一个历史分页器，关闭页面时发 `session.history_close`。
 
 Shell 进入全屏后调用 `Terminal::set_mouse(true)` 打开鼠标上报，ScrollbackMouse 才收得到滚轮、
 拖选与双击；退出、挂起和 `run_external` 的还原由框架处理。
 
-活动动画忙时每 100 ms 更新；MCP 只在连接中或轮次忙碌时每 200 ms 取状态，稳定空闲后停止。
+活动动画忙时每 100 ms 更新；MCP 状态来自会话快照：只在连接中或轮次忙碌时每 200 ms 请求一次 `session.snapshot`，稳定空闲后停止。
 toast 使用一次性五秒定时器，文件补全使用一次性 80 ms 防抖；空闲时没有新增的周期唤醒。
 
 ## 4. 输入、补全与排队
@@ -101,8 +103,10 @@ PromptBox 左侧是一根竖条（忙碌时换成 `primary`），底纹用 `back
 补全列表的名称和描述使用统一列起点，按字素的终端显示宽度计算列宽；中文、宽字符和窄屏截断不以 UTF-8
 字节数计宽，长内容用省略号收尾，避免侵入右侧边框。
 
-输入和斜杠命令共用 FIFO 队列。忙时继续 Enter 会排队；QueueLabel 第一行显示数量，随后显示最近两条的首行。
-输入框为空时 ↑ 取回最后一条排队输入。收到 `TurnEnded` 或压缩完成后自动处理下一条。
+普通输入经 `input.submit` 进入后端内存 FIFO，忙时也立即提交；QueueLabel 按快照里的队列显示数量与最近两条的首行预览。
+输入框为空时 ↑ 发 `input.recall_last`，把最后一条仍排队的输入取回输入框。后端在 `turn_ended` 或压缩完成后自行处理下一条。
+斜杠命令不进队列，立即分派：业务命令（new、sessions、model、compact、plan、permissions）按原 busy 条件发请求，
+本地视图命令（theme、help、agents、exit、折叠与侧栏）在前端执行。
 
 | 按键 | 行为 |
 | --- | --- |
@@ -123,8 +127,8 @@ PromptBox 左侧是一根竖条（忙碌时换成 `primary`），底纹用 `back
 输入是单行且以 `/` 开头时，Completion 从 Shell 注册的命令表按前缀过滤。Tab 只补全，Enter 直接执行，
 不把命令提交给模型。命令表同时驱动 ctrl+p 与帮助面板，避免维护第二份标题和分类。
 
-光标前最后一个非空白串以 `@` 开头时打开文件补全。工作线程用 `workspace::files` 建一次项目文件缓存，
-再用 `fuzzy_rank` 取前八项；每次请求带 Completion 代次，过期结果被丢弃。Enter 用仓库相对路径替换 `@式` 并补空格。
+光标前最后一个非空白串以 `@` 开头时打开文件补全。80 ms 防抖后发 `workspace.complete`，后端用 `workspace::files`
+建一次项目文件缓存，再用 `fuzzy_rank` 取前八项；每次请求带 Completion 代次，过期结果被丢弃。Enter 用仓库相对路径替换 `@式` 并补空格。
 
 | 命令 | 行为 |
 | --- | --- |
@@ -146,7 +150,7 @@ PromptBox 左侧是一根竖条（忙碌时换成 `primary`），底纹用 `back
 | meta / Event | 显示 |
 | --- | --- |
 | `banner` | 新会话字标、项目信息和提示；恢复使用单行系统块 |
-| `TurnStarted` / `user` | `▌` 竖条、正文和整行 `background_element` |
+| `turn_started` / 历史 user | `▌` 竖条、正文和整行 `background_element` |
 | `TextDelta` | `MarkdownStream`，正文前留两列 |
 | `ReasoningDelta` / `thought` | 思考中显示 `· Thinking...`；正文开始或一轮结束时定稿成 `+ Thought: N.Ns`（accent），正文块收起 |
 | `ToolStarted` | 建立同组标题、开放主体和折叠行，按调用 id 保存 |
@@ -154,7 +158,7 @@ PromptBox 左侧是一根竖条（忙碌时换成 `primary`），底纹用 `back
 | `ToolFinished` | 用结构化 View 定稿名称、参数、右对齐统计和主体 |
 | `Compacted` | 永久的压缩前后 token 系统块 |
 | `Notice(error)` | 永久 error 块；info/warn 只进 toast |
-| `SubEvent` | 按 `parent_call` 归位：在对应 task 块正文追加子 Agent 的工具行，同时把内层事件喂给该子会话的 Pane |
+| 带 parent_session_id 的事件 | 按 parent_invocation_id / model_call_id 归位：在对应 task 块正文追加子 Agent 的工具行，同时把事件喂给该子会话的 Pane |
 | `TurnEnded` | interrupted/denied/limit/failed 留系统块；done 追加 `▣ 模式 · 模型 · 耗时` 尾行 |
 
 工具标题是状态符 + 加粗名称、muted 参数、右对齐统计三段；参数过长时省略。主体每行用 `│ `，折叠行独立用
@@ -170,14 +174,14 @@ PromptBox 左侧是一根竖条（忙碌时换成 `primary`），底纹用 `back
 
 ### 子会话 Pane
 
-Shell 持有 `std::vector<Pane>`：索引 0 恒为主会话，task 首次发 `SubEvent` 时按 `call_id` 建一个子 Pane
-（标题 `task · agent`，记录子会话 id），之后该子会话的内层事件同时喂给这个 Pane 的 Transcript。Pane 的
+Shell 持有 `std::vector<Pane>`：索引 0 恒为主会话，task 的子事件首次到达时按父调用 id 建一个子 Pane
+（标题 `task · agent`，记录子会话 id），之后该子会话的事件同时喂给这个 Pane 的 Transcript。Pane 的
 Scrollback 由 `ScrollFrame` 统一持有，`show()` disown 旧区、adopt 新区；鼠标处理器每个 Pane 一个，
 切换时解绑旧的、绑定新的。Ctrl+A / `/agents` 打开 Panel 列出主会话与全部 task；子 Pane 下输入框禁用，
 Ctrl+C 或再次切换回到主会话。
 
 活动期之外的子会话没有 Pane：恢复父会话时只还原 task 块，用户从 `/agents` 选中某个 task 时才用
-`session::replay` 在后台线程回放子会话记录，再把事件投影进新 Pane。
+`session.history` 分页读取子会话记录并投影进新 Pane。浏览是只读查询，不修改子会话记录或 updated。子 Pane 下提交输入被拒并保留草稿。
 
 ## 6. 状态、浮层与权限
 
@@ -204,11 +208,12 @@ unrestricted 的输入/消息尾行使用 error 色，plan 使用 accent 色。�
 
 ## 7. 退出与错误
 
-退出会请求当前轮停止、关闭工作队列并让 Runtime 退出。Runtime 返回后先还原终端，再 join 工作线程并析构 Agent，
-最后在普通终端打印恢复命令。全屏期间进程信号走同一优雅路径；第二次外部信号仍可由进程级机制强制结束。
+`/exit`、连续 Ctrl+C 或进程信号都走同一退出流程：请求当前 Run 取消，Runtime 退出并还原终端，随后前端发 `backend.shutdown`
+等待后端收尾（宽限 10 秒，超时回收自己创建的后端），最后在普通终端打印恢复命令。后端连接意外结束时界面显示错误并退出，
+不重连、不重发输入。
 
-工作线程最外层捕获未预期异常，记录日志、向对话追加错误并退出。单轮 failed、denied、limit 或模型连接失败只结束
-本轮，界面仍可继续接受输入。正常退出返回 0，进程信号退出返回 130，工作线程异常返回 1。
+单轮 failed、denied、limit 或模型连接失败只结束本轮，界面仍可继续接受输入。正常退出返回 0，进程信号退出返回 130，
+启动或通信失败返回 1。
 
 
 ## 模型切换
@@ -218,12 +223,12 @@ Ctrl+M 需要终端提供可区分的扩展按键编码；传统终端把它与 
 命令面板在忙碌时禁用切换；忙碌时直接输入 `/model` 也会提示不可用。
 
 模型 Panel 的 `a add` 打开七步表单：协议、配置名、base URL、模型 ID、API key（也可填 `env:VARIABLE`）、
-最大输出和上下文窗口。Enter/Tab 前进，Shift+Tab 返回，Esc 取消。保存工作在 JobQueue 执行，不阻塞渲染；成功后
-把新配置加入当前列表并自动切换，失败用 error toast 显示校验或写入错误。
+最大输出和上下文窗口。provider 种类与默认端点来自 `model.list`；Enter/Tab 前进，Shift+Tab 返回，Esc 取消。
+提交发 `model.add`（密钥只作为这次请求的 write-only 字段），成功后刷新列表并自动切换；失败用 error toast 显示校验或写入错误，
+保存成功但切换失败时如实提示。
 
-工作线程重新解析所选配置与密钥，通过 Agent::resume 恢复同一会话，锁内替换 Agent 指针、锁外析构旧对象。
-切换期间显示 switching model，普通输入排队；成功后在渲染线程更新输入框、后续消息尾行和 Context 预算。
-历史对话不清空，session ID 不变。失败弹 error toast，保持当前 Agent，随后继续处理排队输入。
-ModelChanged 事件使恢复后的历史消息仍显示当时的模型标签。密钥不进入面板或日志。
+选择后发 `session.select_model`，后端在空闲时按 B13/B14 准备候选、复用写租约并安装（见 [runtime](runtime.md#替换会话)）。
+成功后前端更新输入框、后续消息尾行和 Context 预算；历史对话不清空，session ID 不变。失败弹 error toast，
+后端保留当前会话。历史条目带当时的模型标签。密钥不进入面板、协议 DTO 或日志。
 
 本地 Qwen 与 Ollama 的跨协议切换、失败保留和回放已真实验证；远端切换尚未验证。

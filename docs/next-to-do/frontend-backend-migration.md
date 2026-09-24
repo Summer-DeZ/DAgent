@@ -1,6 +1,6 @@
 # DAgent 整体等价重构：范围、行为基线与总体决策
 
-状态：待实施。基线：`d614700`。本文件与 [对象设计](architecture-refactor.md)、
+状态：已实施（R01–R14 真实验收，见 [执行记录](implementation-tasks.md#7-执行记录)）。基线：`d614700`。本文件与 [对象设计](architecture-refactor.md)、
 [状态机](execution-state-machines.md)、[记录路线](record-routes.md)、[协议](frontend-backend-protocol.md)、
 [任务与验收](implementation-tasks.md) 共同构成规格。
 

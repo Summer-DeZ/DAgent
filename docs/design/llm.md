@@ -1,29 +1,32 @@
-# LLM 编解码：消息模型与 Provider
+# llm：模型客户端与 Provider 编解码
 
-属于 `dagent_agent`，头文件在 `src/public/agent/`，实现在 `src/private/agent/`。
-核心只传中立 `Request`、消费 `StreamEvent`；Provider 翻译 URL、鉴权、报文和错误。
-重试、取消、工具执行和压缩仍由 [agent 运行时](agent.md) 负责。
+模块 `llm`，库 `dagent_llm`，头文件在 `src/public/llm/`，实现在 `src/private/llm/`，命名空间 `dagent::llm`。
+只依赖 agent（中立消息与 `ModelSession` 端口）、net 与 base。核心只传中立 `Request`、消费 `Reply`；
+llm 负责 URL、鉴权、报文、流式累积、重试和错误分类。工具执行与压缩仍由 [agent](agent.md) 负责。
 
 ```text
-ProviderConfig → make_codec（每次请求一个实例）
-Request → encode → HTTP → SSE / NDJSON → decode → StreamEvent
-非 2xx → classify → Error → Model 决定重试或交给 Agent 压缩
+ProviderConfig → make_codec（每次尝试一个实例）
+Request → encode → HTTP → SSE / NDJSON → decode → StreamEvent → Model 累积 → Reply
+非 2xx → classify → Error → Model 决定重试；上下文超长交给核心压缩
 ```
 
 ## 1. 接口与边界
 
 | 文件 | 职责 |
 | --- | --- |
-| `agent/message.hpp` | Role、Message、ToolCall、ToolDef、Request |
-| `agent/llm.hpp` | StreamEvent、Error、Codec、token 估算 |
-| `agent/provider.hpp` | ProviderConfig、ProviderInfo、Framing、providers、find_provider、make_codec |
-| `agent/provider_detail.hpp` | Provider 内部共用的报文原语与工厂声明，不供 app 装配使用 |
-| `provider.cpp` | kind 注册表、工厂、通用 HTTP 错误分类 |
-| `provider_chat.cpp` / `provider_ollama.cpp` / `provider_anthropic.cpp` | 各协议的 encode、decode、classify |
+| `agent/message.hpp`（核心） | Role、Message、ToolCall、ToolSpec、ModelParams、Request |
+| `agent/reply.hpp`、`agent/port_model.hpp`（核心） | StreamEvent、Reply、Usage、ModelError、RetryOptions 与 `ModelSession::complete` 端口 |
+| `llm/codec.hpp` | Codec 接口与协议错误 `Error` |
+| `llm/provider.hpp` | ProviderConfig、ProviderInfo、Framing、providers、find_provider、make_codec |
+| `llm/provider_detail.hpp` | Provider 内部共用的报文原语与工厂声明，不供装配使用 |
+| `llm/model.hpp` | `Model`（实现 `agent::ModelSession`）与 `make_session` 工厂 |
+| `llm/llm.hpp` | `to_public`：ProviderConfig → 无凭据的 `agent::PublicModel` |
+| `provider.cpp` / `provider_chat.cpp` / `provider_ollama.cpp` / `provider_anthropic.cpp` | kind 注册表、工厂、通用 HTTP 错误分类；各协议的 encode、decode、classify |
 
-`Setup::provider` 替代原来的模型参数与专用 Codec 选项。`ProviderConfig` 包括 kind、配置名字、
-base_url、model、api_key、max_tokens、temperature、context_window、send_reasoning_content、
-include_usage 和 extra_body。app 解析密钥，核心不读取环境或配置文件。Codec 有流状态，不能跨请求复用。
+`ProviderConfig` 包括 kind、配置名字、base_url、model、api_key、max_tokens、temperature、context_window、
+send_reasoning_content、include_usage 和 extra_body。它只存在于 app 装配与 llm 内部：app 解析 `env:` 密钥后调用
+`make_session` 得到已配置的 `ModelSession`，核心、runtime 和前端只见 `PublicModel`（has_key 表示是否有密钥）。
+Codec 有流状态，不能跨请求复用。
 
 `ProviderInfo` 声明默认端点、SSE/NDJSON 分帧、是否必须提供 key/max_tokens。
 `make_codec` 对未知 kind 抛 `invalid_argument`。不探测模型能力或上下文窗口。
@@ -75,7 +78,7 @@ stop 且出现工具调用归 tool_calls，length 归 length，load/unload 等�
 
 总是显式设置 `options.num_ctx` 为有效窗口，`num_predict` 为输出上限。
 `extra_body.options` 仅补充未生成的采样参数，不能覆盖 num_ctx；think、keep_alive 等顶层参数可透传。
-窗口为 0 时由 Agent 统一回落到全局 `context.window_tokens`，相同窗口同时用于压缩预算和请求。
+窗口为 0 时由装配统一回落到全局 `context.window_tokens`，相同窗口同时用于压缩预算和请求。
 接口依据 [Ollama Chat 文档](https://docs.ollama.com/api/chat)。
 
 ## 4. 已实现但未验收：Anthropic
@@ -96,7 +99,7 @@ extended thinking 尚未开放；配置试图启用时明确拒绝。虽然保�
 
 共享分类支持 408、429、5xx 重试（含 529），解析 retry-after 秒数或 HTTP-date。
 400 的上下文超长措辞归 context_too_long，包括 `prompt is too long` 和 llama.cpp 的 available context size。
-错误文本移除当前配置的 API key。退避、重试上限和强制压缩仍由 Model / Agent 统一管理。
+错误文本移除当前配置的 API key。退避与重试上限由 Model 管理，强制压缩由核心 TurnRunner 管理。
 
 预算使用模型的 context_window；为 0 时使用全局窗口。减去 safety_margin_tokens 和输出预留得到 limit，
 ContextUpdate 报告该可用预算。切换后重新建立估算器，首轮正常执行自动压缩。
@@ -105,3 +108,25 @@ TokenEstimator 仍用 ASCII 约 4 字节/token、非 ASCII 码点约 1 token 的
 
 尚未真实验证：Anthropic 全路径、远端兼容服务、429/retry-after、Anthropic/Ollama 超长错误分类。
 不提供 Responses、Gemini 原生接口、同轮路由或自动降级。验证只使用真实服务，产物放在 `temp/`。
+
+## 6. Model：一次完整调用与重试
+
+`Model::complete` 把中立 `Request` 经 Codec 和流式 HTTP 转成 `Reply{message, finish, usage}`，同时把可见增量
+（正文、思考、ToolPending、Retrying、StreamReset）交给核心传入的接收器。每次尝试使用新的 Codec 和分帧解析器；
+HttpClient 在同一执行线程上复用。工具调用按 index 归集参数，按首次出现顺序进入回复，补齐空 id、处理重复 id；
+参数 JSON 留给工具的 prepare 解析，报错可回填给模型修正。
+
+| 失败 | 处理 |
+| --- | --- |
+| stop 已请求 | `ModelError::cancelled`，带当前尝试的部分回复 |
+| 连接失败、传输中断、超时；HTTP 408 / 429 / 5xx；流错误或缺正常结束标记 | 整个请求重试 |
+| HTTP 分类为上下文超长 | `context_too_long`，交给核心压缩 |
+| TLS 问题、不可重试 HTTP 错误、2xx 却没有流事件 | `rejected` |
+| 重试次数耗尽或 Retry-After 太长 | `exhausted` |
+
+默认最多重试 2 次，即最多 3 次尝试。退避从 1 秒开始指数增长，以 30 秒为基础上限，增加 0.8–1.2 倍随机抖动；
+服务端的 Retry-After 更长时采用它，超过 300 秒则直接失败。等待可取消；已输出过内容的失败尝试发 StreamReset 让前端清除，
+不写入历史，重试期间取消不会保存已作废尝试的半截内容。
+
+装配把模型 HTTP 的总超时设为 0；配置的 idle timeout 为 0 时补成 120 秒。连接超时和 TLS 选项沿用配置。
+idle timeout 看收到的字节，包括 SSE 注释；大上下文预填充期间没有字节时仍可能超时，需按实际模型调整配置。

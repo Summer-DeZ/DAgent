@@ -1,5 +1,5 @@
 /// @file storage.hpp
-/// @brief 会话存储：SQLite 只追加记录、脱敏、列表、回放、写租约与读写器打开入口。
+/// @brief 会话存储：SQLite 只追加记录、脱敏、列表、写租约与读写器打开入口。
 ///
 /// payload 对模块是不透明 JSON；事件里放什么由核心决定。只读查询使用不初始化/修复数据库的连接。
 #pragma once
@@ -8,13 +8,11 @@
 #include <cstddef>
 #include <filesystem>
 #include <memory>
-#include <optional>
 #include <stdexcept>
 #include <string>
 #include <string_view>
 #include <vector>
 
-#include "lib/nlohmann/json.hpp"
 #include "agent/port_lease.hpp"
 #include "agent/session_meta.hpp"
 
@@ -50,32 +48,6 @@ public:
 
 private:
     Kind kind_;
-};
-
-/// @brief SQLite 会话写入器；一轮事件在事务里提交。
-class Writer {
-public:
-    static Writer create(const Options&, agent::SessionMeta meta);
-    static Writer resume(const Options&, std::string_view id);
-
-    Writer(Writer&&) noexcept;
-    Writer& operator=(Writer&&) noexcept;
-    ~Writer();
-    Writer(const Writer&) = delete;
-    Writer& operator=(const Writer&) = delete;
-
-    /// @brief 脱敏后把 JSON payload 直接写入 events BLOB。
-    void append(std::string_view type, nlohmann::json payload);
-
-    /// @brief 刷盘；核心按自己的节奏调用（比如每轮结束），不是每行都 fsync。
-    void sync();
-
-    const agent::SessionMeta& meta() const noexcept;
-
-private:
-    struct Impl;
-    explicit Writer(std::unique_ptr<Impl> impl);
-    std::unique_ptr<Impl> impl_;
 };
 
 /// @brief 同一 session_id 的跨进程可写所有权（安装根 `.runtime/session-locks/<id>.lock` 的 flock）。

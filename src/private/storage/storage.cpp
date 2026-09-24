@@ -10,6 +10,7 @@
 #include <map>
 #include <memory>
 #include <mutex>
+#include <optional>
 #include <random>
 #include <string>
 #include <utility>
@@ -286,93 +287,6 @@ std::string new_id() {
     return out;
 }
 
-struct Writer::Impl {
-    Options options;
-    agent::SessionMeta meta;
-    Database db;
-    std::int64_t seq = 0;
-
-    Impl(Options value, agent::SessionMeta session)
-        : options(std::move(value)), meta(std::move(session)), db(options.database) {}
-};
-
-Writer::Writer(std::unique_ptr<Impl> impl) : impl_(std::move(impl)) {}
-Writer::Writer(Writer&&) noexcept = default;
-Writer& Writer::operator=(Writer&&) noexcept = default;
-Writer::~Writer() = default;
-
-Writer Writer::create(const Options& options, agent::SessionMeta meta) {
-    if (meta.id.empty()) meta.id = new_id();
-    meta.cwd = normalized(meta.cwd);
-    const auto timestamp = now_ms();
-    meta.created = iso_from_ms(timestamp);
-    auto impl = std::make_unique<Impl>(options, std::move(meta));
-    Statement insert(impl->db.get(),
-                     "INSERT INTO sessions(id,cwd,model,title,created,updated,open_turn,parent_id,agent_name) "
-                     "VALUES(?,?,?,NULL,?,?,0,?,?)");
-    insert.text(1, impl->meta.id);
-    insert.text(2, impl->meta.cwd.string());
-    insert.text(3, impl->meta.model);
-    insert.integer(4, timestamp);
-    insert.integer(5, timestamp);
-    if (impl->meta.parent_id.empty()) insert.null(6); else insert.text(6, impl->meta.parent_id);
-    if (impl->meta.agent_name.empty()) insert.null(7); else insert.text(7, impl->meta.agent_name);
-    insert.done();
-    return Writer(std::move(impl));
-}
-
-Writer Writer::resume(const Options& options, std::string_view id) {
-    Database db(options.database);
-    agent::SessionMeta meta = read_meta(db, id);
-    auto impl = std::make_unique<Impl>(options, std::move(meta));
-    Statement sequence(impl->db.get(), "SELECT COALESCE(MAX(seq),-1)+1 FROM events WHERE session_id=?");
-    sequence.text(1, id);
-    if (sequence.row()) impl->seq = sequence.integer(0);
-    return Writer(std::move(impl));
-}
-
-void Writer::append(std::string_view type, json payload) {
-    base::redact(payload, impl_->options.redact_fields);
-    const std::string encoded = payload.dump();
-    const auto timestamp = now_ms();
-    const bool begins = type == "user";
-    const bool ends = type == "turn_end";
-    std::optional<Transaction> tx;
-    if (begins || ends) tx.emplace(impl_->db);
-
-    Statement event(impl_->db.get(), "INSERT INTO events(session_id,seq,type,payload) VALUES(?,?,?,?)");
-    event.text(1, impl_->meta.id);
-    event.integer(2, impl_->seq);
-    event.text(3, type);
-    event.blob(4, encoded);
-    event.done();
-
-    if (begins) {
-        const std::string title = title_from(payload);
-        Statement update(impl_->db.get(),
-                         "UPDATE sessions SET title=COALESCE(title,?),updated=?,open_turn=1 WHERE id=?");
-        if (title.empty()) update.null(1); else update.text(1, title);
-        update.integer(2, timestamp);
-        update.text(3, impl_->meta.id);
-        update.done();
-    } else {
-        Statement update(impl_->db.get(),
-                         ends ? "UPDATE sessions SET updated=?,open_turn=0 WHERE id=?"
-                              : "UPDATE sessions SET updated=? WHERE id=?");
-        update.integer(1, timestamp);
-        update.text(2, impl_->meta.id);
-        update.done();
-    }
-    if (tx) tx->commit();
-    ++impl_->seq;
-}
-
-void Writer::sync() {
-    sqlite3_db_cacheflush(impl_->db.get());
-}
-
-const agent::SessionMeta& Writer::meta() const noexcept { return impl_->meta; }
-
 std::vector<Summary> list(const Options& options, const fs::path& cwd, std::size_t limit) {
     std::error_code ec;
     if (!fs::exists(options.database, ec)) return {};
@@ -511,28 +425,95 @@ agent::RecordError to_record_error(const StorageError& error) {
     return agent::RecordError(agent::RecordError::Kind::io, error.what());
 }
 
+/// @brief JournalWriter 的 SQLite 实现：一个会话一个连接，按 seq 只追加。
 class SqliteJournal final : public agent::JournalWriter {
 public:
-    explicit SqliteJournal(Writer writer) : writer_(std::move(writer)) {}
+    static std::unique_ptr<SqliteJournal> create(const Options& options, agent::SessionMeta meta) {
+        if (meta.id.empty()) meta.id = new_id();
+        meta.cwd = normalized(meta.cwd);
+        const auto timestamp = now_ms();
+        meta.created = iso_from_ms(timestamp);
+        auto journal = std::unique_ptr<SqliteJournal>(new SqliteJournal(options, std::move(meta)));
+        Statement insert(journal->db_.get(),
+                         "INSERT INTO sessions(id,cwd,model,title,created,updated,open_turn,parent_id,agent_name) "
+                         "VALUES(?,?,?,NULL,?,?,0,?,?)");
+        insert.text(1, journal->meta_.id);
+        insert.text(2, journal->meta_.cwd.string());
+        insert.text(3, journal->meta_.model);
+        insert.integer(4, timestamp);
+        insert.integer(5, timestamp);
+        if (journal->meta_.parent_id.empty()) insert.null(6); else insert.text(6, journal->meta_.parent_id);
+        if (journal->meta_.agent_name.empty()) insert.null(7); else insert.text(7, journal->meta_.agent_name);
+        insert.done();
+        return journal;
+    }
+
+    static std::unique_ptr<SqliteJournal> resume(const Options& options, std::string_view id) {
+        agent::SessionMeta meta;
+        {
+            Database db(options.database);
+            meta = read_meta(db, id);
+        }
+        auto journal = std::unique_ptr<SqliteJournal>(new SqliteJournal(options, std::move(meta)));
+        Statement sequence(journal->db_.get(), "SELECT COALESCE(MAX(seq),-1)+1 FROM events WHERE session_id=?");
+        sequence.text(1, id);
+        if (sequence.row()) journal->seq_ = sequence.integer(0);
+        return journal;
+    }
 
     void append(const agent::Record& record) override {
         try {
-            writer_.append(record.type, record.payload);
+            insert(record.type, record.payload);
         } catch (const StorageError& error) {
             throw to_record_error(error);
         }
     }
-    void sync() override {
-        try {
-            writer_.sync();
-        } catch (const StorageError& error) {
-            throw to_record_error(error);
-        }
-    }
-    const agent::SessionMeta& meta() const override { return writer_.meta(); }
+    void sync() override { sqlite3_db_cacheflush(db_.get()); }
+    const agent::SessionMeta& meta() const override { return meta_; }
 
 private:
-    Writer writer_;
+    SqliteJournal(Options options, agent::SessionMeta meta)
+        : options_(std::move(options)), meta_(std::move(meta)), db_(options_.database) {}
+
+    /// @brief 脱敏后写入 events BLOB；user / turn_end 与会话元信息在同一事务内提交。
+    void insert(std::string_view type, json payload) {
+        base::redact(payload, options_.redact_fields);
+        const std::string encoded = payload.dump();
+        const auto timestamp = now_ms();
+        const bool begins = type == "user";
+        const bool ends = type == "turn_end";
+        std::optional<Transaction> tx;
+        if (begins || ends) tx.emplace(db_);
+
+        Statement event(db_.get(), "INSERT INTO events(session_id,seq,type,payload) VALUES(?,?,?,?)");
+        event.text(1, meta_.id);
+        event.integer(2, seq_);
+        event.text(3, type);
+        event.blob(4, encoded);
+        event.done();
+
+        if (begins) {
+            const std::string title = title_from(payload);
+            Statement update(db_.get(), "UPDATE sessions SET title=COALESCE(title,?),updated=?,open_turn=1 WHERE id=?");
+            if (title.empty()) update.null(1); else update.text(1, title);
+            update.integer(2, timestamp);
+            update.text(3, meta_.id);
+            update.done();
+        } else {
+            Statement update(db_.get(), ends ? "UPDATE sessions SET updated=?,open_turn=0 WHERE id=?"
+                                             : "UPDATE sessions SET updated=? WHERE id=?");
+            update.integer(1, timestamp);
+            update.text(2, meta_.id);
+            update.done();
+        }
+        if (tx) tx->commit();
+        ++seq_;
+    }
+
+    Options options_;
+    agent::SessionMeta meta_;
+    Database db_;
+    std::int64_t seq_ = 0;
 };
 
 class SqliteSessionStore final : public agent::SessionStore {
@@ -575,10 +556,10 @@ public:
     }
 
     std::unique_ptr<agent::JournalWriter> open_writer_create(const agent::SessionMeta& meta) override {
-        return std::make_unique<SqliteJournal>(Writer::create(options_, meta));
+        return SqliteJournal::create(options_, meta);
     }
     std::unique_ptr<agent::JournalWriter> open_writer_resume(std::string_view session_id) override {
-        return std::make_unique<SqliteJournal>(Writer::resume(options_, session_id));
+        return SqliteJournal::resume(options_, session_id);
     }
 
 private:

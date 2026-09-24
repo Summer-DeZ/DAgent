@@ -25,7 +25,7 @@ namespace {
 namespace fs = std::filesystem;
 using dagent::app::Mode;
 
-// docs/design/agent.md §12：整个进程忽略 SIGPIPE，写关闭的管道得到 EPIPE 而不是被信号杀死。
+// docs/design/app.md §6：整个进程忽略 SIGPIPE，写关闭的管道得到 EPIPE 而不是被信号杀死。
 // exec 层只会在 SIGPIPE 仍是默认处理时设置它，两者不冲突。
 void ignore_sigpipe() { ::signal(SIGPIPE, SIG_IGN); }
 

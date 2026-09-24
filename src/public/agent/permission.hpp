@@ -98,7 +98,7 @@ struct DerivedPermission {
     PermissionMode mode = PermissionMode::workspace;
     bool read_only = false;
     bool planning = false;
-    bool may_ask = false; ///< false → 子 Agent 的 TurnContext::approver 传空
+    bool may_ask = false; ///< false → 子 Agent 的 RunServices 不带审批出口
 };
 
 /// @brief 子 Agent 的权限派生：只能收窄不能放宽。

@@ -1,6 +1,6 @@
 /// @file events.hpp
-/// @brief 核心的对外接口：agent 发出事件（Sink），需要时询问权限（Approver），一轮结束时返回状态。
-/// 交互界面、run 模式和以后的任何前端都只实现这三样东西。
+/// @brief 核心的实时出口：执行事件（Sink）、审批（Approver）与问答（Asker）的中立值类型。
+/// runtime 把它们接到交互代理与后端事件发布；前端只经协议 DTO 看到它们。
 #pragma once
 
 #include <chrono>
@@ -171,15 +171,7 @@ struct Answer {
 
 using Asker = std::function<Answer(const Question&, std::stop_token)>;
 
-/// @brief 一轮运行所需的全部外部接口。调用方保证引用在整轮内有效。
-struct TurnContext {
-    const Sink& sink;
-    const Approver& approver; ///< 可为空：非交互运行，或权限派生判定子 Agent 不得询问
-    const Asker& asker;       ///< 子 Agent 恒为空
-    std::stop_token stop;
-};
-
-/// @brief 事件 → JSON（`--output jsonl` 的每一行）。
+/// @brief 事件 → 原实时 JSON 形状（backend 转成协议事件 data；run 的 jsonl 由前端还原同一形状）。
 nlohmann::json to_json(const Event&);
 
 std::string_view to_string(TurnStatus); ///< "done" / "interrupted" / …

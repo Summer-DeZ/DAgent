@@ -1,21 +1,14 @@
 /// @file runtime.hpp
 /// @brief Runtime：backend 协议适配看到的会话控制外观。
 ///
-/// 组装 SessionController、交互代理、子执行与只读查询；前端只提交意图、
+/// 组装 SessionController、交互代理与子执行；前端只提交意图、
 /// 消费快照/事件并回答交互，不持具体装配对象或写业务状态。
 #pragma once
 
-#include <condition_variable>
-#include <cstddef>
-#include <deque>
-#include <filesystem>
 #include <functional>
 #include <memory>
-#include <mutex>
 #include <optional>
 #include <string>
-#include <thread>
-#include <vector>
 
 #include "agent/events.hpp"
 #include "agent/model_input.hpp"

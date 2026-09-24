@@ -2,7 +2,7 @@
 /// @brief 前端进程级中断状态：SIGINT/SIGTERM 由 sigwait 线程处理。
 ///
 /// 可优雅结束期间第一个信号请求 stop，第二个信号直接 _Exit(130)；启动/收尾等轮外阶段直接退出。
-/// 语义与 docs/design/agent.md §12 一致。
+/// 语义与 docs/design/app.md §6 一致。
 #pragma once
 
 #include <atomic>

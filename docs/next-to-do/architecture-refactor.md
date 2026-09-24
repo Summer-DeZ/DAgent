@@ -1,6 +1,6 @@
 # 核心对象、接口与依赖设计
 
-状态：待实施。前置阅读：[范围与 B 保持清单](frontend-backend-migration.md)。
+状态：已实施（R01–R14 真实验收，见 [执行记录](implementation-tasks.md#7-执行记录)）。前置阅读：[范围与 B 保持清单](frontend-backend-migration.md)。
 本文确定结构，不增加产品能力。状态规则见 [执行状态机](execution-state-machines.md)，接口传输见 [协议](frontend-backend-protocol.md)。
 
 ## 1. 统一术语

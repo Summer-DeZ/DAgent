@@ -1,6 +1,6 @@
 # 实施任务、交接记录与真实验收
 
-状态：**R01–R13 真实验收通过，R14 未开始**。执行记录见 §7。
+状态：**R01–R14 真实验收通过**。执行记录见 §7。
 必须先读 [范围/B清单](frontend-backend-migration.md)、[对象](architecture-refactor.md)、
 [状态机](execution-state-machines.md)、[记录路线](record-routes.md) 和 [协议](frontend-backend-protocol.md)。
 
@@ -27,7 +27,7 @@ flowchart LR
 | R11 | TUI 完全切换协议路径 | 真实验收通过 | R10 |
 | R12 | 所有权、关闭与故障收尾 | 真实验收通过 | R11 |
 | R13 | 删除过渡结构与安装交付 | 真实验收通过 | R12 |
-| R14 | 最终真实验收与设计文档同步 | 未开始 | R13 |
+| R14 | 最终真实验收与设计文档同步 | 真实验收通过 | R13 |
 
 可使用的状态：未开始、实施中、构建通过待真实验收、真实验收通过、受环境阻塞。
 后续任务可以在必要的前置结构已经完成后继续推进，但不能把缺少真实证据的前置任务标成完成。
@@ -918,3 +918,90 @@ MCP/模型异常场景只操纵本次验收创建且有权限操作的资源；�
   TUI `--plan` 启动、切模型保持 plan、exit_plan 接受后写入、/exit 0 无残留；release 安装根从无关 cwd run/sessions 正常。
 - 已知原有缺陷（基线同样复现，未纳入）：TUI /new 或 /sessions 替换会话后新会话无 MCP 工具；多选 ask 选 Other 丢弃勾选项。
 - 下一任务：R14。
+
+### R14：完整验收与文档交接 — 真实验收通过（2026-09-24，版本 475a668 + 工作树改动）
+
+- 状态：真实验收通过。V05 的「允许并联网」选项受环境阻塞（见未验项），其余 V/B/L 均有最终代码上的真实证据。
+- 删除的无用兼容代码：
+  - `storage::Writer` 公开类（旧 Recorder 时代的写入接口，R06 之后只剩 storage 内部 `SqliteJournal` 使用）——并入私有
+    `SqliteJournal`，storage.hpp 只保留 Options/Summary/StorageError/SessionWriteLease/list/list_children/open_store/new_id；
+  - `agent::TurnContext`（旧 `Agent::run_turn` 参数包，无任何使用者）；
+  - runtime.hpp 中只读查询线程删除后遗留的 `<condition_variable>/<deque>/<thread>/<mutex>/<filesystem>` 等 include 与过时注释；
+    events.hpp、permission.hpp、interaction.hpp 中指向旧 Agent/run_turn 的注释；源码中指向已移动文档章节的引用改到 app.md §6。
+  - 定位方法：Release + `-ffunction-sections --gc-sections --print-gc-sections` 构建两个正式二进制，取两者都未引用的项目函数，
+    逐个核对调用点；其余均为被内联的正常函数或基线已有的未用函数（PromptBox::set_placeholder、Transcript::info、exec::shell_quote，不在范围）。
+    产品兼容（旧记录字段读取、MCP 经典协议、LegacyOutputCodec 的原输出格式）属于 B 清单，保留。
+- 构建：`cmake --preset dev && cmake --build --preset dev --target dagent dagent-backend -j8` 通过、无警告。
+- 真实运行（`temp/refactor-equivalence/accept-r14/acceptance.md`，本地 qwen3.8 由 /home/jyt/LLM/run-qwen.sh 拉起，tmux 真实终端）：
+  本次改动涉及全部记录写入，故重跑写入相关场景；UI/app/protocol 未改动的场景沿用 accept-0924（其版本即 475a668 的提交内容）。
+- 文档同步：新增 `docs/design/runtime.md`、`docs/design/protocol.md`；`session.md` → `storage.md` 并按端口/写锁/只读分页重写；
+  重写 agent.md（对象/端口、TurnRunner/ActionDispatcher/控制动作、提交路线、恢复与历史投影、MCP 与子执行）；
+  更新 ui.md（Client/RPC/FrontendBridge/分页历史）、app.md（两个入口与库、装配、run 输出、信号与退出码、模型写锁）、
+  tools.md（依赖 agent 中立契约、PreparedTool/execute、控制动作迁出、McpHub）、llm.md（dagent_llm 模块、Model 重试）、
+  docs/README.md（模块状态、阅读顺序、构建/安装/运行）；本目录各规格状态改为已实施。
+
+#### V 矩阵汇总
+
+| 项 | 结果 | 最终代码上的证据 |
+| --- | --- | --- |
+| V01 | 通过 | R14：dagent 无 agent/storage/llm/mcp/tools/runtime/backend/sqlite/curl 符号，backend 无 ui/tui 符号，只有两个正式可执行目标 |
+| V02 | 通过 | accept-0924 V02（help/version 不启动后端、两对互不影响）；R14 每个场景结束后无残留后端 |
+| V03 | 通过 | R14 六工具回合，磁盘与 tool 记录一致 |
+| V04 | 通过 | accept-0924 V04 |
+| V05 | 部分（环境阻塞） | accept-0924 V05 允许/会话允许/撤销/反馈/拒绝；「允许并联网」见未验项 |
+| V06 | 通过 | accept-0924 V06；R14 TUI 切模型（同 session、system 记录）与 B14 失败分支 |
+| V07 | 通过 | accept-0924 V07（流式正文/思考、SIGINT、预算耗尽、dead 模型 retry 1/2、2/2 与基线一致） |
+| V08 | 通过 | accept-0924 V08 |
+| V09 | 通过 | R14 tiny 模型 4 次自动压缩（prune→compaction）、run -r 恢复摘要前缀、TUI /compact 取消无半提交与完整 /compact |
+| V10 | 通过 | accept-0924 V10 |
+| V11 | 通过 | R14 R01 基线库会话继续（seq 18–21）；崩溃闭合见 V18 |
+| V12 | 通过 | accept-0924 V12；R14 Ctrl+C/Esc/PgUp/End |
+| V13 | 通过 | accept-0924 V13（并发、子 Pane、父中断传播）；R14 子会话记录与 TaskView |
+| V14 | 通过 | accept-0924 V14（断连/重连）；R14 MCP 调用与退出清理 |
+| V15 | 通过 | R14 回合中外部独占锁：一次 broken、回合继续、记录停在 user |
+| V16 | 通过 | accept-0924 V16；R14 json/jsonl 输出与退出码 |
+| V17 | 通过 | accept-0924 V17 |
+| V18 | 通过 | R14 kill -9 后端：前端 exit 1 不重发，run -r 写未知结果 + crashed + system，未重跑工具 |
+| V19 | 通过 | R14 双写拒绝、sessions 可用、持有者退出后恢复成功 |
+| V20 | 通过 | accept-0924 V20（release 安装根、无关 cwd）；安装规则 R14 未改 |
+
+#### B 清单证据
+
+| B | 证据 | B | 证据 |
+| --- | --- | --- | --- |
+| B01 | V16；R14 exit 0/1/2 | B15 | V03 并行 grep/glob；V13 并发 task |
+| B02 | V20；配置错误 exit 2（accept-0924 fix） | B16 | V07 预算耗尽；R01 默认值与源码映射 |
+| B03 | R14 `--set` 多项按序 + `-m tiny`；V16 跨 cwd 拒绝 | B17 | V07 模型重试与预算耗尽（limit） |
+| B04 | V04 | B18 | V13；R14 task→explore |
+| B05 | V04 斜杠立即分派 | B19 | V13 父中断传播；R08 子审批 |
+| B06 | V04 drain；R14 /compact 后继续 | B20 | V14 |
+| B07 | V06 忙时拒绝 | B21 | R04/R05 todo；V08 |
+| B08 | V05/V08；fix `--plan` | B22 | V09 |
+| B09 | V08；V16 非交互 T7 | B23 | V15；B14 场景的 seq 冲突 broken |
+| B10 | V08 exit_plan 三选项 | B24 | V18 |
+| B11 | R14 Ctrl+C/Esc 顺序 | B25 | V16；R14 json/jsonl |
+| B12 | V13 子 Pane 只读、草稿保留 | B26 | V16 jsonl 管道关闭 exit 1 |
+| B13 | V06；R14 切模型 system 记录、token 校准重置 | B27 | accept-0924 模型写锁；R12 并发添加 |
+| B14 | R14 候选恢复失败保留旧会话 | B28 | V12；V10 子会话只读浏览 |
+
+#### L 路线证据
+
+| 路线 | 证据 | 路线 | 证据 |
+| --- | --- | --- | --- |
+| L01 | R14 V03 新会话 system seq 0 | L13 | R04 todo tool.view |
+| L02 | R14 子会话 parent_id/agent_name | L14 | R14 父 TaskView 带子 session_id |
+| L03/L05 | R14 V03 user/assistant n 递增 | L15 | R05 中断 partial assistant |
+| L06/L07 | R14 V03 并行组 tool_started 先于结果 | L16 | R14 V09 prune→compaction |
+| L08 | R14 V03 tool 按原序 | L17/L18 | V17 interrupted 收尾；R14 turn_end + open_turn=0 |
+| L09/L10 | accept-0924 V05 permission 记录；V17 审批等待中取消后记录 interrupted | L19 | R14 TUI /compact 与取消 |
+| L11 | R07/R11 permission_revoked | L20 | R14 V18 |
+| L12 | R10/accept-0924 ask 无 tool_started 记录 | L21 | R14 切模型 system seq 4 |
+| L22 | accept-0924 V10；R14 sessions 在写锁持有时可读 | L23 | R14 /exit、holder 退出后锁释放、无残留后端 |
+
+- 未验项：
+  - V05「允许并联网」：本机 workspace 沙箱 profile 不可用（仓库外工作区同样提示 The workspace sandbox is unavailable），
+    只出现一次性 host access 审批，[w] 选项无法触发；基线相同。
+  - 发送背压（前端停止消费）与多个子 Agent 同时申请审批的排队次序只有实现与串行样本，未人为制造（沿用 R08/R09/R12 说明）。
+  - 强杀后端导致的孤儿工具进程属已记录的强退局限。
+- 观察：V09 中 tiny 模型（1024 输出上限）第二次摘要仅 94 字符，后续回合模型自述指令丢失；压缩算法与记录路线未改，属极小预算下的模型质量。
+- 已知原有缺陷（基线同样存在，未纳入）：/new 或 /sessions 替换会话后新会话无 MCP 工具；多选 ask 选 Other 丢弃勾选项。

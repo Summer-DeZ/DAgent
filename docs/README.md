@@ -4,19 +4,25 @@ DAgent 是一个使用 C++23 和 CMake 构建的终端 Agent，仅支持 Linux�
 
 ## 当前状态
 
+DAgent 由两个正式进程组成：前端 `dagent`（命令行、终端界面、run 输出）与它独占启动的 `dagent-backend`
+（配置、模型、工具、会话记录）。两者经私有 socketpair 上的 JSON-RPC 通信；前端不链接执行与存储实现，后端不链接 UI。
+
 | 模块 | 位置 | 状态 |
 | --- | --- | --- |
 | TUI 框架 | `src/*/tui`，库 `dagent_tui` | 已完成并冻结（2026-09-18）：只修缺陷，不增删原语 |
-| 应用层界面 | `src/*/ui`，库 `dagent_ui` | 已完成：居中对话与工具卡片、右侧计划栏、输入/文件补全、命令/会话/模型/主题面板、模型添加与切换、toast、权限对话框、两段式状态栏与运行时主题切换；英文界面文案集中于 `ui/strings` |
-| Agent 运行时 | `src/*/agent`，库 `dagent_agent`，可执行 `dagent` | 已完成：模型循环、三档权限与只读/plan 模式、提问通道、会话恢复、上下文管理、MCP 后台连接与动态工具刷新 |
+| 应用层界面 | `src/*/ui`，库 `dagent_ui` | 已完成：只持协议客户端与页面状态；居中对话与工具卡片、右侧计划栏、输入/文件补全、命令/会话/模型/主题面板、toast、权限对话框、状态栏与运行时主题切换 |
+| 核心业务 | `src/*/agent`，库 `dagent_agent` | 已完成：Session / Run / TurnRunner / ActionDispatcher、控制动作、三档权限与只读/plan、上下文压缩、记录编解码/恢复/历史投影；只依赖 base |
+| 会话控制 | `src/*/runtime`，库 `dagent_runtime` | 已完成：SessionController（输入队列、new/resume/切模型/压缩）、InteractionBroker、SubagentExecutor |
+| 模型客户端 | `src/*/llm`，库 `dagent_llm` | 已完成：openai-chat / ollama / anthropic 编解码、流式累积与重试 |
+| 私有协议 | `src/*/{protocol,ipc,client,backend}` | 已完成：JSON-RPC DTO、socketpair 分帧与后端进程启动、前端客户端、后端方法分发与有序发布 |
 | 基础库 | `src/*/base`，库 `dagent_base` | 已完成：日志、通用 dotenv 解析、文本工具、JSON 脱敏；app 不读取 `.env` |
 | 子进程与沙箱 | `src/*/exec`，库 `dagent_exec` | 已完成：命令执行与进程组清理、长期子进程、bash 只读分析、Landlock + seccomp 沙箱 |
 | 网络 | `src/*/net`，库 `dagent_net` | 已完成：libcurl 薄封装（整包/流式、stop_token 取消、超时分类）与 SSE 解析 |
 | 工作区 | `src/*/workspace`，库 `dagent_workspace` | 已完成：文件原语（原子写入、stale 检测）、ripgrep 搜索与模糊匹配、unified diff、项目上下文（git、AGENTS.md、模板渲染） |
-| 会话存储 | `src/*/session`，库 `dagent_session` | 已完成：单文件 SQLite、UUIDv7、写入前脱敏、事务化崩溃标记、按 cwd 索引与完整 BLOB 回放 |
+| 会话存储 | `src/*/storage`，库 `dagent_storage` | 已完成：单文件 SQLite、UUIDv7、写入前脱敏、事务化崩溃标记、按 cwd 索引、跨进程会话写锁、只读分页 |
 | MCP 客户端 | `src/*/mcp`，库 `dagent_mcp` | 已完成：stdio 与 Streamable HTTP、现代（2026-07-28）与经典协议自动识别、取消/超时/断连、经典会话过期恢复；只做 tools |
-| 工具层 | `src/*/tools`，库 `tools` | 已完成：read / write / edit / bash / grep / glob / todo / ask / exit_plan 与 MCP 工具包装；两阶段 prepare/run、Intent 供权限决策、FileTracker 做 stale 检测、按工具定义的 View |
-| 入口层 | `src/*/app`，库 `dagent_app` | 已完成：自包含安装根、`home/` 配置与提示词、MCP 配置和命令行解析；可执行入口 `main` 属于核心 |
+| 工具层 | `src/*/tools`，库 `tools` | 已完成：read / write / edit / bash / grep / glob 与 MCP 工具包装、McpHub；两阶段 prepare/execute、中立意图、FileTracker |
+| 入口与装配 | `src/*/app`，库 `dagent_app_cli` / `dagent_app_config` | 已完成：命令行、安装根、后端启动与 run 输出；后端配置读取与会话装配 |
 
 dev 构建默认从源码树的 `home/` 读取配置、提示词和主题；显式 `DAGENT_HOME` 可覆盖。其它构建默认读取可执行
 文件所在目录。安装布局与命令行约定见 [app 设计文档](design/app.md)。
@@ -28,14 +34,12 @@ dev 构建默认从源码树的 `home/` 读取配置、提示词和主题；显�
 
 ## 阅读顺序
 
-先读 [agent：运行时与程序入口](design/agent.md) 了解依赖、线程、事件和一轮的数据流，再按关注点读
-[ui：应用层交互界面](design/ui.md)、[app：配置与命令行](design/app.md)、[tools：工具层](design/tools.md)。
-底层协议、存储、执行与终端原语分别由下表的模块文档说明。
+先读 [protocol：前后端进程与私有协议](design/protocol.md) 了解两个进程怎样分工，再读 [runtime：会话控制](design/runtime.md)
+与 [agent：核心业务对象](design/agent.md) 了解一轮的数据流、记录与恢复，然后按关注点读 [ui](design/ui.md)、
+[app](design/app.md)、[tools](design/tools.md)。底层协议、存储、执行与终端原语分别由下表的模块文档说明。
 
-核心 C0–C6 已完成并审核通过，原执行计划与部件草案已整理为架构文档。当前能力及限制以 `design/` 和源码为准，
-不再保留已完成的任务拆分、临时验收脚本路径或开发期网关结论作为接入说明。
-
-整体等价重构方案：[执行入口与阅读顺序](next-to-do/README.md)。该方案仅重构现有能力，包含核心对象、状态机、私有前后端协议、实施任务和真实验收；尚未实施。
+整体等价重构（前后端分离、核心对象拆分）已按 [执行规格](next-to-do/README.md) 完成 R01–R14 并真实验收；
+该目录保留规格与各任务的验收记录，当前能力及限制以 `design/` 和源码为准。
 
 待实施计划：[命令分析、权限与沙箱整体改造](../nexttodo/command-permissions-plan.md)。
 该计划描述目标行为、P01–P10 实施依赖与真实运行验收，不代表当前已经实现的能力。
@@ -47,25 +51,45 @@ dev 构建默认从源码树的 `home/` 读取配置、提示词和主题；显�
 
 | 文档 | 内容 |
 | --- | --- |
-| [agent：运行时与程序入口](design/agent.md) | 分层与线程、Event / Approver / Asker、模型调用、历史不变式、循环与调度、权限与 plan、上下文、记录恢复、MCP 生命周期、run 输出 |
-| [ui：应用层交互界面](design/ui.md) | Shell 与任务队列、主题与布局、输入排队、事件渲染、工具 View、权限对话框、状态刷新、会话切换与退出 |
+| [protocol：前后端进程与私有协议](design/protocol.md) | 进程启动与关闭、传输、身份与版本、请求方法、事件与快照顺序、背压、错误码、前端三种使用方式 |
+| [runtime：会话控制、交互与子执行](design/runtime.md) | 对象与装配端口、会话控制状态机、替换会话、快照发布、交互代理、子执行、线程与关闭 |
+| [agent：核心业务对象与执行循环](design/agent.md) | 对象与端口、线程与取消、Event、历史不变式、循环与调度、权限与控制动作、上下文、提示词、记录/恢复/历史投影、MCP 生命周期、子 Agent |
+| [ui：应用层交互界面](design/ui.md) | 控件树、主题、线程与 RPC、输入与补全、对话投影与子 Pane、状态与权限浮层、退出、模型切换 |
 | [base：日志与公共工具](design/base.md) | 日志接入与 `DAGENT_LOG`、通用 dotenv 解析、文本工具与 JSON 脱敏的行为 |
 | [net：HTTP 客户端与 SSE 解析](design/net.md) | 整包与流式请求、三种超时、错误分类、即时取消、连接复用与线程约束、SSE 解析规则 |
 | [exec：子进程与沙箱](design/exec.md) | `run` 的行为与子进程运行环境、`Child`、只读判定白名单、沙箱模式与已知限制；exec 会让整个进程忽略 SIGPIPE |
 | [workspace：文件、搜索、diff、项目上下文](design/workspace.md) | 路径解析与原子写入、ripgrep 调用与 fzy 模糊匹配、unified diff 的 hunk 合并、git 信息与 AGENTS.md 收集、inja 模板渲染 |
-| [LLM 编解码：消息模型与厂商协议翻译](design/llm.md) | 中立消息模型与 StreamEvent、Codec 接口、OpenAI Chat Completions 的编解码规则、协议错误分类、token 估算 |
-| [session：会话存储](design/session.md) | 存储布局、Writer 的写入与恢复、崩溃后的截断与续写、list/replay 的边界、UUIDv7 |
-| [app：配置与命令行](design/app.md) | 自包含安装根、`home/` 配置与提示词、模型密钥、MCP、工作目录、命令行与入口约定 |
+| [llm：模型客户端与 Provider](design/llm.md) | ProviderConfig 与公开描述、Codec、各 provider 编解码、错误分类与预算、流式累积与重试 |
+| [storage：会话存储](design/storage.md) | 存储端口实现、schema 与迁移、写入事务与崩溃、跨进程写锁、只读列表与历史分页、库损坏处理 |
+| [app：配置与命令行](design/app.md) | 两个入口与库、自包含安装根、配置与提示词、模型添加与写锁、命令行、后端装配、run 输出、信号与退出码 |
 | [mcp：MCP 客户端](design/mcp.md) | 现代与经典协议的识别规则、stdio / Streamable HTTP 传输、请求头与 x-mcp-header、会话过期恢复、超时取消断连、错误分类与已知限制 |
 | [tools：工具层](design/tools.md) | 两阶段 prepare/run 与核心的边界、参数与路径约定、FileTracker、各工具给模型的文本与报错、View 与会话序列化、对核心的要求 |
 | [终端 UI 框架](design/tui-framework.md) | 框架能做什么、分层与对象关系、应用怎样接入、各模块的职责。源码注释中的 `§N` 指这份文档的章节 |
 
-## 构建与测试
+## 构建、安装与运行
 
 ```bash
-cmake --preset dev                 # 生成到 build/dev（Ninja，Debug）
-cmake --build --preset dev
-ctest --test-dir build/dev         # 运行 test/tui（tui_tests）
+cmake --preset dev                                        # 生成到 build/dev（Ninja，Debug）
+cmake --build --preset dev --target dagent dagent-backend # 两个正式可执行文件，输出在 build/dev/src/
+build/dev/src/dagent                                      # 交互界面（dev 构建默认安装根为源码树 home/）
+build/dev/src/dagent run "提示词"                          # 非交互一轮；--output text|json|jsonl
+build/dev/src/dagent sessions                             # 当前目录最近的会话
+build/dev/src/dagent --list-models
+```
+
+`dagent` 必须与 `dagent-backend` 位于同一目录：前端从自身目录启动后端，找不到时启动失败。
+正式安装使用非 dev 构建，安装根即可执行文件所在目录（也可用 `DAGENT_HOME` 指定）：
+
+```bash
+cmake -S . -B build/release -G Ninja -DCMAKE_BUILD_TYPE=Release
+cmake --build build/release --target dagent dagent-backend
+cmake --install build/release --prefix <安装根>   # 两个可执行文件、config.json、models.json(0600)、提示词、themes/、agents/
+```
+
+测试只保留冻结 TUI 框架的真实用例：
+
+```bash
+cmake --build --preset dev && ctest --test-dir build/dev   # 运行 test/tui（tui_tests）
 ```
 
 `test/tui` 用 15 个真实运行的用例覆盖 TUI 框架的能力，按设计文档的章节组织：
@@ -94,8 +118,9 @@ AGENTS.md 不允许为测试加构建目标，真实功能检测都是放在 `te
 b=build/dev
 g++ -std=c++23 -Wall -Wextra -DSPDLOG_COMPILED_LIB -DSPDLOG_USE_STD_FORMAT \
     -I src/public -I $b/_deps/spdlog-src/include temp/check.cc \
-    $b/src/libdagent_app.a $b/src/libdagent_agent.a $b/src/libtools.a $b/src/libdagent_session.a \
-    $b/src/libdagent_mcp.a $b/src/libdagent_workspace.a $b/src/libdagent_net.a $b/src/libdagent_exec.a \
+    $b/src/libdagent_app_config.a $b/src/libdagent_runtime.a $b/src/libtools.a $b/src/libdagent_llm.a \
+    $b/src/libdagent_storage.a $b/src/libdagent_agent.a $b/src/libdagent_mcp.a $b/src/libdagent_workspace.a \
+    $b/src/libdagent_net.a $b/src/libdagent_exec.a \
     $b/src/libdagent_base.a $b/_deps/spdlog-build/libspdlogd.a \
     $b/_deps/tree-sitter-build/libtree-sitter.a $b/libtree-sitter-bash.a \
     -lcurl -lseccomp -pthread -o temp/check
@@ -106,7 +131,8 @@ g++ -std=c++23 -Wall -Wextra -DSPDLOG_COMPILED_LIB -DSPDLOG_USE_STD_FORMAT \
 ```
 docs/
 ├── README.md      本索引
-└── design/        架构与模块设计：描述当前实现
+├── design/        架构与模块设计：描述当前实现
+└── next-to-do/    已完成的等价重构规格与真实验收记录
 ```
 
 - 目录名不含空格，避免 Markdown 链接需要转义。

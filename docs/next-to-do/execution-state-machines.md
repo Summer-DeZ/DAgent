@@ -1,6 +1,6 @@
 # 状态机、线程与完整执行过程
 
-状态：待实施。以 [B01–B28](frontend-backend-migration.md#4-功能保持清单) 为行为约束，
+状态：已实施（R01–R14 真实验收，见 [执行记录](implementation-tasks.md#7-执行记录)）。以 [B01–B28](frontend-backend-migration.md#4-功能保持清单) 为行为约束，
 使用 [对象设计](architecture-refactor.md) 中的对象名称。
 
 ## 1. 状态和事实的唯一来源

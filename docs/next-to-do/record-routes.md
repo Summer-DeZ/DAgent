@@ -1,6 +1,6 @@
 # 记录路线、字段与恢复契约
 
-状态：待实施。本文是对 [状态机](execution-state-machines.md) 中“统一提交”的逐项定义，
+状态：已实施（R01–R14 真实验收，见 [执行记录](implementation-tasks.md#7-执行记录)）。本文是对 [状态机](execution-state-machines.md) 中“统一提交”的逐项定义，
 也是 R05/R06/R07/R10 的必读输入。功能边界仍以 [B保持清单](frontend-backend-migration.md#4-功能保持清单) 为准。
 
 证据基线：`src/private/agent/record.cpp`、`agent.cpp`、`dispatch.cpp`、`compaction.cpp`、

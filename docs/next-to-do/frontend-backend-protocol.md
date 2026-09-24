@@ -1,6 +1,6 @@
 # 私有前后端协议：现有功能的通信契约
 
-状态：待实施。遵循 [功能边界](frontend-backend-migration.md)，对应 [对象](architecture-refactor.md) 和 [状态机](execution-state-machines.md)。
+状态：已实施（R01–R14 真实验收，见 [执行记录](implementation-tasks.md#7-执行记录)）。遵循 [功能边界](frontend-backend-migration.md)，对应 [对象](architecture-refactor.md) 和 [状态机](execution-state-machines.md)。
 这份协议是现有功能的进程间适配，不提供共享后端、后台任务、自动重连或新的面向用户接口。
 
 ## 1. 进程与传输
