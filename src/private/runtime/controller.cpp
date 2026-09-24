@@ -177,6 +177,10 @@ void SessionController::publish_control(ControlEvent event) {
 }
 
 void SessionController::apply_to_snapshot(const Event& event) {
+    // EventPayload 是 variant<agent::Event, ControlEvent>：核心事件要先取出内层 variant 再分派，
+    // 否则快照字段不会随实时事件更新（前端按快照显示标签，必须保持一致）。
+    const auto* core = std::get_if<agent::Event>(&event.payload);
+    if (core == nullptr) return;
     std::visit(Overloaded{
                    [&](const agent::ContextUpdate& update) {
                        snapshot_.used_tokens = update.used;
@@ -197,7 +201,7 @@ void SessionController::apply_to_snapshot(const Event& event) {
                    },
                    [&](const auto&) {},
                },
-               event.payload);
+               *core);
 }
 
 void SessionController::finalize_execution() {
@@ -414,15 +418,6 @@ std::expected<std::string, RuntimeError> SessionController::resolve_session(
     }
 }
 
-void SessionController::cancel() {
-    std::shared_ptr<RunControl> control;
-    {
-        const std::lock_guard lock(mutex_);
-        control = control_;
-    }
-    if (control) control->stop.request_stop();
-}
-
 bool SessionController::cancel(std::string_view run_id) {
     std::shared_ptr<RunControl> control;
     {
@@ -613,16 +608,20 @@ void SessionController::run_input(const QueuedInput& input) {
         if (std::holds_alternative<agent::TurnEnded>(event)) finalize_execution();
         publish(EventPayload{event}, session_id, generation);
     };
-    const agent::Approver approver = [this, session_id, generation](const agent::Approval& approval,
-                                                                   std::stop_token stop) {
-        if (deps_.broker == nullptr) return agent::Decision{agent::Decision::Answer::deny, {}, false};
-        return deps_.broker->request_approval(approval, session_id, generation, stop);
-    };
-    const agent::Asker asker = [this, session_id, generation](const agent::Question& question,
+    const agent::Approver approver =
+        deps_.broker == nullptr
+            ? agent::Approver{}
+            : agent::Approver([this, session_id, generation](const agent::Approval& approval,
                                                              std::stop_token stop) {
-        if (deps_.broker == nullptr) return agent::Answer{{}, {}, true};
-        return deps_.broker->request_answer(question, session_id, generation, stop);
-    };
+                  return deps_.broker->request_approval(approval, session_id, generation, stop);
+              });
+    const agent::Asker asker =
+        deps_.broker == nullptr
+            ? agent::Asker{}
+            : agent::Asker([this, session_id, generation](const agent::Question& question,
+                                                          std::stop_token stop) {
+                  return deps_.broker->request_answer(question, session_id, generation, stop);
+              });
 
     agent::RunServices services{sink, approver, asker, deps_.delegation, &instance->resources(),
                                 run.control->stop.get_token()};

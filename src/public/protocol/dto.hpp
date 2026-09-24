@@ -27,6 +27,12 @@ struct PublicModel {
     bool has_key = false;
 };
 
+/// @brief provider 种类的公开元数据（模型表单校验与默认值；不含配置内容）。
+struct ProviderKind {
+    std::string kind, default_base_url;
+    bool needs_credential = false;
+};
+
 struct Usage {
     std::int64_t prompt = 0, completion = 0, cached = 0;
 };
@@ -44,6 +50,7 @@ struct OperationInfo {
 
 struct ContextInfo {
     std::size_t used = 0, limit = 0;
+    std::size_t window = 0; ///< 配置的窗口预算；模型表单默认值用
     Usage usage;
 };
 
@@ -128,6 +135,8 @@ inline constexpr const char* kClosing = "closing";
 
 void to_json(nlohmann::json&, const PublicModel&);
 void from_json(const nlohmann::json&, PublicModel&);
+void to_json(nlohmann::json&, const ProviderKind&);
+void from_json(const nlohmann::json&, ProviderKind&);
 void to_json(nlohmann::json&, const Usage&);
 void from_json(const nlohmann::json&, Usage&);
 void to_json(nlohmann::json&, const QueueItem&);

@@ -5,13 +5,24 @@
 #include <cctype>
 #include <format>
 
-#include "agent/conversation.hpp"
 #include "base/text.hpp"
 #include "tui/grapheme.hpp"
 
 namespace dagent::ui {
 namespace {
 template<class... T> struct Overloaded : T... { using T::operator()...; };
+
+// 核心生成的“未执行/被拒绝”结果文本前缀（agent/conversation.hpp 的 texts）：
+// UI 只据此决定卡片显示为 stopped，不改变结果本身。
+constexpr std::string_view kInterrupted = "\n\n[response interrupted by the user]";
+constexpr std::string_view kDenied =
+    "The user denied this call. Do not work around it; wait for further instructions.";
+constexpr std::string_view kDeniedWithFeedback = "The user denied this call and said: ";
+constexpr std::string_view kPriorDenied =
+    "An earlier call in the same batch was denied; this call was not executed.";
+constexpr std::string_view kPolicyDenied = "The permission policy denied this call: ";
+constexpr std::string_view kApprovalUnavailable = "This call requires user approval: ";
+constexpr std::string_view kToolLimit = "This turn hit the tool call limit (";
 
 int display_width(std::string_view value) {
     int width = 0;
@@ -202,12 +213,10 @@ private:
 };
 
 bool not_executed(std::string_view text) {
-    constexpr std::string_view skipped[] = {agent::texts::kDenied, agent::texts::kDeniedWithFeedback,
-                                            agent::texts::kPolicyDenied, agent::texts::kApprovalUnavailable,
-                                            agent::texts::kPriorDenied,
-                                            agent::texts::kToolLimit};
+    constexpr std::string_view skipped[] = {kDenied, kDeniedWithFeedback, kPolicyDenied,
+                                            kApprovalUnavailable, kPriorDenied, kToolLimit};
     return std::ranges::any_of(skipped, [&](std::string_view value) {
-        return text.starts_with(value.substr(0, value.find("{}")));
+        return text.starts_with(value);
     });
 }
 uint32_t line_count(std::string_view text) {
@@ -229,7 +238,7 @@ std::string title_name(std::string_view name) {
 }
 } // namespace
 
-Transcript::Transcript(tui::Document& doc, std::function<void(const agent::TodoView&)> todo)
+Transcript::Transcript(tui::Document& doc, std::function<void(const TodoList&)> todo)
     : doc_(doc), on_todo_(std::move(todo)) {
     doc_.set_renderer(tui::BlockKind::text, std::make_unique<ChatRenderer>());
     doc_.set_renderer(tui::BlockKind::output,
@@ -305,7 +314,7 @@ Transcript::ToolBlocks& Transcript::tool(const std::string& id, const std::strin
     return it->second;
 }
 
-void Transcript::finished(const agent::ToolFinished& event) {
+void Transcript::finished(const ToolFinished& event) {
     finish_message();
     ToolBlocks& blocks = tool(event.id, event.name, event.summary);
     std::string name = title_name(event.name), param = clean_field(event.summary), stat, body;
@@ -313,16 +322,16 @@ void Transcript::finished(const agent::ToolFinished& event) {
     const auto elapsed = std::chrono::duration<double>(std::chrono::steady_clock::now() - blocks.began).count();
     stat = format_text(ui::text().card_elapsed, elapsed);
     std::visit(Overloaded{
-        [&](std::monostate) { body = event.result.model_text; },
-        [&](const agent::ReadView& v) {
+        [&](std::monostate) { body = event.text; },
+        [&](const ReadView& v) {
             name = std::string(ui::text().card_read); param = v.path + (v.directory ? "/" : "");
             if (!v.directory) stat = format_text(ui::text().card_read_range, v.start_line, v.end_line, stat);
         },
-        [&](const agent::FileChangeView& v) {
+        [&](const FileChangeView& v) {
             name = v.created ? std::string(ui::text().card_write) : std::string(ui::text().card_edit); param = v.path;
             stat = format_text(ui::text().card_changes, v.added, v.removed, stat); body = v.diff; rows = 20;
         },
-        [&](const agent::BashView& v) {
+        [&](const BashView& v) {
             name = std::string(ui::text().card_bash); param = clean_field(v.command);
             const std::string state = v.interrupted ? std::string(ui::text().card_interrupted) : v.timed_out ? std::string(ui::text().card_timeout)
                 : v.signal ? format_text(ui::text().card_signal, *v.signal)
@@ -330,18 +339,18 @@ void Transcript::finished(const agent::ToolFinished& event) {
             stat = format_text(ui::text().card_state_time, state, v.elapsed_ms / 1000.0);
             body = v.output; rows = 10;
         },
-        [&](const agent::GrepView& v) {
+        [&](const GrepView& v) {
             name = std::string(ui::text().card_grep); param = "\"" + v.pattern + "\"";
             stat = format_text(ui::text().card_matches, v.lines.size(), stat);
             for (const auto& line : v.lines) body += std::format("{}:{}: {}\n", line.path, line.line, line.text);
             rows = 5;
         },
-        [&](const agent::GlobView& v) {
+        [&](const GlobView& v) {
             name = std::string(ui::text().card_glob); param = v.pattern; stat = format_text(ui::text().card_files, v.files.size(), stat);
             for (const auto& file : v.files) body += file + '\n';
             rows = 5;
         },
-        [&](const agent::McpView& v) {
+        [&](const McpView& v) {
             name = v.server + "." + v.tool; param.clear();
             for (const auto& content : v.content) {
                 body += content.value("type", "") == "text" ? content.value("text", "")
@@ -350,22 +359,22 @@ void Transcript::finished(const agent::ToolFinished& event) {
             }
             rows = 5;
         },
-        [&](const agent::TodoView& v) {
-            name = std::string(ui::text().card_plan); param = format_text(ui::text().card_items, v.items.size());
-            const auto done = std::ranges::count_if(v.items, [](const agent::TodoItem& item) {
-                return item.state == agent::TodoItem::State::done;
+        [&](const TodoList& v) {
+            name = std::string(ui::text().card_plan); param = format_text(ui::text().card_items, v.size());
+            const auto done = std::ranges::count_if(v, [](const TodoItem& item) {
+                return item.state == TodoItem::State::done;
             });
             stat = format_text(ui::text().card_done, done, stat);
             todo_ = v; if (on_todo_) on_todo_(v); update_todo_block();
-            const bool complete = !v.items.empty() && done == static_cast<std::ptrdiff_t>(v.items.size());
+            const bool complete = !v.empty() && done == static_cast<std::ptrdiff_t>(v.size());
             if (complete && !todo_complete_) {
-                std::string summary = format_text(ui::text().card_plan_complete, done, v.items.size());
-                for (const auto& item : v.items) summary += " · " + item.text;
+                std::string summary = format_text(ui::text().card_plan_complete, done, v.size());
+                for (const auto& item : v) summary += " · " + item.text;
                 text(std::move(summary), "system.todo");
             }
             todo_complete_ = complete;
         },
-        [&](const agent::AskView& v) {
+        [&](const AskView& v) {
             name = v.header.empty() ? "Question" : v.header;
             param = clean_field(v.prompt);
             body = v.prompt + "\n";
@@ -378,48 +387,76 @@ void Transcript::finished(const agent::ToolFinished& event) {
             if (v.cancelled) body += "Cancelled\n";
             rows = 8;
         },
-        [&](const agent::TaskView& v) {
+        [&](const TaskView& v) {
             name = std::string(ui::text().card_task);
             param = v.agent;
             stat = format_text(ui::text().card_task_stats, v.steps.size(), v.tool_calls, v.seconds);
-            for (const agent::TaskStep& step : v.steps)
+            for (const TaskStep& step : v.steps)
                 body += (step.is_error ? "✗ " : "● ") + step.summary + "\n";
             if (!v.steps.empty()) body += "\n";
             body += v.result;
             rows = 10;
             tasks_.push_back({v.agent, v.session_id, event.id});
         }
-    }, event.result.display);
-    if (body.empty() && event.result.is_error) body = event.result.model_text;
-    const bool skipped = std::holds_alternative<std::monostate>(event.result.display) &&
-                         not_executed(event.result.model_text);
+    }, event.view);
+    if (body.empty() && event.is_error) body = event.text;
+    const bool skipped = std::holds_alternative<std::monostate>(event.view) && not_executed(event.text);
     blocks.label = "\x1e" + name + "\t" + param + "\t" + stat;
-    doc_.set_meta(blocks.title, event.result.interrupted || skipped ? "tool.stopped"
-                               : event.result.is_error ? "tool.error" : "tool.done");
+    doc_.set_meta(blocks.title, event.interrupted || skipped ? "tool.stopped"
+                               : event.is_error ? "tool.error" : "tool.done");
     doc_.replace(blocks.title, blocks.label);
     doc_.replace(blocks.body, base::to_valid_utf8(body)); doc_.close_block(blocks.body);
     blocks.rows = rows; blocks.finished = true; blocks.foldable = line_count(body) > rows;
     collapse(blocks);
 }
 
-void Transcript::apply(const agent::Event& event) {
+void Transcript::apply_live(const Event& event) {
+    apply(event);
+    if (const auto* ended = std::get_if<TurnEnded>(&event.payload)) {
+        if (live_step_ && reasoning_ && ended->status == TurnStatus::interrupted) doc_.replace(reasoning_, {});
+        if (live_step_ && has_text_ && markdown_ && ended->status == TurnStatus::interrupted)
+            markdown_->feed(kInterrupted);
+        finish_message();
+        switch (ended->status) {
+        case TurnStatus::interrupted: text(std::string(ui::text().card_turn_interrupted), "system.status"); break;
+        case TurnStatus::denied: text(std::string(ui::text().card_denied), "system.status"); break;
+        case TurnStatus::limit: text(std::string(ui::text().card_limit), "system.status"); break;
+        case TurnStatus::failed: text("✗ " + ended->error, "system.error"); break;
+        case TurnStatus::done:
+            if (live_step_ && !model_.empty()) {
+                const double seconds = std::chrono::duration<double>(
+                    std::chrono::steady_clock::now() - turn_began_).count();
+                const std::string meta = mode_ == "unrestricted" ? "msg.footer.error"
+                                       : mode_ == "plan" ? "msg.footer.plan" : "msg.footer";
+                text(format_text(ui::text().turn_footer, mode_, model_, seconds), meta);
+            }
+            break;
+        }
+    }
+}
+
+void Transcript::append_history(const protocol::HistoryItem& item) {
+    for (const Event& event : decode_history(item)) apply(event);
+}
+
+void Transcript::apply(const Event& event) {
     std::visit(Overloaded{
-        [&](const agent::TurnStarted& e) {
+        [&](const TurnStarted& e) {
             finish_message(); live_step_ = false; turn_began_ = std::chrono::steady_clock::now();
             text(e.input, "user");
         },
-        [&](const agent::StepStarted&) {
+        [&](const StepStarted&) {
             finish_message(); live_step_ = true;
             step_start_ = doc_.append_block(tui::BlockKind::text);
             markdown_ = std::make_unique<tui::MarkdownStream>(doc_, 1);
         },
-        [&](const agent::TextDelta& e) {
+        [&](const TextDelta& e) {
             if (!e.text.empty()) finish_thought();
             has_text_ = has_text_ || !e.text.empty();
             if (!markdown_) markdown_ = std::make_unique<tui::MarkdownStream>(doc_, 1);
             markdown_->feed(e.text);
         },
-        [&](const agent::ReasoningDelta& e) {
+        [&](const ReasoningDelta& e) {
             if (!reasoning_) {
                 thought_began_ = std::chrono::steady_clock::now();
                 thought_title_ = text(std::string(ui::text().thought_live), "thought");
@@ -429,51 +466,30 @@ void Transcript::apply(const agent::Event& event) {
             }
             doc_.append(reasoning_, e.text);
         },
-        [&](const agent::StreamReset&) {
+        [&](const StreamReset&) {
             markdown_.reset(); reasoning_ = 0; thought_title_ = 0; has_text_ = false;
             if (step_start_) doc_.erase_from(step_start_);
             step_start_ = doc_.append_block(tui::BlockKind::text);
             markdown_ = std::make_unique<tui::MarkdownStream>(doc_, 1);
         },
-        [&](const agent::ToolStarted& e) { finish_message(); tool(e.id, e.name, e.summary); },
-        [&](const agent::ToolOutput& e) {
+        [&](const ToolStarted& e) { finish_message(); tool(e.id, e.name, e.summary); },
+        [&](const ToolOutput& e) {
             if (auto it = tools_.find(e.id); it != tools_.end()) doc_.append(it->second.body, e.chunk);
         },
-        [&](const agent::ToolFinished& e) { finished(e); },
-        [&](const agent::Compacted& e) {
+        [&](const ToolFinished& e) { finished(e); },
+        [&](const Compacted& e) {
             text(format_text(ui::text().card_compacted, e.before, e.after), "system.compact");
         },
-        [&](const agent::ModelChanged& e) { model_ = e.model; },
-        [&](const agent::Notice& e) { if (e.level == agent::Notice::Level::error) text("✗ " + e.text, "system.error"); },
-        [&](const agent::TurnEnded& e) {
-            if (live_step_ && reasoning_ && e.status == agent::TurnStatus::interrupted) doc_.replace(reasoning_, {});
-            if (live_step_ && has_text_ && markdown_ && e.status == agent::TurnStatus::interrupted)
-                markdown_->feed(agent::texts::kInterrupted);
-            finish_message();
-            switch (e.status) {
-            case agent::TurnStatus::interrupted: text(std::string(ui::text().card_turn_interrupted), "system.status"); break;
-            case agent::TurnStatus::denied: text(std::string(ui::text().card_denied), "system.status"); break;
-            case agent::TurnStatus::limit: text(std::string(ui::text().card_limit), "system.status"); break;
-            case agent::TurnStatus::failed: text("✗ " + e.error, "system.error"); break;
-            case agent::TurnStatus::done:
-                if (live_step_ && !model_.empty()) {
-                    const double seconds = std::chrono::duration<double>(
-                        std::chrono::steady_clock::now() - turn_began_).count();
-                    const std::string meta = mode_ == "unrestricted" ? "msg.footer.error"
-                                           : mode_ == "plan" ? "msg.footer.plan" : "msg.footer";
-                    text(format_text(ui::text().turn_footer, mode_, model_, seconds), meta);
-                }
-                break;
-            }
-        },
+        [&](const ModelChanged& e) { model_ = e.model; },
+        [&](const Notice& e) { if (e.level == NoticeLevel::error) text("✗ " + e.text, "system.error"); },
         [](const auto&) {}
-    }, event);
+    }, event.payload);
 }
 
 void Transcript::clear() {
     markdown_.reset(); reasoning_ = step_start_ = todo_block_ = thought_title_ = 0;
     thoughts_.clear(); tools_.clear(); tasks_.clear(); doc_.clear();
-    todo_.items.clear(); todo_complete_ = false; next_group_ = 1;
+    todo_.clear(); todo_complete_ = false; next_group_ = 1;
     if (on_todo_) on_todo_(todo_);
 }
 void Transcript::info(std::string value) { text(std::move(value), "system.status"); }
@@ -517,18 +533,18 @@ void Transcript::set_todo_collapsed(bool value) {
     update_todo_block();
 }
 void Transcript::update_todo_block() {
-    if (todo_.items.empty() && !todo_block_) return;
+    if (todo_.empty() && !todo_block_) return;
     std::string value;
-    const auto done = std::ranges::count_if(todo_.items, [](const agent::TodoItem& item) {
-        return item.state == agent::TodoItem::State::done;
+    const auto done = std::ranges::count_if(todo_, [](const TodoItem& item) {
+        return item.state == TodoItem::State::done;
     });
-    if (todo_narrow_ && !todo_.items.empty()) {
-        value = format_text(ui::text().status_plan, done, todo_.items.size());
+    if (todo_narrow_ && !todo_.empty()) {
+        value = format_text(ui::text().status_plan, done, todo_.size());
         if (todo_collapsed_) value += std::string(ui::text().todo_expand);
-        else for (const auto& item : todo_.items) {
-            const std::string_view symbol = item.state == agent::TodoItem::State::done ? "✓"
-                : item.state == agent::TodoItem::State::doing ? "●"
-                : item.state == agent::TodoItem::State::dropped ? "✗" : "○";
+        else for (const auto& item : todo_) {
+            const std::string_view symbol = item.state == TodoItem::State::done ? "✓"
+                : item.state == TodoItem::State::doing ? "●"
+                : item.state == TodoItem::State::dropped ? "✗" : "○";
             value += "\n" + std::string(symbol) + " " + item.text;
         }
     }

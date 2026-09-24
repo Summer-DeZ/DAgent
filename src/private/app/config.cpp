@@ -18,6 +18,7 @@
 #include <utility>
 
 #include <fcntl.h>
+#include <sys/file.h>
 #include <sys/stat.h>
 #include <unistd.h>
 
@@ -142,6 +143,38 @@ void require_private_file(const fs::path& file) {
                          file.string(), file.string()));
     }
 }
+
+/// @brief 安装根下的短期模型文件写锁：包围重读/校验/原子写，避免两个前端同时添加模型丢失一项。
+/// flock 随进程退出释放，不留下需要清理的锁状态。
+class ModelWriteLock {
+public:
+    explicit ModelWriteLock(const fs::path& root) {
+        const fs::path path = root / ".runtime" / "models.lock";
+        std::error_code ec;
+        fs::create_directories(path.parent_path(), ec);
+        if (ec) fail(ConfigError::Kind::io, "cannot create the model lock directory: " + ec.message());
+        fd_ = ::open(path.c_str(), O_RDWR | O_CREAT | O_CLOEXEC, 0600);
+        if (fd_ < 0) fail(ConfigError::Kind::io, std::format("cannot open {}: {}", path.string(), std::strerror(errno)));
+        while (::flock(fd_, LOCK_EX) != 0) {
+            if (errno == EINTR) continue;
+            const std::string message = std::strerror(errno);
+            ::close(fd_);
+            fd_ = -1;
+            fail(ConfigError::Kind::io, std::format("cannot lock {}: {}", path.string(), message));
+        }
+    }
+    ~ModelWriteLock() {
+        if (fd_ >= 0) {
+            ::flock(fd_, LOCK_UN);
+            ::close(fd_);
+        }
+    }
+    ModelWriteLock(const ModelWriteLock&) = delete;
+    ModelWriteLock& operator=(const ModelWriteLock&) = delete;
+
+private:
+    int fd_ = -1;
+};
 
 void resolve_paths(json& config, const fs::path& root) {
     const auto resolve = [&](std::initializer_list<std::string_view> keys, bool command_like = false) {
@@ -513,36 +546,6 @@ agent::SubagentDef parse_subagent(const fs::path& file, const std::string& text,
 
 } // namespace
 
-InstallationPaths installation_paths() {
-    fs::path root;
-    if (const char* value = std::getenv("DAGENT_HOME"); value != nullptr && *value != '\0') {
-        root = absolute_path(value);
-    } else {
-#ifdef DAGENT_DEV_HOME
-        root = absolute_path(DAGENT_DEV_HOME);
-#else
-        std::array<char, 4096> target{};
-        const ssize_t size = ::readlink("/proc/self/exe", target.data(), target.size() - 1);
-        if (size < 0) fail(ConfigError::Kind::io, std::format("cannot resolve /proc/self/exe: {}", std::strerror(errno)));
-        root = fs::path(std::string(target.data(), static_cast<std::size_t>(size))).parent_path();
-#endif
-    }
-    std::error_code ec;
-    if (!fs::is_directory(root, ec))
-        fail(ConfigError::Kind::io, "installation root does not exist or is not a directory: " + root.string());
-
-    const fs::path probe = root / std::format(".dagent-write-{}", ::getpid());
-    const int fd = ::open(probe.c_str(), O_WRONLY | O_CREAT | O_EXCL | O_CLOEXEC, 0600);
-    if (fd < 0) {
-        fail(ConfigError::Kind::io,
-             std::format("installation root {} is not writable (sessions and logs are stored there): {}. Set DAGENT_HOME to a writable directory",
-                         root.string(), std::strerror(errno)));
-    }
-    ::close(fd);
-    ::unlink(probe.c_str());
-    return {root, root / "config.json", root / "models.json", root / "dagent.db", root / "logs"};
-}
-
 std::filesystem::path project_root(const std::filesystem::path& cwd) {
     exec::Command cmd;
     cmd.argv = {"git", "rev-parse", "--show-toplevel"};
@@ -677,9 +680,9 @@ Config load_config(const LoadOptions& options) {
         config.agent.progress.interval = std::chrono::milliseconds(v.integer());
     if (auto v = node.child("permissions"); v.has()) {
         const std::string mode = v.str();
-        if (mode == "ask") config.agent.permissions = agent::PermissionMode::ask;
-        else if (mode == "workspace") config.agent.permissions = agent::PermissionMode::workspace;
-        else if (mode == "unrestricted") config.agent.permissions = agent::PermissionMode::unrestricted;
+        if (mode == "ask") config.permissions = agent::PermissionMode::ask;
+        else if (mode == "workspace") config.permissions = agent::PermissionMode::workspace;
+        else if (mode == "unrestricted") config.permissions = agent::PermissionMode::unrestricted;
         else fail(ConfigError::Kind::type, v.pointer() + " must be ask, workspace or unrestricted");
     }
     config.credentials = map_credentials(node.child("network"));
@@ -717,6 +720,7 @@ llm::ProviderConfig add_model(const fs::path& root_path,
                                 const llm::ProviderConfig& model) {
     const fs::path root = absolute_path(root_path);
     const fs::path file = root / "models.json";
+    ModelWriteLock lock(root);
     require_private_file(file);
     json document = parse_file(file);
     json& models = document["models"];

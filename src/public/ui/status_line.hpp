@@ -1,7 +1,7 @@
 #pragma once
+#include <cstddef>
 #include <string>
 
-#include "agent/events.hpp"
 #include "tui/widget.hpp"
 
 namespace dagent::ui {
@@ -11,7 +11,7 @@ namespace dagent::ui {
 class StatusLine final : public tui::Widget {
 public:
     void project(std::string path);
-    void context(const agent::ContextUpdate& update);
+    void context(std::size_t used, std::size_t limit);
     void todo(int done, int total, bool shown);
     void set_theme(const tui::ThemeTokens& theme) { theme_ = &theme; invalidate(); }
     void set_trigger(int percent) { trigger_ = percent; }

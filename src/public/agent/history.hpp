@@ -44,7 +44,6 @@ struct HistoryItem {
 /// @brief 记录 → 历史条目；未知显示分支不产生条目。
 class HistoryProjector {
 public:
-    std::vector<HistoryItem> project(const StoredRecord& record) const;
     std::vector<HistoryItem> project(const StoredRecord&, const record_codec::DecodedRecord&) const;
 };
 

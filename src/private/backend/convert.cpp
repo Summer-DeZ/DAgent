@@ -70,6 +70,7 @@ protocol::SessionSnapshot to_protocol(const runtime::RuntimeSnapshot& snapshot) 
     }
     out.context.used = snapshot.used_tokens;
     out.context.limit = snapshot.token_limit;
+    out.context.window = snapshot.window_tokens;
     out.work_plan = agent::to_json(agent::View(snapshot.work_plan));
     for (const agent::McpServerState& state : snapshot.mcp) {
         out.mcp.push_back(nlohmann::json{{"name", state.name},
@@ -127,6 +128,14 @@ std::pair<std::string, nlohmann::json> split_event(const agent::Event& event) {
     std::string kind = json.value("type", "");
     json.erase("type");
     return {std::move(kind), std::move(json)};
+}
+
+const agent::ToolOutput* raw_tool_output(const agent::Event& event) {
+    if (const auto* direct = std::get_if<agent::ToolOutput>(&event)) return direct;
+    if (const auto* sub = std::get_if<agent::SubEvent>(&event)) {
+        return std::get_if<agent::ToolOutput>(&sub->event());
+    }
+    return nullptr;
 }
 
 protocol::RpcError to_rpc_error(const runtime::RuntimeError& error) {

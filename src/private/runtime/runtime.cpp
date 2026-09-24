@@ -5,18 +5,9 @@
 #include "runtime/subagent.hpp"
 
 namespace dagent::runtime {
-namespace {
-
-RuntimeError query_error(const std::exception& error) {
-    return RuntimeError{RuntimeError::Kind::query_failed, error.what()};
-}
-
-} // namespace
-
 Runtime::Runtime(Deps deps)
-    : configuration_(std::move(deps.configuration)), queries_(std::move(deps.queries)),
-      factory_(std::move(deps.factory)) {
-    frontend_.store(deps.frontend);
+    : configuration_(std::move(deps.configuration)), factory_(std::move(deps.factory)),
+      frontend_(deps.frontend) {
     subagent_ = std::make_unique<SubagentExecutor>(*factory_);
     broker_.set_outlet(this);
     SessionController::Deps controller;
@@ -25,15 +16,12 @@ Runtime::Runtime(Deps deps)
     controller.broker = deps.interactive ? &broker_ : nullptr;
     controller.delegation = subagent_.get();
     controller.sink = [this](const Event& event) {
-        if (Frontend* frontend = frontend_.load()) frontend->event(event);
+        if (frontend_) frontend_->event(event);
     };
     controller_ = std::make_unique<SessionController>(std::move(controller));
-    query_thread_ = std::jthread([this](std::stop_token stop) { query_worker(stop); });
 }
 
 Runtime::~Runtime() { shutdown(); }
-
-void Runtime::set_frontend(Frontend* frontend) { frontend_.store(frontend); }
 
 StartResult Runtime::start(const StartOptions& options) { return controller_->start(options); }
 
@@ -42,14 +30,6 @@ RuntimeSnapshot Runtime::snapshot() const {
     snapshot.mcp = controller_->mcp_states();
     return snapshot;
 }
-
-std::vector<agent::PublicModel> Runtime::models() const { return configuration_->models(); }
-
-std::vector<agent::ProviderKindInfo> Runtime::provider_kinds() const {
-    return configuration_->provider_kinds();
-}
-
-std::filesystem::path Runtime::theme_file() const { return configuration_->theme_file(); }
 
 std::expected<std::string, RuntimeError> Runtime::submit(
     std::string text, std::function<void(const std::string&)> accepted) {
@@ -88,8 +68,6 @@ std::expected<void, RuntimeError> Runtime::toggle_planning() {
     return controller_->toggle_planning();
 }
 
-void Runtime::cancel() { controller_->cancel(); }
-
 bool Runtime::cancel(std::string_view run_id) { return controller_->cancel(run_id); }
 
 std::expected<std::string, RuntimeError> Runtime::resolve_session(
@@ -106,86 +84,15 @@ bool Runtime::answer(const std::string& interaction_id, agent::Answer answer) {
 }
 
 void Runtime::interaction_requested(const InteractionRequest& request) {
-    if (Frontend* frontend = frontend_.load()) frontend->interaction_requested(request);
+    if (frontend_) frontend_->interaction_requested(request);
 }
 
 void Runtime::interaction_closed(const std::string& interaction_id) {
-    if (Frontend* frontend = frontend_.load()) frontend->interaction_closed(interaction_id);
-}
-
-void Runtime::post_query(std::function<void()> job) {
-    {
-        const std::lock_guard lock(query_mutex_);
-        if (query_closed_) return;
-        query_jobs_.push_back(std::move(job));
-    }
-    query_cv_.notify_all();
-}
-
-void Runtime::query_worker(std::stop_token stop) {
-    for (;;) {
-        std::function<void()> job;
-        {
-            std::unique_lock lock(query_mutex_);
-            query_cv_.wait(lock, stop, [&] { return query_closed_ || !query_jobs_.empty(); });
-            if ((query_closed_ && query_jobs_.empty()) || stop.stop_requested()) return;
-            job = std::move(query_jobs_.front());
-            query_jobs_.pop_front();
-        }
-        job();
-    }
-}
-
-void Runtime::query_sessions(std::size_t limit, std::function<void(SessionsResult)> done) {
-    post_query([this, limit, done = std::move(done)] {
-        try {
-            done(queries_->sessions(limit));
-        } catch (const std::exception& error) {
-            done(std::unexpected(query_error(error)));
-        }
-    });
-}
-
-void Runtime::query_history(std::string session_id, std::function<void(HistoryResult)> done) {
-    post_query([this, session_id = std::move(session_id), done = std::move(done)] {
-        try {
-            done(queries_->history(session_id));
-        } catch (const std::exception& error) {
-            done(std::unexpected(query_error(error)));
-        }
-    });
-}
-
-void Runtime::query_workspace(std::function<void(WorkspaceResult)> done) {
-    post_query([this, done = std::move(done)] {
-        try {
-            done(queries_->workspace());
-        } catch (const std::exception& error) {
-            done(std::unexpected(query_error(error)));
-        }
-    });
-}
-
-void Runtime::query_files(std::string query, std::size_t limit, std::function<void(FilesResult)> done) {
-    post_query([this, query = std::move(query), limit, done = std::move(done)] {
-        try {
-            done(queries_->complete(query, limit));
-        } catch (const std::exception& error) {
-            done(std::unexpected(query_error(error)));
-        }
-    });
+    if (frontend_) frontend_->interaction_closed(interaction_id);
 }
 
 void Runtime::shutdown() {
     if (controller_ != nullptr) controller_->shutdown();
-    {
-        const std::lock_guard lock(query_mutex_);
-        query_closed_ = true;
-        query_jobs_.clear();
-    }
-    query_cv_.notify_all();
-    query_thread_.request_stop();
-    if (query_thread_.joinable()) query_thread_.join();
 }
 
 } // namespace dagent::runtime

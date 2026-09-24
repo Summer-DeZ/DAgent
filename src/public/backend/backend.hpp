@@ -15,7 +15,6 @@
 #include <string>
 #include <thread>
 
-#include "app/config.hpp"
 #include "backend/publisher.hpp"
 #include "ipc/channel.hpp"
 #include "lib/nlohmann/json.hpp"
@@ -23,15 +22,12 @@
 #include "runtime/factory.hpp"
 #include "runtime/runtime.hpp"
 
-namespace dagent::app {
-class QueryGatewayImpl;
-}
-
 namespace dagent::backend {
 
 class Backend final : public runtime::Frontend {
 public:
-    explicit Backend(ipc::Channel channel);
+    /// @param assemble 由后端入口注入的 app 装配实现；backend 不依赖具体配置与适配对象。
+    Backend(ipc::Channel channel, runtime::Assembler assemble);
     ~Backend() override;
     Backend(const Backend&) = delete;
     Backend& operator=(const Backend&) = delete;
@@ -81,9 +77,10 @@ private:
     void push_query(Job job);
 
     ipc::Channel channel_;
+    runtime::Assembler assemble_;
     std::unique_ptr<Publisher> publisher_;
     std::unique_ptr<runtime::Runtime> runtime_;
-    std::shared_ptr<app::QueryGatewayImpl> queries_;
+    std::shared_ptr<runtime::QueryGateway> queries_;
     std::shared_ptr<runtime::ConfigurationGateway> configuration_;
     bool initialized_ = false;
     std::string mode_;

@@ -1,10 +1,9 @@
 /// @file options.hpp
-/// @brief 核心的上下文与运行选项；外围装配输入见 setup.hpp。
+/// @brief 核心的上下文与运行选项；权限档与只读初值在 SessionConfig。
 #pragma once
 
 #include <chrono>
 #include <cstddef>
-#include "agent/permission.hpp"
 
 namespace dagent::agent {
 
@@ -33,8 +32,6 @@ struct Options {
     ContextOptions context;
     Limits run;
     ProgressOptions progress;
-    PermissionMode permissions = PermissionMode::workspace;
-    bool read_only = false;
 };
 
 } // namespace dagent::agent

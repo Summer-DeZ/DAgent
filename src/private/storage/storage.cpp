@@ -242,12 +242,12 @@ private:
     bool committed_ = false;
 };
 
-Meta read_meta(Database& db, std::string_view id, bool* open_turn = nullptr) {
+agent::SessionMeta read_meta(Database& db, std::string_view id, bool* open_turn = nullptr) {
     Statement query(db.get(),
                     "SELECT cwd,model,created,open_turn,parent_id,agent_name FROM sessions WHERE id=?");
     query.text(1, id);
     if (!query.row()) fail(StorageError::Kind::not_found, "session not found: " + std::string(id));
-    Meta meta;
+    agent::SessionMeta meta;
     meta.id = std::string(id);
     meta.cwd = query.string(0);
     meta.model = query.string(1);
@@ -288,11 +288,11 @@ std::string new_id() {
 
 struct Writer::Impl {
     Options options;
-    Meta meta;
+    agent::SessionMeta meta;
     Database db;
     std::int64_t seq = 0;
 
-    Impl(Options value, Meta session)
+    Impl(Options value, agent::SessionMeta session)
         : options(std::move(value)), meta(std::move(session)), db(options.database) {}
 };
 
@@ -301,7 +301,7 @@ Writer::Writer(Writer&&) noexcept = default;
 Writer& Writer::operator=(Writer&&) noexcept = default;
 Writer::~Writer() = default;
 
-Writer Writer::create(const Options& options, Meta meta) {
+Writer Writer::create(const Options& options, agent::SessionMeta meta) {
     if (meta.id.empty()) meta.id = new_id();
     meta.cwd = normalized(meta.cwd);
     const auto timestamp = now_ms();
@@ -323,7 +323,7 @@ Writer Writer::create(const Options& options, Meta meta) {
 
 Writer Writer::resume(const Options& options, std::string_view id) {
     Database db(options.database);
-    Meta meta = read_meta(db, id);
+    agent::SessionMeta meta = read_meta(db, id);
     auto impl = std::make_unique<Impl>(options, std::move(meta));
     Statement sequence(impl->db.get(), "SELECT COALESCE(MAX(seq),-1)+1 FROM events WHERE session_id=?");
     sequence.text(1, id);
@@ -371,7 +371,7 @@ void Writer::sync() {
     sqlite3_db_cacheflush(impl_->db.get());
 }
 
-const Meta& Writer::meta() const noexcept { return impl_->meta; }
+const agent::SessionMeta& Writer::meta() const noexcept { return impl_->meta; }
 
 std::vector<Summary> list(const Options& options, const fs::path& cwd, std::size_t limit) {
     std::error_code ec;
@@ -418,24 +418,6 @@ std::vector<Summary> list_children(const Options& options, std::string_view pare
         out.push_back(std::move(summary));
     }
     return out;
-}
-
-void replay(const Options& options, std::string_view id,
-            const std::function<void(std::string_view, const json&)>& on_event) {
-    Database db(options.database, Access::read_only);
-    (void)read_meta(db, id);
-    Statement query(db.get(), "SELECT type,payload FROM events WHERE session_id=? ORDER BY seq");
-    query.text(1, id);
-    while (query.row()) {
-        const std::string type = query.string(0);
-        const std::string encoded = query.bytes(1);
-        try {
-            on_event(type, json::parse(encoded));
-        } catch (const json::exception& error) {
-            fail(StorageError::Kind::corrupt,
-                 std::format("corrupt event payload in session {}: {}", id, error.what()));
-        }
-    }
 }
 
 // ---- 写租约 ----
@@ -547,7 +529,7 @@ public:
             throw to_record_error(error);
         }
     }
-    const Meta& meta() const override { return writer_.meta(); }
+    const agent::SessionMeta& meta() const override { return writer_.meta(); }
 
 private:
     Writer writer_;
@@ -617,7 +599,7 @@ constexpr std::size_t kMaxScanPerPage = 100;
 
 struct HistoryRead::Impl {
     Options options;
-    Meta meta;
+    agent::SessionMeta meta;
     std::int64_t upper_seq = -1;
     std::int64_t next_seq = 0;
     bool released = false;
@@ -702,12 +684,6 @@ HistoryRead::Page HistoryRead::read(const std::string& cursor, std::size_t limit
         throw;
     }
 }
-
-void HistoryRead::close() {
-    if (impl_) impl_->release();
-}
-
-const Meta& HistoryRead::meta() const { return impl_->meta; }
 
 std::int64_t HistoryRead::upper_seq() const { return impl_->upper_seq; }
 

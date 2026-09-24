@@ -5,18 +5,24 @@
 /// 同会话切模型复用传入 lease，不再次 flock（记录路线 §8.2）。
 #pragma once
 
+#include <filesystem>
 #include <functional>
 #include <memory>
 #include <optional>
 #include <string>
 #include <string_view>
 
-#include "agent/model_input.hpp"
+#include "agent/options.hpp"
 #include "agent/port_model.hpp"
 #include "agent/public_model.hpp"
-#include "agent/setup.hpp"
 #include "app/assembly.hpp"
+#include "exec/process.hpp"
+#include "exec/sandbox.hpp"
 #include "runtime/factory.hpp"
+#include "storage/storage.hpp"
+#include "tools/tools.hpp"
+#include "workspace/files.hpp"
+#include "workspace/search.hpp"
 
 namespace dagent::app {
 
@@ -28,9 +34,22 @@ struct ModelSelection {
 
 class SessionAssembly final : public runtime::SessionFactory {
 public:
+    /// @brief 整个后端不变的装配值；每个会话的权限/模型/子 Agent 收窄在创建时单独解析。
     struct Options {
-        std::shared_ptr<Assembly> assembly;
-        agent::Setup base; ///< 启动初值：cwd/tools/session/mcp/sandbox/prompts 等
+        std::shared_ptr<Assembly> assembly; ///< MCP、环境事实、子 Agent 定义与模型表
+        agent::Options agent;               ///< 上下文预算、调用上限、进度间隔
+        std::filesystem::path cwd, project_root, control_root;
+        std::optional<std::filesystem::path> git_root;
+        tools::Options tools;
+        workspace::FileOptions files;
+        workspace::SearchOptions search;
+        exec::Options process;
+        exec::SandboxOptions sandbox_options;
+        exec::Support sandbox; ///< 启动时探测一次
+        storage::Options storage;
+        std::string system_prompt, compact_prompt; ///< 主会话提示词模板
+        runtime::SessionState initial;             ///< 启动权限档/只读/规划；model 空表示 default_model
+        ModelSelection default_model;
         std::function<ModelSelection(const std::string&)> resolve_model;
     };
 

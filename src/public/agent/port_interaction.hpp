@@ -1,7 +1,7 @@
 /// @file port_interaction.hpp
 /// @brief InteractionChannel 端口：审批与问答的唯一交互入口。
 ///
-/// 实现在 runtime（R07）；核心控制动作/授权流程只请求交互，不关心前端形态。
+/// 实现在 runtime；核心控制动作/授权流程只请求交互，不关心前端形态。
 /// 等待期间不持有任何业务锁；取消唤醒等待并返回现有取消语义。
 #pragma once
 

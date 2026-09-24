@@ -103,7 +103,7 @@ struct DerivedPermission {
 
 /// @brief 子 Agent 的权限派生：只能收窄不能放宽。
 /// parent_* 必须取父 Policy 的运行时当前值（policy_.mode() / planning() / read_only()），
-/// 不能取 Setup 里的初值——用户可能按过 Shift+Tab，或走过 exit_plan 切换了模式。
+/// 不能取装配初值——用户可能按过 Shift+Tab，或走过 exit_plan 切换了模式。
 DerivedPermission derive_permission(PermissionMode parent_mode, bool parent_planning,
                                     bool parent_read_only, std::string_view def_permission);
 

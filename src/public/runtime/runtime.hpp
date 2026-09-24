@@ -1,11 +1,10 @@
 /// @file runtime.hpp
-/// @brief Runtime：前端（进程内或经协议）看到的后端外观。
+/// @brief Runtime：backend 协议适配看到的会话控制外观。
 ///
 /// 组装 SessionController、交互代理、子执行与只读查询；前端只提交意图、
-/// 消费快照/事件并回答交互，不持 Agent/Setup 或写业务状态（R07 完成条件）。
+/// 消费快照/事件并回答交互，不持具体装配对象或写业务状态。
 #pragma once
 
-#include <atomic>
 #include <condition_variable>
 #include <cstddef>
 #include <deque>
@@ -44,7 +43,6 @@ public:
     struct Deps {
         std::unique_ptr<SessionFactory> factory;
         std::shared_ptr<ConfigurationGateway> configuration;
-        std::shared_ptr<QueryGateway> queries;
         Frontend* frontend = nullptr;
         bool interactive = true; ///< false 时审批/问答按非交互结果返回，不生成永远等不到的对话框
     };
@@ -56,13 +54,8 @@ public:
 
     /// @brief 同步创建/恢复初始会话；失败抛 std::exception（由启动装配处理）。
     StartResult start(const StartOptions& options);
-    /// @brief 绑定前端出口；在 start 之前调用。
-    void set_frontend(Frontend* frontend);
     RuntimeSnapshot snapshot() const;
 
-    std::vector<agent::PublicModel> models() const;
-    std::vector<agent::ProviderKindInfo> provider_kinds() const;
-    std::filesystem::path theme_file() const;
 
     using CommandDone = SessionController::CommandDone;
     using ModelAdded = SessionController::ModelAdded;
@@ -78,7 +71,6 @@ public:
     std::expected<bool, RuntimeError> revoke_grant(const std::string& grant_id);
     std::expected<void, RuntimeError> cycle_permission();
     std::expected<void, RuntimeError> toggle_planning();
-    void cancel();
     bool cancel(std::string_view run_id);
     std::expected<std::string, RuntimeError> resolve_session(std::optional<std::string_view> prefix);
 
@@ -86,38 +78,19 @@ public:
     bool answer(const std::string& interaction_id, agent::Decision decision);
     bool answer(const std::string& interaction_id, agent::Answer answer);
 
-    // 只读查询：在查询线程执行，结果经回调返回（回调在查询线程上调用）。
-    using SessionsResult = std::expected<std::vector<SessionSummary>, RuntimeError>;
-    using HistoryResult = std::expected<std::vector<agent::Event>, RuntimeError>;
-    using WorkspaceResult = std::expected<WorkspaceInfo, RuntimeError>;
-    using FilesResult = std::expected<std::vector<FileCandidate>, RuntimeError>;
-    void query_sessions(std::size_t limit, std::function<void(SessionsResult)> done);
-    void query_history(std::string session_id, std::function<void(HistoryResult)> done);
-    void query_workspace(std::function<void(WorkspaceResult)> done);
-    void query_files(std::string query, std::size_t limit, std::function<void(FilesResult)> done);
-
-    /// @brief 关闭后端：停止输入、取消执行、唤醒交互、join 查询与执行线程。
+    /// @brief 关闭后端：停止输入、取消执行、唤醒交互、join 执行线程。
     void shutdown();
 
 private:
     void interaction_requested(const InteractionRequest& request) override;
     void interaction_closed(const std::string& interaction_id) override;
-    void post_query(std::function<void()> job);
-    void query_worker(std::stop_token stop);
 
     std::shared_ptr<ConfigurationGateway> configuration_;
-    std::shared_ptr<QueryGateway> queries_;
     std::unique_ptr<SessionFactory> factory_;
     InteractionBroker broker_;
     std::unique_ptr<SubagentExecutor> subagent_;
     std::unique_ptr<SessionController> controller_;
-    std::atomic<Frontend*> frontend_{nullptr};
-
-    std::mutex query_mutex_;
-    std::condition_variable_any query_cv_;
-    std::deque<std::function<void()>> query_jobs_;
-    bool query_closed_ = false;
-    std::jthread query_thread_;
+    Frontend* frontend_ = nullptr;
 };
 
 } // namespace dagent::runtime

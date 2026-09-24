@@ -24,7 +24,6 @@ using agent::ToolCall;
 using agent::ToolCallBegin;
 using agent::ToolCallDelta;
 using agent::ToolCallEnd;
-using agent::ToolDef;
 using agent::ToolSpec;
 using agent::ReasoningDelta;
 using agent::Request;

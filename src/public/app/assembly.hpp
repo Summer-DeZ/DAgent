@@ -1,8 +1,7 @@
 /// @file assembly.hpp
 /// @brief 一次前端/后端运行共享的环境：MCP 连接、工作区事实、子 Agent 定义与模型表。
 ///
-/// 由启动装配创建一次，比所有 Session 活得久。审批的单模态排队由 runtime/InteractionBroker
-/// 负责，本对象不再仲裁交互（R07/R08）。
+/// 由启动装配创建一次，比所有 Session 活得久。审批的单模态排队由 runtime/InteractionBroker 负责。
 #pragma once
 
 #include <functional>

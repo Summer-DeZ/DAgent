@@ -61,8 +61,6 @@ public:
     /// @brief 关闭流程：取消全部 Pending 与排队请求，唤醒所有等待线程。
     void cancel_all();
 
-    bool has_pending() const;
-
 private:
     struct Pending;
     enum class Kind { approval, question };

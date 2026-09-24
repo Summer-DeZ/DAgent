@@ -7,7 +7,7 @@
 #include "llm/codec.hpp"
 #include "llm/provider.hpp"
 
-// Provider 实现共用的报文原语，不进入 Setup 或 app 的接口；只有 llm 模块的实现使用。
+// Provider 实现共用的报文原语，不进入 app 装配接口；只有 llm 模块的实现使用。
 namespace dagent::llm::provider_detail {
 std::string join_url(std::string_view, std::string_view);
 std::string string_field(const nlohmann::json&, const char*);

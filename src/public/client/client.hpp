@@ -56,8 +56,6 @@ public:
     void call_async(std::string method, nlohmann::json params,
                     std::function<void(std::expected<nlohmann::json, protocol::RpcError>)> done);
 
-    void notify(const std::string& method, nlohmann::json params = nlohmann::json::object());
-
     /// @brief 主动结束：关闭连接并 join 读取线程。
     void close();
     bool connected() const;

@@ -22,7 +22,6 @@ public:
                      std::filesystem::path project_root, workspace::SearchOptions search);
 
     std::vector<runtime::SessionSummary> sessions(std::size_t limit) override;
-    std::vector<agent::Event> history(std::string_view session_id) override;
     std::unique_ptr<runtime::HistoryReader> open_history(std::string_view session_id) override;
     std::vector<runtime::ChildSummary> children(std::string_view session_id) override;
     runtime::WorkspaceInfo workspace() override;

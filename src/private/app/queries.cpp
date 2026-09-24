@@ -2,7 +2,6 @@
 
 #include <utility>
 
-#include "app/history.hpp"
 #include "storage/history_read.hpp"
 #include "workspace/context.hpp"
 #include "workspace/files.hpp"
@@ -10,18 +9,31 @@
 namespace dagent::app {
 namespace {
 
+/// @brief storage 错误 → runtime 中立查询错误：backend 不包含 storage 头。
+[[noreturn]] void rethrow(const storage::StorageError& error) {
+    using Kind = runtime::QueryError::Kind;
+    const Kind kind = error.kind() == storage::StorageError::Kind::not_found ? Kind::not_found
+                     : error.kind() == storage::StorageError::Kind::invalid_state ? Kind::invalid_state
+                                                                                  : Kind::query_failed;
+    throw runtime::QueryError(kind, error.what());
+}
+
 /// @brief storage::HistoryRead → runtime::HistoryReader（只读分页 + 释放语义）。
 class HistoryReaderImpl final : public runtime::HistoryReader {
 public:
     explicit HistoryReaderImpl(std::unique_ptr<storage::HistoryRead> read) : read_(std::move(read)) {}
 
     runtime::HistoryPage read(const std::string& cursor, std::size_t limit) override {
-        storage::HistoryRead::Page page = read_->read(cursor, limit);
-        runtime::HistoryPage out;
-        out.items = std::move(page.items);
-        out.cursor = std::move(page.cursor);
-        out.done = page.done;
-        return out;
+        try {
+            storage::HistoryRead::Page page = read_->read(cursor, limit);
+            runtime::HistoryPage out;
+            out.items = std::move(page.items);
+            out.cursor = std::move(page.cursor);
+            out.done = page.done;
+            return out;
+        } catch (const storage::StorageError& error) {
+            rethrow(error);
+        }
     }
     const std::string& session_id() const override { return session_id_; }
     std::int64_t upper_seq() const override { return read_->upper_seq(); }
@@ -42,26 +54,35 @@ QueryGatewayImpl::QueryGatewayImpl(storage::Options storage, std::filesystem::pa
 
 std::vector<runtime::SessionSummary> QueryGatewayImpl::sessions(std::size_t limit) {
     std::vector<runtime::SessionSummary> out;
-    for (const storage::Summary& summary : storage::list(storage_, cwd_, limit)) {
-        out.push_back({summary.meta.id, summary.title, summary.updated});
+    try {
+        for (const storage::Summary& summary : storage::list(storage_, cwd_, limit)) {
+            out.push_back({summary.meta.id, summary.title, summary.updated});
+        }
+    } catch (const storage::StorageError& error) {
+        rethrow(error);
     }
     return out;
 }
 
-std::vector<agent::Event> QueryGatewayImpl::history(std::string_view session_id) {
-    return app::project_history(storage_, session_id);
-}
-
 std::unique_ptr<runtime::HistoryReader> QueryGatewayImpl::open_history(std::string_view session_id) {
-    auto reader = std::make_unique<HistoryReaderImpl>(storage::HistoryRead::open(storage_, session_id));
-    reader->bind_session(std::string(session_id));
-    return reader;
+    try {
+        auto reader =
+            std::make_unique<HistoryReaderImpl>(storage::HistoryRead::open(storage_, session_id));
+        reader->bind_session(std::string(session_id));
+        return reader;
+    } catch (const storage::StorageError& error) {
+        rethrow(error);
+    }
 }
 
 std::vector<runtime::ChildSummary> QueryGatewayImpl::children(std::string_view session_id) {
     std::vector<runtime::ChildSummary> out;
-    for (const storage::Summary& summary : storage::list_children(storage_, session_id)) {
-        out.push_back({summary.meta.id, summary.meta.agent_name, summary.title});
+    try {
+        for (const storage::Summary& summary : storage::list_children(storage_, session_id)) {
+            out.push_back({summary.meta.id, summary.meta.agent_name, summary.title});
+        }
+    } catch (const storage::StorageError& error) {
+        rethrow(error);
     }
     return out;
 }

@@ -1,7 +1,7 @@
 /// @file port_model.hpp
 /// @brief ModelSession 端口：核心执行对象调用模型的唯一入口。
 ///
-/// 实现在 llm 模块（R03）；HTTP、SSE、凭据与厂商编解码都不进入核心。
+/// 实现在 llm 模块；HTTP、SSE、凭据与厂商编解码都不进入核心。
 /// complete 返回 Reply 或抛现有分类的 ModelError（cancelled/context_too_long/rejected/exhausted）。
 #pragma once
 

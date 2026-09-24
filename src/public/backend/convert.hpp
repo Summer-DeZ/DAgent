@@ -5,6 +5,7 @@
 #include <string>
 #include <utility>
 
+#include "agent/events.hpp"
 #include "agent/history.hpp"
 #include "lib/nlohmann/json.hpp"
 #include "protocol/dto.hpp"
@@ -19,6 +20,9 @@ protocol::HistoryItem to_protocol(const agent::HistoryItem& item);
 
 /// @brief 核心事件 → (kind, data)；子事件在 backend 展开身份。
 std::pair<std::string, nlohmann::json> split_event(const agent::Event& event);
+
+/// @brief 原始 tool_output（含子事件内层）；UTF-8 边界缓冲必须在 JSON 编码之前按原始字节完成。
+const agent::ToolOutput* raw_tool_output(const agent::Event& event);
 
 /// @brief runtime 业务错误 → 统一 RPC error（code=-32000 + data.kind）。
 protocol::RpcError to_rpc_error(const runtime::RuntimeError& error);

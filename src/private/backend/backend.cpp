@@ -8,16 +8,9 @@
 
 #include <variant>
 
-#include "app/assembly.hpp"
-#include "app/bootstrap.hpp"
-#include "app/configuration.hpp"
-#include "app/queries.hpp"
-#include "app/session_assembly.hpp"
 #include "backend/convert.hpp"
 #include "base/log.hpp"
 #include "base/text.hpp"
-#include "storage/storage.hpp"
-#include "workspace/context.hpp"
 
 namespace dagent::backend {
 namespace {
@@ -65,19 +58,18 @@ std::string require_string(const nlohmann::json& params, const char* key, protoc
     return it->get<std::string>();
 }
 
-protocol::RpcError storage_error(const storage::StorageError& error) {
+protocol::RpcError query_error(const runtime::QueryError& error) {
     protocol::RpcError out;
     out.code = protocol::rpc_code::kBusinessError;
     out.message = error.what();
     switch (error.kind()) {
-    case storage::StorageError::Kind::invalid_state:
+    case runtime::QueryError::Kind::invalid_state:
         out.kind = protocol::error_kind::kInvalidState;
         break;
-    case storage::StorageError::Kind::not_found:
+    case runtime::QueryError::Kind::not_found:
         out.kind = protocol::error_kind::kNotFound;
         break;
-    case storage::StorageError::Kind::io:
-    case storage::StorageError::Kind::corrupt:
+    case runtime::QueryError::Kind::query_failed:
         out.kind = protocol::error_kind::kQueryFailed;
         break;
     }
@@ -142,7 +134,8 @@ nlohmann::json question_payload(const agent::Question& question) {
 
 } // namespace
 
-Backend::Backend(ipc::Channel channel) : channel_(std::move(channel)) {
+Backend::Backend(ipc::Channel channel, runtime::Assembler assemble)
+    : channel_(std::move(channel)), assemble_(std::move(assemble)) {
     publisher_ = std::make_unique<Publisher>(channel_, [this] {
         closing_ = true;
         channel_.shutdown();
@@ -198,7 +191,7 @@ int Backend::run() {
             protocol::RpcError error;
             error.code = protocol::rpc_code::kParseError;
             error.message = message.error;
-            publisher_->send_line(protocol::encode_error("", error));
+            publisher_->send_control_line(protocol::encode_error("", error));
         }
     }
     quit();
@@ -232,7 +225,7 @@ void Backend::quit() {
 }
 
 void Backend::respond(const std::string& id, nlohmann::json result) {
-    publisher_->send_line(protocol::encode_result(id, std::move(result)));
+    publisher_->send_control_line(protocol::encode_result(id, std::move(result)));
 }
 
 void Backend::respond_snapshot(const std::string& id) {
@@ -240,7 +233,7 @@ void Backend::respond_snapshot(const std::string& id) {
 }
 
 void Backend::fail(const std::string& id, const protocol::RpcError& error) {
-    publisher_->send_line(protocol::encode_error(id, error));
+    publisher_->send_control_line(protocol::encode_error(id, error));
 }
 
 void Backend::fail_target(const std::string& id, const runtime::RuntimeError& error) {
@@ -404,12 +397,21 @@ void Backend::dispatch(const protocol::Request& request) {
         for (const agent::PublicModel& model : configuration_->models()) {
             models.push_back(to_protocol(model));
         }
+        nlohmann::json kinds = nlohmann::json::array();
+        for (const agent::ProviderKindInfo& kind : configuration_->provider_kinds()) {
+            protocol::ProviderKind dto;
+            dto.kind = kind.kind;
+            dto.default_base_url = kind.default_base_url;
+            dto.needs_credential = kind.needs_credential;
+            kinds.push_back(std::move(dto));
+        }
         nlohmann::json selected = nullptr;
         if (runtime_) {
             const runtime::RuntimeSnapshot snapshot = runtime_->snapshot();
             if (!snapshot.session_id.empty()) selected = snapshot.model.name;
         }
         respond(id, {{"models", std::move(models)},
+                     {"provider_kinds", std::move(kinds)},
                      {"default_name", default_model_},
                      {"selected_name", std::move(selected)}});
         return;
@@ -525,20 +527,24 @@ void Backend::initialize(const std::string& id, const nlohmann::json& params) {
         return;
     }
     mode_ = params.value("mode", "interactive");
-    app::BootstrapParams bootstrap;
-    bootstrap.root = root;
-    bootstrap.cwd = cwd;
-    bootstrap.overrides = params.value("ordered_overrides", std::vector<std::string>{});
+    runtime::BootstrapOptions options;
+    options.mode = mode_;
+    options.root = root;
+    options.cwd = cwd;
+    options.overrides = params.value("ordered_overrides", std::vector<std::string>{});
     if (params.contains("permissions") && params["permissions"].is_string()) {
-        bootstrap.permissions = params["permissions"].get<std::string>();
+        options.permissions = params["permissions"].get<std::string>();
     }
-    bootstrap.read_only = params.value("read_only", false);
-    bootstrap.plan = params.value("plan", false);
+    options.read_only = params.value("read_only", false);
+    options.plan = params.value("plan", false);
+    if (params.contains("log_level") && params["log_level"].is_string()) {
+        options.log_level = params["log_level"].get<std::string>();
+    }
 
-    app::Config config;
+    runtime::Assembled assembled;
     try {
-        config = app::load_config({bootstrap.root, bootstrap.cwd, bootstrap.overrides});
-    } catch (const app::ConfigError& config_error) {
+        assembled = assemble_(options);
+    } catch (const runtime::ConfigurationError& config_error) {
         protocol::RpcError rpc;
         rpc.code = protocol::rpc_code::kBusinessError;
         rpc.kind = protocol::error_kind::kConfigError;
@@ -546,38 +552,17 @@ void Backend::initialize(const std::string& id, const nlohmann::json& params) {
         fail(id, rpc);
         return;
     }
-    if (params.contains("log_level") && params["log_level"].is_string()) {
-        config.log.level = params["log_level"].get<std::string>();
-    }
-    config.log.also_stderr = false;
-    base::init_log(config.log);
-    for (const auto& note : config.model_selection_log) base::logger("app")->info("{}", note);
-    default_model_ = config.model;
-    progress_interval_ms_ = static_cast<int>(config.agent.progress.interval.count());
-
-    auto make_session = app::make_model_factory(config);
-    auto assembly = app::Assembly::create(config.mcp_servers, config.mcp,
-                                          workspace::collect_environment(bootstrap.cwd, {}),
-                                          config.subagents, config.models, make_session);
-    auto configuration = std::make_shared<app::Configuration>(bootstrap.root, bootstrap.cwd,
-                                                              bootstrap.overrides, config, make_session);
-    queries_ = std::make_shared<app::QueryGatewayImpl>(config.session, bootstrap.cwd,
-                                                       config.project_root, config.search);
+    default_model_ = assembled.default_model;
+    progress_interval_ms_ = assembled.progress_interval_ms;
+    queries_ = assembled.queries;
 
     const bool query_only = mode_ == "sessions" || mode_ == "models";
     bool resumed = false;
     nlohmann::json session_json = nullptr;
     if (!query_only) {
-        app::SessionAssembly::Options factory_options;
-        factory_options.assembly = assembly;
-        factory_options.base = app::make_setup(config, bootstrap, assembly);
-        factory_options.resolve_model = [configuration](const std::string& name) {
-            return configuration->resolve(name);
-        };
         runtime::Runtime::Deps deps;
-        deps.configuration = configuration;
-        deps.queries = queries_;
-        deps.factory = std::make_unique<app::SessionAssembly>(std::move(factory_options));
+        deps.configuration = assembled.configuration;
+        deps.factory = std::move(assembled.factory);
         deps.frontend = this;
         deps.interactive = mode_ == "interactive";
         runtime_ = std::make_unique<runtime::Runtime>(std::move(deps));
@@ -600,11 +585,11 @@ void Backend::initialize(const std::string& id, const nlohmann::json& params) {
         }
         session_json = nlohmann::json(to_protocol(runtime_->snapshot()));
     }
-    configuration_ = configuration;
+    configuration_ = assembled.configuration;
     initialized_ = true;
 
     nlohmann::json theme = nullptr;
-    if (!config.ui.theme_file.empty()) theme = config.ui.theme_file.string();
+    if (const auto file = configuration_->theme_file(); !file.empty()) theme = file.string();
     respond(id, {{"mode", mode_},
                  {"session", std::move(session_json)},
                  {"resumed", resumed},
@@ -735,8 +720,8 @@ void Backend::handle_query(Job job) {
         } else if (job.method == "workspace.complete") {
             workspace_complete(job.id, job.params);
         }
-    } catch (const storage::StorageError& error) {
-        fail(job.id, storage_error(error));
+    } catch (const runtime::QueryError& error) {
+        fail(job.id, query_error(error));
     } catch (const std::exception& error) {
         protocol::RpcError rpc;
         rpc.code = protocol::rpc_code::kBusinessError;
@@ -805,8 +790,8 @@ void Backend::history(const std::string& id, const nlohmann::json& params) {
     if (!reader) {
         try {
             reader = queries_->open_history(session_id);
-        } catch (const storage::StorageError& storage_failure) {
-            fail(id, storage_error(storage_failure));
+        } catch (const runtime::QueryError& failure) {
+            fail(id, query_error(failure));
             return;
         }
     }
@@ -914,37 +899,40 @@ void Backend::handle_core(const runtime::Event& event) {
     out.session_generation = event.generation;
 
     const agent::Event* core = &std::get<agent::Event>(event.payload);
+    const agent::Event* inner = core;
     if (const auto* sub = std::get_if<agent::SubEvent>(core)) {
-        const auto [kind, data] = split_event(sub->event());
-        out.kind = kind;
-        out.data = data;
         out.session_id = sub->session;
         out.parent_session_id = event.session_id;
         out.model_call_id = sub->call_id;
         out.agent = sub->agent;
+        inner = &sub->event();
+    }
+
+    // tool_output 的 UTF-8 边界缓冲必须在 JSON 编码之前按原始字节完成（协议 §7）：
+    // split_event 会先做 to_valid_utf8，跨块的多字节字符会被替换掉。
+    if (const agent::ToolOutput* output = raw_tool_output(*core)) {
+        std::string data;
+        {
+            const std::lock_guard lock(chunk_mutex_);
+            data = std::move(pending_chunks_[output->id]);
+        }
+        data += output->chunk;
+        const std::size_t cut = complete_prefix(data);
+        {
+            const std::lock_guard lock(chunk_mutex_);
+            pending_chunks_[output->id] = data.substr(cut);
+        }
+        data.resize(cut);
+        if (data.empty()) return;
+        out.kind = "tool_output";
+        out.data = {{"id", output->id}, {"chunk", base::to_valid_utf8(data)}};
     } else {
-        const auto [kind, data] = split_event(*core);
+        const auto [kind, data] = split_event(*inner);
         out.kind = kind;
         out.data = data;
     }
 
-    if (out.kind == "tool_output") {
-        const std::string call_id = out.data.value("id", "");
-        std::string data;
-        {
-            const std::lock_guard lock(chunk_mutex_);
-            data = std::move(pending_chunks_[call_id]);
-        }
-        data += out.data.value("chunk", "");
-        const std::size_t cut = complete_prefix(data);
-        {
-            const std::lock_guard lock(chunk_mutex_);
-            pending_chunks_[call_id] = data.substr(cut);
-        }
-        data.resize(cut);
-        if (data.empty()) return;
-        out.data["chunk"] = std::move(data);
-    } else if (out.kind == "tool_finished") {
+    if (out.kind == "tool_finished") {
         const std::string call_id = out.data.value("id", "");
         std::string leftover;
         {

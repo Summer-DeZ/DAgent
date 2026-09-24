@@ -7,12 +7,13 @@
 #include <functional>
 #include <chrono>
 
-#include "agent/events.hpp"
+#include "protocol/dto.hpp"
 #include "tui/document.hpp"
+#include "ui/projection.hpp"
 
 namespace dagent::ui {
 
-/// 只在渲染线程使用；实时和恢复事件共用这一个文档投影。
+/// 只在渲染线程使用；实时和恢复历史共用这一个文档投影。
 class Transcript {
 public:
     /// @brief 一次已结束的 task：切进子会话时用 session_id 回放。
@@ -20,8 +21,11 @@ public:
         std::string agent, session_id, call_id;
     };
 
-    explicit Transcript(tui::Document&, std::function<void(const agent::TodoView&)> todo = {});
-    void apply(const agent::Event&);
+    explicit Transcript(tui::Document&, std::function<void(const TodoList&)> todo = {});
+    /// @brief 实时事件：当前 Run 的流式投影。
+    void apply_live(const Event&);
+    /// @brief 历史条目：静态投影，不触发当前 Run 的收尾/计时语义。
+    void append_history(const protocol::HistoryItem&);
     void clear();
     void toggle_tools();
     void toggle_thoughts();
@@ -49,10 +53,11 @@ private:
         double seconds = 0;
     };
     uint64_t text(std::string source, std::string meta, bool open = false);
+    void apply(const Event&);
     void finish_thought();
     void finish_message();
     ToolBlocks& tool(const std::string& id, const std::string& name, const std::string& summary);
-    void finished(const agent::ToolFinished&);
+    void finished(const ToolFinished&);
     void collapse(ToolBlocks&);
     void update_todo_block();
 
@@ -67,8 +72,8 @@ private:
     bool live_step_ = false, has_text_ = false;
     std::map<std::string, ToolBlocks> tools_;
     std::vector<TaskRef> tasks_;
-    std::function<void(const agent::TodoView&)> on_todo_;
-    agent::TodoView todo_;
+    std::function<void(const TodoList&)> on_todo_;
+    TodoList todo_;
     uint64_t todo_block_ = 0;
     uint32_t next_group_ = 1;
     bool todo_narrow_ = false, todo_collapsed_ = false, todo_complete_ = false;

@@ -34,7 +34,6 @@ void Publisher::stop() {
         const std::lock_guard lock(mutex_);
         if (failed_ || queue_.empty() || channel_.error().empty()) return;
         failed_ = true;
-        error_ = channel_.error();
     }
 }
 
@@ -56,10 +55,8 @@ void Publisher::enqueue_line_locked(std::string line) {
     push_locked(std::move(item));
 }
 
-void Publisher::send_line(std::string line) {
-    const std::size_t bytes = line.size() + 1;
-    std::unique_lock lock(mutex_);
-    cv_.wait(lock, [&] { return stopping_ || has_capacity_locked(bytes); });
+void Publisher::send_control_line(std::string line) {
+    const std::lock_guard lock(mutex_);
     if (stopping_) return;
     enqueue_line_locked(std::move(line));
 }
@@ -107,11 +104,6 @@ void Publisher::flush() {
     cv_.wait(lock, [&] { return stopping_ || (queue_.empty() && !failed_); });
 }
 
-bool Publisher::failed() const {
-    const std::lock_guard lock(mutex_);
-    return failed_;
-}
-
 void Publisher::sender(std::stop_token stop) {
     for (;;) {
         std::string line;
@@ -131,7 +123,6 @@ void Publisher::sender(std::stop_token stop) {
             {
                 const std::lock_guard lock(mutex_);
                 failed_ = true;
-                error_ = channel_.error();
                 stopping_ = true;
             }
             cv_.notify_all();

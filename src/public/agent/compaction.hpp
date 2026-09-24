@@ -10,6 +10,7 @@
 #include <vector>
 
 #include "agent/conversation.hpp"
+#include "agent/events.hpp"
 #include "agent/options.hpp"
 #include "agent/port_model.hpp"
 #include "agent/tokens.hpp"

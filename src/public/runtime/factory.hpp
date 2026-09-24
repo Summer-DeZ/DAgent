@@ -1,15 +1,17 @@
 /// @file factory.hpp
 /// @brief runtime 的外部装配端口：会话工厂、配置网关与只读查询网关。
 ///
-/// 具体实现在 app 后端装配（R09 的 dagent_app_config）；runtime 只经这些端口访问
+/// 具体实现在 app 后端装配（dagent_app_config）；runtime 只经这些端口访问
 /// storage/llm/tools/workspace 等具体实现（architecture-refactor §4.3）。
 #pragma once
 
 #include <chrono>
 #include <cstddef>
 #include <filesystem>
+#include <functional>
 #include <memory>
 #include <optional>
+#include <stdexcept>
 #include <string>
 #include <string_view>
 #include <vector>
@@ -121,6 +123,19 @@ struct HistoryPage {
     bool done = false;
 };
 
+/// @brief 只读查询失败的中立分类：app 适配层把存储/IO 错误翻译到这里，backend 只按 kind 映射协议错误。
+class QueryError : public std::runtime_error {
+public:
+    enum class Kind { not_found, invalid_state, query_failed };
+
+    QueryError(Kind kind, std::string message)
+        : std::runtime_error(std::move(message)), kind_(kind) {}
+    Kind kind() const noexcept { return kind_; }
+
+private:
+    Kind kind_;
+};
+
 /// @brief 一个打开的历史查询：固定高水位、跨页验证游标；释放后读取返回错误。
 class HistoryReader {
 public:
@@ -137,11 +152,40 @@ public:
     virtual ~QueryGateway() = default;
 
     virtual std::vector<SessionSummary> sessions(std::size_t limit) = 0;
-    virtual std::vector<agent::Event> history(std::string_view session_id) = 0;
     virtual std::unique_ptr<HistoryReader> open_history(std::string_view session_id) = 0;
     virtual std::vector<ChildSummary> children(std::string_view session_id) = 0;
     virtual WorkspaceInfo workspace() = 0;
     virtual std::vector<FileCandidate> complete(std::string_view query, std::size_t limit) = 0;
 };
+
+/// @brief 后端启动输入（对象文档 §3.2 BootstrapOptions）：只在装配层读取。
+struct BootstrapOptions {
+    std::string mode; ///< interactive / run / sessions / models
+    std::filesystem::path root;
+    std::filesystem::path cwd;
+    std::vector<std::string> overrides;     ///< 按序 --set
+    std::optional<std::string> permissions; ///< --permissions；空表示用 config.json
+    bool read_only = false;
+    bool plan = false;
+    std::optional<std::string> log_level;
+};
+
+/// @brief 装配结果：backend 只经这些端口访问具体实现。
+struct Assembled {
+    std::shared_ptr<ConfigurationGateway> configuration;
+    std::shared_ptr<QueryGateway> queries;
+    std::unique_ptr<SessionFactory> factory; ///< 纯查询模式（sessions/models）为空
+    std::string default_model;
+    int progress_interval_ms = 1000;
+};
+
+/// @brief 配置文件或覆写无效；backend 映射为协议 config_error。
+class ConfigurationError : public std::runtime_error {
+public:
+    using std::runtime_error::runtime_error;
+};
+
+/// @brief 读取配置、初始化日志并装配具体对象；由 app 装配层实现并注入 backend。
+using Assembler = std::function<Assembled(const BootstrapOptions&)>;
 
 } // namespace dagent::runtime

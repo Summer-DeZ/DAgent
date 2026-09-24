@@ -32,11 +32,12 @@ target_include_directories(dagent_tui PUBLIC ${CMAKE_SOURCE_DIR}/src/public)
 target_compile_features(dagent_tui PUBLIC cxx_std_23)
 target_compile_options(dagent_tui PRIVATE -Wall -Wextra)
 
-# 应用层：在冻结的 TUI 框架之上构建的界面与配置（主题文件加载等）。
+# 应用层：在冻结的 TUI 框架之上构建的界面（只持 Client、协议 DTO 与页面状态）。
 add_library(dagent_ui STATIC
     private/ui/strings.cpp
     private/ui/display.cpp
     private/ui/theme_config.cpp
+    private/ui/projection.cpp
     private/ui/shell.cpp
     private/ui/transcript.cpp
     private/ui/prompt_input.cpp
@@ -51,7 +52,7 @@ add_library(dagent_ui STATIC
     private/ui/side_panel.cpp
 )
 
-target_link_libraries(dagent_ui PUBLIC dagent_tui dagent_runtime)
+target_link_libraries(dagent_ui PUBLIC dagent_tui dagent_client dagent_protocol dagent_base)
 target_compile_options(dagent_ui PRIVATE -Wall -Wextra)
 target_compile_definitions(dagent_ui PRIVATE DAGENT_VERSION="${PROJECT_VERSION}")
 
@@ -135,7 +136,7 @@ target_link_libraries(dagent_mcp
 )
 
 # 工具层：把外围模块包装成模型能调用的工具（read/write/edit/bash/grep/glob + MCP）。
-# 依赖 base、exec、workspace、mcp；不依赖 agent（核心反过来依赖它，会成环）。
+# 依赖 agent（中立工具契约）、base、exec、workspace、mcp；核心不反向依赖 tools。
 add_library(tools STATIC
     private/tools/context.cpp
     private/tools/detail.cpp
@@ -154,25 +155,28 @@ target_include_directories(tools PUBLIC ${CMAKE_SOURCE_DIR}/src/public)
 target_compile_features(tools PUBLIC cxx_std_23)
 target_compile_options(tools PRIVATE -Wall -Wextra)
 target_link_libraries(tools
-    PUBLIC dagent_base dagent_exec dagent_workspace dagent_mcp
+    PUBLIC dagent_agent dagent_base dagent_exec dagent_workspace dagent_mcp
 )
 
-# 入口层：配置加载与命令行解析。认识所有模块的 Options，其他模块都不依赖它。
-add_library(dagent_app STATIC
+# 前端入口层：命令行解析、安装根、前端启动与旧输出适配。其他模块都不依赖它。
+add_library(dagent_app_cli STATIC
     private/app/cli.cpp
+    private/app/interrupts.cpp
     private/app/launcher.cpp
+    private/app/output.cpp
+    private/app/paths.cpp
+    private/app/run.cpp
 )
 
-target_include_directories(dagent_app PUBLIC ${CMAKE_SOURCE_DIR}/src/public)
-target_compile_features(dagent_app PUBLIC cxx_std_23)
-target_compile_options(dagent_app PRIVATE -Wall -Wextra)
-target_compile_definitions(dagent_app PRIVATE DAGENT_VERSION="${PROJECT_VERSION}")
+target_include_directories(dagent_app_cli PUBLIC ${CMAKE_SOURCE_DIR}/src/public)
+target_compile_features(dagent_app_cli PUBLIC cxx_std_23)
+target_compile_options(dagent_app_cli PRIVATE -Wall -Wextra)
+target_compile_definitions(dagent_app_cli PRIVATE DAGENT_VERSION="${PROJECT_VERSION}")
 if(DAGENT_DEV_HOME)
-    target_compile_definitions(dagent_app PRIVATE DAGENT_DEV_HOME="${DAGENT_DEV_HOME}")
+    target_compile_definitions(dagent_app_cli PRIVATE DAGENT_DEV_HOME="${DAGENT_DEV_HOME}")
 endif()
-target_link_libraries(dagent_app
-    PUBLIC dagent_agent_legacy dagent_client dagent_protocol dagent_base dagent_exec dagent_workspace
-           dagent_net dagent_storage dagent_mcp tools
+target_link_libraries(dagent_app_cli
+    PUBLIC dagent_client dagent_protocol dagent_base
     PRIVATE CLI11::CLI11
 )
 
@@ -282,21 +286,8 @@ if(DAGENT_DEV_HOME)
     target_compile_definitions(dagent_app_config PRIVATE DAGENT_DEV_HOME="${DAGENT_DEV_HOME}")
 endif()
 target_link_libraries(dagent_app_config
-    PUBLIC dagent_agent dagent_runtime dagent_llm dagent_net dagent_exec dagent_workspace
-           dagent_storage dagent_mcp tools
-)
-
-# 过渡装配（R13 删除）：run 模式的 Agent 兼容点；经 app_config 的会话工厂工作。
-add_library(dagent_agent_legacy STATIC
-    private/agent/agent.cpp
-    private/agent/headless.cpp
-)
-
-target_include_directories(dagent_agent_legacy PUBLIC ${CMAKE_SOURCE_DIR}/src/public)
-target_compile_features(dagent_agent_legacy PUBLIC cxx_std_23)
-target_compile_options(dagent_agent_legacy PRIVATE -Wall -Wextra)
-target_link_libraries(dagent_agent_legacy
-    PUBLIC dagent_agent dagent_runtime dagent_app_config
+    PUBLIC dagent_runtime dagent_llm tools dagent_storage dagent_workspace dagent_exec dagent_mcp
+           dagent_base
 )
 
 # backend：RPC 方法适配与事件 DTO 转换；不链接 TUI。
@@ -311,19 +302,19 @@ target_compile_features(dagent_backend PUBLIC cxx_std_23)
 target_compile_options(dagent_backend PRIVATE -Wall -Wextra)
 target_compile_definitions(dagent_backend PRIVATE DAGENT_VERSION="${PROJECT_VERSION}")
 target_link_libraries(dagent_backend
-    PUBLIC dagent_runtime dagent_protocol dagent_ipc dagent_app_config dagent_base
+    PUBLIC dagent_runtime dagent_protocol dagent_ipc dagent_base
 )
 
-# 后端可执行文件：与前端同安装目录，只接受 --ipc-fd。
-add_executable(dagent-backend private/backend/main.cpp)
+# 后端可执行文件：与前端同安装目录，只接受 --ipc-fd；入口在 app，把配置装配注入 backend。
+add_executable(dagent-backend private/app/backend_main.cpp)
 
 target_compile_features(dagent-backend PRIVATE cxx_std_23)
 target_compile_options(dagent-backend PRIVATE -Wall -Wextra)
-target_link_libraries(dagent-backend PRIVATE dagent_backend)
+target_link_libraries(dagent-backend PRIVATE dagent_backend dagent_app_config)
 
 # 可执行文件：只编 main.cpp，其余代码都在库里（docs/design/agent.md §1）。
-add_executable(dagent private/agent/main.cpp)
+add_executable(dagent private/app/main.cpp)
 
 target_compile_features(dagent PRIVATE cxx_std_23)
 target_compile_options(dagent PRIVATE -Wall -Wextra)
-target_link_libraries(dagent PRIVATE dagent_app dagent_ui)
+target_link_libraries(dagent PRIVATE dagent_app_cli dagent_ui)

@@ -33,8 +33,8 @@ public:
     /// 停止接收并等待发送线程退出；幂等。
     void stop();
 
-    // 发送入口：按实际编码大小等待容量并入队。
-    void send_line(std::string line);
+    /// @brief 控制响应：不等待发送容量（控制接收不依赖发送队列腾空，协议 §7）。
+    void send_control_line(std::string line);
     void send_event(protocol::Event event);
     /// @brief 在容量等待后读取快照；若其间有事件入队则重读，避免旧状态携带新 state_seq。
     void send_snapshot(const std::string& id,
@@ -42,8 +42,6 @@ public:
     /// @brief 等待队列清空（或发送失败）。
     void flush();
 
-    bool failed() const;
-    const std::string& error() const { return error_; }
 
 private:
     struct Item {
@@ -63,7 +61,6 @@ private:
     std::uint64_t seq_ = 0;
     bool stopping_ = false;
     bool failed_ = false;
-    std::string error_;
     ipc::Channel& channel_;
     std::function<void()> on_error_;
     std::jthread thread_;

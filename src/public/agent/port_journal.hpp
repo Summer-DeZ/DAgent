@@ -1,7 +1,7 @@
 /// @file port_journal.hpp
 /// @brief JournalWriter 端口与记录错误：持久历史的唯一写入口。
 ///
-/// 实现在 storage 模块（R06）；失败抛 RecordError，类别固定 io/not_found/corrupt，
+/// 实现在 storage 模块；失败抛 RecordError，类别固定 io/not_found/corrupt，
 /// 只在核心提交/恢复边界转换（record-routes §4.3）。
 #pragma once
 

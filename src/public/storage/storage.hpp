@@ -7,7 +7,6 @@
 #include <chrono>
 #include <cstddef>
 #include <filesystem>
-#include <functional>
 #include <memory>
 #include <optional>
 #include <stdexcept>
@@ -31,10 +30,8 @@ struct Options {
     std::vector<std::string> redact_fields{"api_key", "authorization", "token"};
 };
 
-using Meta = agent::SessionMeta;
-
 struct Summary {
-    Meta meta;
+    agent::SessionMeta meta;
     std::string title;
     std::chrono::system_clock::time_point updated;
 };
@@ -58,7 +55,7 @@ private:
 /// @brief SQLite 会话写入器；一轮事件在事务里提交。
 class Writer {
 public:
-    static Writer create(const Options&, Meta meta);
+    static Writer create(const Options&, agent::SessionMeta meta);
     static Writer resume(const Options&, std::string_view id);
 
     Writer(Writer&&) noexcept;
@@ -73,7 +70,7 @@ public:
     /// @brief 刷盘；核心按自己的节奏调用（比如每轮结束），不是每行都 fsync。
     void sync();
 
-    const Meta& meta() const noexcept;
+    const agent::SessionMeta& meta() const noexcept;
 
 private:
     struct Impl;
@@ -107,10 +104,6 @@ std::vector<Summary> list(const Options&, const std::filesystem::path& cwd, std:
 
 /// @brief 按父会话列出子会话，按创建时间升序；供界面切换与按需回放使用。
 std::vector<Summary> list_children(const Options&, std::string_view parent_id);
-
-/// @brief 按 seq 回放一个会话；只读连接，不初始化或修复数据库。
-void replay(const Options&, std::string_view id,
-            const std::function<void(std::string_view type, const nlohmann::json& payload)>& on_event);
 
 /// @brief 只读打开一个会话存储（查询与 Writer 打开入口；不建立连接）。
 std::unique_ptr<agent::SessionStore> open_store(const Options&);

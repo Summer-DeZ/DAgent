@@ -33,9 +33,6 @@ struct ToolSpec {
     nlohmann::json parameters = nlohmann::json::object(); ///< JSON Schema
 };
 
-/// 过渡别名：旧的模型侧工具描述与 ToolSpec 同字段（R13 删除清单）。
-using ToolDef = ToolSpec;
-
 /// @brief 构造请求的模型参数；不含密钥、HTTP 或 provider 配置。
 struct ModelParams {
     std::string model;

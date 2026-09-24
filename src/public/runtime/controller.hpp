@@ -161,7 +161,6 @@ public:
 
     std::expected<void, RuntimeError> cycle_permission();
     std::expected<void, RuntimeError> toggle_planning();
-    void cancel();
     /// @brief 只取消身份仍匹配的当前 Run；旧 run_id 返回 false。
     bool cancel(std::string_view run_id);
     /// @brief 解析 --resume/--continue 目标为完整 session id。

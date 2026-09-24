@@ -17,9 +17,9 @@ void StatusLine::project(std::string path) {
     if (path_ == path) return;
     path_ = std::move(path); invalidate();
 }
-void StatusLine::context(const agent::ContextUpdate& update) {
-    if (used_ == update.used && limit_ == update.limit) return;
-    used_ = update.used; limit_ = update.limit; invalidate();
+void StatusLine::context(std::size_t used, std::size_t limit) {
+    if (used_ == used && limit_ == limit) return;
+    used_ = used; limit_ = limit; invalidate();
 }
 void StatusLine::todo(int done, int total, bool shown) {
     if (todo_done_ == done && todo_total_ == total && todo_shown_ == shown) return;

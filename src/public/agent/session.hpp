@@ -18,6 +18,7 @@
 #include "agent/control.hpp"
 #include "agent/events.hpp"
 #include "agent/options.hpp"
+#include "agent/permission.hpp"
 #include "agent/port_journal.hpp"
 #include "agent/port_model.hpp"
 #include "agent/port_tool.hpp"
@@ -99,7 +100,7 @@ public:
     void begin_run(const RunServices& services, Run& run);
     void end_run() { committer_.clear_sink(); }
 
-    /// @brief 执行线程上的即时快照；R07 由 SessionController 发布给跨线程查询。
+    /// @brief 执行线程上的即时快照；由 SessionController 发布给跨线程查询。
     SessionSnapshot snapshot();
 
 private:

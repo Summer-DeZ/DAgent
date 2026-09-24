@@ -3,9 +3,7 @@
 #include "ui/display.hpp"
 
 #include <algorithm>
-#include <atomic>
 #include <format>
-#include <future>
 #include <utility>
 
 namespace dagent::ui {
@@ -94,8 +92,8 @@ ApprovalDialog::ApprovalDialog(tui::Runtime& rt, std::function<void()> interrupt
     : rt_(rt), interrupt_(std::move(interrupt)) {}
 ApprovalDialog::~ApprovalDialog() { close(); }
 
-void ApprovalDialog::open(const agent::Approval& approval,
-                           std::function<void(agent::Decision)> answer) {
+void ApprovalDialog::open(const ApprovalRequest& approval,
+                           std::function<void(ApprovalAnswer)> answer) {
     close(); approval_ = approval; answer_ = std::move(answer);
     auto panel = std::make_unique<Panel>(rt_); panel_ = panel.get();
     panel_->tool = approval.tool;
@@ -109,32 +107,25 @@ void ApprovalDialog::open(const agent::Approval& approval,
     keys += std::string(ui::text().approve_deny);
     panel_->choices->set_text(keys);
     auto kind = tui::BlockKind::text;
-    std::string preview = approval.intent.preview;
-    switch (approval.intent.kind) {
-    case agent::ToolKind::write: kind = tui::BlockKind::diff; break;
-    case agent::ToolKind::exec: kind = tui::BlockKind::code; preview = approval.intent.command->command; break;
-    case agent::ToolKind::read:
-        for (const auto& path : approval.intent.paths) preview += path.path.string() + '\n';
-        break;
-    case agent::ToolKind::external: kind = tui::BlockKind::code; break;
-    }
-    std::string scope = approval.intent.summary;
+    if (approval.preview_kind == "diff") kind = tui::BlockKind::diff;
+    else if (approval.preview_kind == "code") kind = tui::BlockKind::code;
+    std::string scope = approval.summary;
     if (!approval.cwd.empty()) scope += "\ncwd: " + approval.cwd;
     if (!approval.mode.empty()) scope += "\nmode: " + approval.mode;
     for (const auto& request : approval.requests) {
         scope += "\n- " + request.reason;
-        if (!request.target.empty() && request.target != approval.intent.command->command)
+        if (!request.target.empty() && request.target != approval.preview_text)
             scope += ": " + request.target;
     }
     if (approval.partially_executed) scope += "\nWarning: part of this call has already executed.";
     if (!approval.session_rule.empty()) scope += "\n[a] " + approval.session_rule;
     panel_->preview->document().append_block(tui::BlockKind::text, std::move(scope));
-    panel_->preview->document().append_block(kind, preview);
+    panel_->preview->document().append_block(kind, approval.preview_text);
     overlay_ = rt_.open_overlay(std::move(panel), tui::Placement::center, {}, this, panel_->feedback);
 }
 
-void ApprovalDialog::open(const agent::Question& question,
-                          std::function<void(agent::Answer)> answer) {
+void ApprovalDialog::open(const QuestionRequest& question,
+                          std::function<void(QuestionAnswer)> answer) {
     close();
     question_ = question;
     question_answer_ = std::move(answer);
@@ -179,10 +170,10 @@ void ApprovalDialog::close() {
 void ApprovalDialog::set_theme(const tui::ThemeTokens& theme) {
     theme_ = theme; if (panel_) panel_->theme(theme_);
 }
-void ApprovalDialog::answer(agent::Decision decision) {
+void ApprovalDialog::answer(ApprovalAnswer decision) {
     auto callback = std::move(answer_); close(); if (callback) callback(std::move(decision));
 }
-void ApprovalDialog::answer(agent::Answer value) {
+void ApprovalDialog::answer(QuestionAnswer value) {
     auto callback = std::move(question_answer_); close(); if (callback) callback(std::move(value));
 }
 bool ApprovalDialog::on_event(const tui::Event& e) {
@@ -197,11 +188,11 @@ bool ApprovalDialog::on_event(const tui::Event& e) {
             if (e.key == tui::Key::escape) {
                 panel_->feedback->visible = false; panel_->feedback->invalidate_layout();
             } else if (e.key == tui::Key::enter) {
-                answer(agent::Answer{{}, panel_->feedback->text(), false});
+                answer(QuestionAnswer{{}, panel_->feedback->text(), false});
             } else panel_->edit->on_event(e);
             return true;
         }
-        if (e.key == tui::Key::escape) { answer(agent::Answer{{}, {}, true}); return true; }
+        if (e.key == tui::Key::escape) { answer(QuestionAnswer{{}, {}, true}); return true; }
         if (e.key == tui::Key::up || e.key == tui::Key::down) {
             question_cursor_ = (question_cursor_ + (e.key == tui::Key::up ? count - 1 : 1)) % count;
             refresh_question(); return true;
@@ -215,7 +206,7 @@ bool ApprovalDialog::on_event(const tui::Event& e) {
             } else if (question_.multi_select) {
                 selected_[static_cast<std::size_t>(index)] = !selected_[static_cast<std::size_t>(index)];
                 refresh_question();
-            } else answer(agent::Answer{{index}, {}, false});
+            } else answer(QuestionAnswer{{index}, {}, false});
             return true;
         }
         if (e.text == " " && question_.multi_select &&
@@ -235,7 +226,7 @@ bool ApprovalDialog::on_event(const tui::Event& e) {
                     if (selected_[i]) selected.push_back(static_cast<int>(i));
                 if (selected.empty()) return true;
             } else selected.push_back(question_cursor_);
-            answer(agent::Answer{std::move(selected), {}, false});
+            answer(QuestionAnswer{std::move(selected), {}, false});
         }
         return true;
     }
@@ -243,51 +234,17 @@ bool ApprovalDialog::on_event(const tui::Event& e) {
         if (e.key == tui::Key::escape) {
             panel_->feedback->visible = false; panel_->feedback->invalidate_layout();
         } else if (e.key == tui::Key::enter) {
-            answer({agent::Decision::Answer::deny_with_feedback, panel_->feedback->text(), false});
+            answer({ApprovalAnswer::Decision::deny_with_feedback, panel_->feedback->text(), false});
         } else panel_->edit->on_event(e);
         return true;
     }
-    if (e.key == tui::Key::escape || e.text == "n") answer({agent::Decision::Answer::deny, {}, false});
-    else if (e.text == "y") answer({agent::Decision::Answer::allow, {}, false});
-    else if (e.text == "a" && !approval_.session_rule.empty()) answer({agent::Decision::Answer::allow_session, {}, false});
-    else if (e.text == "w" && approval_.can_network) answer({agent::Decision::Answer::allow, {}, true});
+    if (e.key == tui::Key::escape || e.text == "n") answer({ApprovalAnswer::Decision::deny, {}, false});
+    else if (e.text == "y") answer({ApprovalAnswer::Decision::allow, {}, false});
+    else if (e.text == "a" && !approval_.session_rule.empty()) answer({ApprovalAnswer::Decision::allow_session, {}, false});
+    else if (e.text == "w" && approval_.can_network) answer({ApprovalAnswer::Decision::allow, {}, true});
     else if (e.text == "e") {
         panel_->feedback->visible = true; panel_->feedback->invalidate_layout();
     }
     return true;
-}
-
-agent::Decision approve(tui::Runtime& rt, ApprovalDialog& dialog,
-                         const agent::Approval& approval, std::stop_token stop) {
-    struct Pending { std::promise<agent::Decision> promise; std::atomic<bool> done{false}; };
-    auto state = std::make_shared<Pending>();
-    auto future = state->promise.get_future();
-    auto answer = [state](agent::Decision decision) {
-        if (!state->done.exchange(true)) state->promise.set_value(std::move(decision));
-    };
-    rt.post([&dialog, approval, answer, state] {
-        if (!state->done.load()) dialog.open(approval, answer);
-    });
-    std::stop_callback cancelled(stop, [&] { answer({agent::Decision::Answer::deny, {}, false}); });
-    auto result = future.get();
-    if (stop.stop_requested()) rt.post([&dialog] { dialog.close(); });
-    return result;
-}
-
-agent::Answer ask(tui::Runtime& rt, ApprovalDialog& dialog,
-                  const agent::Question& question, std::stop_token stop) {
-    struct Pending { std::promise<agent::Answer> promise; std::atomic<bool> done{false}; };
-    auto state = std::make_shared<Pending>();
-    auto future = state->promise.get_future();
-    auto answer = [state](agent::Answer value) {
-        if (!state->done.exchange(true)) state->promise.set_value(std::move(value));
-    };
-    rt.post([&dialog, question, answer, state] {
-        if (!state->done.load()) dialog.open(question, answer);
-    });
-    std::stop_callback cancelled(stop, [&] { answer(agent::Answer{{}, {}, true}); });
-    auto result = future.get();
-    if (stop.stop_requested()) rt.post([&dialog] { dialog.close(); });
-    return result;
 }
 } // namespace dagent::ui

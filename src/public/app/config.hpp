@@ -12,6 +12,7 @@
 #include <vector>
 
 #include "agent/options.hpp"
+#include "agent/permission.hpp"
 #include "agent/subagent_def.hpp"
 #include "llm/provider.hpp"
 #include "base/log.hpp"
@@ -42,20 +43,13 @@ struct Config {
     base::LogOptions log;
     mcp::Options mcp;
     tools::Options tools;
-    agent::Options agent; ///< context / run / progress / permissions
+    agent::Options agent; ///< context / run / progress
+    agent::PermissionMode permissions = agent::PermissionMode::workspace; ///< 启动权限档初值
     std::map<std::string, std::string> credentials;
     std::vector<mcp::ServerConfig> mcp_servers;
     std::vector<agent::SubagentDef> subagents; ///< <root>/agents/*.md
     std::filesystem::path root;
     std::filesystem::path project_root;
-};
-
-struct InstallationPaths {
-    std::filesystem::path root;
-    std::filesystem::path config;
-    std::filesystem::path models;
-    std::filesystem::path database;
-    std::filesystem::path logs;
 };
 
 struct LoadOptions {
@@ -79,9 +73,6 @@ public:
 private:
     Kind kind_;
 };
-
-/// @brief DAGENT_HOME、dev 默认 home 或 /proc/self/exe 的父目录；同时验证根存在、是目录且可写。
-InstallationPaths installation_paths();
 
 /// @brief 读取安装目录中的两份 JSON，再叠加 overrides。未知键只记 warn。
 Config load_config(const LoadOptions&);

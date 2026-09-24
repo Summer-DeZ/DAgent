@@ -24,19 +24,15 @@ public:
         bool done = false;
     };
 
-    /// @brief 捕获 Meta 与 MAX(seq) 高水位；会话不存在抛 not_found，库不可读抛 io。
+    /// @brief 捕获会话元信息与 MAX(seq) 高水位；会话不存在抛 not_found，库不可读抛 io。
     static std::unique_ptr<HistoryRead> open(const Options&, std::string_view session_id);
 
     ~HistoryRead();
     HistoryRead(const HistoryRead&) = delete;
     HistoryRead& operator=(const HistoryRead&) = delete;
 
-    /// @brief 读取一页；cursor 为空表示第一页。已释放查询抛 invalid_state。
+    /// @brief 读取一页；cursor 为空表示第一页。读完或失败后再读抛 invalid_state。
     Page read(const std::string& cursor, std::size_t limit);
-    /// @brief 前端关闭/切换页面时释放未读完的查询；幂等。
-    void close();
-
-    const Meta& meta() const;
     std::int64_t upper_seq() const;
 
 private:

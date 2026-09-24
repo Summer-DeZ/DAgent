@@ -86,13 +86,6 @@ void Client::call_async(
     }
 }
 
-void Client::notify(const std::string& method, nlohmann::json params) {
-    const std::lock_guard lock(mutex_);
-    if (closing_ || !error_.empty()) return;
-    // 通知没有响应；发送失败由读取线程统一报告。
-    channel_.send_line(protocol::encode_notification({method, std::move(params)}));
-}
-
 void Client::close() {
     {
         const std::lock_guard lock(mutex_);

@@ -42,11 +42,6 @@ void InteractionBroker::set_outlet(InteractionOutlet* outlet) {
     outlet_ = outlet;
 }
 
-bool InteractionBroker::has_pending() const {
-    const std::lock_guard lock(mutex_);
-    return active_ != nullptr || !waiting_.empty();
-}
-
 std::shared_ptr<InteractionBroker::Pending> InteractionBroker::complete_locked(
     const std::shared_ptr<Pending>& pending, bool activate_next) {
     const bool was_active = pending->active;

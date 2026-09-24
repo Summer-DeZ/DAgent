@@ -10,13 +10,7 @@ namespace {
     throw RecordError(RecordError::Kind::corrupt, std::format("corrupt session record: {}", what));
 }
 
-std::string ordinal_text(std::int64_t n) { return std::to_string(n); }
-
 } // namespace
-
-std::vector<HistoryItem> HistoryProjector::project(const StoredRecord& record) const {
-    return project(record, record_codec::decode(record.type, record.payload));
-}
 
 std::vector<HistoryItem> HistoryProjector::project(const StoredRecord& record,
                                                    const record_codec::DecodedRecord& decoded) const {

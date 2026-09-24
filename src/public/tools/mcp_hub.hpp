@@ -3,7 +3,7 @@
 ///
 /// 主会话在模型步骤边界等待/刷新/重连；子会话只在创建时快照。snapshot 注册的工具项
 /// 持有 Client 的 shared_ptr，目录刷新或重连不会让仍被子快照引用的连接悬空
-/// （R08，architecture-refactor §7）：子注册表本身就是这次连接快照的 lease。
+/// （architecture-refactor §7）：子注册表本身就是这次连接快照的 lease。
 #pragma once
 
 #include <condition_variable>

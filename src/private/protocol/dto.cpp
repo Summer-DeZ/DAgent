@@ -37,6 +37,18 @@ void from_json(const nlohmann::json& json, PublicModel& model) {
     model.has_key = json.value("has_key", false);
 }
 
+void to_json(nlohmann::json& json, const ProviderKind& kind) {
+    json = nlohmann::json{{"kind", kind.kind},
+                          {"default_base_url", kind.default_base_url},
+                          {"needs_credential", kind.needs_credential}};
+}
+
+void from_json(const nlohmann::json& json, ProviderKind& kind) {
+    kind.kind = json.value("kind", "");
+    kind.default_base_url = json.value("default_base_url", "");
+    kind.needs_credential = json.value("needs_credential", false);
+}
+
 void to_json(nlohmann::json& json, const Usage& usage) {
     json = nlohmann::json{{"prompt", usage.prompt}, {"completion", usage.completion}, {"cached", usage.cached}};
 }
@@ -70,12 +82,14 @@ void from_json(const nlohmann::json& json, OperationInfo& info) {
 }
 
 void to_json(nlohmann::json& json, const ContextInfo& info) {
-    json = nlohmann::json{{"used", info.used}, {"limit", info.limit}, {"usage", info.usage}};
+    json = nlohmann::json{
+        {"used", info.used}, {"limit", info.limit}, {"window", info.window}, {"usage", info.usage}};
 }
 
 void from_json(const nlohmann::json& json, ContextInfo& info) {
     info.used = json.value("used", std::size_t{0});
     info.limit = json.value("limit", std::size_t{0});
+    info.window = json.value("window", std::size_t{0});
     info.usage = json.value("usage", Usage{});
 }
 

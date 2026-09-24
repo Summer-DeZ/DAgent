@@ -4,15 +4,21 @@
 #include "ui/display.hpp"
 
 #include <algorithm>
-#include <condition_variable>
+#include <cctype>
 #include <cstdlib>
+#include <expected>
 #include <format>
-#include <mutex>
 #include <functional>
 #include <iostream>
+#include <map>
+#include <memory>
+#include <mutex>
+#include <optional>
 #include <set>
+#include <stdexcept>
+#include <string>
 #include <utility>
-#include <variant>
+#include <vector>
 
 #include "base/log.hpp"
 #include "ui/approval.hpp"
@@ -37,6 +43,12 @@ namespace {
 using Clock = std::chrono::steady_clock;
 using namespace std::chrono_literals;
 template<class... T> struct Overloaded : T... { using T::operator()...; };
+
+/// @brief 异步回调的寿命闸门：Shell 析构后回调直接丢弃，不再触碰页面或 Runtime。
+struct CallbackGate {
+    std::mutex mutex;
+    bool open = true;
+};
 
 class QueueLabel final : public tui::Text {
 public:
@@ -130,49 +142,164 @@ std::string display_path(const std::filesystem::path& path) {
     return value;
 }
 
-std::string relative_age(std::chrono::system_clock::time_point time) {
-    const auto elapsed = std::chrono::system_clock::now() - time;
-    const auto minutes = std::chrono::duration_cast<std::chrono::minutes>(elapsed).count();
-    if (minutes < 1) return std::string(ui::text().panel_just_now);
-    if (minutes < 60) return format_text(ui::text().panel_minutes, minutes);
-    const auto hours = minutes / 60;
-    if (hours < 24) return format_text(ui::text().panel_hours, hours);
-    return format_text(ui::text().panel_days, hours / 24);
+std::string relative_age(std::chrono::system_clock::time_point when) {
+    const auto seconds = std::chrono::duration_cast<std::chrono::seconds>(
+                             std::chrono::system_clock::now() - when)
+                             .count();
+    if (seconds < 60) return std::string(ui::text().panel_just_now);
+    if (seconds < 3600) return format_text(ui::text().panel_minutes, seconds / 60);
+    if (seconds < 86400) return format_text(ui::text().panel_hours, seconds / 3600);
+    return format_text(ui::text().panel_days, seconds / 86400);
 }
 
-std::vector<int> subsequence_hits(std::string_view needle, std::string_view value) {
+std::vector<int> subsequence_hits(std::string_view query, std::string_view value) {
     std::vector<int> hits;
     std::size_t from = 0;
-    for (char raw : needle) {
+    for (const char raw : query) {
         const char target = static_cast<char>(std::tolower(static_cast<unsigned char>(raw)));
-        while (from < value.size() &&
-               static_cast<char>(std::tolower(static_cast<unsigned char>(value[from]))) != target) ++from;
-        if (from == value.size()) break;
-        hits.push_back(static_cast<int>(from++));
+        std::size_t index = from;
+        while (index < value.size() &&
+               static_cast<char>(std::tolower(static_cast<unsigned char>(value[index]))) != target)
+            ++index;
+        if (index == value.size()) break;
+        hits.push_back(static_cast<int>(index++));
+        from = index;
     }
     return hits;
 }
 
-/// @brief 前端投影：只持 Runtime、只读 DTO 与页面状态，不持 Agent/Setup，不写业务状态（R07）。
-class Shell final : public tui::EventHandler, public runtime::Frontend {
+/// @brief 只读历史分页：每页结果经 rt.post 回到渲染线程；关闭/离开时释放未读完游标。
+class HistoryPager : public std::enable_shared_from_this<HistoryPager> {
 public:
-    Shell(runtime::Runtime& runtime, const runtime::RuntimeSnapshot& initial,
-          runtime::StartResult started, std::vector<agent::Event> history,
-          std::optional<ThemeSet> themes, const InteractiveOptions& options)
-        : runtime_(runtime), themes_(std::move(themes)), resumed_(started.resumed),
-          replay_(std::move(started.replay)), history_(std::move(history)),
+    HistoryPager(client::Client& client, tui::Runtime& rt, std::shared_ptr<CallbackGate> gate,
+                 std::string session_id)
+        : client_(client), rt_(rt), gate_(std::move(gate)), session_id_(std::move(session_id)) {}
+
+    std::function<void(const protocol::HistoryItem&)> on_item;
+    std::function<void(std::string)> on_error;
+    std::function<void()> on_done;
+
+    void start() { request(); }
+    void cancel() {
+        const std::lock_guard lock(mutex_);
+        cancelled_ = true;
+    }
+
+private:
+    void request() {
+        nlohmann::json params{{"session_id", session_id_}, {"limit", 100}};
+        {
+            const std::lock_guard lock(mutex_);
+            if (cancelled_) return;
+            if (!cursor_.empty()) params["cursor"] = cursor_;
+        }
+        auto self = shared_from_this();
+        client_.call_async("session.history", std::move(params),
+                           [self](std::expected<nlohmann::json, protocol::RpcError> response) {
+                               self->handle(std::move(response));
+                           });
+    }
+
+    void handle(std::expected<nlohmann::json, protocol::RpcError> response) {
+        if (!response) {
+            const std::string message = response.error().message;
+            auto self = shared_from_this();
+            rt_.post([self, message] {
+                const std::lock_guard lock(self->gate_->mutex);
+                if (!self->gate_->open || self->cancelled()) return;
+                if (self->on_error) self->on_error(message);
+            });
+            return;
+        }
+        std::vector<protocol::HistoryItem> items;
+        for (const auto& item : response->value("items", nlohmann::json::array())) {
+            items.push_back(item.get<protocol::HistoryItem>());
+        }
+        std::string next;
+        if (const auto it = response->find("next_cursor"); it != response->end() && it->is_string())
+            next = it->get<std::string>();
+        if (cancelled()) {
+            if (!next.empty()) {
+                client_.call_async("session.history_close", {{"cursor", next}},
+                                   [](std::expected<nlohmann::json, protocol::RpcError>) {});
+            }
+            return;
+        }
+        auto self = shared_from_this();
+        rt_.post([self, items = std::move(items), next]() mutable {
+            const std::lock_guard lock(self->gate_->mutex);
+            if (!self->gate_->open || self->cancelled()) return;
+            for (const auto& item : items) {
+                if (self->on_item) self->on_item(item);
+            }
+            if (!next.empty()) {
+                {
+                    const std::lock_guard lock(self->mutex_);
+                    self->cursor_ = next;
+                }
+                self->request();
+            } else if (self->on_done) {
+                self->on_done();
+            }
+        });
+    }
+
+    bool cancelled() {
+        const std::lock_guard lock(mutex_);
+        return cancelled_;
+    }
+
+    client::Client& client_;
+    tui::Runtime& rt_;
+    std::shared_ptr<CallbackGate> gate_;
+    std::string session_id_;
+    std::mutex mutex_;
+    std::string cursor_;
+    bool cancelled_ = false;
+};
+
+std::vector<protocol::HistoryItem> load_history(client::Client& client, const std::string& session_id) {
+    std::vector<protocol::HistoryItem> items;
+    std::string cursor;
+    for (;;) {
+        nlohmann::json params{{"session_id", session_id}, {"limit", 100}};
+        if (!cursor.empty()) params["cursor"] = cursor;
+        const nlohmann::json page = client.call("session.history", std::move(params));
+        for (const auto& item : page.value("items", nlohmann::json::array())) {
+            items.push_back(item.get<protocol::HistoryItem>());
+        }
+        if (const auto it = page.find("next_cursor"); it != page.end() && it->is_string()) {
+            cursor = it->get<std::string>();
+        } else {
+            break;
+        }
+    }
+    return items;
+}
+
+} // namespace
+
+/// @brief 前端投影：只持 Client、只读 DTO 与页面状态，不持执行对象，不写业务状态。
+class Shell final : public tui::EventHandler {
+public:
+    Shell(client::Client& client, FrontendBridge& bridge, const protocol::SessionSnapshot& initial,
+          std::vector<protocol::HistoryItem> history, std::optional<ThemeSet> themes,
+          const InteractiveOptions& options, std::filesystem::path project_root, std::string branch)
+        : client_(client), bridge_(bridge), themes_(std::move(themes)),
+          resumed_(options.resumed), history_(std::move(history)),
           initial_prompt_(options.initial_prompt), root_(layout()), rt_(terminal_, root_),
           prompt_(*input_, [this](std::string text) { submit(std::move(text)); },
                   [this] { recall(); }, [this] { prompt_changed(); },
                   [this] { return completion_.visible(); }),
           keys_(rt_), dialog_(rt_, [this] { interrupt(); }), model_dialog_(rt_),
           toasts_(rt_), panel_(rt_),
-          completion_(rt_, *input_, [this] { completion_kind_.clear(); }) {
+          completion_(rt_, *input_, [this] { completion_kind_.clear(); }),
+          branch_(std::move(branch)), project_root_(std::move(project_root)) {
         apply_snapshot(initial);
         project_path_ = display_path(project_root_);
         status_->project(project_path_);
         status_->set_trigger(trigger_percent_);
-        side_->set_project(project_path_, {});
+        side_->set_project(project_path_, branch_);
         side_->set_version(DAGENT_VERSION);
         add_pane("main", id_, {});
         update_prompt_footer();
@@ -185,32 +312,66 @@ public:
             if (theme_choice_ == "follow" && !theme_preview_) apply_theme(theme_for(theme_choice_));
         });
         refresh_models();
-        reset_transcript(resumed_, replay_.size() + history_.size());
-        for (const auto& event : history_) apply_core(event);
-        for (const auto& event : replay_) apply_core(event);
+        reset_transcript(resumed_, history_.size());
+        for (const auto& item : history_) active_transcript().append_history(item);
+        history_.clear();
         refresh_project();
         refresh_mcp();
     }
 
     ~Shell() override {
+        {
+            const std::lock_guard lock(gate_->mutex);
+            gate_->open = false;
+        }
         rt_.cancel(file_debounce_);
         terminal_.restore();
         unbind_active_mouse();
     }
 
-    int run(agent::Interrupts& interrupts) {
-        interrupts.graceful = true;
-        std::stop_callback signal(interrupts.stop.get_token(), [this] {
+    int run(std::stop_token stop) {
+        std::stop_callback signal(stop, [this] {
             rt_.post([this] { signal_exit_ = true; exit(); });
         });
         if (!initial_prompt_.empty()) submit(initial_prompt_);
         rt_.run();
         terminal_.restore();
-        runtime_.shutdown();
-        interrupts.graceful = false;
+        exiting_ = true;
+        if (client_.connected()) {
+            try {
+                client_.call("backend.shutdown");
+            } catch (const std::exception&) {
+                // 后端已在收尾或连接已关闭；宽限回收由 launcher 负责。
+            }
+        }
+        bridge_.detach();
         if (!error_.empty()) std::cerr << "failed: " << error_ << '\n';
         std::cout << std::format("Session {0} saved. Resume with: dagent -r {0}\n", id_);
         return !error_.empty() ? 1 : signal_exit_ ? 130 : 0;
+    }
+
+    // ---- FrontendBridge：后端线程 → 渲染线程（Shell 已 detach 后不再到达）----
+    void on_backend_event(const protocol::Event& event) {
+        rt_.post([this, event] { if (!exiting_) handle_event(event); });
+    }
+    void on_backend_interaction(const protocol::InteractionRequest& request) {
+        rt_.post([this, request] { if (!exiting_) show_interaction(request); });
+    }
+    void on_backend_interaction_closed(const std::string& interaction_id) {
+        rt_.post([this, interaction_id] {
+            if (exiting_) return;
+            if (active_interaction_ == interaction_id) {
+                active_interaction_.clear();
+                dialog_.close();
+            }
+        });
+    }
+    void on_backend_disconnected(const std::string& message) {
+        rt_.post([this, message] {
+            if (exiting_) return;
+            error_ = message;
+            exit();
+        });
     }
 
     bool on_event(const tui::Event& event) override {
@@ -224,41 +385,289 @@ public:
 private:
     struct CommandUi { std::string id, shortcut, alias; };
 
-    // ---- runtime::Frontend：后端线程 → 渲染线程 ----
-    void event(const runtime::Event& event) override {
-        rt_.post([this, event] { if (!exiting_) apply(event); });
+    // ---- RPC：请求在读取线程返回，回调经 rt.post 回到渲染线程 ----
+    nlohmann::json target() const {
+        return {{"session_id", id_}, {"session_generation", generation_}};
     }
-    void interaction_requested(const runtime::InteractionRequest& request) override {
-        rt_.post([this, request] { if (!exiting_) show_interaction(request); });
-    }
-    void interaction_closed(const std::string& interaction_id) override {
-        rt_.post([this, interaction_id] {
-            if (exiting_) return;
-            if (active_interaction_ == interaction_id) {
-                active_interaction_.clear();
-                dialog_.close();
+    void request(std::string method, nlohmann::json params,
+                 std::function<void(const nlohmann::json&)> done,
+                 std::function<void(const protocol::RpcError&)> failed = {}) {
+        auto gate = gate_;
+        client_.call_async(std::move(method), std::move(params),
+                           [this, gate, done = std::move(done), failed = std::move(failed)](
+                               std::expected<nlohmann::json, protocol::RpcError> result) {
+            const std::lock_guard lock(gate->mutex);
+            if (!gate->open) return;
+            if (!result) {
+                if (failed) {
+                    rt_.post([failed = std::move(failed), error = std::move(result.error())] {
+                        failed(error);
+                    });
+                }
+                return;
+            }
+            if (done) {
+                rt_.post([done = std::move(done), value = std::move(*result)]() mutable {
+                    done(value);
+                });
             }
         });
     }
+    /// @brief 命令的失败处理：解除本地 pending；执行期失败已有 notice 事件，不重复提示。
+    std::function<void(const protocol::RpcError&)> command_failure() {
+        return [this](const protocol::RpcError& error) {
+            set_busy(false);
+            if (error.kind == protocol::error_kind::kInvalidState ||
+                error.kind == protocol::error_kind::kConfigError) {
+                return;
+            }
+            toast(error.message, tui::Notice::Severity::warn);
+        };
+    }
+    void refresh_snapshot() {
+        request("session.snapshot", target(), [this](const nlohmann::json& value) {
+            apply_snapshot(value.get<protocol::SessionSnapshot>());
+        });
+    }
 
-    void apply_snapshot(const runtime::RuntimeSnapshot& snapshot) {
+    void apply_snapshot(const protocol::SessionSnapshot& snapshot) {
+        snapshot_ = snapshot;
         id_ = snapshot.session_id;
+        generation_ = snapshot.session_generation;
         model_name_ = snapshot.model.name;
         model_label_ = snapshot.model.model;
         planning_ = snapshot.planning;
         mode_ = snapshot.permission_mode;
         read_only_ = snapshot.read_only;
-        worked_tokens_ = snapshot.used_tokens;
-        token_limit_ = snapshot.token_limit;
-        trigger_percent_ = snapshot.trigger_percent;
-        window_tokens_ = snapshot.window_tokens;
-        project_root_ = snapshot.project_root;
-        if (!snapshot.project_root.empty()) project_path_ = display_path(snapshot.project_root);
-        mcp_states_ = snapshot.mcp;
-        if (!snapshot.session_id.empty()) {
-            const auto [done, total] = side_->progress();
-            status_->todo(done, total, total > 0 && (side_->collapsed() || terminal_.size().cols < 80));
+        worked_tokens_ = snapshot.context.used;
+        token_limit_ = snapshot.context.limit;
+        window_tokens_ = snapshot.context.window;
+        mcp_states_ = decode_mcp(snapshot.mcp);
+        side_->set_mcp(mcp_label(mcp_states_));
+        status_->context(worked_tokens_, token_limit_);
+        side_->set_context(worked_tokens_, token_limit_);
+        if (!panes_.empty()) {
+            active_transcript().set_session(mode_label(), model_label_);
+            update_prompt_footer();
         }
+        set_busy(snapshot.busy);
+        refresh_queue();
+        refresh_mcp();
+        const auto [done, total] = side_->progress();
+        status_->todo(done, total, total > 0 && (side_->collapsed() || terminal_.size().cols < 80));
+    }
+
+    void handle_event(const protocol::Event& event) {
+        if (event.kind == "session.changed") {
+            apply_session_changed(event);
+            return;
+        }
+        if (event.session_generation != 0 && event.session_generation != generation_) return;
+        if (event.kind == "operation.finished") {
+            if (event.data.value("status", "done") == "interrupted")
+                toast(std::string(ui::text().toast_compact_cancelled));
+            set_busy(false);
+            return;
+        }
+        if (event.parent_session_id) {
+            route_sub_event(event);
+            return;
+        }
+        if (const auto decoded = decode_event(event)) apply_live(*decoded);
+    }
+
+    void apply_session_changed(const protocol::Event& event) {
+        id_ = event.session_id;
+        generation_ = event.session_generation;
+        const bool replace = event.data.value("replace_transcript", true);
+        const bool resumed = event.data.value("resumed", false);
+        refresh_snapshot();
+        if (replace) {
+            reset_transcript(resumed, 0);
+            side_->set_title({});
+            if (resumed) refresh_history();
+        } else {
+            active_transcript().set_session(mode_label(), model_label_);
+            update_prompt_footer();
+        }
+        set_busy(false);
+        refresh_project();
+        refresh_models();
+    }
+
+    void route_sub_event(const protocol::Event& event) {
+        const std::string call_id = event.model_call_id.value_or("");
+        const std::string agent = event.agent.value_or("");
+        std::size_t index = 0;
+        if (const auto it = task_panes_.find(call_id); it != task_panes_.end()) {
+            index = it->second;
+        } else {
+            index = add_pane("task · " + agent, event.session_id, call_id);
+            task_panes_.emplace(call_id, index);
+        }
+        phase_ = format_text(ui::text().act_task, agent);
+        if (index == 0) return;
+        const auto decoded = decode_event(event);
+        if (!decoded) return;
+        if (const auto* sub = std::get_if<SubEvent>(&decoded->payload)) {
+            panes_[index].transcript->apply_live(sub->event());
+        }
+    }
+
+    void apply_live(const Event& event) {
+        active_transcript().apply_live(event);
+        std::visit(Overloaded{
+                       [&](const TurnStarted&) { set_busy(true); refresh_snapshot(); },
+                       [&](const StepStarted&) { phase_ = std::string(ui::text().act_thinking); step_begin_ = Clock::now(); },
+                       [&](const TextDelta&) { phase_ = std::string(ui::text().act_generating); },
+                       [&](const ReasoningDelta&) { phase_ = std::string(ui::text().act_generating); },
+                       [&](const ToolPending& e) { phase_ = std::string(ui::text().act_preparing) + e.name; },
+                       [&](const ToolStarted& e) { running_.push_back({e.id, e.summary, Clock::now()}); },
+                       [&](const ToolFinished& e) {
+                           std::erase_if(running_, [&](const Running& running) { return running.id == e.id; });
+                       },
+                       [&](const ContextUpdate& e) {
+                           status_->context(e.used, e.limit);
+                           side_->set_context(e.used, e.limit);
+                       },
+                       [&](const Retrying& e) {
+                           toast(format_text(ui::text().toast_retry, e.reason, e.wait_ms / 1000.0,
+                                             e.attempt, e.max_attempts),
+                                 tui::Notice::Severity::warn);
+                       },
+                       [&](const Notice& e) {
+                           if (e.level != NoticeLevel::error)
+                               toast(e.text, e.level == NoticeLevel::warn
+                                                 ? tui::Notice::Severity::warn
+                                                 : tui::Notice::Severity::info);
+                       },
+                       [&](const ModeChanged& e) {
+                           planning_ = e.planning;
+                           mode_ = e.mode;
+                           active_transcript().set_session(mode_label(), model_label_);
+                           update_prompt_footer();
+                       },
+                       [&](const TurnEnded&) {
+                           dialog_.close();
+                           set_busy(false);
+                           refresh_snapshot();
+                       },
+                       [](const auto&) {}
+                   },
+                   event.payload);
+        activity();
+    }
+
+    void set_busy(bool value) {
+        if (busy_ == value) return;
+        busy_ = value; rt_.cancel(activity_timer_); activity_timer_ = 0;
+        input_->set_active(!value && active_ == 0); update_prompt_footer();
+        if (value) {
+            step_begin_ = Clock::now(); phase_ = std::string(ui::text().act_thinking);
+            activity_timer_ = rt_.every(100ms, [this] { activity(); activity_->tick(); return true; });
+        } else {
+            running_.clear();
+        }
+        refresh_mcp(); activity();
+    }
+
+    void refresh_history() {
+        const std::string id = id_;
+        auto pager = std::make_shared<HistoryPager>(client_, rt_, gate_, id);
+        pager->on_item = [this, id](const protocol::HistoryItem& item) {
+            if (id_ != id || exiting_) return;
+            pending_history_.push_back(item);
+        };
+        pager->on_done = [this, id] {
+            if (id_ != id || exiting_) return;
+            reset_transcript(true, pending_history_.size());
+            for (const auto& item : pending_history_) active_transcript().append_history(item);
+            pending_history_.clear();
+            root_.invalidate_tree();
+            refresh_mcp();
+        };
+        history_pagers_[id] = pager;
+        pager->start();
+    }
+
+    void refresh_project() {
+        const std::string id = id_;
+        request("workspace.info", {{"session_id", id}}, [this, id](const nlohmann::json& value) {
+            if (id_ != id) return;
+            branch_ = value.value("branch", "");
+            side_->set_project(project_path_, branch_);
+        });
+    }
+
+    void refresh_models() {
+        request("model.list", nlohmann::json::object(), [this](const nlohmann::json& value) {
+            models_.clear();
+            for (const auto& model : value.value("models", nlohmann::json::array()))
+                models_.push_back(model.get<protocol::PublicModel>());
+            provider_kinds_.clear();
+            for (const auto& kind : value.value("provider_kinds", nlohmann::json::array())) {
+                const protocol::ProviderKind info = kind.get<protocol::ProviderKind>();
+                provider_kinds_.push_back({info.kind, info.default_base_url, info.needs_credential});
+            }
+        });
+    }
+
+    void refresh_queue() {
+        std::string label;
+        const auto& queue = snapshot_.queue;
+        if (!queue.empty()) {
+            label = format_text(ui::text().queue_count, queue.size());
+            const std::size_t first = queue.size() > 2 ? queue.size() - 2 : 0;
+            for (std::size_t i = first; i < queue.size(); ++i)
+                label += std::format("\n{} {}", i - first + 1, queue[i].text_preview);
+        }
+        queue_label_->set_text(std::move(label));
+    }
+
+    bool mcp_pending() const {
+        return std::ranges::any_of(mcp_states_, [](const McpStatus& state) {
+            return state.status == "connecting" || state.status == "reconnecting";
+        });
+    }
+    void refresh_mcp() {
+        side_->set_mcp(mcp_label(mcp_states_));
+        if (!mcp_pending() && !busy_) return;
+        if (mcp_timer_) return;
+        mcp_timer_ = rt_.every(200ms, [this] {
+            refresh_snapshot();
+            if (mcp_pending() || busy_) return true;
+            mcp_timer_ = 0; return false;
+        });
+    }
+    static std::string mcp_label(const std::vector<McpStatus>& states) {
+        if (states.empty()) return {};
+        const auto ready = std::ranges::count_if(states, [](const McpStatus& state) {
+            return state.status == "ready";
+        });
+        return format_text(ui::text().status_mcp, ready, states.size());
+    }
+
+    void toast(std::string text, tui::Notice::Severity severity = tui::Notice::Severity::info) {
+        toasts_.show(severity, std::move(text));
+    }
+    void apply_theme(const tui::ThemeTokens& selected) {
+        theme_ = resolve_theme(selected); theme_.epoch = ++theme_epoch_;
+        for (Pane& pane : panes_) pane.scroll->set_theme(theme_);
+        activity_->set_theme(theme_);
+        queue_label_->set_theme(theme_); queue_label_->set_style(theme_.text_muted);
+        input_->set_theme(theme_); status_->set_theme(theme_);
+        side_->set_theme(theme_); toasts_.set_theme(theme_); panel_.set_theme(theme_);
+        dialog_.set_theme(theme_); model_dialog_.set_theme(theme_); completion_.set_theme(theme_);
+        root_.invalidate_tree();
+    }
+    void activity() {
+        if (!busy_) { activity_->set_action({}); return; }
+        if (dialog_.active()) { activity_->set_action(std::string(ui::text().act_waiting)); return; }
+        std::string label = phase_;
+        auto begin = step_begin_;
+        if (!running_.empty()) { label = std::string(ui::text().act_running) + running_.front().summary; begin = running_.front().begin; }
+        const auto seconds = std::chrono::duration_cast<std::chrono::seconds>(Clock::now() - begin).count();
+        activity_->set_action(format_text(ui::text().act_line, label, seconds));
     }
 
     std::unique_ptr<tui::Widget> layout() {
@@ -337,6 +746,7 @@ private:
         tui::Scrollback* scroll = nullptr;
         std::unique_ptr<Transcript> transcript;
         std::unique_ptr<tui::ScrollbackMouse> mouse;
+        std::shared_ptr<HistoryPager> pager;
         std::string title, session_id, call_id;
     };
     tui::Scrollback& active_scroll() { return *panes_[active_].scroll; }
@@ -348,13 +758,13 @@ private:
         tui::Scrollback& scroll = frame_->create();
         const std::size_t index = panes_.size();
         auto transcript = std::make_unique<Transcript>(
-            scroll.document(), [this, index](const agent::TodoView& value) {
+            scroll.document(), [this, index](const TodoList& value) {
                 if (index == 0) update_todo(value);
             });
         transcript->set_session(mode_label(), model_label_);
         scroll.set_theme(theme_);
         auto mouse = std::make_unique<tui::ScrollbackMouse>(rt_, scroll);
-        panes_.push_back({&scroll, std::move(transcript), std::move(mouse), std::move(title),
+        panes_.push_back({&scroll, std::move(transcript), std::move(mouse), {}, std::move(title),
                           std::move(session_id), std::move(call_id)});
         return index;
     }
@@ -377,6 +787,7 @@ private:
             bind_active_mouse();
         }
         for (std::size_t i = 1; i < panes_.size(); ++i) {
+            if (panes_[i].pager) panes_[i].pager->cancel();
             panes_[i].transcript.reset();
             panes_[i].mouse.reset();
             frame_->destroy(*panes_[i].scroll);
@@ -389,21 +800,22 @@ private:
     void open_task_pane(const Transcript::TaskRef& task) {
         const std::size_t index = add_pane("task · " + task.agent, task.session_id, task.call_id);
         show_pane(index);
-        runtime_.query_history(task.session_id,
-                               [this, index, id = task.session_id](runtime::Runtime::HistoryResult result) {
-            if (!result) {
-                rt_.post([this, message = result.error().message] {
-                    toast(std::string(ui::text().toast_resume_failed) + message,
-                          tui::Notice::Severity::error);
-                });
-                return;
-            }
-            rt_.post([this, index, id, events = std::move(*result)]() mutable {
-                if (index >= panes_.size() || panes_[index].session_id != id) return;
-                for (const auto& event : events) panes_[index].transcript->apply(event);
-                root_.invalidate_tree();
-            });
-        });
+        const std::string id = task.session_id;
+        auto pager = std::make_shared<HistoryPager>(client_, rt_, gate_, id);
+        pager->on_item = [this, index, id](const protocol::HistoryItem& item) {
+            if (index >= panes_.size() || panes_[index].session_id != id) return;
+            panes_[index].transcript->append_history(item);
+        };
+        pager->on_error = [this, index, id](std::string message) {
+            if (index >= panes_.size() || panes_[index].session_id != id) return;
+            toast(std::string(ui::text().toast_resume_failed) + message, tui::Notice::Severity::error);
+        };
+        pager->on_done = [this, index, id] {
+            if (index >= panes_.size() || panes_[index].session_id != id) return;
+            root_.invalidate_tree();
+        };
+        panes_[index].pager = pager;
+        pager->start();
     }
     void agent_panel() {
         std::vector<Panel::Row> rows;
@@ -427,186 +839,9 @@ private:
         panel_.open(std::string(ui::text().panel_agents), std::move(rows),
                     std::string(ui::text().panel_agent_footer));
     }
-    void refresh_project() {
-        runtime_.query_workspace([this](runtime::Runtime::WorkspaceResult result) {
-            if (!result) return;
-            std::string branch = result->branch;
-            rt_.post([this, branch = std::move(branch)] {
-                branch_ = branch; side_->set_project(project_path_, branch_);
-            });
-        });
-    }
-    void toast(std::string text, tui::Notice::Severity severity = tui::Notice::Severity::info) {
-        toasts_.show(severity, std::move(text));
-    }
-    void apply_theme(const tui::ThemeTokens& selected) {
-        theme_ = resolve_theme(selected); theme_.epoch = ++theme_epoch_;
-        for (Pane& pane : panes_) pane.scroll->set_theme(theme_);
-        activity_->set_theme(theme_);
-        queue_label_->set_theme(theme_); queue_label_->set_style(theme_.text_muted);
-        input_->set_theme(theme_); status_->set_theme(theme_);
-        side_->set_theme(theme_); toasts_.set_theme(theme_); panel_.set_theme(theme_);
-        dialog_.set_theme(theme_); model_dialog_.set_theme(theme_); completion_.set_theme(theme_);
-        root_.invalidate_tree();
-    }
-    void activity() {
-        if (!busy_) { activity_->set_action({}); return; }
-        if (dialog_.active()) { activity_->set_action(std::string(ui::text().act_waiting)); return; }
-        std::string label = phase_;
-        auto begin = step_begin_;
-        if (!running_.empty()) { label = std::string(ui::text().act_running) + running_.front().summary; begin = running_.front().begin; }
-        const auto seconds = std::chrono::duration_cast<std::chrono::seconds>(Clock::now() - begin).count();
-        activity_->set_action(format_text(ui::text().act_line, label, seconds));
-    }
-    bool update_mcp() {
-        mcp_states_ = runtime_.snapshot().mcp;
-        side_->set_mcp(mcp_label(mcp_states_));
-        for (const auto& state : mcp_states_) {
-            using Status = agent::McpServerState::Status;
-            if (state.status == Status::connecting || state.status == Status::reconnecting) return true;
-        }
-        return false;
-    }
-    void refresh_mcp() {
-        const bool pending = update_mcp();
-        if (!pending && !busy_) return;
-        if (mcp_timer_) return;
-        mcp_timer_ = rt_.every(200ms, [this] {
-            const bool pending_now = update_mcp();
-            if (pending_now || busy_) return true;
-            mcp_timer_ = 0; return false;
-        });
-    }
-    void busy(bool value) {
-        busy_ = value; rt_.cancel(activity_timer_); activity_timer_ = 0;
-        input_->set_active(!value && active_ == 0); update_prompt_footer();
-        if (value) {
-            step_begin_ = Clock::now(); phase_ = std::string(ui::text().act_thinking);
-            activity_timer_ = rt_.every(100ms, [this] { activity(); activity_->tick(); return true; });
-        } else running_.clear();
-        refresh_mcp(); activity();
-    }
-    void apply(const runtime::Event& event) {
-        std::visit(Overloaded{
-                       [&](const agent::Event& core) { apply_core(core); },
-                       [&](const runtime::ControlEvent& control) { apply_control(control); },
-                   },
-                   event.payload);
-        activity();
-    }
-    void apply_control(const runtime::ControlEvent& event) {
-        switch (event.kind) {
-        case runtime::ControlEvent::Kind::session_replaced: {
-            const runtime::RuntimeSnapshot snapshot = runtime_.snapshot();
-            apply_snapshot(snapshot);
-            if (event.replace_transcript) {
-                reset_transcript(event.resumed, 0);
-                side_->set_title({});
-                if (event.resumed) refresh_history();
-            } else {
-                active_transcript().set_session(mode_label(), model_label_);
-                update_prompt_footer();
-            }
-            busy(false);
-            refresh_project();
-            refresh_models();
-            break;
-        }
-        case runtime::ControlEvent::Kind::models_changed:
-            refresh_models();
-            toast(std::string(ui::text().toast_model_added) + runtime_.snapshot().model.name);
-            break;
-        case runtime::ControlEvent::Kind::operation_finished:
-            if (event.operation == "compact") {
-                if (event.status == agent::TurnStatus::interrupted)
-                    toast(std::string(ui::text().toast_compact_cancelled));
-                busy(false);
-            }
-            break;
-        case runtime::ControlEvent::Kind::failed:
-            toast(event.operation + " failed: " + event.error, tui::Notice::Severity::error);
-            busy(false);
-            break;
-        }
-    }
-    void apply_core(const agent::Event& event) {
-        if (!std::holds_alternative<agent::SubEvent>(event)) active_transcript().apply(event);
-        std::visit(Overloaded{
-            [&](const agent::TurnStarted&) { busy(true); refresh_queue(); },
-            [&](const agent::StepStarted&) { phase_ = std::string(ui::text().act_thinking); step_begin_ = Clock::now(); },
-            [&](const agent::TextDelta&) { phase_ = std::string(ui::text().act_generating); },
-            [&](const agent::ReasoningDelta&) { phase_ = std::string(ui::text().act_generating); },
-            [&](const agent::ToolPending& e) { phase_ = std::string(ui::text().act_preparing) + e.name; },
-            [&](const agent::ToolStarted& e) { running_.push_back({e.id, e.summary, Clock::now()}); },
-            [&](const agent::SubEvent& e) {
-                phase_ = format_text(ui::text().act_task, e.agent);
-                std::size_t index = 0;
-                if (const auto it = task_panes_.find(e.call_id); it != task_panes_.end()) {
-                    index = it->second;
-                } else {
-                    index = add_pane("task · " + e.agent, e.session, e.call_id);
-                    task_panes_.emplace(e.call_id, index);
-                }
-                if (index != 0) panes_[index].transcript->apply(e.event()); // 子 Pane 自己的记录
-            },
-            [&](const agent::ToolFinished& e) {
-                std::erase_if(running_, [&](const Running& running) { return running.id == e.id; });
-            },
-            [&](const agent::ContextUpdate& e) { status_->context(e); side_->set_context(e.used, e.limit); },
-            [&](const agent::Retrying& e) {
-                toast(format_text(ui::text().toast_retry, e.reason, e.wait.count() / 1000.0,
-                                  e.attempt, e.max_attempts), tui::Notice::Severity::warn);
-            },
-            [&](const agent::Notice& e) {
-                if (e.level != agent::Notice::Level::error)
-                    toast(e.text, e.level == agent::Notice::Level::warn
-                                      ? tui::Notice::Severity::warn : tui::Notice::Severity::info);
-            },
-            [&](const agent::ModeChanged& e) {
-                planning_ = e.planning;
-                mode_ = e.mode == "ask" ? agent::PermissionMode::ask
-                      : e.mode == "unrestricted" ? agent::PermissionMode::unrestricted
-                                                   : agent::PermissionMode::workspace;
-                active_transcript().set_session(mode_label(), model_label_);
-                update_prompt_footer();
-            },
-            [&](const agent::TurnEnded&) { dialog_.close(); busy(false); refresh_queue(); },
-            [](const auto&) {}
-        }, event);
-    }
 
-    void refresh_history() {
-        runtime_.query_history(id_, [this, id = id_](runtime::Runtime::HistoryResult result) {
-            if (!result) return;
-            rt_.post([this, id, events = std::move(*result)]() mutable {
-                if (id_ != id || exiting_) return;
-                reset_transcript(true, events.size());
-                for (const auto& event : events) apply_core(event);
-                rt_.post([this] { refresh_mcp(); });
-            });
-        });
-    }
-    void refresh_models() {
-        models_ = runtime_.models();
-        provider_kinds_ = runtime_.provider_kinds();
-    }
-    void show_interaction(const runtime::InteractionRequest& request) {
-        active_interaction_ = request.id;
-        if (request.kind == runtime::InteractionRequest::Kind::approval) {
-            dialog_.open(request.approval, [this, id = request.id](agent::Decision decision) {
-                active_interaction_.clear();
-                runtime_.answer(id, std::move(decision));
-            });
-        } else {
-            dialog_.open(request.question, [this, id = request.id](agent::Answer answer) {
-                active_interaction_.clear();
-                runtime_.answer(id, std::move(answer));
-            });
-        }
-    }
-
-    void update_todo(const agent::TodoView& value) {
-        side_->set_items(value.items);
+    void update_todo(const TodoList& value) {
+        side_->set_items(value);
         update_todo_status(terminal_.size().cols);
     }
     void update_todo_status(int columns) {
@@ -621,38 +856,25 @@ private:
     /// 输入框尾行与消息尾行共用同一份「模式 · 模型」。
     std::string mode_label() const {
         if (planning_) return "plan";
-        if (mode_ == agent::PermissionMode::unrestricted) return "unrestricted";
-        return std::string(mode_ == agent::PermissionMode::workspace ? ui::text().status_auto_edit
-                                                                     : ui::text().status_ask);
+        if (mode_ == "unrestricted") return "unrestricted";
+        return std::string(mode_ == "workspace" ? ui::text().status_auto_edit : ui::text().status_ask);
     }
     void update_prompt_footer() {
         input_->set_footer(format_text(ui::text().box_footer, mode_label(), model_label_));
-        input_->set_footer_tone(!planning_ && mode_ == agent::PermissionMode::unrestricted, planning_);
-    }
-    static std::string mcp_label(const std::vector<agent::McpServerState>& states) {
-        if (states.empty()) return {};
-        const auto ready = std::ranges::count_if(states, [](const agent::McpServerState& state) {
-            return state.status == agent::McpServerState::Status::ready;
-        });
-        return format_text(ui::text().status_mcp, ready, states.size());
+        input_->set_footer_tone(!planning_ && mode_ == "unrestricted", planning_);
     }
 
-    void refresh_queue() {
-        const runtime::RuntimeSnapshot snapshot = runtime_.snapshot();
-        std::string label;
-        if (!snapshot.queue.empty()) {
-            label = format_text(ui::text().queue_count, snapshot.queue.size());
-            const std::size_t first = snapshot.queue.size() > 2 ? snapshot.queue.size() - 2 : 0;
-            for (std::size_t i = first; i < snapshot.queue.size(); ++i)
-                label += std::format("\n{} {}", i - first + 1,
-                                     snapshot.queue[i].text.substr(0, snapshot.queue[i].text.find('\n')));
-        }
-        queue_label_->set_text(std::move(label));
-    }
     void recall() {
-        if (const auto recalled = runtime_.recall_last()) {
-            input_->set_text(recalled->text);
-            refresh_queue(); prompt_changed();
+        try {
+            const nlohmann::json result = client_.call("input.recall_last", target());
+            const auto& input = result["input"];
+            if (input.is_object()) {
+                input_->set_text(input.value("text", ""));
+                prompt_changed();
+            }
+            refresh_snapshot();
+        } catch (const std::exception& error) {
+            toast(error.what(), tui::Notice::Severity::warn);
         }
     }
     void submit(std::string text) {
@@ -673,10 +895,13 @@ private:
             return;
         }
         set_session_title(text);
-        if (auto accepted = runtime_.submit(std::move(text)); !accepted) {
-            toast(accepted.error().message, tui::Notice::Severity::warn);
-        }
-        refresh_queue();
+        nlohmann::json params = target();
+        params["text"] = std::move(text);
+        request("input.submit", std::move(params), [this](const nlohmann::json&) {
+            refresh_snapshot();
+        }, [this](const protocol::RpcError& error) {
+            toast(error.message, tui::Notice::Severity::warn);
+        });
     }
     /// 侧栏标题取本会话第一条真实输入的首行。
     void set_session_title(const std::string& input) {
@@ -692,27 +917,25 @@ private:
     }
     void compact() {
         if (busy_) return;
-        if (auto accepted = runtime_.compact(); !accepted) {
-            toast(accepted.error().message, tui::Notice::Severity::warn);
-            return;
-        }
-        busy(true); phase_ = std::string(ui::text().act_compacting); activity();
+        request("session.compact", target(), [this](const nlohmann::json&) {
+            set_busy(true); phase_ = std::string(ui::text().act_compacting); activity();
+        }, command_failure());
     }
     void new_session() {
         if (busy_) return;
-        if (auto accepted = runtime_.new_session(); !accepted) {
-            toast(accepted.error().message, tui::Notice::Severity::warn);
-            return;
-        }
-        busy(true); phase_ = std::string(ui::text().act_resuming); activity();
+        request("session.new", target(), [this](const nlohmann::json& value) {
+            apply_snapshot(value.get<protocol::SessionSnapshot>());
+        }, command_failure());
+        set_busy(true); phase_ = std::string(ui::text().act_resuming); activity();
     }
     void resume_session(std::string id) {
         if (busy_) return;
-        if (auto accepted = runtime_.resume(id); !accepted) {
-            toast(accepted.error().message, tui::Notice::Severity::warn);
-            return;
-        }
-        busy(true); phase_ = std::string(ui::text().act_resuming) + id.substr(0, 8); activity();
+        nlohmann::json params = target();
+        params["id"] = id;
+        request("session.resume", std::move(params), [this](const nlohmann::json& value) {
+            apply_snapshot(value.get<protocol::SessionSnapshot>());
+        }, command_failure());
+        set_busy(true); phase_ = std::string(ui::text().act_resuming) + id.substr(0, 8); activity();
     }
 
     void model_panel() {
@@ -734,22 +957,36 @@ private:
     }
     void add_model() {
         if (busy_) return;
-        model_dialog_.open(window_tokens_, provider_kinds_,
-                           [this](agent::ModelInput model) {
-            if (auto accepted = runtime_.add_model(std::move(model)); !accepted) {
-                toast(accepted.error().message, tui::Notice::Severity::warn);
-                return;
-            }
-            busy(true); phase_ = std::string(ui::text().act_adding_model); activity();
+        model_dialog_.open(window_tokens_, provider_kinds_, [this](ModelInput model) {
+            if (busy_) return;
+            nlohmann::json params = target();
+            params["kind"] = model.kind;
+            params["name"] = model.name;
+            params["base_url"] = model.base_url;
+            params["model"] = model.model;
+            params["credential"] = model.credential;
+            params["max_tokens"] = model.max_tokens;
+            params["context_window"] = model.context_window;
+            request("model.add", std::move(params), [this](const nlohmann::json& value) {
+                refresh_models();
+                const bool selected = value.value("selected", false);
+                std::string error;
+                if (const auto it = value.find("selection_error"); it != value.end() && it->is_string())
+                    error = it->get<std::string>();
+                if (selected) toast(std::string(ui::text().toast_model_added) + value["model"].value("name", ""));
+                else toast(error.empty() ? "model switch failed" : error, tui::Notice::Severity::warn);
+            }, command_failure());
+            set_busy(true); phase_ = std::string(ui::text().act_adding_model); activity();
         });
     }
     void switch_model(const std::string& name) {
         if (busy_ || name == model_name_) return;
-        if (auto accepted = runtime_.select_model(name); !accepted) {
-            toast(accepted.error().message, tui::Notice::Severity::warn);
-            return;
-        }
-        busy(true); phase_ = std::string(ui::text().act_switching_model); activity();
+        nlohmann::json params = target();
+        params["name"] = name;
+        request("session.select_model", std::move(params), [this](const nlohmann::json& value) {
+            apply_snapshot(value.get<protocol::SessionSnapshot>());
+        }, command_failure());
+        set_busy(true); phase_ = std::string(ui::text().act_switching_model); activity();
     }
 
     void command_panel() {
@@ -766,24 +1003,22 @@ private:
     }
     void session_panel() {
         panel_.open(std::string(ui::text().panel_sessions), {{std::string(ui::text().panel_loading), {}, {}, false, {}}}, std::string(ui::text().panel_session_footer), false);
-        runtime_.query_sessions(50, [this](runtime::Runtime::SessionsResult result) {
-            if (!result) {
-                rt_.post([this, message = result.error().message] {
-                    panel_.close();
-                    toast(std::string(ui::text().toast_sessions_failed) + message, tui::Notice::Severity::error);
-                });
-                return;
+        request("session.list", {{"limit", 50}}, [this](const nlohmann::json& value) {
+            std::vector<Panel::Row> rows;
+            for (const auto& session : value.value("sessions", nlohmann::json::array())) {
+                const std::string id = session.value("id", "");
+                rows.push_back({session.value("title", "").empty() ? std::string(ui::text().panel_empty_session)
+                                                                   : session.value("title", ""),
+                                relative_age(std::chrono::system_clock::time_point(
+                                    std::chrono::milliseconds(session.value("updated", std::int64_t{0})))),
+                                id.substr(0, 4), true,
+                                [this, id] { resume_session(id); }});
             }
-            rt_.post([this, sessions = std::move(*result)]() mutable {
-                std::vector<Panel::Row> rows;
-                for (const auto& session : sessions) {
-                    rows.push_back({session.title.empty() ? std::string(ui::text().panel_empty_session) : session.title,
-                                    relative_age(session.updated), session.id.substr(0, 4), true,
-                                    [this, id = session.id] { resume_session(id); }});
-                }
-                if (rows.empty()) rows.push_back({std::string(ui::text().panel_no_sessions), {}, {}, false, {}});
-                panel_.open(std::string(ui::text().panel_sessions), std::move(rows), std::string(ui::text().panel_session_footer));
-            });
+            if (rows.empty()) rows.push_back({std::string(ui::text().panel_no_sessions), {}, {}, false, {}});
+            panel_.open(std::string(ui::text().panel_sessions), std::move(rows), std::string(ui::text().panel_session_footer));
+        }, [this](const protocol::RpcError& error) {
+            panel_.close();
+            toast(std::string(ui::text().toast_sessions_failed) + error.message, tui::Notice::Severity::error);
         });
     }
     void help_panel() {
@@ -797,18 +1032,25 @@ private:
         panel_.open(std::string(ui::text().panel_help), std::move(rows), std::string(ui::text().panel_close), false);
     }
     void permissions_panel() {
-        const std::vector<agent::Policy::SessionGrant> grants = runtime_.snapshot().grants;
-        std::vector<Panel::Row> rows;
-        for (const auto& grant : grants) {
-            rows.push_back({grant.description, {}, "revoke", true, [this, id = grant.id] {
-                bool removed = false;
-                if (auto result = runtime_.revoke_grant(id); result) removed = *result;
-                toast(removed ? "Session permission revoked" : "Permission was already absent",
-                      removed ? tui::Notice::Severity::info : tui::Notice::Severity::warn);
-            }});
-        }
-        if (rows.empty()) rows.push_back({"No active session permissions", {}, {}, false, {}});
-        panel_.open("Session permissions", std::move(rows), "enter revoke · esc close", false);
+        request("session.grants", target(), [this](const nlohmann::json& value) {
+            std::vector<Panel::Row> rows;
+            for (const auto& grant : value.value("grants", nlohmann::json::array())) {
+                const std::string id = grant.value("id", "");
+                rows.push_back({grant.value("description", ""), {}, "revoke", true, [this, id] {
+                    nlohmann::json params = target();
+                    params["grant_id"] = id;
+                    request("session.revoke_grant", std::move(params), [this](const nlohmann::json& result) {
+                        const bool removed = result.value("removed", false);
+                        toast(removed ? "Session permission revoked" : "Permission was already absent",
+                              removed ? tui::Notice::Severity::info : tui::Notice::Severity::warn);
+                    }, [this](const protocol::RpcError& error) {
+                        toast(error.message, tui::Notice::Severity::warn);
+                    });
+                }});
+            }
+            if (rows.empty()) rows.push_back({"No active session permissions", {}, {}, false, {}});
+            panel_.open("Session permissions", std::move(rows), "enter revoke · esc close", false);
+        });
     }
     tui::ThemeTokens theme_for(std::string_view choice) const {
         if (choice == "follow" && themes_) return themes_->pick(terminal_.caps().background);
@@ -876,14 +1118,12 @@ private:
                 completion_.open(std::string(ui::text().panel_files), [this](std::string_view query, auto done) {
                     rt_.cancel(file_debounce_);
                     file_debounce_ = rt_.after(80ms, [this, query = std::string(query), done = std::move(done)]() mutable {
-                        runtime_.query_files(query, 8,
-                                             [done = std::move(done), query](runtime::Runtime::FilesResult result) mutable {
+                        nlohmann::json params{{"session_id", id_}, {"text", query}, {"limit", 8}};
+                        request("workspace.complete", std::move(params), [done = std::move(done), query](const nlohmann::json& value) mutable {
                             std::vector<Completion::Item> items;
-                            if (result) {
-                                for (const auto& candidate : *result) {
-                                    items.push_back({candidate.path, candidate.path, {},
-                                                     subsequence_hits(query, candidate.path)});
-                                }
+                            for (const auto& candidate : value.value("candidates", nlohmann::json::array())) {
+                                const std::string path = candidate.value("path", "");
+                                items.push_back({path, path, {}, subsequence_hits(query, path)});
                             }
                             done(std::move(items));
                         });
@@ -901,7 +1141,21 @@ private:
         completion_.close();
     }
 
-    void interrupt() { if (busy_) runtime_.cancel(); }
+    void interrupt() {
+        if (!busy_) return;
+        const nlohmann::json params = target();
+        request("session.snapshot", params, [this, params](const nlohmann::json& snapshot) {
+            const auto operation = snapshot.find("current_operation");
+            if (operation == snapshot.end() || !operation->is_object()) return;
+            const auto run = operation->find("run_id");
+            if (run == operation->end() || !run->is_string()) return;
+            const std::string run_id = run->get<std::string>();
+            if (run_id.empty()) return;
+            nlohmann::json cancel = params;
+            cancel["run_id"] = run_id;
+            request("run.cancel", std::move(cancel), {});
+        });
+    }
     void cancel() {
         if (completion_.visible()) { completion_.close(); return; }
         if (panel_.visible()) { panel_.close(); return; }
@@ -913,26 +1167,71 @@ private:
         last_cancel_ = now; toast(std::string(ui::text().toast_exit));
     }
     void cycle_permission() {
-        if (auto result = runtime_.cycle_permission(); !result)
-            toast(result.error().message, tui::Notice::Severity::warn);
+        request("session.cycle_permission", target(), [this](const nlohmann::json& value) {
+            apply_snapshot(value.get<protocol::SessionSnapshot>());
+        }, [this](const protocol::RpcError& error) {
+            toast(error.message, tui::Notice::Severity::warn);
+        });
     }
     void toggle_plan() {
         if (busy_) return;
-        if (auto result = runtime_.toggle_planning(); !result)
-            toast(result.error().message, tui::Notice::Severity::warn);
+        request("session.toggle_planning", target(), [this](const nlohmann::json& value) {
+            apply_snapshot(value.get<protocol::SessionSnapshot>());
+        }, [this](const protocol::RpcError& error) {
+            toast(error.message, tui::Notice::Severity::warn);
+        });
     }
     void exit() {
         exiting_ = true; rt_.quit();
     }
 
-    runtime::Runtime& runtime_;
+    void show_interaction(const protocol::InteractionRequest& request) {
+        active_interaction_ = request.interaction_id;
+        if (request.kind == "approval") {
+            dialog_.open(decode_approval(request.payload),
+                         [this, id = request.interaction_id](ApprovalAnswer answer) {
+                active_interaction_.clear();
+                const char* decision = answer.decision == ApprovalAnswer::Decision::allow ? "allow"
+                                     : answer.decision == ApprovalAnswer::Decision::allow_session ? "allow_session"
+                                     : answer.decision == ApprovalAnswer::Decision::deny_with_feedback ? "deny_with_feedback"
+                                                                                                       : "deny";
+                answer_interaction(id, {{"decision", decision},
+                                        {"feedback", answer.feedback},
+                                        {"network", answer.network}});
+            });
+        } else {
+            dialog_.open(decode_question(request.payload),
+                         [this, id = request.interaction_id](QuestionAnswer answer) {
+                active_interaction_.clear();
+                answer_interaction(id, {{"selected", answer.selected},
+                                        {"other", answer.other},
+                                        {"cancelled", answer.cancelled}});
+            });
+        }
+    }
+    void answer_interaction(std::string id, nlohmann::json answer) {
+        auto gate = gate_;
+        client_.call_async("interaction.answer", {{"interaction_id", id}, {"answer", std::move(answer)}},
+                           [this, gate, id](std::expected<nlohmann::json, protocol::RpcError> result) {
+            const std::lock_guard lock(gate->mutex);
+            if (!gate->open || result) return;
+            rt_.post([this, message = result.error().message] {
+                toast(message, tui::Notice::Severity::warn);
+            });
+        });
+    }
+
+    client::Client& client_;
+    FrontendBridge& bridge_;
+    std::shared_ptr<CallbackGate> gate_ = std::make_shared<CallbackGate>();
     std::optional<ThemeSet> themes_;
     bool resumed_ = false;
-    std::vector<agent::Event> replay_;
-    std::vector<agent::Event> history_;
+    std::vector<protocol::HistoryItem> history_, pending_history_;
     std::string initial_prompt_;
-    std::vector<agent::PublicModel> models_;
-    std::vector<agent::ProviderKindInfo> provider_kinds_;
+    std::vector<protocol::PublicModel> models_;
+    std::vector<ProviderKind> provider_kinds_;
+    protocol::SessionSnapshot snapshot_;
+    std::map<std::string, std::shared_ptr<HistoryPager>> history_pagers_;
     tui::ThemeTokens theme_ = tui::dark_theme();
     uint32_t theme_epoch_ = 0;
     std::string theme_choice_ = "follow";
@@ -960,11 +1259,12 @@ private:
     std::string id_, error_, phase_, project_path_, branch_, completion_kind_;
     std::filesystem::path project_root_;
     std::string active_interaction_, model_name_, model_label_;
-    agent::PermissionMode mode_ = agent::PermissionMode::ask;
+    std::string mode_ = "ask";
+    std::uint64_t generation_ = 0;
     bool planning_ = false, read_only_ = false;
     std::size_t worked_tokens_ = 0, token_limit_ = 0, window_tokens_ = 0;
     int trigger_percent_ = 80;
-    std::vector<agent::McpServerState> mcp_states_;
+    std::vector<McpStatus> mcp_states_;
     std::vector<CommandUi> command_ui_;
     struct Running { std::string id, summary; Clock::time_point begin; };
     std::vector<Running> running_;
@@ -973,37 +1273,87 @@ private:
     tui::TimerId activity_timer_ = 0, mcp_timer_ = 0, file_debounce_ = 0;
     bool busy_ = false, exiting_ = false, signal_exit_ = false;
 };
-} // namespace
 
-int run_interactive(runtime::Runtime& runtime, const InteractiveOptions& options,
-                    agent::Interrupts& interrupts) {
+struct FrontendBridge::Impl {
+    std::mutex mutex;
+    Shell* shell = nullptr;
+};
+
+FrontendBridge::FrontendBridge() : impl_(std::make_unique<Impl>()) {}
+FrontendBridge::~FrontendBridge() = default;
+
+void FrontendBridge::attach(Shell& shell) {
+    const std::lock_guard lock(impl_->mutex);
+    impl_->shell = &shell;
+}
+void FrontendBridge::detach() {
+    const std::lock_guard lock(impl_->mutex);
+    impl_->shell = nullptr;
+}
+void FrontendBridge::event(const protocol::Event& event) {
+    Shell* shell = nullptr;
+    {
+        const std::lock_guard lock(impl_->mutex);
+        shell = impl_->shell;
+    }
+    if (shell) shell->on_backend_event(event);
+}
+void FrontendBridge::interaction_requested(const protocol::InteractionRequest& request) {
+    Shell* shell = nullptr;
+    {
+        const std::lock_guard lock(impl_->mutex);
+        shell = impl_->shell;
+    }
+    if (shell) shell->on_backend_interaction(request);
+}
+void FrontendBridge::interaction_closed(const std::string& interaction_id) {
+    Shell* shell = nullptr;
+    {
+        const std::lock_guard lock(impl_->mutex);
+        shell = impl_->shell;
+    }
+    if (shell) shell->on_backend_interaction_closed(interaction_id);
+}
+void FrontendBridge::disconnected(const std::string& message) {
+    Shell* shell = nullptr;
+    {
+        const std::lock_guard lock(impl_->mutex);
+        shell = impl_->shell;
+    }
+    if (shell) shell->on_backend_disconnected(message);
+}
+
+int run_interactive(client::Client& client, FrontendBridge& bridge, const InteractiveOptions& options,
+                    std::stop_token stop) {
     std::optional<ThemeSet> themes;
-    const std::filesystem::path theme_file = runtime.theme_file();
-    if (!theme_file.empty()) themes = load_theme(theme_file);
+    if (!options.theme_file.empty()) themes = load_theme(options.theme_file);
 
-    runtime::RuntimeSnapshot snapshot = runtime.snapshot();
-    std::mutex history_mutex;
-    std::condition_variable history_cv;
-    bool history_done = false;
-    runtime::Runtime::HistoryResult history_result;
-    if (!snapshot.session_id.empty()) {
-        runtime.query_history(snapshot.session_id, [&](runtime::Runtime::HistoryResult result) {
-            {
-                const std::lock_guard lock(history_mutex);
-                history_result = std::move(result);
-                history_done = true;
-            }
-            history_cv.notify_all();
-        });
-        std::unique_lock lock(history_mutex);
-        history_cv.wait(lock, [&] { return history_done; });
+    std::filesystem::path project_root;
+    std::string branch;
+    if (!options.initial.session_id.empty()) {
+        try {
+            const nlohmann::json workspace =
+                client.call("workspace.info", {{"session_id", options.initial.session_id}});
+            project_root = workspace.value("project_root", "");
+            branch = workspace.value("branch", "");
+        } catch (const std::exception&) {
+            // 项目信息只影响横幅与状态栏；缺失时保持空值。
+        }
     }
 
-    std::vector<agent::Event> history;
-    if (history_result) history = std::move(*history_result);
-    Shell shell(runtime, snapshot, runtime::StartResult{options.resumed, options.replay},
-                std::move(history), std::move(themes), options);
-    runtime.set_frontend(&shell);
-    return shell.run(interrupts);
+    std::vector<protocol::HistoryItem> history;
+    if (!options.initial.session_id.empty()) {
+        try {
+            history = load_history(client, options.initial.session_id);
+        } catch (const std::exception&) {
+            // 历史读取失败不阻止进入界面；与旧前端一致地留空。
+        }
+    }
+
+    Shell shell(client, bridge, options.initial, std::move(history), std::move(themes), options,
+                std::move(project_root), std::move(branch));
+    bridge.attach(shell);
+    return shell.run(stop);
 }
+
 } // namespace dagent::ui

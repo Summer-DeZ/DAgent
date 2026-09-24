@@ -97,7 +97,7 @@ ModelDialog::ModelDialog(tui::Runtime& rt) : rt_(rt) {}
 ModelDialog::~ModelDialog() { close(); }
 
 void ModelDialog::open(std::size_t default_context_window,
-                       const std::vector<agent::ProviderKindInfo>& kinds, Submit submit) {
+                       const std::vector<ProviderKind>& kinds, Submit submit) {
     close();
     kinds_ = kinds;
     values_ = {"openai-chat", "", "", "", "", "8192",
@@ -125,8 +125,8 @@ void ModelDialog::fail(std::string message) {
     view_->error->set_text("  " + std::move(message));
 }
 
-const agent::ProviderKindInfo* ModelDialog::find_kind(std::string_view kind) const {
-    const auto it = std::ranges::find_if(kinds_, [&](const agent::ProviderKindInfo& info) {
+const ProviderKind* ModelDialog::find_kind(std::string_view kind) const {
+    const auto it = std::ranges::find_if(kinds_, [&](const ProviderKind& info) {
         return info.kind == kind;
     });
     return it == kinds_.end() ? nullptr : &*it;
@@ -137,7 +137,7 @@ bool ModelDialog::accept_field() {
     const std::string value = trim(view_->input->text());
     switch (step_) {
     case 0: {
-        const agent::ProviderKindInfo* provider = find_kind(value);
+        const ProviderKind* provider = find_kind(value);
         if (!provider) { fail("kind must be openai-chat, anthropic or ollama"); return false; }
         values_[0] = value;
         values_[2] = provider->default_base_url;
@@ -156,7 +156,7 @@ bool ModelDialog::accept_field() {
         values_[3] = value;
         break;
     case 4: {
-        const agent::ProviderKindInfo* provider = find_kind(values_[0]);
+        const ProviderKind* provider = find_kind(values_[0]);
         if (provider && provider->needs_credential && value.empty()) {
             fail("this provider requires an API key or env:VARIABLE"); return false;
         }
@@ -215,7 +215,7 @@ bool ModelDialog::on_event(const tui::Event& event) {
     if (event.key == tui::Key::tab || event.key == tui::Key::enter) {
         if (step_ + 1 < k_fields) { move(1); return true; }
         if (!accept_field()) return true;
-        agent::ModelInput model;
+        ModelInput model;
         model.kind = values_[0]; model.name = values_[1]; model.base_url = values_[2];
         model.model = values_[3]; model.credential = values_[4];
         model.max_tokens = *positive_number(values_[5]);

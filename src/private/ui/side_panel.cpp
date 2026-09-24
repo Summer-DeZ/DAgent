@@ -26,7 +26,7 @@ void SidePanel::set_context(std::size_t used, std::size_t limit) {
     if (used_ == used && limit_ == limit) return;
     used_ = used; limit_ = limit; invalidate();
 }
-void SidePanel::set_items(std::vector<agent::TodoItem> items) {
+void SidePanel::set_items(TodoList items) {
     if (items_ == items) return;
     items_ = std::move(items); invalidate();
 }
@@ -51,7 +51,7 @@ void SidePanel::set_collapsed(bool value) {
 
 std::pair<int, int> SidePanel::progress() const noexcept {
     const int done = static_cast<int>(std::ranges::count_if(items_, [](const auto& item) {
-        return item.state == agent::TodoItem::State::done;
+        return item.state == ui::TodoItem::State::done;
     }));
     return {done, static_cast<int>(items_.size())};
 }
@@ -102,7 +102,7 @@ void SidePanel::render(tui::Surface& surface) {
         const int room = std::max(0, h - 2 - y);
         int first = 0;
         const auto doing = std::ranges::find_if(items_, [](const auto& item) {
-            return item.state == agent::TodoItem::State::doing;
+            return item.state == ui::TodoItem::State::doing;
         });
         if (doing != items_.end() && static_cast<int>(items_.size()) > room)
             first = std::max(0, static_cast<int>(doing - items_.begin()) - 2);
@@ -112,12 +112,12 @@ void SidePanel::render(tui::Surface& surface) {
             std::string_view symbol = "○";
             tui::Style symbol_style = theme_->text_muted;
             tui::Style text_style = theme_->text;
-            if (item.state == agent::TodoItem::State::doing) {
+            if (item.state == ui::TodoItem::State::doing) {
                 symbol = "●"; symbol_style = theme_->accent;
                 text_style.attrs = text_style.attrs | tui::Attr::bold;
-            } else if (item.state == agent::TodoItem::State::done) {
+            } else if (item.state == ui::TodoItem::State::done) {
                 symbol = "✓"; symbol_style = theme_->success; text_style = theme_->text_muted;
-            } else if (item.state == agent::TodoItem::State::dropped) {
+            } else if (item.state == ui::TodoItem::State::dropped) {
                 symbol = "✗"; text_style = theme_->text_muted;
             }
             surface.text(x, y, symbol, panel_style(symbol_style));
