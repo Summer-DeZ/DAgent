@@ -2,7 +2,7 @@
 /// @brief 私有协议的纯数据 DTO：会话快照、事件信封、历史条目与交互请求。
 ///
 /// protocol 只依赖 base/nlohmann：不包含核心实现类型，工具/展示数据保持 JSON 值；
-/// 核心值 → DTO 的转换集中在 backend adapter（architecture-refactor §4.2）。
+/// 核心值 → DTO 的转换集中在 backend adapter。
 #pragma once
 
 #include <cstddef>
@@ -80,7 +80,7 @@ struct SessionSnapshot {
     RecordingInfo recording;
 };
 
-/// @brief 历史条目；一个持久记录产生 0/1 条（记录路线 §7）。
+/// @brief 历史条目；一个持久记录产生 0/1 条。
 struct HistoryItem {
     std::string kind; ///< user / assistant / tool / tool_started / system / turn_end
     std::int64_t seq = -1;

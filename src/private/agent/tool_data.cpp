@@ -2,6 +2,8 @@
 
 #include <utility>
 
+#include "agent/port_journal.hpp"
+
 namespace dagent::agent {
 namespace {
 
@@ -26,15 +28,14 @@ constexpr std::string_view kTask = "task";
 
 } // namespace
 
-// 序列化函数必须生成在 dagent::agent 名字空间里（ADL 才找得到）。缺字段时取默认值：
-// 以后给结构体加字段，旧会话照样读得出来。
-NLOHMANN_DEFINE_TYPE_NON_INTRUSIVE_WITH_DEFAULT(ReadView, path, start_line, end_line, total_lines,
+// 序列化函数放在 dagent::agent 名字空间供 ADL 查找；所有展示字段按当前格式读取。
+NLOHMANN_DEFINE_TYPE_NON_INTRUSIVE(ReadView, path, start_line, end_line, total_lines,
                                                 truncated, directory)
-NLOHMANN_DEFINE_TYPE_NON_INTRUSIVE_WITH_DEFAULT(FileChangeView, path, diff, added, removed, created)
-NLOHMANN_DEFINE_TYPE_NON_INTRUSIVE_WITH_DEFAULT(GrepLine, path, text, line, spans, is_context)
-NLOHMANN_DEFINE_TYPE_NON_INTRUSIVE_WITH_DEFAULT(GrepView, pattern, lines, truncated)
-NLOHMANN_DEFINE_TYPE_NON_INTRUSIVE_WITH_DEFAULT(GlobView, pattern, files, truncated)
-NLOHMANN_DEFINE_TYPE_NON_INTRUSIVE_WITH_DEFAULT(McpView, server, tool, content, structured,
+NLOHMANN_DEFINE_TYPE_NON_INTRUSIVE(FileChangeView, path, diff, added, removed, created)
+NLOHMANN_DEFINE_TYPE_NON_INTRUSIVE(GrepLine, path, text, line, spans, is_context)
+NLOHMANN_DEFINE_TYPE_NON_INTRUSIVE(GrepView, pattern, lines, truncated)
+NLOHMANN_DEFINE_TYPE_NON_INTRUSIVE(GlobView, pattern, files, truncated)
+NLOHMANN_DEFINE_TYPE_NON_INTRUSIVE(McpView, server, tool, content, structured,
                                                 disconnected)
 
 inline void to_json(nlohmann::json& j, const TodoItem& item) {
@@ -43,24 +44,25 @@ inline void to_json(nlohmann::json& j, const TodoItem& item) {
 }
 
 inline void from_json(const nlohmann::json& j, TodoItem& item) {
-    item.text = j.value("text", "");
-    const std::string state = j.value("state", "todo");
-    item.state = state == "doing" ? TodoItem::State::doing
-               : state == "done" ? TodoItem::State::done
-               : state == "dropped" ? TodoItem::State::dropped
-                                     : TodoItem::State::todo;
+    item.text = j.at("text").get<std::string>();
+    const std::string state = j.at("state").get<std::string>();
+    if (state == "todo") item.state = TodoItem::State::todo;
+    else if (state == "doing") item.state = TodoItem::State::doing;
+    else if (state == "done") item.state = TodoItem::State::done;
+    else if (state == "dropped") item.state = TodoItem::State::dropped;
+    else throw RecordError(RecordError::Kind::corrupt, "unknown todo state: " + state);
 }
 
-NLOHMANN_DEFINE_TYPE_NON_INTRUSIVE_WITH_DEFAULT(TodoView, items)
-NLOHMANN_DEFINE_TYPE_NON_INTRUSIVE_WITH_DEFAULT(AskOption, label, description)
-NLOHMANN_DEFINE_TYPE_NON_INTRUSIVE_WITH_DEFAULT(AskView, header, prompt, options, selected, other,
+NLOHMANN_DEFINE_TYPE_NON_INTRUSIVE(TodoView, items)
+NLOHMANN_DEFINE_TYPE_NON_INTRUSIVE(AskOption, label, description)
+NLOHMANN_DEFINE_TYPE_NON_INTRUSIVE(AskView, header, prompt, options, selected, other,
                                                 multi_select, allow_other, cancelled)
-NLOHMANN_DEFINE_TYPE_NON_INTRUSIVE_WITH_DEFAULT(TaskStep, summary, is_error)
-NLOHMANN_DEFINE_TYPE_NON_INTRUSIVE_WITH_DEFAULT(TaskView, agent, task, session_id, result, steps,
+NLOHMANN_DEFINE_TYPE_NON_INTRUSIVE(TaskStep, summary, is_error)
+NLOHMANN_DEFINE_TYPE_NON_INTRUSIVE(TaskView, agent, task, session_id, result, steps,
                                                 model_calls, tool_calls, seconds, interrupted)
 
 // BashView 的 exit_code / signal 是 std::optional<int>：本项目用的 nlohmann 开着隐式转换，
-// 这份配置不提供 optional 的序列化，BashView 手写（缺字段取默认值，null 表示没有）。
+// 这份配置不提供 optional 的序列化，BashView 手写；null 表示没有退出码或信号。
 inline void to_json(nlohmann::json& j, const BashView& v) {
     j["command"] = v.command;
     j["output"] = v.output;
@@ -85,29 +87,28 @@ inline void to_json(nlohmann::json& j, const BashView& v) {
 }
 
 inline void from_json(const nlohmann::json& j, BashView& v) {
-    const BashView d;
-    v.command = j.value("command", d.command);
-    v.output = j.value("output", d.output);
-    if (const auto it = j.find("exit_code"); it != j.end() && it->is_number_integer())
-        v.exit_code = it->get<int>();
-    if (const auto it = j.find("signal"); it != j.end() && it->is_number_integer())
-        v.signal = it->get<int>();
-    v.timed_out = j.value("timed_out", d.timed_out);
-    v.interrupted = j.value("interrupted", d.interrupted);
-    v.sandbox = j.value("sandbox", d.sandbox);
-    v.backend = j.value("backend", d.backend);
-    v.grant_source = j.value("grant_source", d.grant_source);
-    v.analysis_version = j.value("analysis_version", d.analysis_version);
-    v.allow_network = j.value("allow_network", d.allow_network);
-    v.allow_local_sockets = j.value("allow_local_sockets", d.allow_local_sockets);
-    v.private_tmp = j.value("private_tmp", d.private_tmp);
-    v.protect_sensitive_names = j.value("protect_sensitive_names", d.protect_sensitive_names);
-    v.readable = j.value("readable", d.readable);
-    v.writable = j.value("writable", d.writable);
-    v.protected_read = j.value("protected_read", d.protected_read);
-    v.protected_write = j.value("protected_write", d.protected_write);
-    v.network_targets = j.value("network_targets", d.network_targets);
-    v.elapsed_ms = j.value("elapsed_ms", d.elapsed_ms);
+    j.at("command").get_to(v.command);
+    j.at("output").get_to(v.output);
+    j.at("timed_out").get_to(v.timed_out);
+    j.at("interrupted").get_to(v.interrupted);
+    j.at("sandbox").get_to(v.sandbox);
+    j.at("backend").get_to(v.backend);
+    j.at("grant_source").get_to(v.grant_source);
+    j.at("analysis_version").get_to(v.analysis_version);
+    j.at("allow_network").get_to(v.allow_network);
+    j.at("allow_local_sockets").get_to(v.allow_local_sockets);
+    j.at("private_tmp").get_to(v.private_tmp);
+    j.at("protect_sensitive_names").get_to(v.protect_sensitive_names);
+    j.at("readable").get_to(v.readable);
+    j.at("writable").get_to(v.writable);
+    j.at("protected_read").get_to(v.protected_read);
+    j.at("protected_write").get_to(v.protected_write);
+    j.at("network_targets").get_to(v.network_targets);
+    j.at("elapsed_ms").get_to(v.elapsed_ms);
+    const auto& exit_code = j.at("exit_code");
+    v.exit_code = exit_code.is_null() ? std::nullopt : std::optional<int>(exit_code.get<int>());
+    const auto& signal = j.at("signal");
+    v.signal = signal.is_null() ? std::nullopt : std::optional<int>(signal.get<int>());
 }
 
 json to_json(const View& view) {
@@ -129,11 +130,10 @@ json to_json(const View& view) {
 }
 
 View view_from_json(const json& data) {
-    if (!data.is_object()) return {};
-    const auto kind = data.find("kind");
-    if (kind == data.end() || !kind->is_string()) return {};
     try {
-        const std::string name = kind->get<std::string>();
+        const auto& kind = data.at("kind");
+        if (kind.is_null()) return {};
+        const std::string name = kind.get<std::string>();
         if (name == kRead) return data.get<ReadView>();
         if (name == kChange) return data.get<FileChangeView>();
         if (name == kBash) return data.get<BashView>();
@@ -143,10 +143,10 @@ View view_from_json(const json& data) {
         if (name == kTodo) return data.get<TodoView>();
         if (name == kAsk) return data.get<AskView>();
         if (name == kTask) return data.get<TaskView>();
-    } catch (const json::exception&) {
-        return {}; // 会话文件损坏的条目按 monostate 显示
+    } catch (const json::exception& error) {
+        throw RecordError(RecordError::Kind::corrupt, std::string("invalid tool view: ") + error.what());
     }
-    return {};
+    throw RecordError(RecordError::Kind::corrupt, "unknown tool view kind");
 }
 
 } // namespace dagent::agent

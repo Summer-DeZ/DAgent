@@ -52,7 +52,7 @@ void remove_entry(std::vector<std::string>& env, std::string_view name) {
     std::erase_if(env, [&](const std::string& entry) { return entry_has_name(entry, name); });
 }
 
-// 默认注入的变量（坑 7）：防止命令进分页器、停下来等输入、吐颜色转义。
+// 默认注入的变量：防止命令进分页器、停下来等输入、吐颜色转义。
 // 调用方可以通过 env_unset 撤掉其中任意一个，通过 env_set 覆盖成别的值。
 constexpr std::pair<std::string_view, std::string_view> kDefaultEnv[] = {
     {"PAGER", "cat"}, {"GIT_PAGER", "cat"}, {"GIT_TERMINAL_PROMPT", "0"},

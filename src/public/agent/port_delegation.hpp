@@ -2,7 +2,7 @@
 /// @brief DelegationChannel 端口：一次 task 委派的执行入口与父侧只读上下文。
 ///
 /// 核心只传已解析的请求与执行时取样的父事实；子会话构造、模型/工具名单与生命周期
-/// 由 runtime/SubagentExecutor 负责（architecture-refactor §7，状态机 §7）。
+/// 由 runtime/SubagentExecutor 负责。
 /// 不含父 Agent&、current_turn 指针或可写父 Session。
 #pragma once
 

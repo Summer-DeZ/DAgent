@@ -14,14 +14,8 @@ namespace dagent::mcp::detail {
 
 /// @brief 当前实现的现代协议版本。
 inline constexpr std::string_view kModernVersion = "2026-07-28";
-/// @brief initialize 时优先提出的经典版本（server 不同意时回它支持的一个）。
-inline constexpr std::string_view kPreferredLegacy = "2025-11-25";
-
-/// @brief v 是否是我们能对话的经典协议版本。工具能力从 2024-11-05 起没有破坏性变化。
-bool is_known_legacy_version(std::string_view v);
-
-/// @brief 从 server 声明的版本数组里选现代版本；没有我们支持的返回空串。
-std::string pick_modern_version(const nlohmann::json& supported);
+/// @brief server 声明的版本数组是否包含当前协议。
+bool supports_protocol(const nlohmann::json& supported);
 
 /// @brief 组装现代协议每个请求都要带的 params._meta。
 nlohmann::json modern_meta();
@@ -30,8 +24,6 @@ nlohmann::json client_info();
 
 nlohmann::json make_request(int64_t id, std::string_view method, nlohmann::json params);
 nlohmann::json make_notification(std::string_view method, nlohmann::json params);
-nlohmann::json make_response(const nlohmann::json& id, nlohmann::json result);
-nlohmann::json make_error_response(const nlohmann::json& id, int code, const std::string& message);
 
 /// @brief 把任意名字清理成 [A-Za-z0-9_-]，其余字符换成 '_'。
 std::string sanitize(std::string_view s);

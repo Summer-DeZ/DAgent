@@ -63,7 +63,8 @@
       "kind": "openai-chat",
       "base_url": "http://127.0.0.1:10009/v1",
       "model": "Qwen3.8-Flash-Next",
-      "context_window": 262144
+      "context_window": 262144,
+      "max_tokens": 8192
     }
   }
 }
@@ -88,6 +89,25 @@
 `sandbox` 是独立版本化对象，当前只接受 version 1；`extra_readable` / `extra_writable` 是宿主维护的持久范围，
 相对路径按 workspace cwd 解析。它们只扩大兼容后端的显式范围，不改变 profile 能力结论，也不会覆盖控制数据、
 敏感读取或 `.git` 保护。
+
+运行策略的数值由 `home/config.json` 显式提供，缺少必填项时报配置错误，不从程序默认值补齐。
+
+| 配置位置 | 用途 | 随附值 |
+|---|---|---|
+| `run.max_model_calls` | 每轮模型调用上限，0 不限 | 24 |
+| `run.max_tool_calls` | 每轮工具调用上限，0 不限 | 35 |
+| `run.max_model_retries` | 模型请求重试次数 | 2 |
+| `run.max_parallel_tasks` | 子 Agent 并发数，必须为正整数 | 4 |
+| `run.max_parallel_tools` | 只读工具并发数，必须为正整数 | 8 |
+| `tools.bash_collect_bytes` | 中断时命令输出收集上限 | 4194304 |
+| `session.history_scan_limit` | 每页历史最多扫描的记录数 | 100 |
+
+上下文预算、工具结果与文件大小限制、HTTP/进程超时、日志大小及进度间隔也显式读取对应配置段。
+`process.kill_grace_ms`、`process.drain_after_exit_ms`、`process.env_deny` 与 `log.also_stderr` 已列入配置文件。
+HTTP 和进程配置同样传入 MCP；模型请求使用配置的总超时与空闲超时，不再强制覆盖。
+子 Agent 在 `home/agents/*.md` 的 frontmatter 中设置 `max_model_calls`、`max_tool_calls`，省略或为 0 时继承全局配置。
+模型输出预算统一设置在 `models.json` 每个模型的 `max_tokens`，必须大于 0；禁止通过 `extra_body` 再提供输出预算。
+Chat 编码为 `max_completion_tokens`，Anthropic 编码为 `max_tokens`，Ollama 编码为 `options.num_predict`。
 
 ## 3. 工作目录与项目根
 
@@ -135,18 +155,20 @@ resume_id, continue_last, log_level}`。后端的 `app::assemble_backend` 依次
 
 ## 6. run 输出
 
-run 模式的前端把协议事件经 `LegacyOutputCodec` 还原成原有公开输出，stdout 格式与退出码保持不变：
+run 模式的前端由 `RunOutput` 累积主会话结果，并按所选格式输出：
 
 | `--output` | stdout | stderr |
 | --- | --- | --- |
 | `text` | 结束时打印最后一步正文，不流式写入 | 工具进度、Notice、重试及等待模型的心跳 |
 | `json` | 结束时一个结果对象 | 同 text |
-| `jsonl` | 第一行 session 元信息，随后实时事件，一行一个 JSON | 启动错误及 warn / error Notice；info 留在 jsonl |
+| `jsonl` | 协议事件信封，一行一个 JSON | 启动错误及 warn / error Notice；info 留在 jsonl |
 
-json 结果字段为 `session_id, status, error, result, steps, tool_calls, usage, duration_ms`。jsonl 的首行为
-`{"type":"session","id":"…","resumed":false}`，后续事件与原实时 JSON 同形，子 Agent 事件恢复原 `sub_event` 包装
-（session / agent / parent_call / event）；协议新增的会话、操作与交互通知不进入公开输出。恢复时不输出历史。
-text / json 的结果缓冲在新步和流重试时重置，使重试的半截输出不会混入最终结果。子 Agent 的 `turn_ended` 不结束本次 run。
+json 结果字段为 `session_id, status, error, result, steps, tool_calls, usage, duration_ms`。
+jsonl 每行直接序列化 `protocol::Event`：`seq, session_id, session_generation, kind, data, run_id,
+parent_session_id, parent_invocation_id, model_call_id, agent`。子事件身份保留在同一信封中；
+会话和操作通知也原样输出，恢复时不输出历史。
+各格式共用主会话结果累积，在新步和流重试时重置正文缓冲，并从主会话 `turn_ended` 取得状态与用量。
+子 Agent 事件不修改主会话结果，也不结束本次 run；JSONL 同样按最终状态返回退出码。
 
 stdout 被关闭时 jsonl 请求取消本轮并返回 1，text / json 最终写出失败不改变运行状态。run 模式没有交互审批器：
 需要批准的调用返回「no interactive approver」工具错误，ask / exit_plan 返回原非交互文本。

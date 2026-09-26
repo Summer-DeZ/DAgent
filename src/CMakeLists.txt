@@ -32,7 +32,7 @@ target_include_directories(dagent_tui PUBLIC ${CMAKE_SOURCE_DIR}/src/public)
 target_compile_features(dagent_tui PUBLIC cxx_std_23)
 target_compile_options(dagent_tui PRIVATE -Wall -Wextra)
 
-# 应用层：在冻结的 TUI 框架之上构建的界面（只持 Client、协议 DTO 与页面状态）。
+# 应用层：在 TUI 框架之上构建的界面（只持 Client、协议 DTO 与页面状态）。
 add_library(dagent_ui STATIC
     private/ui/strings.cpp
     private/ui/display.cpp
@@ -158,7 +158,7 @@ target_link_libraries(tools
     PUBLIC dagent_agent dagent_base dagent_exec dagent_workspace dagent_mcp
 )
 
-# 前端入口层：命令行解析、安装根、前端启动与旧输出适配。其他模块都不依赖它。
+# 前端入口层：命令行解析、安装根、前端启动与输出适配。其他模块都不依赖它。
 add_library(dagent_app_cli STATIC
     private/app/cli.cpp
     private/app/interrupts.cpp

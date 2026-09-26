@@ -18,13 +18,13 @@ namespace dagent::net {
 
 using Headers = std::vector<std::pair<std::string, std::string>>;
 
-/// @brief 客户端选项，对应 config/dagent.json 的 "http" 段。时长为 0 表示不限。
+/// @brief 客户端选项，对应 config.json 的 "http" 段。时长为 0 表示不限。
 struct HttpOptions {
-    std::chrono::seconds timeout{300};         ///< 整个请求的总时长上限
-    std::chrono::seconds connect_timeout{30};  ///< 建连（含 TLS 握手）上限；为 0 时取 libcurl 默认 300 秒
+    std::chrono::seconds timeout{0};         ///< 整个请求的总时长上限
+    std::chrono::seconds connect_timeout{0};  ///< 建连（含 TLS 握手）上限；为 0 时取 libcurl 默认 300 秒
     std::chrono::seconds idle_timeout{0};      ///< 连续多久收不到任何字节即判超时，适合长流
-    std::size_t max_body_bytes = 2 << 20;      ///< send() 响应体上限，超出抛 too_large
-    std::size_t max_error_body_bytes = 4096;   ///< stream() 非 2xx 时保留的错误体上限（超出截断）
+    std::size_t max_body_bytes = 0;      ///< send() 响应体上限，超出抛 too_large
+    std::size_t max_error_body_bytes = 0;   ///< stream() 非 2xx 时保留的错误体上限（超出截断）
     bool verify_peer = true;
     bool verify_host = true;
 };
@@ -68,7 +68,7 @@ private:
 /// 不可跨线程并发使用；取消请从其他线程对 stop_token 所属的 stop_source 调 request_stop()。
 class HttpClient {
 public:
-    explicit HttpClient(HttpOptions opt = {});
+    explicit HttpClient(HttpOptions opt);
     ~HttpClient();
 
     HttpClient(const HttpClient&) = delete;

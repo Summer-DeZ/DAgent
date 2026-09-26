@@ -134,7 +134,7 @@ public:
     SessionController(const SessionController&) = delete;
     SessionController& operator=(const SessionController&) = delete;
 
-    /// @brief 同步创建/恢复初始会话（L01/L20）；失败抛异常，由启动装配处理。
+    /// @brief 同步创建/恢复初始会话；失败抛异常，由启动装配处理。
     StartResult start(const StartOptions&);
     /// @brief 关闭：停止新输入、清队列、取消当前 Run、唤醒交互、join 执行线程。
     void shutdown();

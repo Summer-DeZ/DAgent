@@ -2,7 +2,7 @@
 /// @brief ActionCatalog：模型侧动作的稳定顺序描述与准备入口。
 ///
 /// 普通工具来自 ToolSession；控制动作由核心解析。顺序固定为内置普通工具、控制动作、
-/// 动态 MCP 工具（architecture-refactor §5.2）。
+/// 动态 MCP 工具。
 #pragma once
 
 #include <expected>

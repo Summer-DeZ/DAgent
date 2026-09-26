@@ -1,8 +1,7 @@
 /// @file grant.hpp
 /// @brief 执行授权与沙箱支持能力的中立值。
 ///
-/// 字段与既有 tools::Grant / exec::Support 一一对应；沙箱 profile 在 tools/exec
-/// 适配处映射回现有 backend/mode，不更改选型规则（architecture-refactor §4.2）。
+/// 沙箱 profile 在 tools/exec 适配处映射为执行层的 backend/mode。
 #pragma once
 
 #include <filesystem>
@@ -11,10 +10,10 @@
 
 namespace dagent::agent {
 
-/// bash 沙箱的三档边界；与既有 exec::Mode 对应。
+/// bash 沙箱的三档边界；与 exec::Mode 对应。
 enum class SandboxProfile { read_only, workspace_write, full_access };
 
-/// 授权来源；与既有 Grant::Source 对应。
+/// 授权来源。
 enum class GrantSource { mode, once, session, unrestricted };
 
 /// @brief 一次执行的决定，授权后传回工具执行。
@@ -34,7 +33,7 @@ struct ExecutionGrant {
     std::vector<std::string> network_targets;
 };
 
-/// @brief 沙箱支持能力：启动时探测一次的中立事实；选型规则仍由策略按这些布尔值执行。
+/// @brief 沙箱支持能力：启动时探测一次的中立事实；选型规则由策略按这些布尔值执行。
 struct SandboxSupport {
     std::string backend = "none";
     bool read_only_ready = false;   ///< 已知只读命令要求的边界

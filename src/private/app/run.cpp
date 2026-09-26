@@ -50,7 +50,7 @@ void request_cancel(const std::shared_ptr<CancelTarget>& target) {
 }
 
 /// @brief 等模型的 Ticker：interval 到点或 jthread 被要求停止就醒，退出时不拖住进程。
-std::jthread start_ticker(LegacyOutputCodec& codec, std::chrono::milliseconds interval) {
+std::jthread start_ticker(RunOutput& codec, std::chrono::milliseconds interval) {
     return std::jthread([&codec, interval](std::stop_token stop) {
         std::mutex mutex;
         std::condition_variable_any cv;
@@ -65,7 +65,7 @@ std::jthread start_ticker(LegacyOutputCodec& codec, std::chrono::milliseconds in
     });
 }
 
-int exit_code(const LegacyOutputCodec::Summary& summary) {
+int exit_code(const RunOutput::Summary& summary) {
     if (summary.output_failed) return 1;
     if (summary.status == "done") return 0;
     if (summary.status == "interrupted") return 130;
@@ -76,7 +76,7 @@ int exit_code(const LegacyOutputCodec::Summary& summary) {
 
 int run_backend(const BackendLaunch& launch, std::string prompt, OutputFormat output,
                 Interrupts& interrupts) {
-    LegacyOutputCodec codec(output, std::cout, std::cerr);
+    RunOutput codec(output, std::cout, std::cerr);
 
     std::mutex mutex;
     std::condition_variable cv;
@@ -115,7 +115,7 @@ int run_backend(const BackendLaunch& launch, std::string prompt, OutputFormat ou
         std::cerr << "startup failed: the backend did not create a session\n";
         return 1;
     }
-    if (!codec.session_header(session_id, initialized.value("resumed", false))) return 1;
+    codec.set_session(session_id);
 
     auto target = std::make_shared<CancelTarget>();
     target->client = &session.client();

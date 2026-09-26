@@ -1346,7 +1346,7 @@ int run_interactive(client::Client& client, FrontendBridge& bridge, const Intera
         try {
             history = load_history(client, options.initial.session_id);
         } catch (const std::exception&) {
-            // 历史读取失败不阻止进入界面；与旧前端一致地留空。
+            // 历史读取失败不阻止进入界面，历史区域保持空白。
         }
     }
 

@@ -40,15 +40,16 @@ using Grant = agent::ExecutionGrant;
 using Result = agent::ToolResult;
 using PreparedTool = agent::PreparedTool; ///< 准备完成的普通工具（核心契约）
 
-/// @brief 工具选项，对应 config/dagent.json 的 "tools" 段。
+/// @brief 工具选项，对应 config.json 的 "tools" 段。
 struct Options {
-    std::size_t max_result_bytes = 32 << 10;         ///< 每次调用交给模型的文本上限（约 8k token）
-    int read_default_lines = 2000;
-    std::size_t read_max_line_bytes = 2000;          ///< read 输出里单行的上限，超出截断
-    std::size_t grep_max_matches = 200;
-    std::size_t glob_max_files = 200;
-    std::chrono::milliseconds bash_max_timeout{600000}; ///< 模型能要求的最长超时
-    std::chrono::milliseconds mcp_call_timeout{120000}; ///< 单次 MCP 工具调用的上限
+    std::size_t max_result_bytes = 0; ///< 每次调用交给模型的文本上限
+    std::size_t bash_collect_bytes = 0; ///< 中断时保留的命令输出上限
+    int read_default_lines = 0;
+    std::size_t read_max_line_bytes = 0;          ///< read 输出里单行的上限，超出截断
+    std::size_t grep_max_matches = 0;
+    std::size_t glob_max_files = 0;
+    std::chrono::milliseconds bash_max_timeout{0}; ///< 模型能要求的最长超时
+    std::chrono::milliseconds mcp_call_timeout{0}; ///< 单次 MCP 工具调用的上限
 };
 
 /// @brief 会话级状态：核心每个会话建一个，所有调用共用。线程安全。

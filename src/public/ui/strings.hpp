@@ -171,7 +171,7 @@ struct Strings {
 
 const Strings& text() noexcept;
 
-// 文案表使用显式参数索引，支持未来语言的词序调整。
+// 文案表使用显式参数索引，支持不同语言的词序调整。
 template<class... Args>
 std::string format_text(std::string_view pattern, Args&&... args) {
     return std::vformat(pattern, std::make_format_args(args...));

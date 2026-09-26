@@ -62,7 +62,7 @@ agent::ToolResult result = (*prepared)->execute(grant, on_output, stop);
 | `Grant` = `agent::ExecutionGrant` | 核心的决定：沙箱 profile、backend、来源、读写/保护范围、通信开关与私有临时空间 |
 | `Result` = `agent::ToolResult` | `model_text` 给模型、`is_error`、`interrupted`、`display`（View）、`signals`（如 `McpDisconnected`） |
 | `Context` | 会话级状态，每个会话一个，所有调用共用，线程安全；持有工作区根、各模块的 Options 和 FileTracker |
-| `Registry` | 名字 → 工具；`specs()` 按注册顺序返回，`retain(names)` 收窄（子 Agent 工具集），`remove_prefix` 刷新 MCP |
+| `Registry` | 名字 → 工具；`specs()` 按注册顺序返回，`retain(names)` 收窄（子 Agent 工具集），`remove_prefix` 移除失效的 MCP 工具 |
 | `ToolSession` | 核心 `agent::ToolSession` 端口的实现：Registry + Context |
 
 完整的 shell 分析树（`exec::Analysis`）、MCP Client 与 workspace 解析结果留在具体 PreparedTool 内部；核心只看到上面的中立摘要。
@@ -74,7 +74,7 @@ dangerous / known_readonly 仍由 exec 的原分析函数计算，核心不重�
 - **所有给模型的文本都是合法 UTF-8**：nlohmann 在 `dump()` 遇到非法 UTF-8 会抛 `type_error.316`，整条消息
   就发不出去。rg 输出、bash 输出、MCP 文本都经过 `base::to_valid_utf8`。
 - **Spec 的顺序稳定**：DeepSeek 等网关按前缀缓存 prompt，工具列表顺序一变缓存就失效。`Registry::add` 遇到
-  同名工具时原位替换；`remove_prefix("mcp__<server>__")` 用于刷新某个 MCP server 的工具。
+  同名工具时原位替换；`remove_prefix("mcp__<server>__")` 用于移除断开或失败的 MCP server 工具。
 - 工具说明直接写在各 `.cpp` 的原始字符串里，和 Schema 放在一起。
 
 ---
@@ -206,7 +206,7 @@ dangerous / known_readonly 仍由 exec 的原分析函数计算，核心不重�
   整体按 `max_result_bytes` 截断。`is_error` 沿用 `isError`。
 - `McpError::cancelled` 返回 `interrupted`；其他 `McpError` 都转成 `is_error` 的结果并记 warn，
   `disconnected` 时置 `McpView::disconnected` 并附执行信号 `McpDisconnected{server}`，核心据此交给 Hub 标记断开。
-- 工具项持有 Client 的 `shared_ptr`：Hub 刷新某个 server 时先 `remove_prefix("mcp__<server>__")` 再 `add_mcp`，
+- 工具项持有 Client 的 `shared_ptr`：Hub 重连某个 server 前移除旧工具，连接成功后通过 `add_mcp` 合并新工具，
   仍被子会话快照引用的旧连接不会悬空。
 - display：`McpView`，内容块原样保留，界面自己决定怎样显示。
 
@@ -215,6 +215,9 @@ dangerous / known_readonly 仍由 exec 的原分析函数计算，核心不重�
 `tools::McpHub`（`tools/mcp_hub.hpp`）管理配置的全部 MCP server：构造时为每个 server 启动后台连接；`apply_pending`
 在主会话的模型步骤之间处理重连、等待与工具合并；`snapshot` 把已就绪工具合并进子会话的注册表；`mark_disconnected`
 返回追加给模型的 T12 / T13；`states` 线程安全地给出状态快照。生命周期规则见 [agent §11](agent.md#11-mcp-生命周期)。
+
+连接只接受 MCP `2026-07-28`，通过 `server/discover` 确认版本，不回退旧协议。Hub 在连接或重连后合并工具，
+不接收服务端工具变更通知，也不周期刷新工具列表。
 
 ---
 
@@ -237,9 +240,9 @@ dangerous / known_readonly 仍由 exec 的原分析函数计算，核心不重�
   `monostate` 表示 prepare 阶段就失败的调用（参数错误等），界面只显示文本。前端不链接核心，
   由 `ui/projection` 把协议里的 View JSON 解码成自己的投影类型，未知 kind 按文本回退。
 - `agent::to_json(view)` 输出 `{"kind": ..., 各字段}`，写进 tool 记录的 `view`，协议也原样传给前端；`kind` 为 `read`、`change`、
-  `bash`、`grep`、`glob`、`mcp`、`todo`、`ask`、`task`，`monostate` 为 `null`。`view_from_json` 在 `kind` 不认识或条目损坏时返回
-  `monostate`。
-- 反序列化时缺字段取默认值：以后给结构体加字段，旧会话照样读得出来。
+  `bash`、`grep`、`glob`、`mcp`、`todo`、`ask`、`task`，`monostate` 使用显式 `kind: null`。
+- `view_from_json` 严格读取当前完整字段；未知 `kind`、缺失字段、非法字段类型或损坏条目均报错。
+  不为旧会话补默认字段，也不把损坏展示数据转换成 `monostate`。
 
 ---
 

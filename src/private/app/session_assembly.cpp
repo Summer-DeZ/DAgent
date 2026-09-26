@@ -19,7 +19,7 @@ namespace {
 
 std::shared_ptr<spdlog::logger> log_assembly() { return base::logger("assembly"); }
 
-/// @brief 一个会话相对装配初值的差异：权限、模型与子 Agent 收窄（B18/B19）。
+/// @brief 一个会话相对装配初值的差异：权限、模型与子 Agent 收窄。
 struct SessionSpec {
     runtime::SessionState state;
     ModelSelection model;
@@ -137,7 +137,7 @@ private:
     std::unique_ptr<agent::Session> session_;
 };
 
-/// @brief 子定义派生：模型外的字段全部按 B18/B19 收窄。
+/// @brief 根据子 Agent 定义派生配置，并应用委派权限与工具限制。
 SessionSpec derive_child(const SessionAssembly::Options& base, const agent::SubagentDef& def,
                          const agent::DerivedPermission& permission,
                          const agent::DelegationContext& context) {

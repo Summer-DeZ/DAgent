@@ -1,8 +1,8 @@
 /// @file tool_data.hpp
 /// @brief 工具结果与展示的业务事实：给模型的文本、错误/中断语义、结构化展示数据、执行信号。
 ///
-/// 这些结构是核心与历史记录共用的中立值；旧 View JSON 的编码（to_json / view_from_json）
-/// 也定义在这里，保持与既有会话记录的字段和 kind 名称一致。
+/// 这些结构是核心与历史记录共用的中立值；View JSON 的编码（to_json / view_from_json）
+/// 也定义在这里，保持与会话记录的字段和 kind 名称一致。
 #pragma once
 
 #include <cstdint>
@@ -122,7 +122,7 @@ struct TaskView {
 using View = std::variant<std::monostate, ReadView, FileChangeView, BashView, GrepView, GlobView,
                           McpView, TodoView, AskView, TaskView>;
 
-/// @brief 执行信号：不是展示事实，而是执行层需要核心处理的事件（记录路线 L08）。
+/// @brief 执行信号：不是展示事实，而是执行层需要核心处理的事件。
 struct McpDisconnected {
     std::string server; ///< 断连的 MCP server 名
 };
@@ -133,14 +133,14 @@ struct ToolResult {
     std::string model_text;   ///< 给模型：合法 UTF-8，已按 max_result_bytes 截断
     bool is_error = false;    ///< 模型视角的失败：参数错、找不到、匹配失败、退出码非 0……
     bool interrupted = false; ///< stop_token 触发；model_text 里是已有的部分输出
-    View display;             ///< 给界面与会话的展示事实，编码保持旧 view JSON 形状
+    View display;             ///< 给界面与会话的展示事实，按 view JSON 格式编码
     std::vector<ExecutionSignal> signals; ///< 执行信号（如 MCP 断连），不由 display 分支判定
 };
 
 /// 序列化成 {"kind": "read", ...}，给会话记录与实时事件；kind 区分各分支。
 nlohmann::json to_json(const View&);
 
-/// 回放时用；kind 缺失或不认识时返回 monostate。
+/// 回放时按当前格式读取；kind 为 null 返回 monostate，缺字段或未知 kind 抛 RecordError。
 View view_from_json(const nlohmann::json&);
 
 } // namespace dagent::agent

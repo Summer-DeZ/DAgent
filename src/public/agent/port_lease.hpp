@@ -1,8 +1,8 @@
 /// @file port_lease.hpp
 /// @brief SessionLease 端口：一个可写会话的跨进程所有权句柄。
 ///
-/// storage 的 flock 实现是唯一具体实现；runtime 只持有寿命与身份，不依赖 storage
-/// （architecture-refactor §4.3/§9）。同一进程内同会话复用同一个句柄。
+/// storage 的 flock 实现是唯一具体实现；runtime 只持有寿命与身份，不依赖 storage。
+/// 同一进程内同会话复用同一个句柄。
 #pragma once
 
 #include <string>

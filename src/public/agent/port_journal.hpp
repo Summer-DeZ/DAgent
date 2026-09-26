@@ -2,7 +2,7 @@
 /// @brief JournalWriter 端口与记录错误：持久历史的唯一写入口。
 ///
 /// 实现在 storage 模块；失败抛 RecordError，类别固定 io/not_found/corrupt，
-/// 只在核心提交/恢复边界转换（record-routes §4.3）。
+/// 只在核心提交/恢复边界转换。
 #pragma once
 
 #include <cstdint>
@@ -17,7 +17,7 @@
 
 namespace dagent::agent {
 
-/// @brief 记录读写的错误分类；与既有会话存储错误类别一致。
+/// @brief 记录读写的错误分类；与会话存储错误类别一致。
 class RecordError : public std::runtime_error {
 public:
     enum class Kind { io, not_found, corrupt };
@@ -29,7 +29,7 @@ private:
     Kind kind_;
 };
 
-/// @brief 一条已编码记录：既有 events.type + payload 形状（记录路线 §2）。
+/// @brief 一条已编码记录：events.type + payload 形状。
 struct Record {
     std::string_view type;
     nlohmann::json payload;

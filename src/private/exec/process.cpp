@@ -211,7 +211,7 @@ private:
         if (cmd_.stdin_data) {
             detail::make_pipe(in);
         } else {
-            // 坑 4：不给 stdin 数据时接 /dev/null，绝不继承调用方的 stdin。
+            // 不给 stdin 数据时接 /dev/null，绝不继承调用方的 stdin。
             null_in.read = ::open("/dev/null", O_RDONLY | O_CLOEXEC);
             if (null_in.read == -1)
                 throw ExecError{ExecError::Kind::spawn_failed,
@@ -316,7 +316,7 @@ private:
         });
     }
 
-    // 坑 2：先对进程组发 SIGTERM，kill_grace 后 SIGKILL，只杀主进程会留下孤儿子孙。
+    // 先对进程组发 SIGTERM，kill_grace 后 SIGKILL，只杀主进程会留下孤儿子孙。
     void begin_terminate() {
         if (terminating_) return;
         terminating_ = true;
@@ -331,7 +331,7 @@ private:
         }
     }
 
-    // 主进程退出后仍然没有 EOF：后台进程还持有管道写端（坑 3）。
+    // 主进程退出后仍然没有 EOF：后台进程还持有管道写端。
     // 杀掉整组、停止读取，不再等待。
     void on_drain_expired() {
         if (spawned_) ::kill(-pid_, SIGKILL);

@@ -129,7 +129,7 @@ workspace::Resolved resolve_arg(const Context& ctx, std::string_view raw) {
 
 std::string display_path(const Context& ctx, const workspace::Resolved& resolved) {
     std::error_code ec;
-    const auto relative = fs::relative(resolved.path, ctx.root(), ec); // fs alias needed
+    const auto relative = fs::relative(resolved.path, ctx.root(), ec);
     if (!ec) {
         std::string text = relative.string();
         if (!text.empty() && text != ".") return text;

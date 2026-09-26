@@ -1,7 +1,7 @@
 /// @file work_plan.hpp
-/// @brief 当前会话的整份计划：todo 每次完整替换，不做增量合并（B21）。
+/// @brief 当前会话的整份计划：todo 每次完整替换，不做增量合并。
 ///
-/// 持久来源仍是 todo 工具结果的 view（记录路线 L13）；这里是会话内存状态，显示投影由前端生成。
+/// 持久来源是 todo 工具结果的 view；这里是会话内存状态，显示投影由前端生成。
 #pragma once
 
 #include <utility>

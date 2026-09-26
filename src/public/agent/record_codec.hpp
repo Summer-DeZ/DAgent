@@ -1,7 +1,7 @@
 /// @file record_codec.hpp
-/// @brief RecordCodec：记录 payload 的唯一编解码入口（记录路线 §2、§5）。
+/// @brief RecordCodec：记录 payload 的唯一编解码入口。
 ///
-/// 编码输出与既有 events.type/payload 逐字段一致；解码产生类型化事实并集中旧字段兼容与
+/// 编码输出采用 events.type/payload 格式；解码产生类型化事实并校验当前字段形状，集中处理
 /// 错误分类（corrupt）。恢复与历史投影共用本解码器，不各自手写字段解析。
 #pragma once
 
@@ -39,7 +39,7 @@ Record turn_end_crashed();
 
 struct SystemRecord {
     std::string text;
-    std::string model; ///< 旧记录可能缺失
+    std::string model;
 };
 
 struct UserRecord {

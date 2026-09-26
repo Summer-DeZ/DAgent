@@ -2,7 +2,7 @@
 /// @brief 权限决策所需的中立意图摘要：资源访问、命令影响与交互内容。
 ///
 /// 核心（Policy、调度器）只看这些值；exec 分析树、MCP Client、workspace 实现对象
-/// 留在 tools 模块的 PreparedTool 实现内部（architecture-refactor §4.2）。
+/// 留在 tools 模块的 PreparedTool 实现内部。
 #pragma once
 
 #include <filesystem>
@@ -12,7 +12,7 @@
 
 namespace dagent::agent {
 
-/// 工具调用的类别；与既有权限/调度语义一一对应。ask/exit_plan/todo/task 是控制动作，不在此枚举。
+/// 权限与调度使用的工具调用类别。ask/exit_plan/todo/task 是控制动作，不在此枚举。
 enum class ToolKind { read, write, exec, external };
 
 /// 资源访问方向。
@@ -39,7 +39,7 @@ struct CommandImpact {
 };
 
 /// @brief 一条 bash 命令的中立摘要。dangerous / known_readonly 由原 exec 分析函数在
-/// tools 侧计算成布尔值，不能在核心重写简化白名单（architecture-refactor §4.2）。
+/// tools 侧计算成布尔值，不能在核心重写简化白名单。
 struct CommandIntent {
     std::string command;      ///< 原始命令
     int analysis_version = 0; ///< 分析器版本

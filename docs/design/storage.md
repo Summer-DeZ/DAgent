@@ -18,7 +18,7 @@
 | `list_children(options, parent_id)` | 按父会话升序列出子会话，供界面切换 |
 | `new_id()` | 生成 UUIDv7 |
 
-`Options::database` 由装配固定为 `<root>/dagent.db`。`redact_fields` 默认包含 `api_key`、`authorization`、
+`Options::database` 由装配固定为 `<root>/dagent.db`。`history_scan_limit` 由 `session.history_scan_limit` 提供每页扫描上限，必须为正整数。`redact_fields` 默认包含 `api_key`、`authorization`、
 `token`；payload 在序列化和写库前递归脱敏，只改交给持久化的副本。存储层自身的失败为 `StorageError{io, not_found,
 corrupt, invalid_state}`，经端口返回核心前转换成 `RecordError`，交给 app 查询适配时转换成 `runtime::QueryError`。
 
@@ -32,7 +32,6 @@ CREATE TABLE sessions (
   title TEXT,
   created INTEGER NOT NULL,
   updated INTEGER NOT NULL,
-  open_turn INTEGER NOT NULL DEFAULT 0,
   parent_id TEXT,
   agent_name TEXT
 );
@@ -52,33 +51,23 @@ CREATE TABLE events (
 首条 user 事件写入时计算第一行标题（最多 60 个 UTF-8 字符），列表不读取事件正文。`parent_id` / `agent_name`
 标识子 Agent 会话，顶层会话为空。
 
-### schema 迁移
+### schema 版本
 
-`PRAGMA user_version` 是该库的迁移版本号。`initialize()` 在 `CREATE TABLE IF NOT EXISTS` 之后按版本补齐旧库：
-
-```cpp
-if (user_version() < 1) {
-    if (!has_column("sessions", "parent_id"))  exec("ALTER TABLE sessions ADD COLUMN parent_id TEXT;");
-    if (!has_column("sessions", "agent_name")) exec("ALTER TABLE sessions ADD COLUMN agent_name TEXT;");
-    exec("CREATE INDEX IF NOT EXISTS sessions_by_parent ON sessions(parent_id, created);");
-    exec("PRAGMA user_version=1;");
-}
-```
-
-后续所有 schema 变更都递增版本、在同一个块里就地迁移。不能用「捕获 duplicate column 异常」代替：构造函数里的
-`initialize()` 抛异常会把数据库当作损坏文件改名备份，那样用户会丢掉全部历史会话。
+数据库只支持 `PRAGMA user_version=1`。新库在一个事务中创建完整表与索引并写入版本；
+已有库的读写入口都先检查版本。非空的版本 0 数据库及其他版本直接报 unsupported，不迁移、不改名、不重建。
+已有版本 1 数据库中的额外列不影响读取；代码不再读取或维护 `open_turn` 列，新库也不创建它。
 
 ## 3. 写入与崩溃
 
 写连接设置 `foreign_keys=ON`、`journal_mode=WAL`、`synchronous=NORMAL` 和 5 秒 busy timeout。
 
-- 新建会话插入 sessions 行：规范化 cwd，title 为 NULL，open_turn=0，保存初始 model 与父关系。
-- user 事件、标题（首行前 60 个 UTF-8 字符）、`updated`、`open_turn=1` 在一个 `BEGIN IMMEDIATE` 事务内提交。
-- turn_end 事件与 `open_turn=0` 在同一事务内提交；其他事件按 seq 追加并更新 `updated`，不另开总事务。
+- 新建会话插入 sessions 行：规范化 cwd，title 为 NULL，保存初始 model 与父关系。
+- user 事件、标题（首行前 60 个 UTF-8 字符）与 `updated` 在一个 `BEGIN IMMEDIATE` 事务内提交。
+- turn_end 事件与 `updated` 在同一事务内提交；其他事件按 seq 追加并更新 `updated`，不另开总事务。
 - `sync` 调用 `sqlite3_db_cacheflush`；WAL/NORMAL 不承诺每条事件单独 fsync。
 
-进程被杀时已提交的事件是完整前缀，`open_turn` 保持 1。核心的显式恢复据此为未闭合调用补「结果未知」并追加 crashed turn_end。
-写入失败时核心提交器进入 broken 状态、只提示一次，当前回合继续（B23）；存储层不重试旧 seq，下次续写重新读取 MAX(seq)。
+进程被杀时已提交的事件是完整前缀。核心按 user / turn_end 记录判断回合是否闭合，为未闭合调用补「结果未知」并追加 crashed turn_end。
+写入失败时核心提交器进入 broken 状态、只提示一次，当前回合继续；存储层不重试旧 seq，下次续写重新读取 MAX(seq)。
 
 父子会话各持独立的连接，并发写由 WAL + busy timeout 覆盖。整轮模型/工具执行不包在数据库事务里。
 
@@ -103,14 +92,13 @@ FROM sessions WHERE cwd=? AND (parent_id IS NULL OR parent_id='') ORDER BY updat
 
 子会话不进 `/resume` 与 `sessions` 列表，需要时用 `list_children` 取。
 
-`HistoryRead` 打开时捕获会话元信息与 MAX(seq) 高水位，之后按 seq 推进：每页最多扫描 100 条记录，无显示项的一页也推进，
+`HistoryRead` 打开时捕获会话元信息与 MAX(seq) 高水位，之后按 seq 推进：每页扫描量不超过 `history_scan_limit`，无显示项的一页也推进，
 游标对前端不透明。页之间只保存核心 `HistoryCursor` 的验证元数据（ordinal、开放调用、裁剪目标），不构造 Conversation。
 读完、关闭或失败后再读返回 `invalid_state`。记录损坏（payload JSON 或核心字段非法）报 corrupt。
 
 ## 6. 库损坏
 
-写入口打开数据库时若 pragma/schema 失败，原文件重命名为 `dagent.db.corrupt-<unix-ms>`，日志记录原错误，再创建空库；
-不会删除损坏文件，也不尝试迁移旧 JSONL 会话。只读查询遇到同样的问题只报错，不改名。
+读写入口遇到 pragma/schema 错误或不支持的版本时直接报错；不改名、不删除、不重建已有数据库，也不迁移其他会话格式。
 
 SQLite 可能在运行期间生成同目录的 `dagent.db-wal` 与 `dagent.db-shm`。备份活动安装根时使用 SQLite 一致备份，
 不要只复制主数据库文件。

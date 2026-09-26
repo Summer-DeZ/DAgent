@@ -68,6 +68,11 @@ public:
         const auto it = value_->find(key);
         return it == value_->end() ? Node{} : Node(*it, pointer_ + "/" + std::string(key));
     }
+    Node required(std::string_view key) const {
+        const Node value = child(key);
+        if (!value.has()) fail(ConfigError::Kind::invalid, pointer_ + "/" + std::string(key) + " is required");
+        return value;
+    }
     const json& raw() const { return *value_; }
     const std::string& pointer() const { return pointer_; }
     std::string str(std::string fallback = {}) const {
@@ -118,6 +123,21 @@ private:
     const json* value_ = nullptr;
     std::string pointer_;
 };
+
+int count_option(const Node& node, std::string_view key, int minimum = 0) {
+    const Node value = node.required(key);
+    const int count = value.integer();
+    if (count < minimum)
+        fail(ConfigError::Kind::invalid, value.pointer() + " must be at least " + std::to_string(minimum));
+    return count;
+}
+
+std::size_t size_option(const Node& node, std::string_view key) {
+    const Node value = node.required(key);
+    const std::size_t size = value.usize();
+    if (size == 0) fail(ConfigError::Kind::invalid, value.pointer() + " must be greater than zero");
+    return size;
+}
 
 json parse_file(const fs::path& file) {
     std::ifstream in(file, std::ios::binary);
@@ -229,11 +249,11 @@ const std::set<std::string>& known_keys() {
         "search.rg_path", "process.default_timeout_ms", "process.max_output_bytes",
         "process.kill_grace_ms", "process.drain_after_exit_ms", "process.env_deny",
         "run.max_model_calls", "run.max_tool_calls", "run.max_model_retries",
-        "run.max_parallel_tasks",
-        "session.redact_fields", "log.max_file_bytes",
+        "run.max_parallel_tasks", "run.max_parallel_tools",
+        "session.redact_fields", "session.history_scan_limit", "log.max_file_bytes",
         "log.max_files", "log.level", "log.also_stderr", "progress.interval_ms",
         "permissions", "ui.theme_file", "sandbox.version", "mcp.connect_timeout_ms", "mcp.probe_timeout_ms",
-        "tools.max_result_bytes", "tools.read_default_lines", "tools.read_max_line_bytes",
+        "tools.max_result_bytes", "tools.bash_collect_bytes", "tools.read_default_lines", "tools.read_max_line_bytes",
         "tools.grep_max_matches", "tools.glob_max_files", "tools.bash_max_timeout_ms",
         "tools.mcp_call_timeout_ms"};
     return keys;
@@ -301,7 +321,7 @@ std::map<std::string, llm::ProviderConfig> map_models(const Node& node) {
         if (model.model.empty()) fail(ConfigError::Kind::invalid, key + "/model must not be empty");
         model.base_url = value.child("base_url").str(std::string(info->default_base_url));
         if (model.base_url.empty()) fail(ConfigError::Kind::invalid, key + "/base_url is required");
-        model.max_tokens = value.child("max_tokens").usize();
+        model.max_tokens = size_option(value, "max_tokens");
         model.temperature = value.child("temperature").real(-1.0);
         model.context_window = value.child("context_window").usize();
         model.send_reasoning_content = value.child("send_reasoning_content").flag();
@@ -309,6 +329,13 @@ std::map<std::string, llm::ProviderConfig> map_models(const Node& node) {
         if (const Node extra = value.child("extra_body"); extra.has()) {
             if (!extra.raw().is_object()) fail(ConfigError::Kind::type, key + "/extra_body must be an object");
             model.extra_body = extra.raw();
+            const bool output_limit = model.extra_body.contains("max_tokens") ||
+                                      model.extra_body.contains("max_completion_tokens") ||
+                                      (model.kind == "ollama" && model.extra_body.contains("options") &&
+                                       model.extra_body.at("options").is_object() &&
+                                       model.extra_body.at("options").contains("num_predict"));
+            if (output_limit)
+                fail(ConfigError::Kind::invalid, key + "/extra_body: set the output budget with max_tokens");
         }
         const std::string api_key = value.child("api_key").str();
         model.api_key = api_key.starts_with("env:") ? env_value(std::string_view(api_key).substr(4), key + "/api_key")
@@ -324,23 +351,23 @@ std::map<std::string, llm::ProviderConfig> map_models(const Node& node) {
 
 net::HttpOptions map_http(const Node& n) {
     net::HttpOptions o;
-    if (auto v = n.child("timeout_seconds"); v.has()) o.timeout = std::chrono::seconds(v.integer());
-    if (auto v = n.child("connect_timeout_seconds"); v.has()) o.connect_timeout = std::chrono::seconds(v.integer());
-    if (auto v = n.child("idle_timeout_seconds"); v.has()) o.idle_timeout = std::chrono::seconds(v.integer());
-    if (auto v = n.child("max_body_bytes"); v.has()) o.max_body_bytes = v.usize(o.max_body_bytes);
-    if (auto v = n.child("max_error_body_bytes"); v.has()) o.max_error_body_bytes = v.usize(o.max_error_body_bytes);
-    if (auto v = n.child("verify_peer"); v.has()) o.verify_peer = v.flag(o.verify_peer);
-    if (auto v = n.child("verify_host"); v.has()) o.verify_host = v.flag(o.verify_host);
+    o.timeout = std::chrono::seconds(count_option(n, "timeout_seconds"));
+    o.connect_timeout = std::chrono::seconds(count_option(n, "connect_timeout_seconds"));
+    o.idle_timeout = std::chrono::seconds(count_option(n, "idle_timeout_seconds"));
+    o.max_body_bytes = size_option(n, "max_body_bytes");
+    o.max_error_body_bytes = size_option(n, "max_error_body_bytes");
+    o.verify_peer = n.required("verify_peer").flag();
+    o.verify_host = n.required("verify_host").flag();
     return o;
 }
 
 exec::Options map_process(const Node& n) {
     exec::Options o;
-    if (auto v = n.child("default_timeout_ms"); v.has()) o.default_timeout = std::chrono::milliseconds(v.integer());
-    if (auto v = n.child("max_output_bytes"); v.has()) o.max_output_bytes = v.usize(o.max_output_bytes);
-    if (auto v = n.child("kill_grace_ms"); v.has()) o.kill_grace = std::chrono::milliseconds(v.integer());
-    if (auto v = n.child("drain_after_exit_ms"); v.has()) o.drain_after_exit = std::chrono::milliseconds(v.integer());
-    if (auto v = n.child("env_deny"); v.has()) o.env_deny = v.strings();
+    o.default_timeout = std::chrono::milliseconds(count_option(n, "default_timeout_ms"));
+    o.max_output_bytes = size_option(n, "max_output_bytes");
+    o.kill_grace = std::chrono::milliseconds(count_option(n, "kill_grace_ms"));
+    o.drain_after_exit = std::chrono::milliseconds(count_option(n, "drain_after_exit_ms"));
+    o.env_deny = n.required("env_deny").strings();
     return o;
 }
 
@@ -362,67 +389,72 @@ exec::SandboxOptions map_sandbox(const Node& n, const fs::path& workspace) {
 
 workspace::FileOptions map_files(const Node& n) {
     workspace::FileOptions o;
-    if (auto v = n.child("max_read_bytes"); v.has()) o.max_read_bytes = v.usize(o.max_read_bytes);
-    if (auto v = n.child("max_write_bytes"); v.has()) o.max_write_bytes = v.usize(o.max_write_bytes);
+    o.max_read_bytes = size_option(n, "max_read_bytes");
+    o.max_write_bytes = size_option(n, "max_write_bytes");
     return o;
 }
 
 workspace::SearchOptions map_search(const Node& n) {
     workspace::SearchOptions o;
-    if (auto v = n.child("rg_path"); v.has()) o.rg_path = v.str();
+    o.rg_path = n.required("rg_path").str();
     return o;
 }
 
 storage::Options map_session(const Node& n) {
     storage::Options o;
-    if (auto v = n.child("redact_fields"); v.has()) o.redact_fields = v.strings();
+    o.redact_fields = n.required("redact_fields").strings();
+    o.history_scan_limit = size_option(n, "history_scan_limit");
     return o;
 }
 
 base::LogOptions map_log(const Node& n) {
     base::LogOptions o;
-    if (auto v = n.child("max_file_bytes"); v.has()) o.max_file_bytes = v.usize(o.max_file_bytes);
-    if (auto v = n.child("max_files"); v.has()) o.max_files = v.usize(o.max_files);
-    if (auto v = n.child("level"); v.has()) o.level = v.str(o.level);
-    if (auto v = n.child("also_stderr"); v.has()) o.also_stderr = v.flag(o.also_stderr);
+    o.max_file_bytes = size_option(n, "max_file_bytes");
+    o.max_files = size_option(n, "max_files");
+    o.level = n.required("level").str();
+    o.also_stderr = n.required("also_stderr").flag();
     return o;
 }
 
 agent::ContextOptions map_context(const Node& n) {
     agent::ContextOptions o;
-    if (auto v = n.child("window_tokens"); v.has()) o.window_tokens = v.usize(o.window_tokens);
-    if (auto v = n.child("safety_margin_tokens"); v.has()) o.safety_margin_tokens = v.usize(o.safety_margin_tokens);
-    if (auto v = n.child("compaction_trigger_percent"); v.has()) o.compaction_trigger_percent = v.integer(o.compaction_trigger_percent);
-    if (auto v = n.child("compaction_target_percent"); v.has()) o.compaction_target_percent = v.integer(o.compaction_target_percent);
+    o.window_tokens = size_option(n, "window_tokens");
+    o.safety_margin_tokens = n.required("safety_margin_tokens").usize();
+    o.compaction_trigger_percent = count_option(n, "compaction_trigger_percent", 1);
+    o.compaction_target_percent = count_option(n, "compaction_target_percent", 1);
+    if (o.safety_margin_tokens >= o.window_tokens || o.compaction_trigger_percent > 100 ||
+        o.compaction_target_percent > o.compaction_trigger_percent)
+        fail(ConfigError::Kind::invalid, n.pointer() + ": invalid context budget or compaction percentages");
     return o;
 }
 
 agent::Limits map_run(const Node& n) {
     agent::Limits o;
-    if (auto v = n.child("max_model_calls"); v.has()) o.max_model_calls = v.integer(o.max_model_calls);
-    if (auto v = n.child("max_tool_calls"); v.has()) o.max_tool_calls = v.integer(o.max_tool_calls);
-    if (auto v = n.child("max_model_retries"); v.has()) o.max_model_retries = v.integer(o.max_model_retries);
-    if (auto v = n.child("max_parallel_tasks"); v.has())
-        o.max_parallel_tasks = std::clamp(v.integer(o.max_parallel_tasks), 3, 16);
+    o.max_model_calls = count_option(n, "max_model_calls");
+    o.max_tool_calls = count_option(n, "max_tool_calls");
+    o.max_model_retries = count_option(n, "max_model_retries");
+    o.max_parallel_tasks = count_option(n, "max_parallel_tasks", 1);
+    o.max_parallel_tools = count_option(n, "max_parallel_tools", 1);
     return o;
 }
 
 mcp::Options map_mcp(const Node& n) {
     mcp::Options o;
-    if (auto v = n.child("connect_timeout_ms"); v.has()) o.connect_timeout = std::chrono::milliseconds(v.integer());
-    if (auto v = n.child("probe_timeout_ms"); v.has()) o.probe_timeout = std::chrono::milliseconds(v.integer());
+    o.connect_timeout = std::chrono::milliseconds(count_option(n, "connect_timeout_ms", 1));
+    o.probe_timeout = std::chrono::milliseconds(count_option(n, "probe_timeout_ms", 1));
     return o;
 }
 
 tools::Options map_tools(const Node& n) {
     tools::Options o;
-    if (auto v = n.child("max_result_bytes"); v.has()) o.max_result_bytes = v.usize(o.max_result_bytes);
-    if (auto v = n.child("read_default_lines"); v.has()) o.read_default_lines = v.integer(o.read_default_lines);
-    if (auto v = n.child("read_max_line_bytes"); v.has()) o.read_max_line_bytes = v.usize(o.read_max_line_bytes);
-    if (auto v = n.child("grep_max_matches"); v.has()) o.grep_max_matches = v.usize(o.grep_max_matches);
-    if (auto v = n.child("glob_max_files"); v.has()) o.glob_max_files = v.usize(o.glob_max_files);
-    if (auto v = n.child("bash_max_timeout_ms"); v.has()) o.bash_max_timeout = std::chrono::milliseconds(v.integer());
-    if (auto v = n.child("mcp_call_timeout_ms"); v.has()) o.mcp_call_timeout = std::chrono::milliseconds(v.integer());
+    o.max_result_bytes = size_option(n, "max_result_bytes");
+    o.bash_collect_bytes = size_option(n, "bash_collect_bytes");
+    o.read_default_lines = count_option(n, "read_default_lines", 1);
+    o.read_max_line_bytes = size_option(n, "read_max_line_bytes");
+    o.grep_max_matches = size_option(n, "grep_max_matches");
+    o.glob_max_files = size_option(n, "glob_max_files");
+    o.bash_max_timeout = std::chrono::milliseconds(count_option(n, "bash_max_timeout_ms", 1));
+    o.mcp_call_timeout = std::chrono::milliseconds(count_option(n, "mcp_call_timeout_ms", 1));
     return o;
 }
 
@@ -663,21 +695,23 @@ Config load_config(const LoadOptions& options) {
     config.ui.theme_file = node.child("ui").child("theme_file").str();
     config.system_prompt_file = node.child("prompts").child("system").str((root / "system.md").string());
     config.compact_prompt_file = node.child("prompts").child("compact").str((root / "compact.md").string());
-    config.http = map_http(node.child("http"));
-    config.process = map_process(node.child("process"));
+    config.http = map_http(node.required("http"));
+    config.process = map_process(node.required("process"));
     config.sandbox = map_sandbox(node.child("sandbox"), cwd);
-    config.files = map_files(node.child("files"));
-    config.search = map_search(node.child("search"));
-    config.session = map_session(node.child("session"));
+    config.files = map_files(node.required("files"));
+    config.search = map_search(node.required("search"));
+    config.session = map_session(node.required("session"));
     config.session.database = root / "dagent.db";
-    config.log = map_log(node.child("log"));
+    config.log = map_log(node.required("log"));
     config.log.file = root / "logs" / std::format("dagent-{}.log", ::getpid());
-    config.mcp = map_mcp(node.child("mcp"));
-    config.tools = map_tools(node.child("tools"));
-    config.agent.context = map_context(node.child("context"));
-    config.agent.run = map_run(node.child("run"));
-    if (auto v = node.child("progress").child("interval_ms"); v.has())
-        config.agent.progress.interval = std::chrono::milliseconds(v.integer());
+    config.mcp = map_mcp(node.required("mcp"));
+    config.mcp.http = config.http;
+    config.mcp.process = config.process;
+    config.tools = map_tools(node.required("tools"));
+    config.agent.context = map_context(node.required("context"));
+    config.agent.run = map_run(node.required("run"));
+    config.agent.progress.interval = std::chrono::milliseconds(
+        count_option(node.required("progress"), "interval_ms"));
     if (auto v = node.child("permissions"); v.has()) {
         const std::string mode = v.str();
         if (mode == "ask") config.permissions = agent::PermissionMode::ask;

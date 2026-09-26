@@ -2,7 +2,7 @@
 /// @brief ToolSession 端口：普通工具的稳定描述与准备入口。
 ///
 /// tools 实现（Registry + 会话 Context）；核心 ActionCatalog/Session 只经此访问，
-/// 看不到工作区、FileTracker 或 MCP Client 实现（architecture-refactor §4.3）。
+/// 看不到工作区、FileTracker 或 MCP Client 实现。
 #pragma once
 
 #include <expected>

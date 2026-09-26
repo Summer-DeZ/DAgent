@@ -1,8 +1,8 @@
 /// @file control.hpp
 /// @brief 控制动作：ask/exit_plan/todo/task 的类型化请求、固定 Schema 与执行器。
 ///
-/// 这些动作不再伪装成普通工具：名称、Schema、说明与原工具文件一致，解析结果进入 ControlRequest，
-/// 由 ControlActionExecutor 按各自规则处理（architecture-refactor §5.2，状态机 §6）。
+/// 控制动作的解析结果进入 ControlRequest，
+/// 由 ControlActionExecutor 按各自规则处理。
 #pragma once
 
 #include <expected>
@@ -90,7 +90,7 @@ public:
     void begin_turn(Services services);
 
     /// @brief 执行一个控制请求（ask/exit_plan 可能阻塞等待问答）；返回工具结果。
-    /// todo 只返回计划替换事实，WorkPlan 由 SessionCommitter 在原序提交点更新（L13）。
+    /// todo 只返回计划替换事实，WorkPlan 由 SessionCommitter 在原序提交点更新。
     ToolResult execute(const ControlRequest&, std::stop_token);
 
 private:

@@ -1,9 +1,9 @@
 /// @file mcp_hub.hpp
 /// @brief MCP 连接资源：连接/重连、工具目录合并与显式 lease（共享所有权）。
 ///
-/// 主会话在模型步骤边界等待/刷新/重连；子会话只在创建时快照。snapshot 注册的工具项
-/// 持有 Client 的 shared_ptr，目录刷新或重连不会让仍被子快照引用的连接悬空
-/// （architecture-refactor §7）：子注册表本身就是这次连接快照的 lease。
+/// 主会话在模型步骤边界等待/重连；子会话只在创建时快照。snapshot 注册的工具项
+/// 持有 Client 的 shared_ptr，目录刷新或重连不会让仍被子快照引用的连接悬空；
+/// 子注册表本身就是这次连接快照的 lease。
 #pragma once
 
 #include <condition_variable>
@@ -34,7 +34,7 @@ public:
     /// @brief 只读快照：把当前已就绪 server 的工具合并进传入的注册表；这些工具项持有连接所有权。
     /// 不等待、不重连、不产生通知；供子 Agent 构造时调用一次（线程安全）。
     void snapshot(Registry& registry);
-    /// 调度器看到 McpView::disconnected 时调用；返回追加给模型的说明（T12 / T13），不是新断开时返回空。
+    /// 调度器看到 McpView::disconnected 时调用；返回追加给模型的说明，不是新断开时返回空。
     std::string mark_disconnected(std::string_view server, std::string reason);
     /// 只交付尚未报告的警告，不刷新或等待连接，适合在一轮结束时调用。
     void report_pending(const agent::Sink&);
@@ -45,7 +45,7 @@ private:
     void connect(Server&);
     void restart_disconnected(Registry&);
     void wait_connecting(const agent::Sink&, std::stop_token);
-    bool merge(Registry&, std::stop_token);
+    void merge(Registry&, std::stop_token);
 
     mcp::Options options_;
     mutable std::mutex mutex_;

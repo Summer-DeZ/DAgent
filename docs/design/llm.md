@@ -36,7 +36,7 @@ Codec 有流状态，不能跨请求复用。
 Message 保留 role、content、reasoning_content、tool_calls、tool_call_id，并补充
 `reasoning_signature`（无校验串时为空）。内容块、厂商字段名和 URL 不进入消息模型。
 `ReasoningDelta` 的可选 signature 增量由 Model 累积到 Message，界面只显示文本。
-会话 assistant 记录保存 signature；旧记录缺该字段时按空读取。
+会话 assistant 记录必须包含 `reasoning_signature`；没有校验串时写空字符串，缺失字段直接报错。
 
 StreamEvent 仍是 TextDelta、ReasoningDelta、ToolCallBegin/Delta/End、Usage 和 Finish。
 Finish 只分 stop、length、tool_calls、content_filter、error；未知原因保存原文到 raw，并归 error。
@@ -64,9 +64,10 @@ POST `{base_url}/chat/completions`，非空 key 使用 Bearer 头。
 历史思考默认不回传，显式 `send_reasoning_content=true` 时才发送。
 流同时识别 reasoning_content / reasoning，前者出现时优先；工具分片按 index 聚合，
 在 `[DONE]` 时依次交付 ToolCallEnd、Usage、Finish。
+结束原因识别 stop、length、tool_calls、content_filter；缺失或未知值归 error。
 
-`extra_body` 顶层只补缺失字段，不覆盖已生成字段。配置 `extra_body.max_completion_tokens`
-时不再生成 max_tokens；app 同时用该值作为输出预留预算，避免实际输出上限与预算脱节。
+配置 `max_tokens` 是唯一输出预算来源，Chat 请求映射为 `max_completion_tokens`。
+`extra_body` 通过公共 `merge_extra` 只补缺失字段，不覆盖已生成字段；不得另行配置输出预算字段。
 
 ### ollama
 

@@ -26,7 +26,7 @@ struct SandboxOptions {
 
 struct Policy {
     Mode mode = Mode::workspace_write;
-    /// 可读/可写路径均为明确授权。readable 为空时保留旧的全盘可读兼容配置。
+    /// 可读/可写路径均为明确授权。readable 为空时允许全盘读取。
     std::vector<std::filesystem::path> readable;
     /// /dev/null 始终可写，否则大量程序会莫名失败。
     std::vector<std::filesystem::path> writable;

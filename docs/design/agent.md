@@ -27,7 +27,7 @@ flowchart TD
 | `ToolSession` / `PreparedTool` | 普通工具描述、按名准备、带授权执行 | `tools::ToolSession` |
 | `JournalWriter` / `SessionStore` / `SessionLease` | 追加已编码记录与同步；读取记录与高水位；写所有权 | storage |
 | `DelegationChannel` | 一次 task 委派 → 原 task 结果 | `runtime::SubagentExecutor` |
-| `SessionResources` | 主会话步骤边界的 MCP 等待/刷新/重连、断连说明、轮末通知 | app 装配（包装 `tools::McpHub`） |
+| `SessionResources` | 主会话步骤边界的 MCP 等待/合并/重连、断连说明、轮末通知 | app 装配（包装 `tools::McpHub`） |
 
 主要对象：
 
@@ -54,8 +54,8 @@ stop_token；不含配置、终端、数据库路径或查找任意对象的方�
 | 线程 | 工作与边界 |
 | --- | --- |
 | 会话执行线程 | runtime 控制器的串行线程；执行模型请求、串行工具、记录写入和工具目录更新 |
-| 工具工作线程 | 每个只读并行组临时创建，同时最多 8 个；只执行 `PreparedTool::execute` |
-| task 组线程 | 每个并发子 Agent 一个，同时最多 `run.max_parallel_tasks`（默认 4，夹取到 3–16）；在组内创建并运行子会话 |
+| 工具工作线程 | 每个只读并行组临时创建，同时最多 `run.max_parallel_tools` 个；只执行 `PreparedTool::execute` |
+| task 组线程 | 每个并发子 Agent 一个，同时最多 `run.max_parallel_tasks`（配置文件为 4，必须为正整数）；在组内创建并运行子会话 |
 | MCP 连接/读取线程 | 由 tools 的 McpHub 与 mcp Client 持有；只交接状态与标志，不直接改工具目录或调用 Sink |
 
 Session 只在所属执行线程推进对话、工具目录、模型和记录。跨线程只开放 Policy 的模式切换/撤销、Run 的取消和发布出去的快照。
@@ -191,7 +191,7 @@ TurnEnded
 消息中的全部工具调用。网络重试、上下文超长后的唯一一次重发仍属于同一步。
 
 1. 用户输入修复为合法 UTF-8，追加进历史并记录，发 `TurnStarted`。
-2. 检查模型调用上限；在下一步主请求前处理 MCP 连接、刷新与重连，再按整请求预算自动压缩。
+2. 检查模型调用上限；在下一步主请求前处理 MCP 连接、工具合并与重连，再按整请求预算自动压缩。
    MCP 的重连、等待与断线通知只由主会话做（`SessionConfig::is_main`，经 `SessionResources::begin_step`）；子会话只用创建时的工具快照。
 3. 发 `StepStarted`、请求前的 `ContextUpdate`，调用 `ModelSession::complete`，向 Sink 转发可见流事件。
 4. 返回后更新 usage 和估算校正，保存有效 assistant 回复；没有工具调用则结束。
@@ -202,7 +202,7 @@ TurnEnded
 执行工具看 `tool_calls` 是否为空，不依赖服务端的 finish reason。正文因 `length` 或 `content_filter` 截断时提示后
 结束，不自动续写；空正文且没有调用（包括仅有思考）不加入历史，警告后结束。
 
-默认 `run.max_model_calls=24`、`run.max_tool_calls=35`、`run.max_model_retries=2`。未知工具、参数失败和策略拒绝
+运行限制必填于 `home/config.json` 的 `run` 段，程序没有业务默认值。随附配置为 `max_model_calls=24`、`max_tool_calls=35`、`max_model_retries=2`、`max_parallel_tasks=4`、`max_parallel_tools=8`。调用上限为 0 表示不限；并发数必须大于 0。未知工具、参数失败和策略拒绝
 也消耗已处理调用预算；因中断、同批拒绝或超额而跳过的调用不消耗执行预算。超额调用回填 T8，若还有模型步数，
 给予一次总结机会；普通总结或继续要工具都以 `limit` 收尾，后者不再执行工具。摘要不计入主循环的 steps 或总 usage。
 
@@ -224,7 +224,7 @@ tool_calls → ActionCatalog.prepare → 普通 PreparedTool ── PreparedInte
 ```
 
 可并行的是 Policy 直接放行的 read 意图，以及获准使用 `read_only` 沙箱的 bash；写入、编辑、MCP 和经过询问的调用
-串行执行。连续的可并行调用构成一组，分块创建线程，每块最多 8 个。
+串行执行。连续的可并行调用构成一组，分块创建线程，每块最多 `run.max_parallel_tools` 个。
 
 遇到不能加入挂起组的调用，先运行并等待整个组，再重新 prepare 当前调用并重新判权、重算并行类别。这样「read a → edit a」
 能使用刚读到的 FileTracker，「edit a → edit a」的后一个 diff 基于前一个修改。权限对话框也只在前面的挂起组结束后出现。
@@ -301,7 +301,7 @@ plan 在此基础上给出规划专用反馈，使模型改为调研和提案而
 network 或未知目标扩大为全网访问。
 
 `Grant` 保存实际 profile、backend、来源（mode/once/session/unrestricted）、读写/保护范围、敏感名称规则、通信开关、
-私有临时空间和 analysis version。执行前先持久化版本化 `tool_started`，再发实时事件；`BashView` 在完成记录中保留同一执行事实。旧 view 缺字段时显示 unknown/空值，
+私有临时空间和 analysis version。执行前先持久化版本化 `tool_started`，再发实时事件；`BashView` 在完成记录中保留同一执行事实。View 按当前完整字段读取，
 历史授权记录不会在恢复后重新生效。MCP 仍使用独立授权流程。
 
 ### 子 Agent 的权限派生
@@ -471,15 +471,16 @@ UI 显示完成不代表记录可靠保存；broken 状态进入会话快照。
 
 ### 恢复与崩溃闭合
 
-`SessionRecovery::restore` 按 seq 读取全部记录，经 RecordCodec 解码后重建 Conversation、WorkPlan（旧 TodoView）、
+`SessionRecovery::restore` 按 seq 读取全部记录，经 RecordCodec 解码后重建 Conversation、WorkPlan（工具结果中的 TodoView）、
 最近模型、next_ordinal 与仍打开的调用，并在副本上校验协议不变式。它不执行工具、不调模型、不写库、不发事件。
 `prune` 和 `compaction` 只改变有效上下文，切点必须安全、裁剪对象必须是 tool。
 
 显式恢复（L20）在取得写租约后打开续写器：为没结果的调用补 T9 结果、追加 `turn_end{crashed}` 并同步，再按当前环境
 重新渲染 system 并写新的 system 记录。T9 表示结果未知，不能声称没有执行，因为修改可能已完成但结果尚未落盘；
 不根据任何记录自动重做工具。第二次恢复不会重复补齐。FileTracker 和会话授权从空开始，MCP 使用当前连接。
-不认识的类型、非法必需字段或不一致历史直接报 corrupt，不猜测修复；旧记录缺 system.model、reasoning_signature、usage、
-protect_sensitive_names 或旧 permission 形状时按兼容规则读取。
+不认识的类型、缺失或非法的必需字段、不一致历史直接报 corrupt，不猜测修复，不读取旧版本字段形状。
+`system.model`、`reasoning_signature`、`protect_sensitive_names` 和当前 View 的字段必填；`permission` 只接受 schema 2 及其完整字段。
+`assistant.usage` 仍为可选，因为当前模型响应可以没有 usage；View 仅以显式 `kind: null` 表示没有结构化展示。
 
 ### 历史投影
 
@@ -496,6 +497,8 @@ prune 目标和 compaction 切点。投影不构造 Session、模型或 MCP，�
 启动后台连接并立即返回；**启动不等 MCP，主会话每一步模型请求前经 `SessionResources::begin_step` 等待连接结果**，
 防止模型因首轮没有工具而直接放弃任务。
 
+Client 仅接受 MCP `2026-07-28`，通过 `server/discover` 确认版本；旧协议连接直接失败，不回退握手。
+
 ```mermaid
 stateDiagram-v2
     [*] --> connecting
@@ -510,11 +513,11 @@ stateDiagram-v2
 
 每个 server 在当前 Hub 生命周期里只自动重连一次；初始连接失败不重试。断开调用的结果追加 T12 / T13，告诉模型下一步
 会重连还是已不可用；同批重复断开只标记一次。步骤边界依次：移除 failed / disconnected 服务的旧工具并为首次断开启动重连；
-有 connecting / reconnecting 时发等待 Notice 并可取消地等待，至多 `mcp.connect_timeout_ms`；合并已完成连接，
-`on_tools_changed` 只置原子标志、在此处刷新。连接线程只交接 Client、状态和警告；警告在边界或轮末交付一次。
+有 connecting / reconnecting 时发等待 Notice 并可取消地等待，至多 `mcp.connect_timeout_ms`；然后合并已完成连接。
+Hub 不接收服务端工具变更通知，也不周期刷新工具列表。连接线程只交接 Client、状态和警告；警告在边界或轮末交付一次。
 
 子会话创建时调用一次 `snapshot`：把当前 ready 服务的工具合并进子注册表，不等待、不重连、不发通知。工具项持有 Client 的
-`shared_ptr`，因此目录刷新或重连不会让仍被子快照引用的连接悬空。子 Agent 的默认工具集不含 `mcp__*`，定义里显式写出才有。
+`shared_ptr`，因此重连替换目录不会让仍被子快照引用的连接悬空。子 Agent 的默认工具集不含 `mcp__*`，定义里显式写出才有。
 
 ## 12. 子 Agent 与 task
 

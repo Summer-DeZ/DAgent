@@ -28,11 +28,6 @@ namespace {
 using json = nlohmann::json;
 using std::chrono::milliseconds;
 
-constexpr int kMethodNotFound = -32601;
-constexpr int kHeaderMismatch = -32020;
-constexpr int kMissingClientCapability = -32021;
-constexpr int kUnsupportedProtocolVersion = -32022;
-constexpr milliseconds kNotificationTimeout{15000};
 constexpr std::size_t kMaxQualifiedToolName = 64; ///< OpenAI 等协议对函数名的长度限制
 
 std::shared_ptr<spdlog::logger> log_mcp() { return base::logger("mcp"); }
@@ -124,8 +119,6 @@ struct Response {
     bool rpc_error = false;
     json error;
     long status = 0;          ///< 仅 HTTP
-    std::string used_session; ///< 请求发出时带的 Mcp-Session-Id（HTTP 经典）
-    std::string session_id;   ///< 响应头里的 Mcp-Session-Id（只有 initialize 会带）
 };
 
 } // namespace
@@ -138,40 +131,26 @@ struct Client::Impl {
     void start();
     void shutdown();
     void handshake(std::stop_token stop);
-    bool stdio_probe_modern(std::stop_token stop);
-    bool http_probe_modern(std::stop_token stop);
-    bool select_modern(const json& supported);
-    Response initialize_exchange(std::stop_token stop);
-    void legacy_handshake(std::stop_token stop);
-    void recover_session(const std::string& used_session, std::stop_token stop);
     void fetch_tools(milliseconds timeout, std::stop_token stop);
 
     // ---- 消息收发
-    Response exchange(std::string_view method, json params, milliseconds timeout, std::stop_token stop,
-                      const std::string* session_override = nullptr);
+    Response exchange(std::string_view method, json params, milliseconds timeout, std::stop_token stop);
     Response stdio_exchange(std::int64_t id, std::string_view method, json params, milliseconds timeout,
                             std::stop_token stop);
     Response http_exchange(std::int64_t id, std::string_view method, json params, milliseconds timeout,
-                           std::stop_token stop, const std::string& session);
+                           std::stop_token stop);
     json request(std::string_view method, json params, milliseconds timeout, std::stop_token stop);
-    void notify(std::string_view method, json params);
     void send_cancel(std::int64_t id, std::string_view reason);
     void stdio_send(std::string_view line);
-    void http_post(const json& message, milliseconds timeout, const std::string* session_override = nullptr);
-    void handle_incoming(const json& message);
     void on_line(std::string_view line);
     void on_exit(std::optional<int> code, std::optional<int> signal);
 
     json build_params(json params) const;
-    net::Headers build_headers(std::string_view method, const json& params, bool modern,
-                               const std::string& session) const;
+    net::Headers build_headers(std::string_view method, const json& params) const;
 
     ServerConfig config_;
     Options opt_;
     bool http_ = false;
-
-    bool modern_ = true; ///< 握手前按现代协议探测；探测失败后置 false
-    std::string version_;
 
     std::unique_ptr<exec::Child> child_;
 
@@ -183,23 +162,10 @@ struct Client::Impl {
     bool disconnected_ = false;
     std::string disconnect_reason_;
 
-    mutable std::mutex session_mu_; ///< 经典 HTTP 的 Mcp-Session-Id，HTTP 调用并发时保护
-    std::string session_id_;
-    std::mutex reinit_mu_; ///< 会话失效后只让一个线程重新 initialize，其他线程用换好的会话重试
-
     mutable std::mutex data_mu_;
     std::vector<Tool> tools_;
     std::map<std::string, std::vector<detail::HeaderParam>> header_params_;
-    std::function<void()> tools_changed_;
 
-    std::string session_id() const {
-        std::lock_guard lock(session_mu_);
-        return session_id_;
-    }
-    void set_session_id(std::string id) {
-        std::lock_guard lock(session_mu_);
-        session_id_ = std::move(id);
-    }
 };
 
 void Client::Impl::start() {
@@ -279,7 +245,7 @@ void Client::Impl::on_line(std::string_view line) {
         cv_.notify_all();
         return;
     }
-    handle_incoming(message);
+    log_mcp()->debug("{}: 忽略主动消息 {}", config_.name, string_or(message, "method"));
 }
 
 void Client::Impl::on_exit(std::optional<int> code, std::optional<int> signal) {
@@ -301,98 +267,38 @@ void Client::Impl::on_exit(std::optional<int> code, std::optional<int> signal) {
     log_mcp()->warn("{}", disconnect_reason_);
 }
 
-// ---- 消息分发 ----
-
-void Client::Impl::handle_incoming(const json& message) {
-    const std::string method = string_or(message, "method");
-    if (method.empty()) {
-        log_mcp()->debug("{}: 忽略未知消息", config_.name);
-        return;
-    }
-    const auto id = message.find("id");
-    if (id != message.end()) { // server 主动发来的请求
-        if (http_ && modern_) {
-            log_mcp()->warn("{}: 现代协议下 server 不应发起请求，忽略 {}", config_.name, method);
-            return;
-        }
-        try {
-            if (method == "ping") {
-                const json reply = detail::make_response(*id, json::object());
-                if (http_) http_post(reply, kNotificationTimeout);
-                else stdio_send(reply.dump());
-            } else {
-                const json reply =
-                    detail::make_error_response(*id, kMethodNotFound, "Method not found: " + method);
-                if (http_) http_post(reply, kNotificationTimeout);
-                else stdio_send(reply.dump());
-            }
-        } catch (const std::exception& e) {
-            log_mcp()->warn("{}: 回复 server 请求 {} 失败：{}", config_.name, method, e.what());
-        }
-        return;
-    }
-    if (method == "notifications/tools/list_changed") {
-        std::function<void()> callback;
-        {
-            std::lock_guard lock(data_mu_);
-            callback = tools_changed_;
-        }
-        if (!callback) return;
-        try {
-            callback();
-        } catch (const std::exception& e) {
-            log_mcp()->error("{}: tools/list_changed 回调抛出异常：{}", config_.name, e.what());
-        }
-        return;
-    }
-    log_mcp()->debug("{}: 忽略通知 {}", config_.name, method);
-}
-
 // ---- 请求 ----
 
 json Client::Impl::build_params(json params) const {
-    if (!modern_) return params;
     if (!params.is_object()) params = json::object();
     params["_meta"] = detail::modern_meta();
     return params;
 }
 
-net::Headers Client::Impl::build_headers(std::string_view method, const json& params, bool modern,
-                                         const std::string& session) const {
+net::Headers Client::Impl::build_headers(std::string_view method, const json& params) const {
     net::Headers headers = config_.headers;
     set_header(headers, "Accept", "application/json, text/event-stream");
     set_header(headers, "Content-Type", "application/json");
-    if (modern) {
-        set_header(headers, "MCP-Protocol-Version", std::string(detail::kModernVersion));
-        if (!method.empty()) set_header(headers, "Mcp-Method", std::string(method));
-        if (method == "tools/call" && params.is_object()) {
-            const std::string name = string_or(params, "name");
-            set_header(headers, "Mcp-Name", detail::encode_header_value(name));
-            std::lock_guard lock(data_mu_);
-            const auto it = header_params_.find(name);
-            if (it != header_params_.end()) {
-                const json arguments = params.contains("arguments") ? params["arguments"] : json::object();
-                for (auto& [header, value] : detail::header_param_values(it->second, arguments))
-                    set_header(headers, header, std::move(value));
-            }
+    set_header(headers, "MCP-Protocol-Version", std::string(detail::kModernVersion));
+    set_header(headers, "Mcp-Method", std::string(method));
+    if (method == "tools/call" && params.is_object()) {
+        const std::string name = string_or(params, "name");
+        set_header(headers, "Mcp-Name", detail::encode_header_value(name));
+        std::lock_guard lock(data_mu_);
+        const auto it = header_params_.find(name);
+        if (it != header_params_.end()) {
+            const json arguments = params.contains("arguments") ? params["arguments"] : json::object();
+            for (auto& [header, value] : detail::header_param_values(it->second, arguments))
+                set_header(headers, header, std::move(value));
         }
-    } else {
-        if (!session.empty()) set_header(headers, "Mcp-Session-Id", session);
-        // 2025-06-18 起要求带着协商结果；更早的版本不认识这个头。
-        if (version_ >= "2025-06-18") set_header(headers, "MCP-Protocol-Version", version_);
     }
     return headers;
 }
 
 Response Client::Impl::exchange(std::string_view method, json params, milliseconds timeout,
-                                std::stop_token stop, const std::string* session_override) {
+                                std::stop_token stop) {
     const std::int64_t id = next_id_.fetch_add(1);
-    if (http_) {
-        const std::string session = session_override    ? *session_override
-                                    : modern_           ? std::string{}
-                                                        : session_id();
-        return http_exchange(id, method, std::move(params), timeout, stop, session);
-    }
+    if (http_) return http_exchange(id, method, std::move(params), timeout, stop);
     return stdio_exchange(id, method, std::move(params), timeout, stop);
 }
 
@@ -441,15 +347,14 @@ Response Client::Impl::stdio_exchange(std::int64_t id, std::string_view method, 
 }
 
 Response Client::Impl::http_exchange(std::int64_t id, std::string_view method, json params,
-                                     milliseconds timeout, std::stop_token stop,
-                                     const std::string& session) {
+                                     milliseconds timeout, std::stop_token stop) {
     const json message = detail::make_request(id, method, build_params(std::move(params)));
     net::HttpOptions options = opt_.http;
     options.timeout = std::chrono::seconds{0}; // 总时长交给下面自己的计时器
     // 每次调用独占一个 HttpClient：并发调用互不排队，取消和超时立刻生效（代价是连接不复用）。
     net::HttpClient client(options);
     net::HttpRequest req{.method = "POST", .url = config_.url, .headers = {}, .body = message.dump()};
-    req.headers = build_headers(method, message["params"], modern_, session);
+    req.headers = build_headers(method, message["params"]);
 
     std::stop_source cancel;
     std::stop_callback relay(stop, [&cancel] { cancel.request_stop(); });
@@ -467,15 +372,12 @@ Response Client::Impl::http_exchange(std::int64_t id, std::string_view method, j
     }
 
     Response out;
-    out.used_session = session;
     bool got = false;
     json response_message;
     net::SseParser sse;
     std::string body;
     bool sse_seen = false;   // SSE 流只需要逐事件解析，不再留整包
     bool body_overflow = false;
-    // initialize 的响应头里有 Mcp-Session-Id；提前掐掉 SSE 就拿不到响应头了，所以它要读完流。
-    const bool need_headers = method == "initialize";
 
     const auto take = [&](const json& msg) {
         const auto msg_id = msg.find("id");
@@ -483,10 +385,10 @@ Response Client::Impl::http_exchange(std::int64_t id, std::string_view method, j
             msg_id->get<std::int64_t>() == id) {
             response_message = msg;
             got = true;
-            if (!need_headers) cancel.request_stop(); // 拿到响应就不用等 server 关闭流了
+            cancel.request_stop(); // 拿到响应就不用等 server 关闭流了
             return;
         }
-        handle_incoming(msg);
+        log_mcp()->debug("{}: 忽略非本次请求的消息", config_.name);
     };
 
     try {
@@ -510,17 +412,12 @@ Response Client::Impl::http_exchange(std::int64_t id, std::string_view method, j
             },
             cancel.get_token());
         out.status = resp.status;
-        // 会话头只信 initialize 的响应；其他响应里的忽略，避免并发时新旧会话互相覆盖。
-        if (const auto sid = resp.header("mcp-session-id"); sid && !sid->empty())
-            out.session_id = std::string(*sid);
         if (resp.status < 200 || resp.status >= 300) {
             const json msg = json::parse(resp.body, nullptr, false);
             if (!msg.is_discarded() && msg.is_object()) {
                 if (msg.contains("error")) {
                     out.rpc_error = true;
                     out.error = msg["error"];
-                } else if (msg.contains("method")) {
-                    handle_incoming(msg);
                 }
             }
             return out;
@@ -545,7 +442,7 @@ Response Client::Impl::http_exchange(std::int64_t id, std::string_view method, j
         }
         return out;
     } catch (const net::HttpError& e) {
-        if (got && !need_headers) {
+        if (got) {
             if (response_message.contains("error")) {
                 out.rpc_error = true;
                 out.error = response_message["error"];
@@ -559,12 +456,6 @@ Response Client::Impl::http_exchange(std::int64_t id, std::string_view method, j
             send_cancel(id, "cancelled by caller");
             throw McpError{McpError::Kind::cancelled, std::format("{}: {} interrupted", config_.name, method)};
         }
-        // initialize 要读完流才拿得到响应头：响应到了但流没正常结束（server 不关 SSE 流而超时，或连接
-        // 中断），就拿不到 Mcp-Session-Id，不能当成功，否则之后每个请求都会因为缺会话失败。
-        if (got)
-            throw McpError{McpError::Kind::handshake,
-                           std::format("{}: {} response stream did not finish normally; Mcp-Session-Id unavailable ({})", config_.name,
-                                       method, e.what())};
         if (deadline_hit) {
             send_cancel(id, "timeout");
             throw McpError{McpError::Kind::timeout,
@@ -593,13 +484,7 @@ Response Client::Impl::http_exchange(std::int64_t id, std::string_view method, j
 }
 
 json Client::Impl::request(std::string_view method, json params, milliseconds timeout, std::stop_token stop) {
-    Response response = exchange(method, params, timeout, stop);
-    // 经典 HTTP 的会话过期：server 重启后会拒绝旧 session（404），重新 initialize 再试一次。
-    if (http_ && !modern_ && response.status == 404 && !response.used_session.empty()) {
-        log_mcp()->warn("{}: 会话已失效，重新 initialize 后重试 {}", config_.name, method);
-        recover_session(response.used_session, stop);
-        response = exchange(method, std::move(params), timeout, stop);
-    }
+    Response response = exchange(method, std::move(params), timeout, stop);
     // 鉴权和 server 侧错误按状态码分类，哪怕 body 里带着 JSON-RPC error。
     if (response.status == 401 || response.status == 403 || response.status >= 500)
         throw_http_status(config_.name, method, response.status, response.error);
@@ -613,202 +498,36 @@ json Client::Impl::request(std::string_view method, json params, milliseconds ti
     return std::move(response.result);
 }
 
-void Client::Impl::notify(std::string_view method, json params) {
-    const json message = detail::make_notification(method, params);
-    if (http_) {
-        http_post(message, kNotificationTimeout);
-        return;
-    }
-    stdio_send(message.dump());
-}
-
-void Client::Impl::http_post(const json& message, milliseconds timeout, const std::string* session_override) {
-    net::HttpOptions options = opt_.http;
-    if (options.timeout.count() == 0 || options.timeout > timeout)
-        options.timeout = std::chrono::duration_cast<std::chrono::seconds>(timeout);
-    if (options.connect_timeout.count() == 0 || options.connect_timeout > timeout)
-        options.connect_timeout = std::chrono::duration_cast<std::chrono::seconds>(timeout);
-    net::HttpClient client(options);
-    net::HttpRequest req{.method = "POST", .url = config_.url, .headers = {}, .body = message.dump()};
-    req.headers = build_headers("", json::object(), modern_, session_override ? *session_override : session_id());
-    net::HttpResponse resp;
-    try {
-        resp = client.send(req);
-    } catch (const net::HttpError& e) {
-        const auto kind = e.kind() == net::HttpError::Kind::timeout ? McpError::Kind::timeout
-                                                                    : McpError::Kind::disconnected;
-        throw McpError{kind, std::format("{}: POST notification failed: {}", config_.name, e.what())};
-    }
-    if (resp.status < 200 || resp.status >= 300)
-        throw_http_status(config_.name, "POST notification", resp.status);
-}
-
 void Client::Impl::send_cancel(std::int64_t id, std::string_view reason) {
-    if (http_ && modern_) return; // 现代 HTTP：断开响应流本身就是取消信号
+    if (http_) return; // HTTP：断开响应流本身就是取消信号
     try {
         const json message = detail::make_notification(
             "notifications/cancelled", {{"requestId", id}, {"reason", std::string(reason)}});
-        if (http_) http_post(message, milliseconds{5000});
-        else stdio_send(message.dump());
+        stdio_send(message.dump());
     } catch (const std::exception& e) {
         log_mcp()->warn("{}: 发送 notifications/cancelled 失败：{}", config_.name, e.what());
     }
 }
 
-// ---- 握手 ----
-
-bool Client::Impl::select_modern(const json& supported) {
-    const std::string version = detail::pick_modern_version(supported);
-    if (!version.empty()) {
-        version_ = version;
-        return true;
-    }
-    // discover 是现代方法，但 server 也可以只提供经典版本：按经典协议握手。
-    if (supported.is_array()) {
-        for (const auto& item : supported)
-            if (item.is_string() && detail::is_known_legacy_version(item.get<std::string>())) return false;
-    }
-    throw McpError{McpError::Kind::handshake,
-                   std::format("{}: none of the server protocol versions {} is supported by this client", config_.name,
-                               supported.dump())};
-}
-
-bool Client::Impl::stdio_probe_modern(std::stop_token stop) {
-    Response response;
-    try {
-        response = stdio_exchange(next_id_.fetch_add(1), "server/discover", json::object(), opt_.probe_timeout,
-                                  stop);
-    } catch (const McpError& e) {
-        if (e.kind() == McpError::Kind::timeout) {
-            log_mcp()->debug("{}: server/discover 无响应，按经典协议握手", config_.name);
-            return false;
-        }
-        throw;
-    }
-    if (response.ok) return select_modern(member_or(response.result, "supportedVersions", json::array()));
-    if (response.rpc_error && int_or(response.error, "code") == kUnsupportedProtocolVersion)
-        return select_modern(member_or(member_or(response.error, "data", json::object()), "supported", json::array()));
-    return false; // 其他错误（-32601 等）说明是经典 server
-}
-
-bool Client::Impl::http_probe_modern(std::stop_token stop) {
-    const Response response = exchange("server/discover", json::object(), opt_.connect_timeout, stop);
-    if (response.status == 401 || response.status == 403 || response.status >= 500)
-        throw_http_status(config_.name, "server/discover", response.status, response.error);
-    if (response.ok) return select_modern(member_or(response.result, "supportedVersions", json::array()));
-    if (response.rpc_error) {
-        const int code = int_or(response.error, "code");
-        const json supported = member_or(member_or(response.error, "data", json::object()), "supported",
-                                         json::array());
-        if (code == kUnsupportedProtocolVersion) return select_modern(supported);
-        if (code == kHeaderMismatch || code == kMissingClientCapability)
-            throw McpError{McpError::Kind::handshake,
-                           config_.name + ": " + rpc_text("server/discover", response.error)};
-        if (code == kMethodNotFound && response.status == 404) {
-            version_ = std::string(detail::kModernVersion); // 现代 server 但没实现 discover
-            return true;
-        }
-        return false;
-    }
-    // 经典 server 在初始化前对未知请求通常回 400/404/405；其他状态码按真实错误处理。
-    if (response.status == 400 || response.status == 404 || response.status == 405) return false;
-    if (response.status >= 400) throw_http_status(config_.name, "server/discover", response.status);
-    throw McpError{McpError::Kind::protocol,
-                   std::format("{}: unrecognized server/discover response (HTTP {})", config_.name, response.status)};
-}
-
-// 发送 initialize。新会话在 response.session_id 里，由调用方决定什么时候装上；不碰 version_ / modern_。
-Response Client::Impl::initialize_exchange(std::stop_token stop) {
-    const json params = {{"protocolVersion", std::string(detail::kPreferredLegacy)},
-                         {"capabilities", json::object()},
-                         {"clientInfo", detail::client_info()}};
-    const std::string no_session; // initialize 不能带旧会话，否则 server 会拿它当续期请求拒掉
-    return exchange("initialize", params, opt_.connect_timeout, stop, &no_session);
-}
-
-void Client::Impl::legacy_handshake(std::stop_token stop) {
-    Response response = initialize_exchange(stop);
-    if (response.status == 401 || response.status == 403 || response.status >= 500)
-        throw_http_status(config_.name, "initialize", response.status, response.error);
-    if (response.rpc_error) {
-        const json supported = member_or(member_or(response.error, "data", json::object()), "supported",
-                                         json::array());
-        const std::string modern = detail::pick_modern_version(supported);
-        // 冷启动慢的现代 server 会先让 server/discover 探测超时，但 initialize 会被它用
-        // UnsupportedProtocolVersionError 明确拒绝：这时改走现代协议，不再当它是经典 server。
-        if (int_or(response.error, "code") == kUnsupportedProtocolVersion && !modern.empty()) {
-            modern_ = true;
-            version_ = modern;
-            log_mcp()->info("{}: server 拒绝 initialize，改用现代协议 {}", config_.name, modern);
-            return;
-        }
-        throw McpError{McpError::Kind::rpc, config_.name + ": " + rpc_text("initialize", response.error)};
-    }
-    if (!response.ok) {
-        if (response.status >= 400) throw_http_status(config_.name, "initialize", response.status);
-        throw McpError{McpError::Kind::protocol,
-                       std::format("{}: initialize response contains neither result nor error", config_.name)};
-    }
-    const std::string version = string_or(response.result, "protocolVersion");
-    if (!detail::is_known_legacy_version(version))
-        throw McpError{McpError::Kind::handshake,
-                       std::format("{}: negotiated server protocol version is unsupported: '{}'", config_.name, version)};
-    version_ = version;
-    if (http_) set_session_id(response.session_id); // connect 期间只有这一个线程，先装上再发通知
-    try {
-        notify("notifications/initialized", json::object());
-    } catch (const McpError& e) {
-        throw McpError{McpError::Kind::handshake,
-                       std::format("{}: failed to send notifications/initialized: {}", config_.name, e.what())};
-    }
-}
-
-// 会话过期后的恢复。同一时刻只允许一个线程重新 initialize；其他线程如果发现会话已经被
-// 换过，直接返回去用新会话重试。这里只重建会话，不改 version_ / modern_（server 换了协议
-// 就报错，让核心重新 connect），所以握手之后这两个字段是只读的。
-void Client::Impl::recover_session(const std::string& used_session, std::stop_token stop) {
-    std::lock_guard lock(reinit_mu_);
-    if (session_id() != used_session) return;
-    log_mcp()->warn("{}: 会话已失效，重新 initialize", config_.name);
-    Response response = initialize_exchange(stop);
-    if (response.status == 401 || response.status == 403 || response.status >= 500)
-        throw_http_status(config_.name, "initialize", response.status, response.error);
-    if (response.rpc_error) {
-        if (int_or(response.error, "code") == kUnsupportedProtocolVersion)
-            throw McpError{McpError::Kind::handshake,
-                           config_.name + ": server no longer supports the classic protocol after restart; reconnect required"};
-        throw McpError{McpError::Kind::rpc, config_.name + ": " + rpc_text("initialize", response.error)};
-    }
-    if (!response.ok) {
-        if (response.status >= 400) throw_http_status(config_.name, "initialize", response.status);
-        throw McpError{McpError::Kind::protocol,
-                       std::format("{}: initialize response contains neither result nor error", config_.name)};
-    }
-    const std::string version = string_or(response.result, "protocolVersion");
-    if (version != version_)
-        throw McpError{McpError::Kind::handshake,
-                       std::format("{}: negotiated protocol changed after server restart ({} -> {}); reconnect required",
-                                   config_.name, version_, version)};
-    // 通知显式带新会话发出，成功后才装进共享状态：其他线程不会拿到还没初始化完的会话。
-    try {
-        http_post(detail::make_notification("notifications/initialized", json::object()), kNotificationTimeout,
-                  &response.session_id);
-    } catch (const McpError& e) {
-        throw McpError{McpError::Kind::handshake,
-                       std::format("{}: failed to send notifications/initialized: {}", config_.name, e.what())};
-    }
-    set_session_id(response.session_id);
-}
+// ---- 协议发现 ----
 
 void Client::Impl::handshake(std::stop_token stop) {
-    const bool probed_modern = http_ ? http_probe_modern(stop) : stdio_probe_modern(stop);
-    if (probed_modern) {
-        modern_ = true;
-    } else {
-        modern_ = false;
-        legacy_handshake(stop); // 里面可能因为 -32022 改判为现代
+    const Response response = exchange("server/discover", json::object(),
+                                       http_ ? opt_.connect_timeout : opt_.probe_timeout, stop);
+    if (response.status == 401 || response.status == 403 || response.status >= 500)
+        throw_http_status(config_.name, "server/discover", response.status, response.error);
+    if (response.rpc_error)
+        throw McpError{McpError::Kind::handshake, config_.name + ": " + rpc_text("server/discover", response.error)};
+    if (!response.ok) {
+        if (response.status >= 400) throw_http_status(config_.name, "server/discover", response.status);
+        throw McpError{McpError::Kind::handshake, config_.name + ": server/discover returned no result"};
     }
-    log_mcp()->info("{}: 已连接，协议 {}（{}）", config_.name, version_, modern_ ? "现代" : "经典");
+    const json supported = member_or(response.result, "supportedVersions", json::array());
+    if (!detail::supports_protocol(supported))
+        throw McpError{McpError::Kind::handshake,
+                       std::format("{}: server must support MCP {}; advertised versions: {}", config_.name,
+                                   detail::kModernVersion, supported.dump())};
+    log_mcp()->info("{}: 已连接，协议 {}", config_.name, detail::kModernVersion);
 }
 
 void Client::Impl::fetch_tools(milliseconds timeout, std::stop_token stop) {
@@ -904,10 +623,6 @@ std::unique_ptr<Client> Client::connect(const ServerConfig& config, const Option
 
 const std::vector<Tool>& Client::tools() const { return impl_->tools_; }
 
-void Client::refresh_tools(milliseconds timeout, std::stop_token stop) {
-    impl_->fetch_tools(timeout, stop);
-}
-
 CallResult Client::call(std::string_view tool, const json& args, milliseconds timeout, std::stop_token stop) {
     std::string name;
     {
@@ -936,12 +651,5 @@ CallResult Client::call(std::string_view tool, const json& args, milliseconds ti
     out.is_error = bool_or(result, "isError");
     return out;
 }
-
-void Client::on_tools_changed(std::function<void()> cb) {
-    std::lock_guard lock(impl_->data_mu_);
-    impl_->tools_changed_ = std::move(cb);
-}
-
-const std::string& Client::protocol_version() const { return impl_->version_; }
 
 } // namespace dagent::mcp

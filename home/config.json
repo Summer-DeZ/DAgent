@@ -9,7 +9,9 @@
     "system": "system.md",
     "compact": "compact.md"
   },
-  "ui": { "theme_file": "themes/dagent.json" },
+  "ui": {
+    "theme_file": "themes/dagent.json"
+  },
   "http": {
     "timeout_seconds": 300,
     "connect_timeout_seconds": 30,
@@ -19,15 +21,22 @@
     "verify_peer": true,
     "verify_host": true
   },
-  "network": { "credentials": {} },
+  "network": {
+    "credentials": {}
+  },
   "context": {
     "window_tokens": 262144,
     "safety_margin_tokens": 8192,
     "compaction_trigger_percent": 80,
     "compaction_target_percent": 60
   },
-  "files": { "max_read_bytes": 8388608, "max_write_bytes": 1048576 },
-  "search": { "rg_path": "" },
+  "files": {
+    "max_read_bytes": 8388608,
+    "max_write_bytes": 1048576
+  },
+  "search": {
+    "rg_path": ""
+  },
   "tools": {
     "max_result_bytes": 32768,
     "read_default_lines": 2000,
@@ -35,18 +44,48 @@
     "grep_max_matches": 200,
     "glob_max_files": 200,
     "bash_max_timeout_ms": 600000,
-    "mcp_call_timeout_ms": 120000
+    "mcp_call_timeout_ms": 120000,
+    "bash_collect_bytes": 4194304
   },
   "mcp": {
     "connect_timeout_ms": 60000,
     "probe_timeout_ms": 10000,
     "servers": {}
   },
-  "process": { "default_timeout_ms": 300000, "max_output_bytes": 262144 },
-  "run": { "max_model_calls": 24, "max_tool_calls": 35, "max_model_retries": 2 },
-  "session": {
-    "redact_fields": ["api_key", "authorization", "token"]
+  "process": {
+    "default_timeout_ms": 300000,
+    "max_output_bytes": 262144,
+    "kill_grace_ms": 2000,
+    "drain_after_exit_ms": 200,
+    "env_deny": [
+      "*KEY*",
+      "*TOKEN*",
+      "*SECRET*",
+      "*PASSWORD*"
+    ]
   },
-  "progress": { "interval_ms": 1000 },
-  "log": { "max_file_bytes": 5242880, "max_files": 3, "level": "info" }
+  "run": {
+    "max_model_calls": 24,
+    "max_tool_calls": 35,
+    "max_model_retries": 2,
+    "max_parallel_tasks": 4,
+    "max_parallel_tools": 8
+  },
+  "session": {
+    "redact_fields": [
+      "api_key",
+      "authorization",
+      "token"
+    ],
+    "history_scan_limit": 100
+  },
+  "progress": {
+    "interval_ms": 1000
+  },
+  "log": {
+    "max_file_bytes": 5242880,
+    "max_files": 3,
+    "level": "info",
+    "also_stderr": false
+  }
 }

@@ -25,6 +25,7 @@ namespace dagent::storage {
 /// @brief 会话选项；数据库位置由安装根固定，只有记录与脱敏策略可配置。
 struct Options {
     std::filesystem::path database;
+    std::size_t history_scan_limit = 0;
     std::vector<std::string> redact_fields{"api_key", "authorization", "token"};
 };
 

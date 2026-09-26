@@ -22,7 +22,6 @@
 #include "agent/port_store.hpp"
 #include "base/json.hpp"
 #include "storage/history_read.hpp"
-#include "base/log.hpp"
 #include "base/text.hpp"
 #include "lib/sqlite/sqlite3.h"
 
@@ -132,26 +131,25 @@ public:
     explicit Database(const fs::path& file, Access access = Access::read_write) : file_(file) {
         if (file_.empty()) fail(StorageError::Kind::io, "session database path is empty");
         if (access == Access::read_only) {
-            // 只读查询不初始化或修复数据库：不存在直接报告，损坏直接报错。
             std::error_code ec;
             if (!fs::exists(file_, ec)) fail(StorageError::Kind::not_found, "session database does not exist");
-            open(true);
-            return;
         }
-        open(false);
+        open(access == Access::read_only);
         try {
-            initialize();
-        } catch (const StorageError& error) {
+            const int version = user_version();
+            if (access == Access::read_write && version == 0 && empty_schema()) {
+                initialize();
+            } else {
+                if (version != 1) {
+                    fail(StorageError::Kind::corrupt,
+                         std::format("unsupported session database schema version {}; expected 1", version));
+                }
+                if (access == Access::read_write) configure_write();
+            }
+        } catch (...) {
             sqlite3_close(db_);
             db_ = nullptr;
-            const fs::path backup = file_.string() + std::format(".corrupt-{}", now_ms());
-            std::error_code ec;
-            fs::rename(file_, backup, ec);
-            if (ec) throw;
-            base::logger("session")->error("session database was unreadable; moved it to {} and created a new database: {}",
-                                           backup.string(), error.what());
-            open(false);
-            initialize();
+            throw;
         }
     }
     ~Database() { if (db_ != nullptr) sqlite3_close(db_); }
@@ -186,17 +184,19 @@ private:
         Statement query(db_, "PRAGMA user_version");
         return query.row() ? static_cast<int>(query.integer(0)) : 0;
     }
-    bool has_column(std::string_view table, std::string_view name) {
-        Statement query(db_, "SELECT 1 FROM pragma_table_info(?) WHERE name=?");
-        query.text(1, table);
-        query.text(2, name);
-        return query.row();
+    bool empty_schema() {
+        Statement query(db_, "SELECT 1 FROM sqlite_schema WHERE name NOT LIKE 'sqlite_%' LIMIT 1");
+        return !query.row();
     }
-    void initialize() {
+    void configure_write() {
         exec("PRAGMA foreign_keys=ON;");
         exec("PRAGMA journal_mode=WAL;");
         exec("PRAGMA synchronous=NORMAL;");
+    }
+    void initialize() {
+        configure_write();
         exec(R"SQL(
+BEGIN IMMEDIATE;
 CREATE TABLE IF NOT EXISTS sessions (
   id TEXT PRIMARY KEY,
   cwd TEXT NOT NULL,
@@ -204,11 +204,11 @@ CREATE TABLE IF NOT EXISTS sessions (
   title TEXT,
   created INTEGER NOT NULL,
   updated INTEGER NOT NULL,
-  open_turn INTEGER NOT NULL DEFAULT 0,
   parent_id TEXT,
   agent_name TEXT
 );
 CREATE INDEX IF NOT EXISTS sessions_by_cwd ON sessions(cwd, updated DESC);
+CREATE INDEX IF NOT EXISTS sessions_by_parent ON sessions(parent_id, created);
 CREATE TABLE IF NOT EXISTS events (
   session_id TEXT NOT NULL REFERENCES sessions(id) ON DELETE CASCADE,
   seq INTEGER NOT NULL,
@@ -216,14 +216,9 @@ CREATE TABLE IF NOT EXISTS events (
   payload BLOB NOT NULL,
   PRIMARY KEY (session_id, seq)
 ) WITHOUT ROWID;
+PRAGMA user_version=1;
+COMMIT;
 )SQL");
-        // 该库的迁移机制：每次 schema 变更递增 user_version，旧库就地补齐。
-        if (user_version() < 1) {
-            if (!has_column("sessions", "parent_id")) exec("ALTER TABLE sessions ADD COLUMN parent_id TEXT;");
-            if (!has_column("sessions", "agent_name")) exec("ALTER TABLE sessions ADD COLUMN agent_name TEXT;");
-            exec("CREATE INDEX IF NOT EXISTS sessions_by_parent ON sessions(parent_id, created);");
-            exec("PRAGMA user_version=1;");
-        }
     }
     fs::path file_;
     sqlite3* db_ = nullptr;
@@ -243,9 +238,9 @@ private:
     bool committed_ = false;
 };
 
-agent::SessionMeta read_meta(Database& db, std::string_view id, bool* open_turn = nullptr) {
+agent::SessionMeta read_meta(Database& db, std::string_view id) {
     Statement query(db.get(),
-                    "SELECT cwd,model,created,open_turn,parent_id,agent_name FROM sessions WHERE id=?");
+                    "SELECT cwd,model,created,parent_id,agent_name FROM sessions WHERE id=?");
     query.text(1, id);
     if (!query.row()) fail(StorageError::Kind::not_found, "session not found: " + std::string(id));
     agent::SessionMeta meta;
@@ -253,9 +248,8 @@ agent::SessionMeta read_meta(Database& db, std::string_view id, bool* open_turn 
     meta.cwd = query.string(0);
     meta.model = query.string(1);
     meta.created = iso_from_ms(query.integer(2));
-    if (open_turn != nullptr) *open_turn = query.integer(3) != 0;
-    if (!query.is_null(4)) meta.parent_id = query.string(4);
-    if (!query.is_null(5)) meta.agent_name = query.string(5);
+    if (!query.is_null(3)) meta.parent_id = query.string(3);
+    if (!query.is_null(4)) meta.agent_name = query.string(4);
     return meta;
 }
 
@@ -435,8 +429,8 @@ public:
         meta.created = iso_from_ms(timestamp);
         auto journal = std::unique_ptr<SqliteJournal>(new SqliteJournal(options, std::move(meta)));
         Statement insert(journal->db_.get(),
-                         "INSERT INTO sessions(id,cwd,model,title,created,updated,open_turn,parent_id,agent_name) "
-                         "VALUES(?,?,?,NULL,?,?,0,?,?)");
+                         "INSERT INTO sessions(id,cwd,model,title,created,updated,parent_id,agent_name) "
+                         "VALUES(?,?,?,NULL,?,?,?,?)");
         insert.text(1, journal->meta_.id);
         insert.text(2, journal->meta_.cwd.string());
         insert.text(3, journal->meta_.model);
@@ -494,14 +488,13 @@ private:
 
         if (begins) {
             const std::string title = title_from(payload);
-            Statement update(db_.get(), "UPDATE sessions SET title=COALESCE(title,?),updated=?,open_turn=1 WHERE id=?");
+            Statement update(db_.get(), "UPDATE sessions SET title=COALESCE(title,?),updated=? WHERE id=?");
             if (title.empty()) update.null(1); else update.text(1, title);
             update.integer(2, timestamp);
             update.text(3, meta_.id);
             update.done();
         } else {
-            Statement update(db_.get(), ends ? "UPDATE sessions SET updated=?,open_turn=0 WHERE id=?"
-                                             : "UPDATE sessions SET updated=? WHERE id=?");
+            Statement update(db_.get(), "UPDATE sessions SET updated=? WHERE id=?");
             update.integer(1, timestamp);
             update.text(2, meta_.id);
             update.done();
@@ -574,12 +567,8 @@ std::unique_ptr<agent::SessionStore> open_store(const Options& options) {
 
 // ---- 只读历史分页 ----
 
-namespace {
-constexpr std::size_t kMaxScanPerPage = 100;
-} // namespace
-
 struct HistoryRead::Impl {
-    Options options;
+    std::size_t scan_limit = 0;
     agent::SessionMeta meta;
     std::int64_t upper_seq = -1;
     std::int64_t next_seq = 0;
@@ -599,7 +588,7 @@ HistoryRead::~HistoryRead() = default;
 
 std::unique_ptr<HistoryRead> HistoryRead::open(const Options& options, std::string_view session_id) {
     auto impl = std::make_unique<Impl>();
-    impl->options = options;
+    impl->scan_limit = options.history_scan_limit;
     impl->db = std::make_unique<Database>(options.database, Access::read_only);
     impl->meta = read_meta(*impl->db, session_id);
     Statement query(impl->db->get(), "SELECT COALESCE(MAX(seq),-1) FROM events WHERE session_id=?");
@@ -626,7 +615,7 @@ HistoryRead::Page HistoryRead::read(const std::string& cursor, std::size_t limit
 
     try {
         Page page;
-        const std::size_t scan = std::min(limit == 0 ? kMaxScanPerPage : limit, kMaxScanPerPage);
+        const std::size_t scan = std::min(limit == 0 ? impl.scan_limit : limit, impl.scan_limit);
         Statement query(impl.db->get(),
                         "SELECT seq,type,payload FROM events WHERE session_id=? AND seq>=? AND seq<? "
                         "ORDER BY seq LIMIT ?");

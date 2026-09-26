@@ -181,7 +181,7 @@ DecodedRecord decode(std::string_view type, const nlohmann::json& payload) {
                                       integer_field(type, payload, "schema")));
         SystemRecord record;
         record.text = string_field(type, payload, "text");
-        if (payload.contains("model")) record.model = string_field(type, payload, "model");
+        record.model = string_field(type, payload, "model");
         return record;
     }
     if (type == "user") {
@@ -196,8 +196,7 @@ DecodedRecord decode(std::string_view type, const nlohmann::json& payload) {
         record.message.role = Role::assistant;
         record.message.content = string_field(type, payload, "content");
         record.message.reasoning_content = string_field(type, payload, "reasoning");
-        if (payload.contains("reasoning_signature"))
-            record.message.reasoning_signature = string_field(type, payload, "reasoning_signature");
+        record.message.reasoning_signature = string_field(type, payload, "reasoning_signature");
         const auto calls = payload.find("tool_calls");
         if (calls == payload.end() || !calls->is_array()) corrupt(type, "field tool_calls must be an array");
         for (const json& item : *calls) {
@@ -232,7 +231,7 @@ DecodedRecord decode(std::string_view type, const nlohmann::json& payload) {
         grant.allow_network = bool_field(type, payload, "network");
         grant.allow_local_sockets = bool_field(type, payload, "local_sockets");
         grant.private_tmp = bool_field(type, payload, "private_tmp");
-        grant.protect_sensitive_names = payload.value("protect_sensitive_names", false);
+        grant.protect_sensitive_names = bool_field(type, payload, "protect_sensitive_names");
         const auto paths = [&](const char* key) {
             const auto found = payload.find(key);
             if (found == payload.end() || !found->is_array())
@@ -275,6 +274,18 @@ DecodedRecord decode(std::string_view type, const nlohmann::json& payload) {
         return record;
     }
     if (type == "permission") {
+        if (integer_field(type, payload, "schema") != 2) corrupt(type, "unknown schema");
+        (void)string_field(type, payload, "cwd");
+        (void)string_field(type, payload, "mode");
+        (void)bool_field(type, payload, "partially_executed");
+        const auto requests = payload.find("requests");
+        if (requests == payload.end() || !requests->is_array()) corrupt(type, "field requests must be an array");
+        for (const json& request : *requests) {
+            require_object(type, request);
+            (void)string_field(type, request, "kind");
+            (void)string_field(type, request, "target");
+            (void)string_field(type, request, "reason");
+        }
         PermissionRecord record;
         record.call_id = string_field(type, payload, "call_id");
         record.answer = string_field(type, payload, "answer");

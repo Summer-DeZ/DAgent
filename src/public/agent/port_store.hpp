@@ -2,7 +2,7 @@
 /// @brief SessionStore 端口：会话元信息、记录读取与写入器的打开入口。
 ///
 /// 实现在 storage 模块。只读查询使用独立连接，不借用执行线程的 Writer；
-/// Writer 与写租约以独占所有权返回（architecture-refactor §4.3）。
+/// Writer 与写租约以独占所有权返回。
 #pragma once
 
 #include <cstdint>

@@ -137,17 +137,11 @@ const json* dig(const json& root, const std::vector<std::string>& path) {
 
 } // namespace
 
-bool is_known_legacy_version(std::string_view v) {
-    static constexpr std::string_view kVersions[] = {"2025-11-25", "2025-06-18", "2025-03-26",
-                                                     "2024-11-05"};
-    return std::ranges::find(kVersions, v) != std::end(kVersions);
-}
-
-std::string pick_modern_version(const json& supported) {
-    if (!supported.is_array()) return {};
-    for (const auto& v : supported)
-        if (v.is_string() && v.get<std::string>() == kModernVersion) return std::string(kModernVersion);
-    return {};
+bool supports_protocol(const json& supported) {
+    if (!supported.is_array()) return false;
+    return std::ranges::any_of(supported, [](const json& version) {
+        return version.is_string() && version.get<std::string>() == kModernVersion;
+    });
 }
 
 json modern_meta() {
@@ -166,14 +160,6 @@ json make_request(int64_t id, std::string_view method, json params) {
 
 json make_notification(std::string_view method, json params) {
     return {{"jsonrpc", "2.0"}, {"method", std::string(method)}, {"params", std::move(params)}};
-}
-
-json make_response(const json& id, json result) {
-    return {{"jsonrpc", "2.0"}, {"id", id}, {"result", std::move(result)}};
-}
-
-json make_error_response(const json& id, int code, const std::string& message) {
-    return {{"jsonrpc", "2.0"}, {"id", id}, {"error", {{"code", code}, {"message", message}}}};
 }
 
 std::string sanitize(std::string_view s) { return sanitize_name(s); }

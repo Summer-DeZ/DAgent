@@ -53,7 +53,7 @@ std::int64_t SessionCommitter::commit_assistant(const Reply& reply) {
 
 std::int64_t SessionCommitter::commit_tool(const ToolCall& call, std::string_view summary,
                                            const ToolResult& result, const TodoView* plan) {
-    if (plan != nullptr) plan_.replace(*plan); // L13：计划替换与 tool 记录同一次提交
+    if (plan != nullptr) plan_.replace(*plan); // 计划替换与 tool 记录同一次提交
     const std::int64_t ordinal =
         conversation_.add_tool_result(call.id, result.model_text, std::string(summary));
     append(record_codec::tool(ordinal, call, summary, result));

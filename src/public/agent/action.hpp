@@ -1,8 +1,8 @@
 /// @file action.hpp
 /// @brief 动作契约：一次已准备普通工具的身份、只读意图与执行入口。
 ///
-/// 身份在 prepare 构造时固定（不再有运行中改写）；execute 只接收决定好的授权、输出接收器和取消。
-/// shell 分析树、MCP Client、workspace 实现对象留在具体 PreparedTool 内部（architecture-refactor §5.1）。
+/// 身份在 prepare 构造时固定，运行中不可改写；execute 只接收决定好的授权、输出接收器和取消。
+/// shell 分析树、MCP Client、workspace 实现对象留在具体 PreparedTool 内部。
 #pragma once
 
 #include <functional>

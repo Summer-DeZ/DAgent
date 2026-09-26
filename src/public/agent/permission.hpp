@@ -34,7 +34,7 @@ struct Verdict {
     Kind kind = Kind::deny;
     ExecutionGrant grant; ///< allow 时有效
     Approval approval;    ///< ask 时有效：reason、session_rule、can_network 已填好
-    std::string reason;   ///< deny 时有效，进 T6
+    std::string reason;   ///< deny 时有效，写入给模型的策略拒绝说明
 };
 
 /// @brief 按模式与规则表判定。线程安全：规则容器与模式快照由同一把短锁保护，

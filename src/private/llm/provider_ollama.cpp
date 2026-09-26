@@ -96,7 +96,7 @@ private:
         out.emplace_back(Finish{Finish::Reason::error, std::move(message)});
     }
     ProviderConfig config_;
-    // ollama 不回传调用 ID：内部生成唯一前缀（运行时 ID，不要求与旧格式一致）。
+    // ollama 不回传调用 ID：内部生成唯一前缀作为运行时 ID。
     const std::string call_prefix_ = [] {
         std::random_device device;
         char raw[17] = {};

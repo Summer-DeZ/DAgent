@@ -1,7 +1,6 @@
 #include "tools/mcp_hub.hpp"
 
 #include <algorithm>
-#include <atomic>
 #include <chrono>
 #include <format>
 #include <thread>
@@ -13,8 +12,6 @@ namespace dagent::tools {
 
 struct McpHub::Server {
     mcp::ServerConfig config;
-    // 回调只访问这块共享标志；它必须比 Client 活得久（子快照可能让 Client 晚于 Hub 销毁）。
-    std::shared_ptr<std::atomic<bool>> tools_changed = std::make_shared<std::atomic<bool>>(false);
     std::shared_ptr<mcp::Client> client;   // owner 线程操作；snapshot 会跨线程读，指针本身受 mutex_ 保护
     std::shared_ptr<mcp::Client> incoming; // 受 mutex_ 保护
     agent::McpServerState state;           // 受 mutex_ 保护
@@ -41,12 +38,9 @@ McpHub::~McpHub() {
 }
 
 void McpHub::connect(Server& server) {
-    *server.tools_changed = false;
     server.connector = std::jthread([this, &server](std::stop_token stop) {
         try {
             std::shared_ptr<mcp::Client> client = mcp::Client::connect(server.config, options_, stop);
-            const std::shared_ptr<std::atomic<bool>> changed = server.tools_changed;
-            client->on_tools_changed([changed] { changed->store(true); });
             const auto count = client->tools().size();
             std::lock_guard lock(mutex_);
             server.incoming = std::move(client);
@@ -99,11 +93,9 @@ std::string McpHub::mark_disconnected(std::string_view name, std::string reason)
 
 void McpHub::apply_pending(Registry& registry, const agent::Sink& sink, std::stop_token stop) {
     report_pending(sink);
-    // 刷新失败会把 server 标成断开，要再走一遍重连；每个 server 至多断开两次（第二次直接 failed），循环有界。
-    do {
-        restart_disconnected(registry);
-        wait_connecting(sink, stop);
-    } while (merge(registry, stop));
+    restart_disconnected(registry);
+    wait_connecting(sink, stop);
+    merge(registry, stop);
     report_pending(sink);
 }
 
@@ -176,8 +168,7 @@ void McpHub::wait_connecting(const agent::Sink& sink, std::stop_token stop) {
     }
 }
 
-bool McpHub::merge(Registry& registry, std::stop_token stop) {
-    bool changed = false;
+void McpHub::merge(Registry& registry, std::stop_token stop) {
     for (auto& pointer : servers_) {
         if (stop.stop_requested()) {
             throw mcp::McpError(mcp::McpError::Kind::cancelled, "MCP update interrupted");
@@ -197,22 +188,7 @@ bool McpHub::merge(Registry& registry, std::stop_token stop) {
             }
             add_mcp(registry, server.client);
         }
-        if (!server.client || !server.tools_changed->exchange(false)) continue;
-        try {
-            server.client->refresh_tools(options_.connect_timeout, stop);
-            registry.remove_prefix(prefix);
-            add_mcp(registry, server.client);
-            std::lock_guard lock(mutex_);
-            server.state.tools = server.client->tools().size();
-        } catch (const mcp::McpError& error) {
-            if (error.kind() == mcp::McpError::Kind::cancelled) {
-                server.tools_changed->store(true);
-                throw;
-            }
-            changed |= !mark_disconnected(server.config.name, error.what()).empty();
-        }
     }
-    return changed;
 }
 
 } // namespace dagent::tools

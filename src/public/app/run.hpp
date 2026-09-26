@@ -1,5 +1,5 @@
 /// @file run.hpp
-/// @brief run 模式前端：启动本前端独占的后端，经协议完成一轮并输出旧格式结果。
+/// @brief run 模式前端：启动本前端独占的后端，经协议完成一轮并输出 text/json/jsonl 格式结果。
 #pragma once
 
 #include <string>

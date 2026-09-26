@@ -2,7 +2,7 @@
 /// @brief 装配侧只读查询网关：会话列表、历史投影、项目信息与文件补全。
 ///
 /// 实现 runtime::QueryGateway；在 runtime 的查询线程调用，不初始化/修复数据库，
-/// 不借用执行线程的 Writer（记录路线 §7）。
+/// 不借用执行线程的 Writer。
 #pragma once
 
 #include <filesystem>

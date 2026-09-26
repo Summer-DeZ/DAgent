@@ -50,7 +50,7 @@ Usage parse_usage(const json& usage) {
 Finish::Reason finish_reason_from(std::string_view raw) {
     if (raw == "stop") return Finish::Reason::stop;
     if (raw == "length") return Finish::Reason::length;
-    if (raw == "tool_calls" || raw == "function_call") return Finish::Reason::tool_calls;
+    if (raw == "tool_calls") return Finish::Reason::tool_calls;
     if (raw == "content_filter") return Finish::Reason::content_filter;
     // 缺失或未知都不能当成正常结束，否则核心会把截断误当完整回复
     return Finish::Reason::error;
@@ -99,13 +99,10 @@ public:
         if (request.stream && opt_.include_usage) {
             body["stream_options"] = {{"include_usage", true}};
         }
-        if (request.max_tokens > 0 && !opt_.extra_body.contains("max_completion_tokens"))
-            body["max_tokens"] = request.max_tokens;
+        if (request.max_tokens > 0) body["max_completion_tokens"] = request.max_tokens;
         if (request.temperature >= 0.0) body["temperature"] = request.temperature;
         if (!request.tools.empty()) body["tools"] = encode_tools(request.tools);
-        for (auto it = opt_.extra_body.begin(); it != opt_.extra_body.end(); ++it) {
-            if (!body.contains(it.key())) body[it.key()] = it.value();
-        }
+        merge_extra(body, opt_.extra_body);
 
         net::HttpRequest http;
         http.method = "POST";

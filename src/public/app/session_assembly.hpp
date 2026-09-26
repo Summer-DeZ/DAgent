@@ -2,7 +2,7 @@
 /// @brief 后端装配：从已解析配置创建 SessionInstance（runtime::SessionFactory 实现）。
 ///
 /// 提示词渲染、工具/MCP 环境、记录写入器与写租约都在这里构造；runtime 只看到核心对象。
-/// 同会话切模型复用传入 lease，不再次 flock（记录路线 §8.2）。
+/// 同会话切模型复用传入 lease，不再次 flock。
 #pragma once
 
 #include <filesystem>

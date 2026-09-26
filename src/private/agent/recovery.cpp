@@ -66,7 +66,7 @@ RecoveryResult SessionRecovery::restore(const std::vector<StoredRecord>& records
                     Entry entry = entry_from(message, value.n);
                     entry.summary = value.summary;
                     result.conversation.restore(std::move(entry));
-                    // 旧 Todo View 重建为 WorkPlan；不新增 Plan 记录（B21）。
+                    // 从工具结果中的 TodoView 重建 WorkPlan，不新增 Plan 记录。
                     if (const auto* plan = std::get_if<TodoView>(&value.result.display)) {
                         result.plan.replace(*plan);
                     }
@@ -108,9 +108,7 @@ RecoveryResult SessionRecovery::restore(const std::vector<StoredRecord>& records
         throw RecordError(RecordError::Kind::corrupt, "session record has no system entry");
     }
     result.conversation.set_next_ordinal(next_ordinal);
-    result.next_ordinal = next_ordinal;
     result.unfinished = open_turn;
-    result.high_water = records.empty() ? -1 : records.back().seq;
 
     // 未闭合历史只允许缺少最后一批工具结果：先在内存副本上补闭合并验证。
     result.open_calls = open_turn ? result.conversation.open_calls() : std::vector<ToolCall>{};

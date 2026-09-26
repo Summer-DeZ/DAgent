@@ -18,7 +18,6 @@
 namespace dagent::agent {
 namespace {
 
-constexpr std::size_t kGroupWidth = 8; ///< 并行组每块的线程数上限（docs/design/agent.md §1）
 
 std::shared_ptr<spdlog::logger> log_agent() { return base::logger("agent"); }
 
@@ -102,7 +101,7 @@ ActionDispatcher::Outcome ActionDispatcher::dispatch(const std::vector<ToolCall>
             Slot& slot = slots[committed];
             for (const ExecutionSignal& signal : slot.result->signals) {
                 if (const auto* disconnected = std::get_if<McpDisconnected>(&signal)) {
-                    // 告诉模型这个 server 会重连还是已不可用（T12 / T13），免得它在工具消失后反复寻找。
+                    // 告诉模型这个 server 会重连还是已不可用，免得它在工具消失后反复寻找。
                     if (resources != nullptr) {
                         slot.result->model_text +=
                             resources->mark_disconnected(disconnected->server, slot.result->model_text);
@@ -113,7 +112,7 @@ ActionDispatcher::Outcome ActionDispatcher::dispatch(const std::vector<ToolCall>
             if (slot.action) {
                 if (const auto* control_request = std::get_if<ControlRequest>(&slot.action.value())) {
                     if (const auto* replacement = std::get_if<PlanReplacement>(control_request)) {
-                        plan = &replacement->plan; // L13：与 tool 记录同一次提交
+                        plan = &replacement->plan; // 与 tool 记录同一次提交
                     }
                 }
             }
@@ -133,7 +132,7 @@ ActionDispatcher::Outcome ActionDispatcher::dispatch(const std::vector<ToolCall>
             ->execute(grant, make_on_output(*slot.call), stop);
     };
 
-    // 串行执行：普通工具写 tool_started 审计；ask/exit_plan 按 L12 只发实时开始、不写记录。
+    // 串行执行：普通工具写 tool_started 审计；ask/exit_plan 只发实时开始、不写记录。
     const auto run_serial = [&](std::size_t i, const ExecutionGrant& grant) {
         Slot& slot = slots[i];
         const bool ordinary = std::holds_alternative<std::unique_ptr<PreparedTool>>(slot.action.value());
@@ -152,7 +151,7 @@ ActionDispatcher::Outcome ActionDispatcher::dispatch(const std::vector<ToolCall>
         const std::size_t width = group_kind == GroupKind::task
                                       ? static_cast<std::size_t>(
                                             session_.config().options.run.max_parallel_tasks)
-                                      : kGroupWidth;
+                                      : static_cast<std::size_t>(session_.config().options.run.max_parallel_tools);
         for (const Pending& p : group) {
             Slot& slot = slots[p.slot];
             const ToolStarted started{slot.call->id, slot.call->name, slot.summary, p.grant};

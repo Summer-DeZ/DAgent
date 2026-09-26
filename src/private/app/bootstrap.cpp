@@ -25,12 +25,7 @@ using ModelFactory = std::function<std::shared_ptr<agent::ModelSession>(const ll
 ModelFactory make_model_factory(const Config& config) {
     return [http = config.http, retries = config.agent.run.max_model_retries](
                const llm::ProviderConfig& provider) {
-        net::HttpOptions adjusted = http;
-        adjusted.timeout = std::chrono::seconds{0};
-        if (adjusted.idle_timeout == std::chrono::seconds{0}) {
-            adjusted.idle_timeout = std::chrono::seconds{120};
-        }
-        return llm::make_session(provider, adjusted, agent::RetryOptions{retries});
+        return llm::make_session(provider, http, agent::RetryOptions{retries});
     };
 }
 

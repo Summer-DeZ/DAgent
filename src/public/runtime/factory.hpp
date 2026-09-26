@@ -2,7 +2,7 @@
 /// @brief runtime 的外部装配端口：会话工厂、配置网关与只读查询网关。
 ///
 /// 具体实现在 app 后端装配（dagent_app_config）；runtime 只经这些端口访问
-/// storage/llm/tools/workspace 等具体实现（architecture-refactor §4.3）。
+/// storage/llm/tools/workspace 等具体实现。
 #pragma once
 
 #include <chrono>
@@ -46,7 +46,7 @@ public:
     virtual std::shared_ptr<agent::SessionLease> lease() const = 0;
 };
 
-/// @brief 会话控制事实：新会话/恢复/模型替换要保留或重置的状态（B07/B13/B14）。
+/// @brief 会话控制事实：新会话/恢复/模型替换要保留或重置的状态。
 struct SessionState {
     agent::PermissionMode mode = agent::PermissionMode::workspace;
     bool planning = false;
@@ -64,19 +64,19 @@ public:
     /// @brief 子 Agent 定义表查询（装配配置）。
     virtual const agent::SubagentDef* find_subagent(std::string_view name) const = 0;
 
-    /// @brief 新建顶层会话（L01）；permission 为空时用装配初值（启动创建）。
+    /// @brief 新建顶层会话；permission 为空时用装配初值（启动创建）。
     virtual std::unique_ptr<SessionInstance> create_new(std::optional<SessionState> state,
                                                         const agent::Sink& replay) = 0;
-    /// @brief 显式恢复（L20）：候选自己取得写租约；失败时旧会话保持。permission 为空时用装配初值。
+    /// @brief 显式恢复：候选自己取得写租约；失败时旧会话保持。permission 为空时用装配初值。
     virtual std::unique_ptr<SessionInstance> resume(std::string_view session_id,
                                                     std::optional<SessionState> state,
                                                     const agent::Sink& replay) = 0;
-    /// @brief 同会话切模型候选（L21）：复用当前 lease，按 B13 重置临时授权/FileTracker/token 校准。
+    /// @brief 同会话切模型候选：复用当前 lease，重置临时授权/FileTracker/token 校准。
     virtual std::unique_ptr<SessionInstance> prepare_switch_model(std::string_view model_name,
                                                                   std::shared_ptr<agent::SessionLease> lease,
                                                                   const SessionState& state,
                                                                   const agent::Sink& replay) = 0;
-    /// @brief 子会话（L02）：从父上下文与子定义派生；子自己取得写租约。
+    /// @brief 子会话：从父上下文与子定义派生；子自己取得写租约。
     virtual std::unique_ptr<SessionInstance> create_child(const agent::DelegationContext& context,
                                                           const agent::SubagentDef& def,
                                                           const agent::DerivedPermission& permission,
@@ -116,7 +116,7 @@ struct ChildSummary {
     std::string session_id, agent, title;
 };
 
-/// @brief 一页只读历史；cursor 由后端原样回传（记录路线 §7）。
+/// @brief 一页只读历史；cursor 由后端原样回传。
 struct HistoryPage {
     std::vector<agent::HistoryItem> items;
     std::string cursor;
@@ -158,7 +158,7 @@ public:
     virtual std::vector<FileCandidate> complete(std::string_view query, std::size_t limit) = 0;
 };
 
-/// @brief 后端启动输入（对象文档 §3.2 BootstrapOptions）：只在装配层读取。
+/// @brief 后端启动输入：只在装配层读取。
 struct BootstrapOptions {
     std::string mode; ///< interactive / run / sessions / models
     std::filesystem::path root;

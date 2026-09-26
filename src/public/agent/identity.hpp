@@ -1,7 +1,7 @@
 /// @file identity.hpp
 /// @brief 核心身份值类型：会话、轮次、调用与输入的标识。
 ///
-/// 这些身份只在当前后端实例内有效（记录路线 §1）；session_id 是唯一的持久身份。
+/// 这些身份只在当前后端实例内有效；session_id 是唯一的持久身份。
 #pragma once
 
 #include <string>

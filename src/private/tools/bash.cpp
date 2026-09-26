@@ -21,14 +21,13 @@ constexpr std::string_view kDescription = R"(Run a bash command in the workspace
 - Background daemons (such as server &) are not supported; they are cleaned up when the main process exits.
 - Read-only commands (such as git status and ls) are allowed automatically without approval.)";
 
-constexpr std::size_t kCollectCap = 4 << 20; // 内部收集上限：状态行提示与中断输出够用
 
 class BashCall final : public PreparedTool {
 public:
     BashCall(const agent::InvocationContext& invocation, const Context& ctx, std::string command,
              exec::Analysis analysis, std::optional<std::chrono::milliseconds> timeout)
         : PreparedTool(invocation), root_(ctx.root()), process_options_(ctx.process()),
-          max_result_bytes_(ctx.options().max_result_bytes), command_(std::move(command)),
+          max_result_bytes_(ctx.options().max_result_bytes), collect_bytes_(ctx.options().bash_collect_bytes), command_(std::move(command)),
           analysis_(std::move(analysis)), timeout_(timeout) {
         intent_.kind = agent::ToolKind::exec;
         agent::CommandIntent cmd;
@@ -111,11 +110,11 @@ private:
         cmd.sandbox = prepared.get();
 
         std::string collected;
-        collected.reserve(1 << 16);
+        collected.reserve(std::min(collect_bytes_, process_options_.max_output_bytes));
         const auto on_chunk = [&](exec::Stream stream, std::string_view chunk) {
             if (stream != exec::Stream::out) return;
             if (on_output) on_output(chunk);
-            if (collected.size() < kCollectCap) collected.append(chunk);
+            collected.append(chunk.substr(0, collect_bytes_ - collected.size()));
         };
 
         const auto started = std::chrono::steady_clock::now();
@@ -209,6 +208,7 @@ private:
     std::filesystem::path root_;
     exec::Options process_options_;
     std::size_t max_result_bytes_ = 0;
+    std::size_t collect_bytes_ = 0;
     std::string command_;
     exec::Analysis analysis_; ///< 完整分析树只在实现里；核心只看 CommandIntent 摘要
     std::optional<std::chrono::milliseconds> timeout_;

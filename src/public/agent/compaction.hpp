@@ -1,7 +1,7 @@
 /// @file compaction.hpp
 /// @brief 上下文预算与压缩：在副本上计算候选变化，成功且未取消后由 SessionCommitter 一次性提交。
 ///
-/// 保留当前工具事实保留、safe_cuts、摘要前缀和退化策略；Compactor 不再直接改 Conversation 或写记录。
+/// 使用工具事实保留、safe_cuts、摘要前缀和退化策略；Compactor 不直接修改 Conversation 或写记录。
 #pragma once
 
 #include <optional>
@@ -33,7 +33,7 @@ std::string pruned_output(std::string_view summary);
 std::string summary_message(std::string_view summary);
 } // namespace texts
 
-/// @brief 一次压缩的候选结果：内存安装与记录写入都由提交器完成（L16）。
+/// @brief 一次压缩的候选结果：内存安装与记录写入都由提交器完成。
 struct CompactionChange {
     Conversation conversation;            ///< 候选结果，直接替换会话历史
     std::vector<std::int64_t> pruned;     ///< 需要写 prune 的 tool ordinal

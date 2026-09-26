@@ -2,7 +2,7 @@
 /// @brief Session：一份对话的长期业务状态（Conversation/WorkPlan/Policy/模型与工具环境/提交器）。
 ///
 /// 只有 SessionCommitter 能修改对话与计划；外部只读取构造请求、快照和策略控制能力。
-/// 配置、密钥与终端留在装配层（architecture-refactor §3.1）。
+/// 配置、密钥与终端留在装配层。
 #pragma once
 
 #include <cstddef>
@@ -81,7 +81,7 @@ public:
     RequestShape request_shape() const;
     ModelParams model_params() const;
     std::size_t estimated_tokens();
-    /// @brief 本轮动作内部身份；不落库（记录路线 §1）。
+    /// @brief 本轮动作内部身份；不落库。
     std::string next_invocation_id();
     std::vector<ToolSpec> tool_specs() const { return catalog_.specs(); }
     std::vector<std::string> tool_names() const { return catalog_.names(); }

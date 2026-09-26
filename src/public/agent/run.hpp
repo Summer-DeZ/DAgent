@@ -33,7 +33,7 @@ enum class RunPhase {
     finished,
 };
 
-/// Run 的唯一结束结果：保留原 TurnStatus 与既有计数。
+/// Run 的唯一结束结果：包含运行类型、TurnStatus、计数与用量。
 struct RunOutcome {
     RunKind kind = RunKind::turn;
     TurnStatus status = TurnStatus::done;
@@ -74,7 +74,7 @@ public:
     }
     const Usage& usage() const { return total_; }
 
-    /// @brief 达到工具预算后的最终总结机会（B17）。
+    /// @brief 达到工具预算后的最终总结机会。
     void set_grace(bool value) { grace_ = value; }
     bool grace() const { return grace_; }
 

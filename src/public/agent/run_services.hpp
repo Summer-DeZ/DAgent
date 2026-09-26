@@ -31,7 +31,7 @@ public:
 
     /// @brief 主会话模型步骤边界：交付待发通知、等待/重连/合并 MCP 工具。取消抛 ResourceError::cancelled。
     virtual void begin_step(const Sink&, std::stop_token) = 0;
-    /// @brief 执行信号：返回追加给模型的说明（T12/T13），不是新断开时返回空。
+    /// @brief 执行信号：返回追加给模型的说明，不是新断开时返回空。
     virtual std::string mark_disconnected(std::string_view server, std::string_view reason) = 0;
     /// @brief 一轮结束交付尚未报告的 MCP 通知。
     virtual void report_pending(const Sink&) = 0;

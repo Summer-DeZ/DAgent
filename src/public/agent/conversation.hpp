@@ -24,7 +24,7 @@ struct Entry {
     std::size_t tokens = 0;    ///< estimate_tokens 的缓存，加入或修改时算一次
 };
 
-/// @brief 核心自己生成、会进入历史给模型看的文字（T1–T9、T12 / T13；T10 / T11 见 compaction.hpp）。
+/// @brief 核心自己生成、会进入历史给模型看的文字；压缩相关文字见 compaction.hpp。
 namespace texts {
 inline constexpr std::string_view kInterrupted = "\n\n[response interrupted by the user]";
 inline constexpr std::string_view kInterruptedCall = "The user interrupted this turn; this call was not executed.";
@@ -68,14 +68,14 @@ public:
     Request build(const std::string& system, const std::vector<ToolSpec>& tools,
                   const ModelParams& params) const;
 
-    /// @brief 检查 I1–I4；返回第一条违反的描述。debug 构建里 build 开头 assert 它为空。
+    /// @brief 检查消息历史的协议不变式；返回第一条违反的描述。debug 构建里 build 开头 assert 它为空。
     std::optional<std::string> validate() const;
 
     // ---- 压缩（docs/design/agent.md §8）----
     std::vector<std::size_t> safe_cuts() const; ///< 可以切开的下标，升序
     void prune(std::size_t tool_entry, std::string placeholder);
     void replace_prefix(std::size_t cut, std::string summary_message);
-    void discard_prefix(std::size_t cut); ///< 保留已有摘要；调用方保证尾部满足 I4
+    void discard_prefix(std::size_t cut); ///< 保留已有摘要；调用方保证保留的非空历史以 user 消息开头
 
     // ---- 恢复（docs/design/agent.md §10）----
     void restore(Entry entry); ///< 按记录原样放回，不重新分配 ordinal

@@ -41,7 +41,7 @@ void report_retry(const RetryInfo& info, const Sink& sink) {
 RunOutcome TurnRunner::finish(Session& session, Run& run, const RunServices& services, TurnStatus status,
                               std::string error) {
     run.enter_phase(RunPhase::finalizing);
-    session.committer().repair_open_calls(); // L17：补未闭合调用，不额外发 ToolFinished
+    session.committer().repair_open_calls(); // 补未闭合调用，不额外发 ToolFinished
     session.committer().record_turn_end(status, error, run.steps(), run.tool_calls(), run.usage());
     session.committer().sync();
     log_agent()->info("本轮结束：status={} steps={} tool_calls={} prompt={} completion={}",
@@ -61,7 +61,7 @@ RunOutcome TurnRunner::run(Session& session, Run& run, const RunServices& base_s
 
     run.enter_phase(RunPhase::preparing_context);
     input = base::to_valid_utf8(input);
-    session.committer().commit_user(input); // L03
+    session.committer().commit_user(input);
     sink(TurnStarted{input});
 
     const int max_model_calls = session.config().options.run.max_model_calls;
@@ -118,7 +118,7 @@ RunOutcome TurnRunner::run(Session& session, Run& run, const RunServices& base_s
         } catch (const ModelError& error) {
             switch (error.kind()) {
             case ModelError::Kind::cancelled:
-                session.committer().commit_partial(error.partial().message.content); // L15
+                session.committer().commit_partial(error.partial().message.content);
                 return finish(session, run, services, TurnStatus::interrupted, "");
             case ModelError::Kind::context_too_long:
                 return finish(session, run, services, TurnStatus::failed,
@@ -147,7 +147,7 @@ RunOutcome TurnRunner::run(Session& session, Run& run, const RunServices& base_s
             return finish(session, run, services, TurnStatus::done, "");
         }
 
-        session.committer().commit_assistant(reply); // L05
+        session.committer().commit_assistant(reply);
 
         if (reply.message.tool_calls.empty()) {
             if (run.grace()) return finish(session, run, services, TurnStatus::limit, "");

@@ -1,7 +1,7 @@
 /// @file history.hpp
 /// @brief 只读历史投影：把解码后的记录变成可显示条目，并跨页校验记录顺序与配对。
 ///
-/// HistoryProjector 不构造 Session、不调模型、不连 MCP、不写库（记录路线 §6、§7）；
+/// HistoryProjector 不构造 Session、不调模型、不连 MCP、不写库；
 /// HistoryCursor 只保存角色/ordinal/开放调用等必要元数据，不构造完整 Conversation。
 #pragma once
 
