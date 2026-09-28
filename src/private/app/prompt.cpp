@@ -11,6 +11,7 @@ std::string render_system_prompt(std::string_view tmpl, const workspace::Environ
     data["workspace_sandbox"] = vars.workspace_sandbox;
     data["sandbox_backend"] = vars.sandbox_backend;
     data["sandbox_missing"] = vars.sandbox_missing;
+    data["sandbox_child_signals"] = vars.sandbox_child_signals;
     data["permission_mode"] = vars.permission_mode;
     return workspace::render(tmpl, data);
 }

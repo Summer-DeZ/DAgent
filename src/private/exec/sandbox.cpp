@@ -79,9 +79,19 @@ std::uint64_t landlock_file_access(std::uint64_t allowed) {
     return access & allowed;
 }
 
-int create_landlock_ruleset(std::uint64_t handled) {
-    landlock_ruleset_attr attr {};
+// 系统头文件（6.8）还没有 ABI 6 的 scoped 字段，按内核 UAPI 布局补上；
+// 旧内核只要多出的字段为 0 就照常接受。
+struct RulesetAttr {
+    std::uint64_t handled_access_fs = 0;
+    std::uint64_t handled_access_net = 0;
+    std::uint64_t scoped = 0;
+};
+constexpr std::uint64_t landlock_scope_signal = 1ULL << 1;  ///< LANDLOCK_SCOPE_SIGNAL，ABI 6 起
+
+int create_landlock_ruleset(std::uint64_t handled, std::uint64_t scoped) {
+    RulesetAttr attr;
     attr.handled_access_fs = handled;
+    attr.scoped = scoped;
     return static_cast<int>(::syscall(SYS_landlock_create_ruleset, &attr, sizeof(attr), 0));
 }
 
@@ -208,7 +218,7 @@ std::filesystem::path make_private_tmp() {
 // 用 seccomp 拒绝 AF_INET/AF_INET6 的 socket 创建：UDP（DNS）也一起被挡住，AF_UNIX 照常。
 // 只接收需要填充的几个字段，避免在非 friend 函数里提到 Prepared 的私有 Impl。
 void build_filter(std::vector<sock_filter>& filter, sock_fprog& program, bool& has_filter,
-                  bool allow_network, bool allow_local_sockets) {
+                  bool allow_network, bool allow_local_sockets, bool deny_signals) {
     scmp_filter_ctx ctx = ::seccomp_init(SCMP_ACT_ALLOW);
     if (ctx == nullptr) throw ExecError{ExecError::Kind::sandbox, "seccomp_init failed"};
 
@@ -238,11 +248,19 @@ void build_filter(std::vector<sock_filter>& filter, sock_fprog& program, bool& h
     if (::seccomp_rule_add(ctx, SCMP_ACT_ERRNO(EPERM), SCMP_SYS(socketcall), 0) != 0) fail("deny socketcall");
 #endif
 
-    // 沙箱内进程可以管理自己的正常子进程，但不能向任意宿主 PID 发信号、ptrace 或复制 fd。
-    for (const int nr : {SCMP_SYS(kill), SCMP_SYS(tkill), SCMP_SYS(tgkill), SCMP_SYS(ptrace),
-                         SCMP_SYS(process_vm_readv), SCMP_SYS(process_vm_writev), SCMP_SYS(kcmp),
-                         SCMP_SYS(pidfd_getfd), SCMP_SYS(pidfd_send_signal)}) {
+    // 不能 ptrace、读写别的进程内存或复制它的 fd。
+    for (const int nr : {SCMP_SYS(ptrace), SCMP_SYS(process_vm_readv), SCMP_SYS(process_vm_writev),
+                         SCMP_SYS(kcmp), SCMP_SYS(pidfd_getfd)}) {
         if (::seccomp_rule_add(ctx, SCMP_ACT_ERRNO(EPERM), nr, 0) != 0) fail("deny process control");
+    }
+    // 信号边界优先交给 Landlock 的 signal scope：只能发给同一沙箱域内的进程（自己和子孙），
+    // timeout、kill %1 这类管理自己子进程的用法照常工作。seccomp 分辨不出目标是不是子孙，
+    // 内核没有 ABI 6 时只能整体禁止发信号。
+    if (deny_signals) {
+        for (const int nr : {SCMP_SYS(kill), SCMP_SYS(tkill), SCMP_SYS(tgkill), SCMP_SYS(rt_sigqueueinfo),
+                             SCMP_SYS(rt_tgsigqueueinfo), SCMP_SYS(pidfd_send_signal)}) {
+            if (::seccomp_rule_add(ctx, SCMP_ACT_ERRNO(EPERM), nr, 0) != 0) fail("deny signals");
+        }
     }
 
     // 2.5.5 没有 seccomp_export_bpf_mem，先导出到 memfd 再读回成 sock_filter 数组；
@@ -282,6 +300,7 @@ std::unique_ptr<Prepared> prepare(const Policy& policy) {
     const Support support = probe();
     auto prepared = std::make_unique<Prepared>();
     Prepared::Impl& impl = *prepared->impl_;
+    const bool scope_signals = policy.mode != Mode::full_access && support.child_signals;
 
     if (policy.mode != Mode::full_access) {
         if (support.landlock_abi < 1)
@@ -290,7 +309,7 @@ std::unique_ptr<Prepared> prepare(const Policy& policy) {
         const std::uint64_t write = landlock_write_access(support.landlock_abi);
         const std::uint64_t read = policy.readable.empty() ? 0 : landlock_read_access();
         const std::uint64_t handled = write | read;
-        const int ruleset_fd = create_landlock_ruleset(handled);
+        const int ruleset_fd = create_landlock_ruleset(handled, scope_signals ? landlock_scope_signal : 0);
         if (ruleset_fd < 0)
             throw ExecError{ExecError::Kind::sandbox,
                             "landlock_create_ruleset: " + std::string(std::strerror(errno))};
@@ -329,7 +348,7 @@ std::unique_ptr<Prepared> prepare(const Policy& policy) {
     if (!support.seccomp)
         throw ExecError{ExecError::Kind::sandbox, "seccomp is not available on this kernel"};
     build_filter(impl.filter, impl.program, impl.has_filter, policy.allow_network,
-                 policy.allow_local_sockets);
+                 policy.allow_local_sockets, !scope_signals);
 
     impl.noop = impl.ruleset_fd < 0 && !impl.has_filter;
     return prepared;
@@ -349,6 +368,7 @@ Support probe() {
     support.network_block = support.seccomp;
     support.local_socket_block = support.seccomp;
     support.process_control_block = support.seccomp;
+    support.child_signals = support.landlock_abi >= 6;
     if (!support.filesystem_write) support.missing.push_back("Landlock ABI 3 write and truncate controls");
     if (!support.filesystem_read) support.missing.push_back("Landlock read controls");
     if (!support.protected_subpaths)

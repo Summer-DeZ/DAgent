@@ -118,11 +118,15 @@ sh/bash。它只向 agent Policy 提供判定，不执行命令。
 后端会在每个明确读取/写入根下递归找出 `.env*`、`*.pem`、`*.key`、私钥名、`.ssh` 和 `.gnupg`，
 以 `protect_sensitive_names=true` 的语义规则加入实际排除集合；该规则本身进入 tool_started/BashView 记录。
 
-seccomp 默认拒绝 AF_INET/AF_INET6/AF_NETLINK、AF_UNIX、io_uring socket 绕过，以及向宿主进程使用
-signal、ptrace、process_vm、kcmp、pidfd_getfd/pidfd_send_signal。规则在 exec 前应用并由全部子进程继承；
+seccomp 默认拒绝 AF_INET/AF_INET6/AF_NETLINK、AF_UNIX、io_uring socket 绕过，以及 ptrace、process_vm、
+kcmp、pidfd_getfd。信号边界由 Landlock ABI 6 的 `LANDLOCK_SCOPE_SIGNAL` 承担：命令只能向同一 domain
+内的进程（自身与子孙）发信号，`timeout`、`kill %1` 等管理自身子进程的用法正常，宿主进程与 `kill -1`
+广播都收不到；内核低于 ABI 6 时退回 seccomp 整体拒绝 kill/tkill/tgkill/rt_sigqueueinfo/rt_tgsigqueueinfo/
+pidfd_send_signal，此时自身子进程也无法被信号管理，`Support::child_signals` 报告 false，system prompt
+据此提示模型改用 bash 的 `timeout_ms`（这不是缺失的安全边界，不进 `missing`）。规则在 exec 前应用并由全部子进程继承；
 准备或应用失败时命令不执行，不回退 full_access。普通程序 stderr 中的 `Permission denied` 不再被当作可信提权证据。
 
-`Support` 报告后端名和文件读写、嵌套保护、临时空间、网络、本地 socket、进程控制能力，并提供
+`Support` 报告后端名和文件读写、嵌套保护、临时空间、网络、本地 socket、进程控制、子进程信号管理能力，并提供
 `read_only_ready()` / `workspace_ready()`。权限层只在对应 profile 真实满足时启用；`unrestricted` 明确使用 host。
 
 ### 当前后端决策

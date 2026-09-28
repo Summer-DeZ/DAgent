@@ -417,7 +417,7 @@ system 在创建或恢复时渲染一次，之后不随日期、git 状态或权
 | `cwd, os, shell, date` | workspace 环境采集 |
 | `git` | 仓库根、分支、状态、近期提交；不可用时 null |
 | `instructions` | 全局到当前目录的 AGENTS.md，包含来源、内容和截断标记 |
-| `model, project_root, sandbox, workspace_sandbox, sandbox_backend, sandbox_missing, permission_mode` | 装配配置、启动环境及实际沙箱能力 |
+| `model, project_root, sandbox, workspace_sandbox, sandbox_backend, sandbox_missing, sandbox_child_signals, permission_mode` | 装配配置、启动环境及实际沙箱能力 |
 
 内置 system / compact 模板与核心给模型的文本固定英文，不随界面语言切换。
 主模板明确 `Reply in the user's language.`，即界面英文、模型回复跟随用户语言。

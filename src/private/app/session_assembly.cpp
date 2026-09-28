@@ -39,6 +39,7 @@ std::string render_prompt(const SessionAssembly::Options& base, const SessionSpe
     vars.workspace_sandbox = base.sandbox.workspace_ready() && sandboxed;
     vars.sandbox_backend = base.sandbox.backend;
     vars.sandbox_missing = base.sandbox.missing;
+    vars.sandbox_child_signals = base.sandbox.child_signals;
     vars.permission_mode = spec.state.planning ? "plan" : std::string(agent::to_string(spec.state.mode));
     std::string prompt = render_system_prompt(spec.prompt_template, env, vars);
     if (!base.user_instructions.empty())

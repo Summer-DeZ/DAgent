@@ -79,6 +79,9 @@ struct Support {
     bool network_block = false;
     bool local_socket_block = false;
     bool process_control_block = false;
+    /// 沙箱内命令能向自己的子孙发信号（Landlock ABI 6 signal scope）；
+    /// 为 false 时信号被 seccomp 整体拒绝，timeout、kill 管不了自己的子进程。
+    bool child_signals = false;
     std::vector<std::string> missing;
 
     /// 动态 workspace 命令要求的完整边界；已知只读只要求 read_only_ready()。

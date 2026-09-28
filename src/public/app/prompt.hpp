@@ -21,6 +21,7 @@ struct PromptVars {
     bool workspace_sandbox = false;
     std::string sandbox_backend;
     std::vector<std::string> sandbox_missing;
+    bool sandbox_child_signals = false;  ///< 沙箱内命令能否向自己的子进程发信号
     std::string permission_mode;      ///< "ask" / "workspace" / "unrestricted"
 };
 
