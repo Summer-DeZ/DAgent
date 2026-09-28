@@ -25,7 +25,7 @@ public:
 
     /// @brief 按名字准备普通工具；参数/环境错误返回 is_error 结果。
     virtual std::expected<std::unique_ptr<PreparedTool>, ToolResult> prepare(
-        std::string_view name, std::string_view arguments, const InvocationContext&) const = 0;
+        std::string_view name, std::string_view arguments) const = 0;
 };
 
 } // namespace dagent::agent

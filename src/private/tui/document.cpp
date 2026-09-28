@@ -137,14 +137,6 @@ uint64_t Document::append_block(BlockKind kind, std::string source) {
     return append_block(std::move(b));
 }
 
-uint64_t Document::open_block(BlockKind kind, std::string source) {
-    Block b;
-    b.kind = kind;
-    b.source = std::move(source);
-    b.open = true;
-    return append_block(std::move(b));
-}
-
 uint64_t Document::append_block(Block block) {
     block.id = next_id_++;
     block.cache_key = -1;
@@ -253,32 +245,9 @@ void Document::clear() {
     blocks_.clear();
     prefix_.clear();
     prefix_.push_back(0);
-    base_rows_ = 0;
     first_dirty_ = k_npos;
     anchor_ = Anchor{}; // 内容清空：贴底
     ++revision_; // id 序列保持单调，不复用
-}
-
-void Document::trim_blocks(size_t keep) {
-    if (blocks_.size() <= keep) return;
-    while (blocks_.size() > keep) {
-        blocks_.pop_front();
-        prefix_.pop_front();
-        if (first_dirty_ != k_npos && first_dirty_ > 0) --first_dirty_;
-        ++revision_;
-    }
-    base_rows_ = prefix_.front(); // 绝对行号 = 可见行号 + base_rows_
-}
-
-void Document::trim_rows(size_t keep) {
-    // 丢弃首块后剩余行数 = prefix_.back() - prefix_[1]；保持剩余 >= keep。
-    while (blocks_.size() > 1 && prefix_.back() - prefix_[1] >= keep) {
-        blocks_.pop_front();
-        prefix_.pop_front();
-        if (first_dirty_ != k_npos && first_dirty_ > 0) --first_dirty_;
-        ++revision_;
-    }
-    base_rows_ = prefix_.front();
 }
 
 const Block* Document::find(uint64_t id) const noexcept {
@@ -368,7 +337,7 @@ std::optional<size_t> Document::row_of(uint64_t block_id, size_t byte_in_block,
     if (!idx) return std::nullopt; // 块已被头部裁剪
     Block& b = blocks_[*idx];
     ensure_rows(b, theme);
-    const size_t base = prefix_[*idx] - base_rows_ + margin_rows(b);
+    const size_t base = prefix_[*idx] + margin_rows(b);
     const auto first = b.rows.begin();
     const auto last = first + static_cast<std::ptrdiff_t>(b.rows_valid);
     const auto it = std::upper_bound(
@@ -378,7 +347,7 @@ std::optional<size_t> Document::row_of(uint64_t block_id, size_t byte_in_block,
 }
 
 Location Document::location_of(size_t row, const ThemeTokens& theme) {
-    const size_t abs = row + base_rows_;
+    const size_t abs = row;
     size_t i = static_cast<size_t>(
         std::upper_bound(prefix_.begin(), prefix_.end(), abs) -
         prefix_.begin());
@@ -394,7 +363,7 @@ Location Document::location_of(size_t row, const ThemeTokens& theme) {
 void Document::materialize_range(size_t first, size_t count,
                                  const ThemeTokens& theme) {
     if (count == 0 || blocks_.empty()) return;
-    const size_t first_abs = first + base_rows_;
+    const size_t first_abs = first;
     const size_t last_abs = first_abs + count;
     size_t i = static_cast<size_t>(
         std::upper_bound(prefix_.begin(), prefix_.end(), first_abs) -
@@ -417,7 +386,7 @@ void Document::ensure_rows(Block& b, const ThemeTokens& theme) {
 
 const Line* Document::line_at(size_t row) const noexcept {
     if (blocks_.empty()) return nullptr;
-    const size_t abs = row + base_rows_;
+    const size_t abs = row;
     if (abs >= prefix_.back()) return nullptr;
     size_t i = static_cast<size_t>(
         std::upper_bound(prefix_.begin(), prefix_.end(), abs) -
@@ -433,7 +402,7 @@ const Line* Document::line_at(size_t row) const noexcept {
 }
 
 void Document::evict_outside(size_t first, size_t count) noexcept {
-    const size_t first_abs = first + base_rows_;
+    const size_t first_abs = first;
     const size_t lo = first_abs > count ? first_abs - count : 0;
     const size_t hi = first_abs + count + count;
     for (size_t i = 0; i < blocks_.size(); ++i) {
@@ -451,7 +420,7 @@ void Document::evict_outside(size_t first, size_t count) noexcept {
 // ---- 选择 ----
 
 Location Document::location_at(size_t row, int col, const ThemeTokens& theme) {
-    const size_t abs = row + base_rows_;
+    const size_t abs = row;
     size_t i = static_cast<size_t>(
         std::upper_bound(prefix_.begin(), prefix_.end(), abs) -
         prefix_.begin());

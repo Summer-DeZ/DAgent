@@ -197,10 +197,6 @@ WrapResult wrap_measure_from(std::string_view source, size_t from,
     return r;
 }
 
-size_t count_rows(std::string_view source, int width) noexcept {
-    return wrap_measure_from(source, 0, width).rows;
-}
-
 // ---- 默认渲染器 ----
 
 size_t TextRenderer::render(const Block& block, int width, const ThemeTokens& theme,

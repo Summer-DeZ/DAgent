@@ -28,7 +28,10 @@
 namespace dagent::app {
 
 struct Config {
-    struct Ui { std::filesystem::path theme_file; } ui;
+    struct Ui {
+        std::filesystem::path theme_file;
+        std::size_t completion_max_files = 0;
+    } ui;
     std::map<std::string, llm::ProviderConfig> models;
     std::string model;
     std::vector<std::string> model_selection_log; ///< 日志初始化后输出 CLI 选择/覆盖路径
@@ -45,7 +48,6 @@ struct Config {
     tools::Options tools;
     agent::Options agent; ///< context / run / progress
     agent::PermissionMode permissions = agent::PermissionMode::workspace; ///< 启动权限档初值
-    std::map<std::string, std::string> credentials;
     std::vector<mcp::ServerConfig> mcp_servers;
     std::vector<agent::SubagentDef> subagents; ///< <root>/agents/*.md
     std::filesystem::path root;

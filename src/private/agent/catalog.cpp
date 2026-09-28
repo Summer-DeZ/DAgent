@@ -40,8 +40,8 @@ ActionCatalog::ActionCatalog(ToolSession& tools, Config config)
 }
 
 bool ActionCatalog::control_enabled(std::string_view name) const {
-    if (config_.allowed_tools.empty()) return true;
-    return std::ranges::find(config_.allowed_tools, name) != config_.allowed_tools.end();
+    if (!config_.allowed_tools) return true;
+    return std::ranges::find(*config_.allowed_tools, name) != config_.allowed_tools->end();
 }
 
 std::vector<ToolSpec> ActionCatalog::specs() const {
@@ -87,12 +87,12 @@ bool ActionCatalog::contains(std::string_view name) const {
 
 std::expected<PreparedAction, ToolResult> ActionCatalog::prepare(std::string_view name,
                                                                  std::string_view arguments,
-                                                                 const InvocationContext& invocation) const {
+                                                                 std::string_view call_id) const {
     const auto control = std::ranges::find_if(control_specs_, [&](const ToolSpec& spec) {
         return spec.name == name;
     });
     if (control != control_specs_.end() && control_enabled(name)) {
-        auto request = parse_control_action(name, arguments, invocation, config_.subagents);
+        auto request = parse_control_action(name, arguments, call_id, config_.subagents);
         if (!request) return std::unexpected(std::move(request.error()));
         return PreparedAction{std::move(*request)};
     }
@@ -108,7 +108,7 @@ std::expected<PreparedAction, ToolResult> ActionCatalog::prepare(std::string_vie
         return std::unexpected(std::move(result));
     }
 
-    auto prepared = tools_.prepare(name, arguments, invocation);
+    auto prepared = tools_.prepare(name, arguments);
     if (!prepared) return std::unexpected(std::move(prepared.error()));
     return PreparedAction{std::move(*prepared)};
 }

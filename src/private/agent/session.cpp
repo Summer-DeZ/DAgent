@@ -1,6 +1,5 @@
 #include "agent/session.hpp"
 
-#include <format>
 #include <utility>
 
 namespace dagent::agent {
@@ -72,8 +71,6 @@ ToolResult Session::activate_skill(std::string_view name) {
 
 std::size_t Session::estimated_tokens() { return estimator_.estimate(build_request()); }
 
-std::string Session::next_invocation_id() { return std::format("inv-{}", ++invocation_seq_); }
-
 void Session::begin_run(const RunServices& services, Run& run) {
     run_ = &run;
     committer_.set_sink(services.sink);
@@ -85,8 +82,6 @@ void Session::begin_run(const RunServices& services, Run& run) {
 
 SessionSnapshot Session::snapshot() {
     SessionSnapshot snapshot;
-    snapshot.id = meta_.id;
-    snapshot.model = config_.provider.model;
     snapshot.permission_mode = policy_.mode();
     snapshot.read_only = policy_.read_only();
     snapshot.planning = policy_.planning();

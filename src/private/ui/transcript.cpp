@@ -1,4 +1,5 @@
 #include "ui/transcript.hpp"
+#include "ui/display.hpp"
 #include "ui/strings.hpp"
 
 #include <algorithm>
@@ -24,13 +25,6 @@ constexpr std::string_view kPolicyDenied = "The permission policy denied this ca
 constexpr std::string_view kApprovalUnavailable = "This call requires user approval: ";
 constexpr std::string_view kToolLimit = "This turn hit the tool call limit (";
 
-int display_width(std::string_view value) {
-    int width = 0;
-    tui::unicode::Grapheme g;
-    while (tui::unicode::next_grapheme(value, g)) width += g.width;
-    return width;
-}
-
 std::string fit(std::string_view value, int columns) {
     if (columns <= 0) return {};
     std::string result;
@@ -41,11 +35,6 @@ std::string fit(std::string_view value, int columns) {
         result.append(g.bytes); used += g.width;
     }
     return result;
-}
-
-std::string ellipsize(std::string_view value, int columns) {
-    if (display_width(value) <= columns) return std::string(value);
-    return columns <= 3 ? fit("...", columns) : fit(value, columns - 3) + "...";
 }
 
 std::string clean_field(std::string value) {
@@ -153,7 +142,7 @@ private:
         const int stat_width = display_width(stat);
         const int room = std::max(0, width - used - stat_width - (stat.empty() ? 0 : 2));
         if (!param.empty() && room > 2) {
-            const std::string shown = ellipsize(param, room - 2);
+            const std::string shown = fit_columns(param, room - 2);
             line.spans.push_back({"  ", theme.text_muted, tui::k_no_src});
             line.spans.push_back({shown, theme.text_muted, first_tab + 1});
             used += 2 + display_width(shown);

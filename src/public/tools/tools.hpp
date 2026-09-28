@@ -86,7 +86,7 @@ public:
     virtual const Spec& spec() const = 0;
     /// @brief 解析、校验、预演。参数有问题时返回 is_error 的 Result。没有副作用（可以读文件）。
     virtual std::expected<std::unique_ptr<PreparedTool>, Result> prepare(
-        std::string_view arguments, Context&, const agent::InvocationContext&) const = 0;
+        std::string_view arguments, Context&) const = 0;
 };
 
 /// @brief 名字到工具的映射，specs() 按注册顺序返回（保证每次请求里工具列表顺序稳定）。
@@ -109,8 +109,7 @@ public:
 
     std::vector<agent::ToolSpec> specs() const override;
     std::expected<std::unique_ptr<agent::PreparedTool>, agent::ToolResult> prepare(
-        std::string_view name, std::string_view arguments,
-        const agent::InvocationContext&) const override;
+        std::string_view name, std::string_view arguments) const override;
 
 private:
     const Registry& registry_;

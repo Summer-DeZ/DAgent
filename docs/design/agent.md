@@ -18,8 +18,7 @@ flowchart TD
     ST[storage] -. JournalWriter / SessionStore / Lease .-> AG
 ```
 
-核心不包含 HTTP、SQLite、shell 分析树、MCP Client、终端控件或配置文件读取。外层实现的端口（`agent/port_*.hpp`，
-`ports.hpp` 仅作导航）：
+核心不包含 HTTP、SQLite、shell 分析树、MCP Client、终端控件或配置文件读取。外层实现的端口（`agent/port_*.hpp`）：
 
 | 端口 | 能力 | 实现 |
 | --- | --- | --- |
@@ -35,12 +34,12 @@ flowchart TD
 | --- | --- | --- |
 | `Session` | `session.hpp` | 一份对话的长期状态：Conversation、WorkPlan、Policy、模型与工具环境、Compactor、控制动作执行器、提交器；只暴露构造请求、快照与策略控制 |
 | `SessionConfig` | `session.hpp` | 已解析的会话配置：Options、公开模型、提示词文本、cwd/项目根/控制根、沙箱中立值、权限档、只读/planning、是否主会话 |
-| `Run` | `run.hpp` | 一次 turn 或 compact：id、阶段、steps/tool_calls/usage、取消源、一次性 `finish` 返回 `RunOutcome`；不落库 |
+| `Run` | `run.hpp` | 一次 turn 或 compact：id、steps/tool_calls/usage、取消源、一次性 `finish` 返回 `RunOutcome`；不落库 |
 | `TurnRunner` | `turn_runner.hpp` | 阻塞循环算法与唯一收尾；无跨会话状态，只经 Session/Run/RunServices 工作 |
 | `ActionCatalog` | `catalog.hpp` | 稳定的动作顺序与准备入口：普通工具、控制动作、动态 MCP |
 | `ActionDispatcher` | `dispatch.hpp` | 一批调用的准备、权限、分组执行与有序提交 |
 | `ControlActionExecutor` | `control.hpp` | ask / exit_plan / todo / task 的类型化规则 |
-| `Policy` | `permission.hpp` | 权限规则、会话授权与模式快照（短锁，跨线程可切换/撤销） |
+| `Policy` | `permission.hpp` | 权限规则、会话授权与模式快照（短锁，跨线程可切换；撤销及其审计记录由执行线程串行提交） |
 | `Compactor` | `compaction.hpp` | 预算、裁剪、摘要与失败退化，只产出候选变化 |
 | `SessionCommitter` | `committer.hpp` | 内存状态、记录与通知的唯一提交入口；唯一持有 broken |
 | `RecordCodec` | `record_codec.hpp` | 10 种记录的编码与类型化解码 |
@@ -516,7 +515,7 @@ stateDiagram-v2
 有 connecting / reconnecting 时发等待 Notice 并可取消地等待，至多 `mcp.connect_timeout_ms`；然后合并已完成连接。
 Hub 不接收服务端工具变更通知，也不周期刷新工具列表。连接线程只交接 Client、状态和警告；警告在边界或轮末交付一次。
 
-子会话创建时调用一次 `snapshot`：把当前 ready 服务的工具合并进子注册表，不等待、不重连、不发通知。工具项持有 Client 的
+每个主/子会话创建时调用一次 `snapshot`：把当前 ready 服务的工具合并进该会话的新注册表，不等待、不重连、不发通知。工具项持有 Client 的
 `shared_ptr`，因此重连替换目录不会让仍被子快照引用的连接悬空。子 Agent 的默认工具集不含 `mcp__*`，定义里显式写出才有。
 
 ## 12. 子 Agent 与 task
@@ -528,7 +527,7 @@ app 校验名字唯一、`permission` 取值、`model` 引用和上限，未知�
 - `DelegationContext` 是执行时构造的不可变值：父 session/run/call、父当前权限快照、子定义、允许工具、模型名、
   父 Sink/Approver 与 stop；不含可写父 Session。子会话生命周期严格在一次 `delegate` 内，父等待整组结束，按原顺序回填。
 - 禁止二级子 Agent：子会话的动作目录不含 task；子会话也不能使用 ask / exit_plan（没有 Asker，也不参与规划确认）。
-- `allowed_tools` 取定义里的 `tools`，缺省继承父工具名再剔除 `task` / `ask` / `exit_plan` 与 MCP 工具。
+- `allowed_tools` 取定义里的 `tools`，缺省继承父工具名再剔除 `task` / `ask` / `exit_plan` 与 MCP 工具。显式空列表或过滤后为空均表示不提供工具，只有主会话的未限制状态才使用 nullopt。
 - 定义未指定模型时继承父当前模型；显式指定时按配置名解析。
 - 子会话记录带 `parent_id` / `agent_name`，不进 `sessions` 列表与 `/resume`，按父会话列出供界面浏览。
 

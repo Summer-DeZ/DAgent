@@ -254,7 +254,7 @@ const std::set<std::string>& known_keys() {
         "run.max_parallel_tasks", "run.max_parallel_tools",
         "session.redact_fields", "session.history_scan_limit", "log.max_file_bytes",
         "log.max_files", "log.level", "log.also_stderr", "progress.interval_ms",
-        "permissions", "ui.theme_file", "sandbox.version", "mcp.connect_timeout_ms", "mcp.probe_timeout_ms",
+        "permissions", "ui.theme_file", "ui.completion_max_files", "sandbox.version", "mcp.connect_timeout_ms", "mcp.probe_timeout_ms",
         "tools.max_result_bytes", "tools.bash_collect_bytes", "tools.read_default_lines", "tools.read_max_line_bytes",
         "tools.grep_max_matches", "tools.glob_max_files", "tools.bash_max_timeout_ms",
         "tools.mcp_call_timeout_ms"};
@@ -265,7 +265,7 @@ bool known_key(std::string_view key) {
     if (known_keys().contains(std::string(key))) return true;
     constexpr std::string_view prefixes[] = {"session.redact_fields", "process.env_deny",
                                               "sandbox.extra_readable", "sandbox.extra_writable",
-                                              "network.credentials", "mcp.mcpServers"};
+                                              "mcp.mcpServers"};
     return std::ranges::any_of(prefixes, [&](std::string_view prefix) {
         return key == prefix || (key.starts_with(prefix) && key.size() > prefix.size() &&
                                  key[prefix.size()] == '.');
@@ -460,20 +460,6 @@ tools::Options map_tools(const Node& n) {
     return o;
 }
 
-std::map<std::string, std::string> map_credentials(const Node& n) {
-    std::map<std::string, std::string> out;
-    const Node values = n.child("credentials");
-    if (!values.has()) return out;
-    if (!values.raw().is_object()) fail(ConfigError::Kind::type, values.pointer() + " must be an object");
-    for (const auto& [host, value] : values.raw().items()) {
-        if (!value.is_string()) fail(ConfigError::Kind::type, values.pointer() + "/" + host + " must be a string");
-        const std::string env = value.get<std::string>();
-        if (const char* secret = std::getenv(env.c_str()); secret != nullptr) out[host] = secret;
-        else log_app()->warn("network.credentials.{} references unset environment variable {}", host, env);
-    }
-    return out;
-}
-
 bool blank(std::string_view text) {
     return text.find_first_not_of(" \t\r") == std::string_view::npos;
 }
@@ -542,7 +528,7 @@ agent::SubagentDef parse_subagent(const fs::path& file, const std::string& text,
         if (line.front() == '-') {
             if (!tools_open) fail_at(ConfigError::Kind::parse, i + 1, "list item outside a tools key");
             std::string item = trim(line.substr(1));
-            if (!item.empty()) def.tools.push_back(std::move(item));
+            if (!item.empty()) def.tools->push_back(std::move(item));
             continue;
         }
         const auto colon = line.find(':');
@@ -588,7 +574,7 @@ std::filesystem::path project_root(const std::filesystem::path& cwd, const exec:
     try {
         const exec::Result result = exec::run(cmd, process);
         if (result.exit_code.value_or(1) == 0) {
-            const std::string text = trim_end(result.out.text);
+            const std::string text = trim_end(result.out);
             if (!text.empty()) return absolute_under(cwd, text);
         }
     } catch (const exec::ExecError&) {}
@@ -701,6 +687,7 @@ Config load_config(const LoadOptions& options) {
     if (!config.models.contains(config.model))
         fail(ConfigError::Kind::invalid, "models.json default names an unknown model: " + config.model);
     config.ui.theme_file = node.child("ui").child("theme_file").str();
+    config.ui.completion_max_files = size_option(node.required("ui"), "completion_max_files");
     config.system_prompt_file = node.child("prompts").child("system").str((paths.prompts / "system.md").string());
     config.compact_prompt_file = node.child("prompts").child("compact").str((paths.prompts / "compact.md").string());
     config.http = map_http(node.required("http"));
@@ -728,7 +715,6 @@ Config load_config(const LoadOptions& options) {
         else if (mode == "unrestricted") config.permissions = agent::PermissionMode::unrestricted;
         else fail(ConfigError::Kind::type, v.pointer() + " must be ask, workspace or unrestricted");
     }
-    config.credentials = map_credentials(node.child("network"));
     config.mcp_servers = parse_mcp_servers(node.required("mcp").raw());
     Toolchain toolchain(paths);
     config.tools.environments = toolchain.environments();

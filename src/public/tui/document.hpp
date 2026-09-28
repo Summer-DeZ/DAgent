@@ -93,8 +93,6 @@ struct WrapResult {
 /// 返回值中的 stable_bytes 相对 from。
 WrapResult wrap_measure_from(std::string_view source, size_t from,
                              int width) noexcept;
-/// @brief 对全文折行计数（零分配）。
-size_t count_rows(std::string_view source, int width) noexcept;
 
 /// @brief 单行折行边界。
 struct RowEdge {
@@ -187,8 +185,6 @@ public:
     uint64_t append_block(BlockKind kind, std::string source = {});
     /// @brief 追加块（完整控制 meta/group/depth/open/collapsed），返回块 id。
     uint64_t append_block(Block block);
-    /// @brief 建一个可增长的块（流式输出入口），返回块 id。
-    uint64_t open_block(BlockKind kind, std::string source = {});
     /// @brief 追加到 open 块；id 不存在或块已关闭时返回 false。
     bool append(uint64_t id, std::string_view chunk);
     /// @brief 整体替换块的 source。
@@ -204,17 +200,11 @@ public:
 
     /// @brief 清空文档；id 序列保持单调不复用。
     void clear();
-    /// @brief 头部裁剪到至多 keep 块。
-    void trim_blocks(size_t keep);
-    /// @brief 头部裁剪到至多 keep 行。
-    void trim_rows(size_t keep);
 
     /// @brief 滚动锚点；replace/erase_from 自动维护其有效性。
     const Anchor& anchor() const noexcept { return anchor_; }
     void set_anchor(Anchor anchor) noexcept { anchor_ = anchor; }
 
-    size_t block_count() const noexcept { return blocks_.size(); }
-    const Block& block_at(size_t index) const noexcept { return blocks_[index]; }
     /// @brief 按 id 查找；不存在返回 nullptr。
     const Block* find(uint64_t id) const noexcept;
     /// @brief 内容版本号，任何内容变更后递增。
@@ -226,9 +216,9 @@ public:
     void begin_frame(int width, uint32_t theme_epoch);
     /// @brief 可见总行数（0 = 现存最旧一行）。
     size_t total_rows() const noexcept {
-        return prefix_.back() - base_rows_;
+        return prefix_.back();
     }
-    /// @brief 锚点所在行；所在块被头部裁剪后返回 nullopt。
+    /// @brief 锚点所在行；所在块被删除后返回 nullopt。
     std::optional<size_t> row_of(uint64_t block_id, size_t byte_in_block,
                                  const ThemeTokens& theme);
     /// @brief 行号 → 内容位置；边距行返回块首。
@@ -265,13 +255,12 @@ private:
     std::optional<size_t> index_of(uint64_t id) const noexcept;
 
     std::deque<Block> blocks_;
-    std::deque<size_t> prefix_; ///< 长度 = blocks_ + 1，绝对行号
+    std::deque<size_t> prefix_; ///< 长度 = blocks_ + 1，累计行号
     std::array<std::unique_ptr<BlockRenderer>, k_block_kind_count> renderers_{};
     Anchor anchor_{};
     uint64_t next_id_ = 1;
     uint64_t revision_ = 0;
     size_t first_dirty_ = static_cast<size_t>(-1);
-    size_t base_rows_ = 0; ///< 已裁剪的行数（绝对行号 = 可见行号 + 它）
     int width_ = 0;
     uint32_t theme_epoch_ = 0;
 };

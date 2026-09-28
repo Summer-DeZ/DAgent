@@ -16,10 +16,15 @@
 
 namespace dagent::workspace {
 
-struct GitInfo {
-    std::filesystem::path root;
+struct GitStatus {
+    bool dirty = false;
     std::string branch;                      ///< detached HEAD 时是短 SHA
     std::string status_summary;              ///< "3 个文件已修改，1 个未跟踪"
+};
+
+struct GitInfo {
+    std::filesystem::path root;
+    GitStatus status;
     std::vector<std::string> recent_commits; ///< git log --oneline -n 5
 };
 
@@ -42,6 +47,10 @@ struct ContextOptions {
     std::size_t max_instructions_bytes = 32 << 10;
     std::vector<std::string> instruction_files{"AGENTS.md"};
 };
+
+/// @brief 仅查询分支与工作区变更，不读取提交日志或项目指令。
+std::optional<GitStatus> collect_git_status(const std::filesystem::path& cwd,
+                                           const ContextOptions& = {}, std::stop_token = {});
 
 /// @brief 收集环境事实。git 不可用（没装、不是仓库、超时）时 git 为空，不影响启动。
 Environment collect_environment(const std::filesystem::path& cwd, const ContextOptions& = {},

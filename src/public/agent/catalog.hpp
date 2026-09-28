@@ -21,7 +21,7 @@ namespace dagent::agent {
 class ActionCatalog {
 public:
     struct Config {
-        std::vector<std::string> allowed_tools; ///< 空 = 全部；子 Agent 的收窄名单
+        std::optional<std::vector<std::string>> allowed_tools; ///< nullopt = 不限制；空列表 = 无工具
         std::vector<SubagentDef> subagents;     ///< task 的描述与枚举
         std::shared_ptr<const SkillCatalog> skills;
         bool include_task = false;              ///< 主 Agent 且定义表非空
@@ -36,7 +36,7 @@ public:
 
     /// @brief 按名准备普通工具或解析控制动作；未知名字/参数错误返回 is_error 结果。
     std::expected<PreparedAction, ToolResult> prepare(std::string_view name, std::string_view arguments,
-                                                      const InvocationContext&) const;
+                                                      std::string_view call_id) const;
 
 private:
     bool control_enabled(std::string_view name) const;

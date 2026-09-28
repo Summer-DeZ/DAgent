@@ -30,7 +30,7 @@ base、exec、workspace、mcp。核心不依赖 tools：后端装配把 `tools::
   │
   ▼ ActionCatalog：控制动作由核心解析；普通工具交给 ToolSession
   ▼ registry.find(name)            找不到 → 核心自己构造未知工具结果
-  ▼ tool.prepare(arguments, ctx, invocation)  解析、校验、预演；参数有问题 → 直接得到 is_error 的 ToolResult
+  ▼ tool.prepare(arguments, ctx)  解析、校验、预演；参数有问题 → 直接得到 is_error 的 ToolResult
   │                                成功 → PreparedTool，带只读的 PreparedIntent（资源、命令意图、diff 预览、摘要）
   ▼ 核心：按 PreparedIntent 做权限决策     拒绝 → 核心构造拒绝结果
   ▼ prepared->execute(grant, on_output, stop)
@@ -39,7 +39,7 @@ base、exec、workspace、mcp。核心不依赖 tools：后端装配把 `tools::
 
 **两阶段**：权限对话框需要在执行前看到「要改什么」（edit 的 diff、bash 的命令和只读分析），而且注定失败的
 调用（找不到 `old_string`、参数缺字段、超过写入上限、路径不存在）不应该先弹一次确认。`prepare` 没有副作用，
-可以读文件，但不写任何东西。PreparedTool 在构造时固定 invocation 身份（model_call_id + 内部 invocation_id）。
+可以读文件，但不写任何东西。调用身份由 Dispatcher 的槽位持有；PreparedTool 只拥有执行所需参数与只读意图。
 
 ```cpp
 tools::Registry registry;
@@ -48,7 +48,7 @@ tools::add_mcp(registry, client);                    // shared_ptr<mcp::Client>�
 tools::Context ctx(root, config.tools, config.files, config.search, config.process);
 tools::ToolSession session(registry, ctx);           // 实现 agent::ToolSession，交给核心 Session
 
-auto prepared = session.prepare(call.name, call.arguments, invocation);
+auto prepared = session.prepare(call.name, call.arguments);
 if (!prepared) return prepared.error();              // is_error 的 ToolResult
 const agent::PreparedIntent& intent = (*prepared)->intent(); // 权限决策的输入
 agent::ToolResult result = (*prepared)->execute(grant, on_output, stop);

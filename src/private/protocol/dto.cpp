@@ -71,26 +71,24 @@ void from_json(const nlohmann::json& json, QueueItem& item) {
 void to_json(nlohmann::json& json, const OperationInfo& info) {
     json = nlohmann::json{{"kind", info.kind}, {"run_id", optional_string(info.run_id.empty()
                                                                                ? std::nullopt
-                                                                               : std::optional<std::string>(info.run_id))},
-                          {"phase", info.phase}};
+                                                                               : std::optional<std::string>(info.run_id))}};
 }
 
 void from_json(const nlohmann::json& json, OperationInfo& info) {
     info.kind = json.value("kind", "");
     info.run_id = read_optional_string(json, "run_id").value_or("");
-    info.phase = json.value("phase", "");
 }
 
 void to_json(nlohmann::json& json, const ContextInfo& info) {
     json = nlohmann::json{
-        {"used", info.used}, {"limit", info.limit}, {"window", info.window}, {"usage", info.usage}};
+        {"used", info.used}, {"limit", info.limit}, {"window", info.window}, {"trigger_percent", info.trigger_percent}};
 }
 
 void from_json(const nlohmann::json& json, ContextInfo& info) {
     info.used = json.value("used", std::size_t{0});
     info.limit = json.value("limit", std::size_t{0});
     info.window = json.value("window", std::size_t{0});
-    info.usage = json.value("usage", Usage{});
+    info.trigger_percent = json.at("trigger_percent").get<int>();
 }
 
 void to_json(nlohmann::json& json, const RecordingInfo& info) {
@@ -100,16 +98,6 @@ void to_json(nlohmann::json& json, const RecordingInfo& info) {
 void from_json(const nlohmann::json& json, RecordingInfo& info) {
     info.broken = json.value("broken", false);
     info.error = json.value("error", "");
-}
-
-void to_json(nlohmann::json& json, const ChildInfo& info) {
-    json = nlohmann::json{{"session_id", info.session_id}, {"agent", info.agent}, {"call_id", info.call_id}};
-}
-
-void from_json(const nlohmann::json& json, ChildInfo& info) {
-    info.session_id = json.value("session_id", "");
-    info.agent = json.value("agent", "");
-    info.call_id = json.value("call_id", "");
 }
 
 void to_json(nlohmann::json& json, const SessionSnapshot& snapshot) {
@@ -128,7 +116,6 @@ void to_json(nlohmann::json& json, const SessionSnapshot& snapshot) {
         {"context", snapshot.context},
         {"work_plan", snapshot.work_plan},
         {"mcp", snapshot.mcp},
-        {"children", snapshot.children},
         {"recording", snapshot.recording},
     };
 }
@@ -149,7 +136,6 @@ void from_json(const nlohmann::json& json, SessionSnapshot& snapshot) {
     snapshot.context = json.value("context", ContextInfo{});
     snapshot.work_plan = json.value("work_plan", nlohmann::json::array());
     snapshot.mcp = json.value("mcp", nlohmann::json::array());
-    snapshot.children = json.value("children", std::vector<ChildInfo>{});
     snapshot.recording = json.value("recording", RecordingInfo{});
 }
 
@@ -189,9 +175,7 @@ void to_json(nlohmann::json& json, const Event& event) {
                           {"session_generation", event.session_generation},
                           {"kind", event.kind},
                           {"data", event.data},
-                          {"run_id", optional_string(event.run_id)},
                           {"parent_session_id", optional_string(event.parent_session_id)},
-                          {"parent_invocation_id", optional_string(event.parent_invocation_id)},
                           {"model_call_id", optional_string(event.model_call_id)},
                           {"agent", optional_string(event.agent)}};
 }
@@ -202,9 +186,7 @@ void from_json(const nlohmann::json& json, Event& event) {
     event.session_generation = json.value("session_generation", std::uint64_t{0});
     event.kind = json.value("kind", "");
     event.data = json.value("data", nlohmann::json::object());
-    event.run_id = read_optional_string(json, "run_id");
     event.parent_session_id = read_optional_string(json, "parent_session_id");
-    event.parent_invocation_id = read_optional_string(json, "parent_invocation_id");
     event.model_call_id = read_optional_string(json, "model_call_id");
     event.agent = read_optional_string(json, "agent");
 }

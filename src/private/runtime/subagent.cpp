@@ -38,7 +38,7 @@ public:
           prompt_(request.prompt) {}
 
     agent::ToolResult run() {
-        instance_ = factory_.create_child(context_, def_, permission_, [](const agent::Event&) {});
+        instance_ = factory_.create_child(context_, def_, permission_);
         agent::Session& session = instance_->session();
         view_.agent = def_.name;
         view_.task = prompt_;
@@ -59,7 +59,7 @@ public:
 
         agent::RunServices services{child_sink, approver, asker, nullptr, &instance_->resources(),
                                     context_.stop};
-        agent::Run run(agent::RunKind::turn, run_id);
+        agent::Run run(run_id);
         run.begin(context_.stop);
 
         const auto began = std::chrono::steady_clock::now();

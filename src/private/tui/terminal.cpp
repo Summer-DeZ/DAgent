@@ -24,9 +24,6 @@ namespace {
 // atexit 兜底与信号处理器（无 this 可用）所需的全局锚点。
 std::atomic<Terminal*> g_instance{nullptr};
 std::atomic<int> g_signal_write_fd{-1};
-// 挂起中：SIGINT 在处理器里忽略（不改 SIG_IGN，避免跨 exec 继承）。
-
-std::atomic<bool> g_interrupt_ignored{false};
 std::once_flag g_atexit_once;
 
 // 被接管的信号：卸载时还原调用方原装的处理器，而非 SIG_DFL。
@@ -41,10 +38,6 @@ struct sigaction g_saved_handlers[std::size(kSignals)] = {};
 void terminal_on_signal(int sig) noexcept {
     const int saved_errno = errno; // 处理器不得改动被打断代码看到的 errno
     const int fd = g_signal_write_fd.load(std::memory_order_relaxed);
-    if (sig == SIGINT && g_interrupt_ignored.load(std::memory_order_relaxed)) {
-        errno = saved_errno;
-        return;
-    }
     if (fd >= 0) {
         const char b = sig == SIGWINCH ? kResizeByte : kQuitByte;
         ssize_t n = ::write(fd, &b, 1); // 管道满（EAGAIN）= 唤醒已挂起
@@ -64,12 +57,11 @@ bool env_has(std::string_view value, std::string_view key) noexcept {
     return value.find(key) != std::string_view::npos;
 }
 
-// 离开界面模式的序列；restore 与 suspend 共用，传入"当前确实开着"的模式。
-std::string leave_screen_seq(bool mouse, bool focus, bool paste, bool kitty,
+// 离开界面模式的序列；传入"当前确实开着"的模式。
+std::string leave_screen_seq(bool mouse, bool paste, bool kitty,
                              bool grapheme) {
     std::string seq;
     if (mouse) seq += "\x1b[?1006l\x1b[?1002l";
-    if (focus) seq += "\x1b[?1004l";
     if (kitty) seq += "\x1b[<u"; // 弹出握手时推入的键盘 flag
     if (grapheme) seq += "\x1b[?2027l";
     if (paste) seq += "\x1b[?2004l";
@@ -159,7 +151,6 @@ void Terminal::probe_caps() noexcept {
 
     caps_.sgr_mouse       = modern;
     caps_.bracketed_paste = modern;
-    caps_.focus_events    = modern;
 }
 
 Size Terminal::size() const noexcept {
@@ -193,14 +184,6 @@ void Terminal::set_mouse(bool on) {
     }
     // 1002 = 按键事件跟踪；1006 = SGR 扩展坐标。
     write(on ? "\x1b[?1002h\x1b[?1006h" : "\x1b[?1006l\x1b[?1002l");
-}
-
-void Terminal::set_focus_events(bool on) {
-    if (!screen_active_.load(std::memory_order_acquire) || !caps_.focus_events ||
-        focus_.exchange(on, std::memory_order_acq_rel) == on) {
-        return;
-    }
-    write(on ? "\x1b[?1004h" : "\x1b[?1004l");
 }
 
 void Terminal::apply_caps(const Caps& caps) noexcept { caps_ = caps; }
@@ -268,12 +251,10 @@ void Terminal::restore() noexcept {
     if (restored_.exchange(true, std::memory_order_acq_rel)) {
         return;
     }
-    g_interrupt_ignored.store(false, std::memory_order_relaxed);
 
     if (screen_active_.load(std::memory_order_acquire)) {
         write(leave_screen_seq(
             mouse_.exchange(false, std::memory_order_acq_rel),
-            focus_.exchange(false, std::memory_order_acq_rel),
             paste_.exchange(false, std::memory_order_acq_rel),
             kitty_.exchange(false, std::memory_order_acq_rel),
             grapheme_.exchange(false, std::memory_order_acq_rel)));
@@ -283,76 +264,6 @@ void Terminal::restore() noexcept {
     if (raw_saved_) {
         ::tcsetattr(STDIN_FILENO, TCSANOW, &saved_);
         raw_saved_ = false;
-    }
-}
-
-// 挂起：逆序退出界面模式并还原 termios，记住现场供 resume 恢复。
-void Terminal::suspend() noexcept {
-    if (restored_.load(std::memory_order_acquire) || suspended_) return;
-    suspended_ = true;
-    g_interrupt_ignored.store(true, std::memory_order_relaxed);
-
-    if (screen_active_.load(std::memory_order_acquire)) {
-        suspended_screen_ = true;
-        suspended_mouse_ = mouse_.exchange(false, std::memory_order_acq_rel);
-        suspended_focus_ = focus_.exchange(false, std::memory_order_acq_rel);
-        suspended_paste_ = paste_.exchange(false, std::memory_order_acq_rel);
-        suspended_kitty_ = kitty_.exchange(false, std::memory_order_acq_rel);
-        suspended_grapheme_ = grapheme_.exchange(false, std::memory_order_acq_rel);
-        write(leave_screen_seq(suspended_mouse_, suspended_focus_,
-                               suspended_paste_, suspended_kitty_,
-                               suspended_grapheme_));
-        screen_active_.store(false, std::memory_order_release);
-    }
-
-    suspended_raw_ = raw_saved_;
-    if (raw_saved_) {
-        ::tcsetattr(STDIN_FILENO, TCSANOW, &saved_);
-        raw_saved_ = false;
-    }
-}
-
-// 恢复：与 suspend 配对，重进备用屏/raw 并恢复挂起前的上报模式。
-void Terminal::resume() {
-    if (!suspended_ || restored_.load(std::memory_order_acquire)) return;
-    suspended_ = false;
-    g_interrupt_ignored.store(false, std::memory_order_relaxed);
-
-    if (suspended_raw_) {
-        suspended_raw_ = false;
-        termios raw = saved_;
-        ::cfmakeraw(&raw);
-        ::tcsetattr(STDIN_FILENO, TCSANOW, &raw);
-        raw_saved_ = true;
-    }
-
-    if (suspended_screen_) {
-        suspended_screen_ = false;
-        std::string seq = "\x1b[?1049h"; // 备用屏幕
-        seq += "\x1b[?7l";               // 关自动换行
-        seq += "\x1b[?25l";              // 藏光标
-        if (suspended_paste_) {
-            seq += "\x1b[?2004h";
-            paste_.store(true, std::memory_order_release);
-        }
-        if (suspended_mouse_) {
-            seq += "\x1b[?1002h\x1b[?1006h";
-            mouse_.store(true, std::memory_order_release);
-        }
-        if (suspended_focus_) {
-            seq += "\x1b[?1004h";
-            focus_.store(true, std::memory_order_release);
-        }
-        if (suspended_kitty_) {
-            seq += "\x1b[>1u";
-            kitty_.store(true, std::memory_order_release);
-        }
-        if (suspended_grapheme_) {
-            seq += "\x1b[?2027h";
-            grapheme_.store(true, std::memory_order_release);
-        }
-        write(seq);
-        screen_active_.store(true, std::memory_order_release);
     }
 }
 

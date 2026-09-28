@@ -147,7 +147,6 @@ ActionDispatcher::Outcome ActionDispatcher::dispatch(const std::vector<ToolCall>
     // 块内 join 完才起下一块；每个线程只写自己的 slot（docs/design/agent.md §6）。
     const auto run_group = [&] {
         if (group.empty()) return;
-        if (group_kind == GroupKind::task) run_.enter_phase(RunPhase::waiting_children);
         const std::size_t width = group_kind == GroupKind::task
                                       ? static_cast<std::size_t>(
                                             session_.config().options.run.max_parallel_tasks)
@@ -171,7 +170,6 @@ ActionDispatcher::Outcome ActionDispatcher::dispatch(const std::vector<ToolCall>
             }
         } // jthread 析构时 join：这一块全部结束才开始下一块
         group.clear();
-        if (group_kind == GroupKind::task) run_.enter_phase(RunPhase::dispatching);
     };
 
     for (std::size_t i = 0; i < slots.size(); ++i) {
@@ -193,8 +191,7 @@ ActionDispatcher::Outcome ActionDispatcher::dispatch(const std::vector<ToolCall>
         }
         ++outcome.handled;
 
-        const InvocationContext invocation{session_.next_invocation_id(), slot.call->id};
-        auto prepared = catalog.prepare(slot.call->name, slot.call->arguments, invocation);
+        auto prepared = catalog.prepare(slot.call->name, slot.call->arguments, slot.call->id);
         std::optional<Verdict> verdict;
         if (prepared) {
             if (const auto* tool = std::get_if<std::unique_ptr<PreparedTool>>(&prepared.value()))
@@ -209,7 +206,7 @@ ActionDispatcher::Outcome ActionDispatcher::dispatch(const std::vector<ToolCall>
         std::optional<GroupKind> kind = parallel_kind(prepared, verdict);
         if (!group.empty() && (!kind || *kind != group_kind)) {
             run_group();
-            prepared = catalog.prepare(slot.call->name, slot.call->arguments, invocation);
+            prepared = catalog.prepare(slot.call->name, slot.call->arguments, slot.call->id);
             verdict.reset();
             if (prepared) {
                 if (const auto* tool = std::get_if<std::unique_ptr<PreparedTool>>(&prepared.value()))
@@ -262,9 +259,7 @@ ActionDispatcher::Outcome ActionDispatcher::dispatch(const std::vector<ToolCall>
                     make_result(std::format(texts::kApprovalUnavailable, approval.reason), true, false);
                 break;
             }
-            run_.enter_phase(RunPhase::waiting_approval);
             const Decision decision = services_.approver(approval, stop);
-            run_.enter_phase(RunPhase::dispatching);
             if (stop.stop_requested()) {
                 outcome.stop = Outcome::Stop::interrupted;
                 slot.result = make_result(std::string(texts::kInterruptedCall), false, true);

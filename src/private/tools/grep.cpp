@@ -28,9 +28,9 @@ constexpr std::string_view kDescription = R"(Search file contents in the workspa
 
 class GrepCall final : public PreparedTool {
 public:
-    GrepCall(const agent::InvocationContext& invocation, const Context& ctx, workspace::Resolved root,
+    GrepCall(const Context& ctx, workspace::Resolved root,
              workspace::GrepQuery query, bool files_only)
-        : PreparedTool(invocation), root_(std::move(root)), search_options_(ctx.search()),
+        : root_(std::move(root)), search_options_(ctx.search()),
           files_only_(files_only), max_result_bytes_(ctx.options().max_result_bytes),
           query_(std::move(query)) {
         // workspace::grep 返回的路径相对查询根（查询根是文件时相对它所在的目录）；
@@ -146,8 +146,7 @@ public:
     const Spec& spec() const override { return spec_; }
 
     std::expected<std::unique_ptr<PreparedTool>, Result> prepare(
-        std::string_view arguments, Context& ctx,
-        const agent::InvocationContext& invocation) const override {
+        std::string_view arguments, Context& ctx) const override {
         auto args = detail::parse_arguments(arguments);
         if (!args) return std::unexpected(error_result(args.error()));
         std::string err;
@@ -173,7 +172,7 @@ public:
         if (context && *context > 0) query.context = static_cast<int>(std::min<std::int64_t>(*context, 10));
         query.max_matches = ctx.options().grep_max_matches;
 
-        return std::make_unique<GrepCall>(invocation, ctx, root, std::move(query),
+        return std::make_unique<GrepCall>(ctx, root, std::move(query),
                                           files_only.value_or(false));
     }
 

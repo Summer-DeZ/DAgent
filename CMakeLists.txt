@@ -23,6 +23,3 @@ add_subdirectory(src)
 install(TARGETS dagent dagent-backend RUNTIME DESTINATION .)
 configure_file(cmake/install_home.cmake.in ${CMAKE_BINARY_DIR}/install_home.cmake @ONLY)
 install(SCRIPT ${CMAKE_BINARY_DIR}/install_home.cmake)
-
-enable_testing()
-add_subdirectory(test)

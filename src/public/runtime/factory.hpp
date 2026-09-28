@@ -66,8 +66,7 @@ public:
     virtual const agent::SubagentDef* find_subagent(std::string_view name) const = 0;
 
     /// @brief 新建顶层会话；permission 为空时用装配初值（启动创建）。
-    virtual std::unique_ptr<SessionInstance> create_new(std::optional<SessionState> state,
-                                                        const agent::Sink& replay) = 0;
+    virtual std::unique_ptr<SessionInstance> create_new(std::optional<SessionState> state) = 0;
     /// @brief 显式恢复：候选自己取得写租约；失败时旧会话保持。permission 为空时用装配初值。
     virtual std::unique_ptr<SessionInstance> resume(std::string_view session_id,
                                                     std::optional<SessionState> state,
@@ -80,8 +79,7 @@ public:
     /// @brief 子会话：从父上下文与子定义派生；子自己取得写租约。
     virtual std::unique_ptr<SessionInstance> create_child(const agent::DelegationContext& context,
                                                           const agent::SubagentDef& def,
-                                                          const agent::DerivedPermission& permission,
-                                                          const agent::Sink& replay) = 0;
+                                                          const agent::DerivedPermission& permission) = 0;
 };
 
 /// @brief 后端配置操作：模型清单/添加与主题文件路径；凭据只在此边界转换，不进入公开返回值。
@@ -117,10 +115,9 @@ struct ChildSummary {
     std::string session_id, agent, title;
 };
 
-/// @brief 一页只读历史；cursor 由后端原样回传。
+/// @brief 一页顺序读取的历史；查询游标由 backend 独立管理。
 struct HistoryPage {
     std::vector<agent::HistoryItem> items;
-    std::string cursor;
     bool done = false;
 };
 
@@ -137,12 +134,12 @@ private:
     Kind kind_;
 };
 
-/// @brief 一个打开的历史查询：固定高水位、跨页验证游标；释放后读取返回错误。
+/// @brief 一个打开的历史查询：固定高水位、顺序读取；释放后读取返回错误。
 class HistoryReader {
 public:
     virtual ~HistoryReader() = default;
 
-    virtual HistoryPage read(const std::string& cursor, std::size_t limit) = 0;
+    virtual HistoryPage read(std::size_t limit) = 0;
     virtual const std::string& session_id() const = 0;
     virtual std::int64_t upper_seq() const = 0;
 };

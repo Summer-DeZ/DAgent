@@ -29,9 +29,9 @@ SessionController::SessionController(Deps deps) : deps_(std::move(deps)) {
 
 SessionController::~SessionController() { shutdown(); }
 
-StartResult SessionController::start(const StartOptions& options) {
-    std::vector<agent::Event> replay;
-    const agent::Sink collect = [&replay](const agent::Event& event) { replay.push_back(event); };
+bool SessionController::start(const StartOptions& options) {
+    // 初始化后的完整状态通过快照和历史查询交付。
+    const agent::Sink initial_replay = [](const agent::Event&) {};
 
     std::unique_ptr<SessionInstance> instance;
     bool resumed = false;
@@ -39,10 +39,10 @@ StartResult SessionController::start(const StartOptions& options) {
         const std::optional<std::string_view> prefix =
             options.resume_id ? std::optional<std::string_view>(*options.resume_id) : std::nullopt;
         const std::string id = deps_.factory->resolve_session(prefix);
-        instance = deps_.factory->resume(id, std::nullopt, collect);
+        instance = deps_.factory->resume(id, std::nullopt, initial_replay);
         resumed = true;
     } else {
-        instance = deps_.factory->create_new(std::nullopt, collect);
+        instance = deps_.factory->create_new(std::nullopt);
     }
 
     std::shared_ptr<SessionInstance> shared(std::move(instance));
@@ -54,7 +54,7 @@ StartResult SessionController::start(const StartOptions& options) {
     }
     refresh_snapshot(*shared);
     log_runtime()->info("会话已就绪：id={} resumed={}", shared->session().meta().id, resumed);
-    return StartResult{resumed, std::move(replay)};
+    return resumed;
 }
 
 void SessionController::shutdown() {
@@ -66,7 +66,7 @@ void SessionController::shutdown() {
         state_ = State::closing;
         commands_.clear();
         queue_.clear();
-        control = control_;
+        if (run_) control = run_->control;
     }
     if (control) control->stop.request_stop();
     cv_.notify_all();
@@ -77,7 +77,6 @@ void SessionController::shutdown() {
         const std::lock_guard lock(mutex_);
         current_.reset();
         run_.reset();
-        control_.reset();
         state_ = State::closed;
     }
 }
@@ -131,7 +130,6 @@ void SessionController::refresh_snapshot(SessionInstance& instance) {
         }
     }
     const std::lock_guard lock(publish_mutex_);
-    next.state_seq = event_seq_;
     snapshot_ = std::move(next);
 }
 
@@ -155,11 +153,9 @@ void SessionController::publish(EventPayload payload, const std::string& session
     Event event;
     {
         const std::lock_guard lock(publish_mutex_);
-        event.seq = ++event_seq_;
         event.session_id = session_id;
         event.generation = generation;
         event.payload = std::move(payload);
-        snapshot_.state_seq = event.seq;
         apply_to_snapshot(event);
         if (deps_.sink) deps_.sink(event);
     }
@@ -211,7 +207,6 @@ void SessionController::finalize_execution() {
         if (state_ != State::executing) return;
         state_ = State::ready;
         run_.reset();
-        control_.reset();
         instance = current_;
     }
     if (instance) refresh_snapshot(*instance);
@@ -328,25 +323,12 @@ std::expected<void, RuntimeError> SessionController::compact() {
     return enqueue(std::move(command));
 }
 
-std::expected<bool, RuntimeError> SessionController::revoke_grant(const std::string& grant_id) {
-    std::shared_ptr<SessionInstance> instance;
-    {
-        const std::lock_guard lock(mutex_);
-        if (closed_) {
-            return std::unexpected(
-                RuntimeError{RuntimeError::Kind::closing, "the backend is shutting down"});
-        }
-        if (state_ != State::ready || current_ == nullptr) {
-            return std::unexpected(RuntimeError{RuntimeError::Kind::busy, "the session is busy"});
-        }
-        instance = current_;
-    }
-    agent::Session& session = instance->session();
-    if (!session.policy().revoke(grant_id)) return false;
-    session.committer().commit_permission_revoked(grant_id);
-    session.committer().sync();
-    refresh_snapshot(*instance);
-    return true;
+std::expected<void, RuntimeError> SessionController::revoke_grant(std::string grant_id, GrantRevoked done) {
+    Command command;
+    command.kind = Command::Kind::revoke_grant;
+    command.value = std::move(grant_id);
+    command.grant_done = std::move(done);
+    return enqueue(std::move(command));
 }
 
 std::expected<void, RuntimeError> SessionController::cycle_permission() {
@@ -422,7 +404,7 @@ bool SessionController::cancel(std::string_view run_id) {
     std::shared_ptr<RunControl> control;
     {
         const std::lock_guard lock(mutex_);
-        if (!run_id.empty() && run_ && run_->id == run_id) control = control_;
+        if (!run_id.empty() && run_ && run_->id == run_id) control = run_->control;
     }
     if (!control) return false;
     control->stop.request_stop();
@@ -440,7 +422,6 @@ void SessionController::install(PendingReplace pending, bool replace_transcript)
         generation = generation_;
         state_ = State::ready;
         run_.reset();
-        control_.reset();
     }
     refresh_snapshot(*instance);
     ControlEvent replaced;
@@ -448,11 +429,6 @@ void SessionController::install(PendingReplace pending, bool replace_transcript)
     replaced.replace_transcript = replace_transcript;
     replaced.resumed = pending.resumed;
     publish(EventPayload{replaced}, session_id, generation);
-    if (pending.added_model) {
-        ControlEvent models;
-        models.kind = ControlEvent::Kind::models_changed;
-        publish(EventPayload{std::move(models)}, session_id, generation);
-    }
     for (agent::Event& event : pending.replay) {
         publish(EventPayload{std::move(event)}, session_id, generation);
     }
@@ -468,9 +444,7 @@ SessionController::PendingReplace SessionController::prepare_new() {
         state.model = current_->session().config().provider.name;
     }
     PendingReplace pending;
-    pending.instance = deps_.factory->create_new(state, [&](const agent::Event& event) {
-        pending.replay.push_back(event);
-    });
+    pending.instance = deps_.factory->create_new(state);
     return pending;
 }
 
@@ -491,8 +465,7 @@ SessionController::PendingReplace SessionController::prepare_resume(const std::s
     return pending;
 }
 
-SessionController::PendingReplace SessionController::prepare_switch(const std::string& model_name,
-                                                                   bool added_model) {
+SessionController::PendingReplace SessionController::prepare_switch(const std::string& model_name) {
     std::shared_ptr<agent::SessionLease> lease;
     runtime::SessionState state;
     {
@@ -504,7 +477,6 @@ SessionController::PendingReplace SessionController::prepare_switch(const std::s
         state.model = current_->session().config().provider.name;
     }
     PendingReplace pending;
-    pending.added_model = added_model;
     pending.instance = deps_.factory->prepare_switch_model(
         model_name, std::move(lease), state, [&](const agent::Event& event) {
             pending.replay.push_back(event);
@@ -513,6 +485,26 @@ SessionController::PendingReplace SessionController::prepare_switch(const std::s
 }
 
 void SessionController::execute_command(const Command& command) {
+    if (command.kind == Command::Kind::revoke_grant) {
+        try {
+            std::shared_ptr<SessionInstance> instance;
+            {
+                const std::lock_guard lock(mutex_);
+                instance = current_;
+            }
+            agent::Session& session = instance->session();
+            const bool removed = session.policy().revoke(command.value);
+            if (removed) {
+                session.committer().commit_permission_revoked(command.value);
+                session.committer().sync();
+                refresh_snapshot(*instance);
+            }
+            command.grant_done(removed);
+        } catch (const std::exception& error) {
+            command.grant_done(std::unexpected(RuntimeError{RuntimeError::Kind::invalid_state, error.what()}));
+        }
+        return;
+    }
     const auto operation_name = [&]() -> std::string {
         switch (command.kind) {
         case Command::Kind::new_session: return "new session";
@@ -520,6 +512,7 @@ void SessionController::execute_command(const Command& command) {
         case Command::Kind::select_model: return "switch model";
         case Command::Kind::add_model: return "add model";
         case Command::Kind::compact: return "compact";
+        case Command::Kind::revoke_grant: return "revoke grant";
         }
         return "operation";
     };
@@ -529,9 +522,7 @@ void SessionController::execute_command(const Command& command) {
             const std::lock_guard lock(mutex_);
             if (state_ != State::ready) return;
             state_ = State::executing;
-            auto control = std::make_shared<RunControl>();
-            run_ = CurrentRun{next_run_id(), "compact", control};
-            control_ = std::move(control);
+            run_ = CurrentRun{next_run_id(), "compact", std::make_shared<RunControl>()};
         }
         sync_control_snapshot();
         run_compact();
@@ -544,7 +535,6 @@ void SessionController::execute_command(const Command& command) {
         if (state_ != State::ready) return;
         state_ = State::replacing;
         run_ = CurrentRun{"", "replacing", nullptr};
-        control_.reset();
     }
     sync_control_snapshot();
 
@@ -556,11 +546,11 @@ void SessionController::execute_command(const Command& command) {
         } else if (command.kind == Command::Kind::resume) {
             install(prepare_resume(command.value), true);
         } else if (command.kind == Command::Kind::select_model) {
-            install(prepare_switch(command.value, false), false);
+            install(prepare_switch(command.value), false);
         } else if (command.kind == Command::Kind::add_model) {
             if (deps_.configuration == nullptr) throw std::runtime_error("model configuration is not available");
             saved_model = deps_.configuration->add_model(command.model);
-            install(prepare_switch(saved_model->name, true), false);
+            install(prepare_switch(saved_model->name), false);
         }
         installed = true;
     } catch (const std::exception& error) {
@@ -568,7 +558,6 @@ void SessionController::execute_command(const Command& command) {
             const std::lock_guard lock(mutex_);
             state_ = State::ready;
             run_.reset();
-            control_.reset();
         }
         sync_control_snapshot();
         ControlEvent failed;
@@ -625,7 +614,7 @@ void SessionController::run_input(const QueuedInput& input) {
 
     agent::RunServices services{sink, approver, asker, deps_.delegation, &instance->resources(),
                                 run.control->stop.get_token()};
-    agent::Run agent_run(agent::RunKind::turn, run.id);
+    agent::Run agent_run(run.id);
     agent_run.begin(run.control->stop.get_token());
     agent::Session& session = instance->session();
     session.begin_run(services, agent_run);
@@ -654,7 +643,7 @@ void SessionController::run_compact() {
     const agent::Asker asker{};
     agent::RunServices services{sink, approver, asker, deps_.delegation, &instance->resources(),
                                 run.control->stop.get_token()};
-    agent::Run agent_run(agent::RunKind::compact, run.id);
+    agent::Run agent_run(run.id);
     agent_run.begin(run.control->stop.get_token());
     agent::Session& session = instance->session();
     session.begin_run(services, agent_run);
@@ -666,7 +655,6 @@ void SessionController::run_compact() {
         if (state_ == State::executing) {
             state_ = State::ready;
             run_.reset();
-            control_.reset();
         }
     }
     refresh_snapshot(*instance);
@@ -686,9 +674,7 @@ void SessionController::drain() {
             next = std::move(queue_.front().input);
             queue_.pop_front();
             state_ = State::executing;
-            auto control = std::make_shared<RunControl>();
-            run_ = CurrentRun{next_run_id(), "turn", control};
-            control_ = std::move(control);
+            run_ = CurrentRun{next_run_id(), "turn", std::make_shared<RunControl>()};
         }
         sync_control_snapshot();
         run_input(*next);
@@ -712,9 +698,7 @@ void SessionController::worker(std::stop_token stop) {
                 input = std::move(queue_.front().input);
                 queue_.pop_front();
                 state_ = State::executing;
-                auto control = std::make_shared<RunControl>();
-                run_ = CurrentRun{next_run_id(), "turn", control};
-                control_ = std::move(control);
+                run_ = CurrentRun{next_run_id(), "turn", std::make_shared<RunControl>()};
             }
         }
         try {
@@ -731,7 +715,6 @@ void SessionController::worker(std::stop_token stop) {
                 const std::lock_guard lock(mutex_);
                 state_ = State::ready;
                 run_.reset();
-                control_.reset();
             }
             ControlEvent failed;
             failed.kind = ControlEvent::Kind::failed;
@@ -743,7 +726,6 @@ void SessionController::worker(std::stop_token stop) {
             const std::lock_guard lock(mutex_);
             state_ = State::ready;
             run_.reset();
-            control_.reset();
         }
         if (command) {
             const std::lock_guard lock(mutex_);

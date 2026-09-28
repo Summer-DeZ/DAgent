@@ -49,42 +49,21 @@ GitOutput run_git(const fs::path& cwd, std::vector<std::string> args, std::chron
     cmd.timeout = timeout;
     try {
         const exec::Result result = exec::run(cmd, process, {}, stop);
-        if (result.exit_code && *result.exit_code == 0) return {true, std::move(result.out.text)};
+        if (result.exit_code && *result.exit_code == 0) return {true, std::move(result.out)};
     } catch (const std::exception&) {
         // 没装 git、不是仓库、超时、被取消……都按「没有 git 信息」处理，不抛给调用方
     }
     return {};
 }
 
-std::optional<GitInfo> collect_git(const fs::path& cwd, const ContextOptions& opt, std::stop_token stop) {
-    // 三条命令互不依赖，并发跑，避免大仓库上慢慢叠加等待时间。
-    auto root_future = std::async(std::launch::async, [&] {
-        return run_git(cwd, {"rev-parse", "--show-toplevel"}, opt.git_timeout, stop, opt.process);
-    });
-    auto status_future = std::async(std::launch::async, [&] {
-        return run_git(cwd, {"status", "--porcelain=v2", "--branch"}, opt.git_timeout, stop, opt.process);
-    });
-    auto log_future = std::async(std::launch::async, [&] {
-        return run_git(cwd, {"log", "--oneline", "-n", "5"}, opt.git_timeout, stop, opt.process);
-    });
-
-    const GitOutput root = root_future.get();
-    const GitOutput status = status_future.get();
-    const GitOutput log = log_future.get();
-    if (!root.ok || !status.ok) {
-        base::logger("workspace")->debug("git unavailable: root_ok={} status_ok={}", root.ok, status.ok);
-        return std::nullopt;
-    }
-
-    GitInfo info;
-    info.root = canonical_or_absolute(trim(root.text));
-
+GitStatus parse_git_status(const std::string& text) {
+    GitStatus info;
     std::string oid;
     std::string head;
     std::size_t changed = 0;
     std::size_t untracked = 0;
     std::size_t unmerged = 0;
-    std::istringstream lines(status.text);
+    std::istringstream lines(text);
     for (std::string line; std::getline(lines, line);) {
         if (line.rfind("# branch.oid ", 0) == 0) {
             oid = line.substr(13);
@@ -109,6 +88,7 @@ std::optional<GitInfo> collect_git(const fs::path& cwd, const ContextOptions& op
     if (changed > 0) parts.push_back(std::format("{} modified files", changed));
     if (untracked > 0) parts.push_back(std::format("{} untracked files", untracked));
     if (unmerged > 0) parts.push_back(std::format("{} conflicts", unmerged));
+    info.dirty = !parts.empty();
     info.status_summary = "working tree clean";
     if (!parts.empty()) {
         info.status_summary.clear();
@@ -117,6 +97,33 @@ std::optional<GitInfo> collect_git(const fs::path& cwd, const ContextOptions& op
             info.status_summary += parts[i];
         }
     }
+
+    return info;
+}
+
+std::optional<GitInfo> collect_git(const fs::path& cwd, const ContextOptions& opt, std::stop_token stop) {
+    // 三条命令互不依赖，并发跑，避免大仓库上慢慢叠加等待时间。
+    auto root_future = std::async(std::launch::async, [&] {
+        return run_git(cwd, {"rev-parse", "--show-toplevel"}, opt.git_timeout, stop, opt.process);
+    });
+    auto status_future = std::async(std::launch::async, [&] {
+        return run_git(cwd, {"status", "--porcelain=v2", "--branch"}, opt.git_timeout, stop, opt.process);
+    });
+    auto log_future = std::async(std::launch::async, [&] {
+        return run_git(cwd, {"log", "--oneline", "-n", "5"}, opt.git_timeout, stop, opt.process);
+    });
+
+    const GitOutput root = root_future.get();
+    const GitOutput status = status_future.get();
+    const GitOutput log = log_future.get();
+    if (!root.ok || !status.ok) {
+        base::logger("workspace")->debug("git unavailable: root_ok={} status_ok={}", root.ok, status.ok);
+        return std::nullopt;
+    }
+
+    GitInfo info;
+    info.root = canonical_or_absolute(trim(root.text));
+    info.status = parse_git_status(status.text);
 
     std::istringstream commits(log.text);
     for (std::string line; std::getline(commits, line);) {
@@ -165,7 +172,7 @@ std::vector<Instructions> collect_instructions(const fs::path& cwd,
             item.content = std::move(it->content);
             budget -= item.content.size();
         } else if (budget > 0) {
-            item.content = base::truncate_middle(it->content, budget).text;
+            item.content = base::truncate_middle(it->content, budget);
             item.truncated = true;
             budget = 0;
         } else {
@@ -179,6 +186,14 @@ std::vector<Instructions> collect_instructions(const fs::path& cwd,
 }
 
 } // namespace
+
+std::optional<GitStatus> collect_git_status(const fs::path& cwd, const ContextOptions& opt,
+                                           std::stop_token stop) {
+    const auto status = run_git(cwd, {"status", "--porcelain=v2", "--branch"},
+                                opt.git_timeout, stop, opt.process);
+    if (!status.ok) return std::nullopt;
+    return parse_git_status(status.text);
+}
 
 Environment collect_environment(const fs::path& cwd, const ContextOptions& opt, std::stop_token stop) {
     if (stop.stop_requested()) throw WorkspaceError(WorkspaceError::Kind::cancelled, "context collection cancelled");
@@ -214,8 +229,8 @@ nlohmann::json to_json(const Environment& env) {
     if (env.git) {
         json["git"] = {
             {"root", env.git->root.string()},
-            {"branch", env.git->branch},
-            {"status_summary", env.git->status_summary},
+            {"branch", env.git->status.branch},
+            {"status_summary", env.git->status.status_summary},
             {"recent_commits", env.git->recent_commits},
         };
     } else {

@@ -81,8 +81,8 @@ std::string execute(std::vector<std::string> argv, const fs::path& cwd,
     options.max_output_bytes = 65536;
     const auto result = exec::run(command, options);
     if (result.exit_code != 0 || result.timed_out || result.signal)
-        throw std::runtime_error(command.argv.front() + " failed: " + result.err.text + result.out.text);
-    std::string out = result.out.text;
+        throw std::runtime_error(command.argv.front() + " failed: " + result.err + result.out);
+    std::string out = result.out;
     while (!out.empty() && (out.back() == '\n' || out.back() == '\r')) out.pop_back();
     return out;
 }

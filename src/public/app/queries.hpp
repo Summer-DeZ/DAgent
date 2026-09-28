@@ -21,7 +21,8 @@ class QueryGatewayImpl final : public runtime::QueryGateway {
 public:
     QueryGatewayImpl(storage::Options storage, std::filesystem::path cwd,
                      std::filesystem::path project_root, workspace::SearchOptions search,
-                     std::shared_ptr<const agent::SkillCatalog> skills, exec::Options process);
+                     std::shared_ptr<const agent::SkillCatalog> skills, exec::Options process,
+                     std::size_t completion_max_files);
 
     std::vector<runtime::SessionSummary> sessions(std::size_t limit) override;
     std::unique_ptr<runtime::HistoryReader> open_history(std::string_view session_id) override;
@@ -36,7 +37,7 @@ private:
     storage::Options storage_;
     std::filesystem::path cwd_, project_root_;
     workspace::SearchOptions search_;
-    std::vector<std::string> file_cache_;
+    std::size_t completion_max_files_;
 };
 
 } // namespace dagent::app

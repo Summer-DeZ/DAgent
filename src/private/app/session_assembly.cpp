@@ -10,7 +10,6 @@
 #include "app/history.hpp"
 #include "app/prompt.hpp"
 #include "base/log.hpp"
-#include "llm/llm.hpp"
 #include "exec/shell.hpp"
 #include "storage/storage.hpp"
 
@@ -26,7 +25,7 @@ struct SessionSpec {
     agent::Options agent;
     std::string prompt_template;
     bool child = false;
-    std::vector<std::string> allowed_tools; ///< 空表示不收窄
+    std::optional<std::vector<std::string>> allowed_tools; ///< 未指定表示不收窄
 };
 
 std::string render_prompt(const SessionAssembly::Options& base, const SessionSpec& spec,
@@ -44,8 +43,8 @@ std::string render_prompt(const SessionAssembly::Options& base, const SessionSpe
     std::string prompt = render_system_prompt(spec.prompt_template, env, vars);
     if (!base.user_instructions.empty())
         prompt += "\n\n# Global user instructions\nCurrent user requests and project-specific instructions take precedence over these general preferences.\n" + base.user_instructions;
-    if (base.skills && (spec.allowed_tools.empty() ||
-        std::ranges::find(spec.allowed_tools, "skill") != spec.allowed_tools.end()))
+    if (base.skills && (!spec.allowed_tools ||
+        std::ranges::find(*spec.allowed_tools, "skill") != spec.allowed_tools->end()))
         prompt += base.skills->prompt();
     return prompt;
 }
@@ -170,10 +169,10 @@ SessionSpec derive_child(const SessionAssembly::Options& base, const agent::Suba
     spec.prompt_template = def.system_prompt;
     spec.child = true;
 
-    std::vector<std::string> allowed = def.tools.empty() ? context.parent_tools : def.tools;
+    std::vector<std::string> allowed = def.tools.value_or(context.parent_tools);
     std::erase_if(allowed, [&](const std::string& name) {
         if (name == "task" || name == "ask" || name == "exit_plan") return true;
-        return def.tools.empty() && name.starts_with("mcp__"); // 默认不含 MCP 工具
+        return !def.tools && name.starts_with("mcp__"); // 默认不含 MCP 工具
     });
     spec.allowed_tools = std::move(allowed);
     return spec;
@@ -187,13 +186,7 @@ struct SessionAssembly::Impl {
 
     ModelSelection pick(const std::string& name) const {
         if (name.empty()) return options.default_model;
-        if (options.resolve_model) return options.resolve_model(name);
-        const auto& models = assembly->models();
-        const auto it = models.find(name);
-        if (it == models.end()) {
-            throw std::runtime_error("unknown model: " + name);
-        }
-        return ModelSelection{llm::to_public(it->second), assembly->make_model_session(it->second)};
+        return options.resolve_model(name);
     }
 
     /// @brief 顶层会话的差异：state 为空用启动初值；model_name 优先于 state 里的模型名。
@@ -224,9 +217,9 @@ struct SessionAssembly::Impl {
                                                         options.search, options.process);
         auto registry = std::make_unique<tools::Registry>();
         tools::add_builtin(*registry);
-        // 先取 MCP 快照再收窄：定义里没显式写 mcp__* 的子 Agent 默认看不到 MCP 工具。
-        if (spec.child && assembly->hub()) assembly->hub()->snapshot(*registry);
-        if (!spec.allowed_tools.empty()) registry->retain(spec.allowed_tools);
+        // 每个新目录先继承现有连接，再按该会话的工具限制收窄。
+        assembly->hub()->snapshot(*registry);
+        if (spec.allowed_tools) registry->retain(*spec.allowed_tools);
         auto tools_session = std::make_unique<tools::ToolSession>(*registry, *context);
         auto resources = std::make_unique<HubResources>(assembly, *registry);
         auto session = std::make_unique<agent::Session>(
@@ -237,8 +230,7 @@ struct SessionAssembly::Impl {
                                           std::move(resources), std::move(session));
     }
 
-    std::unique_ptr<Instance> create_new(const std::optional<runtime::SessionState>& state,
-                                         const agent::Sink& replay) {
+    std::unique_ptr<Instance> create_new(const std::optional<runtime::SessionState>& state) {
         SessionSpec spec = top_level(state, {});
         std::string system_prompt = render_prompt(options, spec, assembly->environment());
         agent::SessionConfig config = make_session_config(options, spec, std::move(system_prompt));
@@ -255,14 +247,12 @@ struct SessionAssembly::Impl {
         if (session.committer().broken())
             log_assembly()->error("Failed to write the session record: {}", session.committer().error());
         log_assembly()->info("会话已创建：id={} model={}", session.meta().id, session.meta().model);
-        (void)replay;
         return instance;
     }
 
     std::unique_ptr<Instance> create_child(const agent::DelegationContext& context,
                                            const agent::SubagentDef& def,
-                                           const agent::DerivedPermission& permission,
-                                           const agent::Sink& replay) {
+                                           const agent::DerivedPermission& permission) {
         SessionSpec spec = derive_child(options, def, permission, context);
         spec.model = pick(!def.model.empty() ? def.model : context.model);
 
@@ -285,7 +275,6 @@ struct SessionAssembly::Impl {
             log_assembly()->error("Failed to write the session record: {}", session.committer().error());
         log_assembly()->info("子会话已创建：id={} agent={} model={}", session.meta().id, meta.agent_name,
                              session.meta().model);
-        (void)replay;
         return instance;
     }
 
@@ -353,8 +342,8 @@ const agent::SubagentDef* SessionAssembly::find_subagent(std::string_view name) 
 }
 
 std::unique_ptr<runtime::SessionInstance> SessionAssembly::create_new(
-    std::optional<runtime::SessionState> state, const agent::Sink& replay) {
-    return impl_->create_new(state, replay);
+    std::optional<runtime::SessionState> state) {
+    return impl_->create_new(state);
 }
 
 std::unique_ptr<runtime::SessionInstance> SessionAssembly::resume(std::string_view session_id,
@@ -371,8 +360,8 @@ std::unique_ptr<runtime::SessionInstance> SessionAssembly::prepare_switch_model(
 
 std::unique_ptr<runtime::SessionInstance> SessionAssembly::create_child(
     const agent::DelegationContext& context, const agent::SubagentDef& def,
-    const agent::DerivedPermission& permission, const agent::Sink& replay) {
-    return impl_->create_child(context, def, permission, replay);
+    const agent::DerivedPermission& permission) {
+    return impl_->create_child(context, def, permission);
 }
 
 } // namespace dagent::app

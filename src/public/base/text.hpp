@@ -17,16 +17,9 @@ std::string to_valid_utf8(std::string_view s, bool* lossy = nullptr);
 /// @brief 从 pos 往前退到 UTF-8 字符边界（pos 在字符中间时退到该字符起始处）。pos 超过长度时返回长度。
 std::size_t utf8_floor(std::string_view s, std::size_t pos);
 
-/// @brief 截断结果：text 为截断后的文本，total_bytes 为截断前的总字节数。
-struct Truncated {
-    std::string text;
-    std::size_t total_bytes;
-    bool truncated;
-};
-
 /// @brief 保留头部和尾部，中间换成 "\n…省略 N 字节…\n"；两处切点都落在 UTF-8 字符边界上。
 /// 头尾各分一半预算，标记本身不计入预算；未超限时原样返回。
-Truncated truncate_middle(std::string_view s, std::size_t max_bytes);
+std::string truncate_middle(std::string_view s, std::size_t max_bytes);
 
 /// @brief 去掉 CSI、OSC/DCS/APC/PM/SOS（OSC 到 BEL 或 ST，其余到 ST）、带中间字节或
 /// 单字符的 ESC 序列。非法或不完整的序列只丢引导部分，后面的字节按正文保留；

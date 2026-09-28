@@ -43,7 +43,6 @@ public:
         bool synchronized    = false; ///< DEC 2026 同步输出
         bool sgr_mouse       = false; ///< 1006 扩展鼠标上报
         bool bracketed_paste = false; ///< 2004 括号粘贴
-        bool focus_events    = false; ///< 1004 焦点事件
         bool kitty_keyboard  = false; ///< kitty 键盘协议
         bool grapheme_width  = false; ///< mode 2027 字素簇宽度
         std::optional<Color> background; ///< OSC 11 背景色；未取得时为空
@@ -84,16 +83,9 @@ public:
 
     /// @brief 开关鼠标上报（1002 + 1006 SGR）。
     void set_mouse(bool on);
-    /// @brief 开关焦点事件上报（1004）。
-    void set_focus_events(bool on);
 
     /// @brief 还原进入前的终端状态；幂等。
     void restore() noexcept;
-
-    /// @brief 挂起界面模式并记住当前开关，等待 resume()。
-    void suspend() noexcept;
-    /// @brief 恢复 suspend() 前的界面模式。
-    void resume();
 
     /// @brief 信号 self-pipe 读端（poll 用）。
     int signal_fd() const noexcept { return signal_pipe_[0]; }
@@ -124,20 +116,11 @@ private:
 
     std::atomic<bool> restored_{false}; ///< restore() 已执行
     std::atomic<bool> mouse_{false};
-    std::atomic<bool> focus_{false};
     std::atomic<bool> paste_{false};
     std::atomic<bool> kitty_{false};
     std::atomic<bool> grapheme_{false};
 
-    // ---- 挂起现场 ----
-    bool suspended_ = false;
-    bool suspended_screen_ = false; ///< 挂起前在界面模式
-    bool suspended_raw_ = false;    ///< 挂起前 stdin 是 raw
-    bool suspended_mouse_ = false;
-    bool suspended_focus_ = false;
-    bool suspended_paste_ = false;
-    bool suspended_kitty_ = false;
-    bool suspended_grapheme_ = false;
+
 };
 
 } // namespace dagent::tui

@@ -29,7 +29,6 @@ public:
     /// @brief 画到自己的 Surface 视图里（坐标系从 (0,0) 开始）。
     virtual void render(Surface&) = 0;
 
-    virtual bool focusable() const { return false; }
 
     /// @brief 光标落点（自身坐标系）；无光标时为空。
     virtual std::optional<Point> cursor() const { return std::nullopt; }
@@ -45,7 +44,6 @@ public:
     virtual void invalidate_tree() noexcept { invalidate(); }
 
     void clear_dirty() noexcept { dirty_ = false; }
-    bool dirty() const noexcept { return dirty_; }
     /// @brief 子树是否有需要重画的控件（容器聚合）。
     virtual bool dirty_tree() const noexcept { return dirty_; }
     /// @brief 布局纪元是否已提升（容器聚合）。

@@ -23,10 +23,6 @@ void PromptBox::set_footer_tone(bool error, bool accent) {
     if (footer_error_ == error && footer_accent_ == accent) return;
     footer_error_ = error; footer_accent_ = accent; invalidate();
 }
-void PromptBox::set_placeholder(std::string value) {
-    if (placeholder_ == value) return;
-    placeholder_ = std::move(value); invalidate();
-}
 void PromptBox::set_active(bool value) {
     if (active_ == value) return;
     active_ = value; invalidate();
@@ -125,8 +121,8 @@ void PromptBox::render(tui::Surface& surface) {
     const int width = inner_width(w);
     const int visible = text_rows(h);
     if (value.empty()) {
-        if (!placeholder_.empty())
-            surface.text(k_left, k_top, fit_columns(placeholder_, width), muted);
+        if (!ui::text().box_placeholder.empty())
+            surface.text(k_left, k_top, fit_columns(ui::text().box_placeholder, width), muted);
     } else {
         const std::vector<Row> rows = wrap(value, width);
         const auto at = caret(rows, value);

@@ -78,10 +78,10 @@ struct Region {
 
 class EditCall final : public PreparedTool {
 public:
-    EditCall(const agent::InvocationContext& invocation, Context& ctx, workspace::Resolved target,
+    EditCall(Context& ctx, workspace::Resolved target,
              std::string path, std::string new_content, workspace::Eol eol, bool bom,
              workspace::Stamp expect, std::string success_text, agent::FileChangeView view)
-        : PreparedTool(invocation), ctx_(ctx), target_(std::move(target)), path_(std::move(path)),
+        : ctx_(ctx), target_(std::move(target)), path_(std::move(path)),
           new_content_(std::move(new_content)), eol_(eol), bom_(bom), expect_(expect),
           success_text_(std::move(success_text)), view_(std::move(view)) {
         intent_.kind = agent::ToolKind::write;
@@ -166,8 +166,7 @@ public:
     const Spec& spec() const override { return spec_; }
 
     std::expected<std::unique_ptr<PreparedTool>, Result> prepare(
-        std::string_view arguments, Context& ctx,
-        const agent::InvocationContext& invocation) const override {
+        std::string_view arguments, Context& ctx) const override {
         auto args = detail::parse_arguments(arguments);
         if (!args) return std::unexpected(error_result(args.error()));
         std::string err;
@@ -296,7 +295,7 @@ public:
         std::string success = std::format("Edited {} (+{} -{}).\n", display, diff.stat.added,
                                           diff.stat.removed);
         success += snippets;
-        return std::make_unique<EditCall>(invocation, ctx, resolved, display, std::move(new_content),
+        return std::make_unique<EditCall>(ctx, resolved, display, std::move(new_content),
                                           file.eol, file.bom, *tracked, std::move(success),
                                           std::move(view));
     }

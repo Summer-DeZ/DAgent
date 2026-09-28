@@ -15,11 +15,6 @@
 #include "base/log.hpp"
 #include "net/sse.hpp"
 
-namespace dagent::agent {
-ModelError::ModelError(Kind kind, Reply partial, const std::string& what)
-    : std::runtime_error(what), kind_(kind), partial_(std::move(partial)) {}
-} // namespace dagent::agent
-
 namespace dagent::llm {
 using agent::Finish;
 using agent::Message;

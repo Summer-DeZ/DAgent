@@ -32,7 +32,7 @@ public:
     /// （最多 connect_timeout，Notice(info) 提示正在等待），然后合并工具。取消时抛 McpError::cancelled。
     void apply_pending(Registry&, const agent::Sink&, std::stop_token);
     /// @brief 只读快照：把当前已就绪 server 的工具合并进传入的注册表；这些工具项持有连接所有权。
-    /// 不等待、不重连、不产生通知；供子 Agent 构造时调用一次（线程安全）。
+    /// 不等待、不重连、不产生通知；供每个新会话构造时调用一次（线程安全）。
     void snapshot(Registry& registry);
     /// 调度器看到 McpView::disconnected 时调用；返回追加给模型的说明，不是新断开时返回空。
     std::string mark_disconnected(std::string_view server, std::string reason);

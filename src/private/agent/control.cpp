@@ -92,9 +92,9 @@ std::string first_characters(std::string_view text, std::size_t count) {
     return std::string(text.substr(0, std::min(pos, text.size())));
 }
 
-Question to_question(const InvocationContext& invocation, const AskView& view, bool allow_other) {
+Question to_question(std::string_view call_id, const AskView& view, bool allow_other) {
     Question question;
-    question.call_id = invocation.call_id;
+    question.call_id = call_id;
     question.header = view.header;
     question.prompt = view.prompt;
     question.multi_select = view.multi_select;
@@ -105,7 +105,7 @@ Question to_question(const InvocationContext& invocation, const AskView& view, b
 }
 
 std::expected<ControlRequest, ToolResult> parse_ask(std::string_view arguments,
-                                                    const InvocationContext& invocation) {
+                                                    std::string_view call_id) {
     auto args = parse_arguments(arguments);
     if (!args) return std::unexpected(error_result(args.error()));
     std::string error;
@@ -134,14 +134,14 @@ std::expected<ControlRequest, ToolResult> parse_ask(std::string_view arguments,
     }
 
     AskRequest request;
-    request.invocation = invocation;
+    request.call_id = call_id;
     request.summary = "Ask the user: " + view.prompt;
     request.view = std::move(view);
     return ControlRequest{std::move(request)};
 }
 
 std::expected<ControlRequest, ToolResult> parse_exit_plan(std::string_view arguments,
-                                                          const InvocationContext& invocation) {
+                                                          std::string_view call_id) {
     auto args = parse_arguments(arguments);
     if (!args) return std::unexpected(error_result(args.error()));
     std::string error;
@@ -149,7 +149,7 @@ std::expected<ControlRequest, ToolResult> parse_exit_plan(std::string_view argum
     if (!error.empty()) return std::unexpected(error_result(error));
 
     PlanConfirmation request;
-    request.invocation = invocation;
+    request.call_id = call_id;
     request.summary = "Submit implementation plan";
     request.plan = std::move(summary);
     request.view.header = "Plan ready";
@@ -161,8 +161,7 @@ std::expected<ControlRequest, ToolResult> parse_exit_plan(std::string_view argum
     return ControlRequest{std::move(request)};
 }
 
-std::expected<ControlRequest, ToolResult> parse_todo(std::string_view arguments,
-                                                     const InvocationContext& invocation) {
+std::expected<ControlRequest, ToolResult> parse_todo(std::string_view arguments) {
     auto args = parse_arguments(arguments);
     if (!args) return std::unexpected(error_result(args.error()));
     const auto it = args->find("items");
@@ -197,14 +196,13 @@ std::expected<ControlRequest, ToolResult> parse_todo(std::string_view arguments,
     }
 
     PlanReplacement request;
-    request.invocation = invocation;
     request.summary = std::format("Update {} plan items", view.items.size());
     request.plan = std::move(view);
     return ControlRequest{std::move(request)};
 }
 
 std::expected<ControlRequest, ToolResult> parse_task(std::string_view arguments,
-                                                     const InvocationContext& invocation,
+                                                     std::string_view call_id,
                                                      const std::vector<SubagentDef>& subagents) {
     json parsed;
     try {
@@ -227,7 +225,7 @@ std::expected<ControlRequest, ToolResult> parse_task(std::string_view arguments,
         return std::unexpected(error_result(std::format("unknown subagent: {}", name)));
 
     DelegationRequest request;
-    request.invocation = invocation;
+    request.call_id = call_id;
     request.agent = name;
     request.prompt = prompt->get<std::string>();
     request.summary = "task(" + request.agent + "): " + first_characters(request.prompt, 60);
@@ -341,7 +339,7 @@ std::vector<ToolSpec> control_action_specs(bool include_task, const std::vector<
 
 std::expected<ControlRequest, ToolResult> parse_control_action(std::string_view name,
                                                                std::string_view arguments,
-                                                               const InvocationContext& invocation,
+                                                               std::string_view call_id,
                                                                const std::vector<SubagentDef>& subagents) {
     if (name == "skill") {
         auto args = parse_arguments(arguments);
@@ -349,12 +347,12 @@ std::expected<ControlRequest, ToolResult> parse_control_action(std::string_view 
         std::string error;
         auto selected = require_string(*args, "name", error);
         if (!error.empty()) return std::unexpected(error_result(error));
-        return ControlRequest{SkillActivation{invocation, "Load skill " + selected, std::move(selected)}};
+        return ControlRequest{SkillActivation{"Load skill " + selected, std::move(selected)}};
     }
-    if (name == "todo") return parse_todo(arguments, invocation);
-    if (name == "ask") return parse_ask(arguments, invocation);
-    if (name == "exit_plan") return parse_exit_plan(arguments, invocation);
-    if (name == "task") return parse_task(arguments, invocation, subagents);
+    if (name == "todo") return parse_todo(arguments);
+    if (name == "ask") return parse_ask(arguments, call_id);
+    if (name == "exit_plan") return parse_exit_plan(arguments, call_id);
+    if (name == "task") return parse_task(arguments, call_id, subagents);
     return std::unexpected(error_result(std::format("unknown control action: {}", name)));
 }
 
@@ -391,9 +389,7 @@ ToolResult ControlActionExecutor::run_ask(const AskRequest& request, std::stop_t
         return result;
     }
 
-    services_.run->enter_phase(RunPhase::waiting_question);
-    const Answer answer = (*services_.asker)(to_question(request.invocation, request.view, request.view.allow_other), stop);
-    services_.run->enter_phase(RunPhase::dispatching);
+    const Answer answer = (*services_.asker)(to_question(request.call_id, request.view, request.view.allow_other), stop);
     AskView view = request.view;
     view.selected = answer.selected;
     view.other = answer.other;
@@ -440,10 +436,8 @@ ToolResult ControlActionExecutor::run_plan_confirmation(const PlanConfirmation& 
         return result;
     }
 
-    services_.run->enter_phase(RunPhase::waiting_question);
     const Answer answer =
-        (*services_.asker)(to_question(request.invocation, request.view, false), stop);
-    services_.run->enter_phase(RunPhase::dispatching);
+        (*services_.asker)(to_question(request.call_id, request.view, false), stop);
     AskView view = request.view;
     view.selected = answer.selected;
     view.cancelled = answer.cancelled;
@@ -490,7 +484,7 @@ ToolResult ControlActionExecutor::run_delegation(const DelegationRequest& reques
     DelegationContext context;
     context.parent_session_id = services_.session_id;
     context.run_id = services_.run->id();
-    context.call_id = request.invocation.call_id;
+    context.call_id = request.call_id;
     if (services_.policy != nullptr) {
         context.parent_mode = services_.policy->mode();
         context.parent_planning = services_.policy->planning();

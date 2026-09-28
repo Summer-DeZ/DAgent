@@ -13,8 +13,6 @@ namespace dagent::tui {
 
 namespace {
 
-constexpr size_t k_none = static_cast<size_t>(-1);
-
 std::optional<char32_t> single_codepoint(std::string_view text) {
     if (text.empty()) return std::nullopt;
     const char32_t cp = unicode::decode_utf8(text);
@@ -47,13 +45,6 @@ bool parse_modifier(std::string_view s, Mods& mods) noexcept {
 
 } // namespace
 
-Keymap::Keymap(Runtime& rt) noexcept : rt_(rt) {}
-
-Keymap::~Keymap() {
-    if (timeout_id_ != 0) rt_.cancel(timeout_id_);
-    if (modal_active_) rt_.pop_modal(*this);
-}
-
 void Keymap::add(Command c) {
     for (Command& existing : commands_) {
         if (existing.id == c.id) {
@@ -65,107 +56,26 @@ void Keymap::add(Command c) {
 }
 
 bool Keymap::bind(std::string_view keys, std::string_view command_id) {
-    std::vector<Token> sequence;
-    if (!parse_binding(keys, sequence)) return false;
+    KeyPress key;
+    if (!parse_binding(keys, key)) return false;
     size_t index = 0;
-    for (; index < commands_.size(); ++index) {
-        if (commands_[index].id == command_id) break;
+    while (index < commands_.size() && commands_[index].id != command_id) ++index;
+    if (index == commands_.size()) return false;
+    for (Binding& binding : bindings_) {
+        if (binding.key == key) { binding.command = index; return true; }
     }
-    if (index == commands_.size()) return false; // 绑定到不存在的命令
-    for (Binding& b : bindings_) {
-        if (b.keys == sequence) {
-            b.command = index; // 冲突：后绑定覆盖先绑定
-            return true;
-        }
-    }
-    bindings_.push_back({std::move(sequence), index});
+    bindings_.push_back({key, index});
     return true;
 }
 
-void Keymap::set_leader(std::string_view key, std::chrono::milliseconds timeout) {
-    timeout_ = timeout;
-    Token token;
-    if (key.find(' ') != std::string_view::npos || !parse_token(key, token) ||
-        token.leader) {
-        leader_.reset();
-        return;
-    }
-    leader_ = token.key;
-}
-
-bool Keymap::on_event(const Event& e) {
-    const std::optional<KeyPress> press = press_from(e);
-    if (!press) return false;
-
-    const auto matches = [this](const Token& t, const KeyPress& k) {
-        return t.leader ? (leader_.has_value() && *leader_ == k) : (t.key == k);
-    };
-
-    // 序列途中：先看能否精确完成，再看是否仍是某条绑定的前缀。
-    if (!pending_.empty()) {
-        pending_.push_back(*press);
-        size_t exact = k_none;
-        bool prefix = false;
-        for (size_t i = 0; i < bindings_.size(); ++i) {
-            const Binding& b = bindings_[i];
-            if (b.keys.size() < pending_.size()) continue;
-            bool ok = true;
-            for (size_t k = 0; k < pending_.size(); ++k) {
-                if (!matches(b.keys[k], pending_[k])) {
-                    ok = false;
-                    break;
-                }
-            }
-            if (!ok) continue;
-            if (b.keys.size() == pending_.size()) {
-                exact = i;
-            } else {
-                prefix = true;
-            }
-        }
-        if (exact != k_none) {
-            const size_t command = bindings_[exact].command;
-            reset_sequence(); // 执行前先重置序列
-            execute(command);
-            return true;
-        }
-        if (prefix) {
-            arm_timeout();
-            return true;
-        }
-        reset_sequence(); // 不匹配：按键照常沿栈下沉
-        return false;
-    }
-
-    // 空闲态：单键精确匹配优先；否则首键命中更长序列 → 压栈等待。
-    size_t exact = k_none;
-    bool prefix = false;
-    for (size_t i = 0; i < bindings_.size(); ++i) {
-        const Binding& b = bindings_[i];
-        if (b.keys.empty() || !matches(b.keys[0], *press)) continue;
-        if (b.keys.size() == 1) {
-            exact = i;
-        } else {
-            prefix = true;
-        }
-    }
-    if (exact != k_none) {
-        execute(bindings_[exact].command);
-        return true;
-    }
-    if (prefix) {
-        pending_.push_back(*press);
-        if (!modal_active_) {
-            rt_.push_modal(*this);
-            modal_active_ = true;
-        }
-        arm_timeout();
-        return true;
+bool Keymap::on_event(const Event& event) {
+    const auto key = press_from(event);
+    if (!key) return false;
+    for (const Binding& binding : bindings_) {
+        if (binding.key == *key) { execute(binding.command); return true; }
     }
     return false;
 }
-
-// ---- 内部 ----
 
 std::optional<Keymap::KeyPress> Keymap::press_from(const Event& e) {
     if (e.kind == Event::Kind::text) {
@@ -246,13 +156,8 @@ bool Keymap::parse_key(std::string_view text, Mods mods, KeyPress& out) {
     return false;
 }
 
-bool Keymap::parse_token(std::string_view text, Token& out) {
-    out = Token{};
+bool Keymap::parse_binding(std::string_view text, KeyPress& out) {
     if (text.empty()) return false;
-    if (text == "<leader>") {
-        out.leader = true;
-        return true;
-    }
     Mods mods = Mods::none;
     size_t i = 0;
     for (;;) {
@@ -262,49 +167,10 @@ bool Keymap::parse_token(std::string_view text, Token& out) {
                                           : text.substr(i, plus - i);
         if (part.empty()) return false;
         if (plus == std::string_view::npos) {
-            return parse_key(part, mods, out.key);
+            return parse_key(part, mods, out);
         }
         if (!parse_modifier(part, mods)) return false;
         i = plus + 1;
-    }
-}
-
-bool Keymap::parse_binding(std::string_view text, std::vector<Token>& out) {
-    out.clear();
-    size_t i = 0;
-    while (i < text.size()) {
-        while (i < text.size() && text[i] == ' ') ++i;
-        if (i >= text.size()) break;
-        const size_t end = text.find(' ', i);
-        const std::string_view part = end == std::string_view::npos
-                                          ? text.substr(i)
-                                          : text.substr(i, end - i);
-        Token token;
-        if (!parse_token(part, token)) return false;
-        out.push_back(std::move(token));
-        if (end == std::string_view::npos) break;
-        i = end;
-    }
-    return !out.empty();
-}
-
-void Keymap::arm_timeout() {
-    if (timeout_id_ != 0) rt_.cancel(timeout_id_);
-    timeout_id_ = rt_.after(timeout_, [this] {
-        timeout_id_ = 0;
-        reset_sequence();
-    });
-}
-
-void Keymap::reset_sequence() {
-    pending_.clear();
-    if (timeout_id_ != 0) {
-        rt_.cancel(timeout_id_);
-        timeout_id_ = 0;
-    }
-    if (modal_active_) {
-        rt_.pop_modal(*this);
-        modal_active_ = false;
     }
 }
 

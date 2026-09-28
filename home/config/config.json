@@ -24,9 +24,6 @@
     "max_file_bytes": 5242880,
     "max_files": 3
   },
-  "network": {
-    "credentials": {}
-  },
   "permissions": "workspace",
   "process": {
     "default_timeout_ms": 300000,
@@ -81,6 +78,7 @@
     "read_max_line_bytes": 2000
   },
   "ui": {
+    "completion_max_files": 5000,
     "theme_file": "themes/dagent.json"
   }
 }

@@ -65,7 +65,7 @@ std::string trim_newline(std::string text) {
 
 void check_exit(const exec::Result& result, std::string_view command) {
     if (!result.exit_code || *result.exit_code <= 1) return; // 0 有匹配、1 无匹配都正常
-    const std::string detail = trim_newline(result.err.text);
+    const std::string detail = trim_newline(result.err);
     if (*result.exit_code == 2 && !detail.empty()) {
         throw WorkspaceError(WorkspaceError::Kind::bad_pattern, std::format("ripgrep: {}", detail));
     }

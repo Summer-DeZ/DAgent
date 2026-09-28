@@ -149,7 +149,6 @@ public:
         invalidate();
     }
 
-    bool focusable() const override { return true; }
     std::optional<Point> cursor() const override;
     Size measure(Size available) const override;
     void render(Surface& s) override;

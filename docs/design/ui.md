@@ -28,7 +28,7 @@
 | `ToastStack` | 右上角最多三条、五秒到期的瞬时通知 |
 | `SidePanel` | 右侧常驻信息栏：会话标题、上下文用量、MCP、最近一份 `TodoView`、项目与版本 |
 | `ApprovalDialog` | 权限审批与选项提问共用的模态骨架与输入；回答经 `interaction.answer` 提交 |
-| `projection` | 协议 DTO / View JSON → UI 自己的投影类型；不包含核心类型 |
+| `projection` | 协议 DTO / View JSON → UI 实际消费的字段；子事件由 Shell 按协议信封路由，解码后直接投影，不重复包装身份 |
 
 ```text
 LayerStack
@@ -49,6 +49,8 @@ LayerStack
 80–99 列占 26 列，至少 100 列占 30 列。状态栏始终在计划栏之外铺满。
 
 新会话的第一个 Document 块是欢迎头，包含版本、项目、git 分支和 MCP 数量；内容栏少于 60 列时只画单行字标。
+历史 `turn_end` 保留在协议与存储中，UI 不将其转换为无人消费的结束事件。
+文本显示宽度和带省略号的裁剪统一使用 `ui/display`；工具折叠提示的硬裁剪保留原行为。
 恢复会话改画恢复 id 与回放事件数。Scrollback 不贴底时，右下角覆盖显示未读行数，End 回到底部。
 
 ## 2. 主题
@@ -84,7 +86,7 @@ panel 背景，不在底纹上打孔；底部状态栏沿用主背景。切换�
 - 列表、历史、项目信息与文件补全都是后端查询；主会话与子 Pane 各有一个历史分页器，关闭页面时发 `session.history_close`。
 
 Shell 进入全屏后调用 `Terminal::set_mouse(true)` 打开鼠标上报，ScrollbackMouse 才收得到滚轮、
-拖选与双击；退出、挂起和 `run_external` 的还原由框架处理。
+拖选与双击；退出时的终端还原由框架处理。
 
 活动动画忙时每 100 ms 更新；MCP 状态来自会话快照：只在连接中或轮次忙碌时每 200 ms 请求一次 `session.snapshot`，稳定空闲后停止。
 toast 使用一次性五秒定时器，文件补全使用一次性 80 ms 防抖；空闲时没有新增的周期唤醒。
@@ -128,7 +130,7 @@ PromptBox 左侧是一根竖条（忙碌时换成 `primary`），底纹用 `back
 不把命令提交给模型。命令表同时驱动 ctrl+p 与帮助面板，避免维护第二份标题和分类。
 
 光标前最后一个非空白串以 `@` 开头时打开文件补全。80 ms 防抖后发 `workspace.complete`，后端用 `workspace::files`
-建一次项目文件缓存，再用 `fuzzy_rank` 取前八项；每次请求带 Completion 代次，过期结果被丢弃。Enter 用仓库相对路径替换 `@式` 并补空格。
+按 `ui.completion_max_files` 列举当前项目文件，再用 `fuzzy_rank` 取前八项；每次请求带 Completion 代次，过期结果被丢弃。Enter 用仓库相对路径替换 `@式` 并补空格。
 
 | 命令 | 行为 |
 | --- | --- |
@@ -158,7 +160,7 @@ PromptBox 左侧是一根竖条（忙碌时换成 `primary`），底纹用 `back
 | `ToolFinished` | 用结构化 View 定稿名称、参数、右对齐统计和主体 |
 | `Compacted` | 永久的压缩前后 token 系统块 |
 | `Notice(error)` | 永久 error 块；info/warn 只进 toast |
-| 带 parent_session_id 的事件 | 按 parent_invocation_id / model_call_id 归位：在对应 task 块正文追加子 Agent 的工具行，同时把事件喂给该子会话的 Pane |
+| 带 parent_session_id 的事件 | 按 model_call_id 归位：在对应 task 块正文追加子 Agent 的工具行，同时把事件喂给该子会话的 Pane |
 | `TurnEnded` | interrupted/denied/limit/failed 留系统块；done 追加 `▣ 模式 · 模型 · 耗时` 尾行 |
 
 工具标题是状态符 + 加粗名称、muted 参数、右对齐统计三段；参数过长时省略。主体每行用 `│ `，折叠行独立用
@@ -236,3 +238,5 @@ Ctrl+M 需要终端提供可区分的扩展按键编码；传统终端把它与 
 ## Skill selection
 
 `/skills` opens the skill catalog and discovery diagnostics. Selecting a skill inserts `$name` without submitting; typing `$` opens skill completion. Both reuse the existing application panel/completion widgets and fetch metadata through `skills.list`. Skill tool results use a dedicated card projection. See [skills](skills.md).
+
+历史加载各自拥有条目缓冲和分页游标；切换会话会取消旧加载，完成或失败即释放。主会话实时事件始终进入主文档，子事件按会话身份进入子文档。

@@ -249,10 +249,6 @@ void Surface::fill(Rect r, char32_t ch, const Style& st) noexcept {
     }
 }
 
-void Surface::hline(int row, int col0, int col1, const Style& s) noexcept {
-    fill({col0, row, col1 - col0 + 1, 1}, U'─', s); // 越界由 fill 求交裁剪
-}
-
 Surface Surface::view(Rect r) noexcept {
     r = r.intersect({0, 0, cols_, rows_});
     Surface v;
@@ -277,7 +273,5 @@ void intern_reset() noexcept {
     g_interned.clear();
     g_intern_overflow.store(false, std::memory_order_relaxed);
 }
-
-std::size_t intern_size() noexcept { return g_interned.size(); }
 
 } // namespace dagent::tui

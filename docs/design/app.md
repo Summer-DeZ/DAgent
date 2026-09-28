@@ -100,6 +100,7 @@ stdio 项支持 `command`、`args`、`env`、`environment`，HTTP 项支持 `url
 | `run.max_parallel_tasks` | 子 Agent 并发数，必须为正整数 | 4 |
 | `run.max_parallel_tools` | 只读工具并发数，必须为正整数 | 8 |
 | `tools.bash_collect_bytes` | 中断时命令输出收集上限 | 4194304 |
+| `ui.completion_max_files` | 每次文件补全扫描上限；每次查询读取当前目录 | 5000 |
 | `session.history_scan_limit` | 每页历史最多扫描的记录数 | 100 |
 
 上下文预算、工具结果与文件大小限制、HTTP/进程超时、日志大小及进度间隔也显式读取对应配置段。
@@ -147,7 +148,9 @@ resume_id, continue_last, log_level}`。后端的 `app::assemble_backend` 依次
 1. 维护命令执行 runtime sync/list，不创建会话。普通启动读取 config/ 下配置及 runtime 快照，按 argv 顺序应用 `--set` 与 `--model`；无效时返回 `config_error`，前端以 2 退出。
 2. 初始化日志：`<root>/logs/dagent-<pid>.log`；交互模式关闭 stderr sink，run 与查询模式沿用配置。
 3. 查询模式只构造配置网关与只读查询；interactive/run 模式另外收集一次工作区环境（git、AGENTS.md）、探测沙箱、
-   读取子 Agent 定义与提示词，创建 `Assembly`（MCP Hub、环境事实、子 Agent 定义、模型表）与 `SessionAssembly`。
+   读取子 Agent 定义与提示词，创建 `Assembly`（MCP Hub、环境事实、子 Agent 定义）与 `SessionAssembly`。
+模型解析与客户端工厂由 Configuration/启动装配负责；Assembly 不再保存第二份模型表。
+
 4. `SessionAssembly` 实现 `runtime::SessionFactory`：为每个会话渲染 system prompt、建立 `tools::Context` / Registry、
    打开记录写入器并取得写租约；存储路径固定为 `<root>/data/dagent.db`。
 
@@ -165,8 +168,8 @@ run 模式的前端由 `RunOutput` 累积主会话结果，并按所选格式输
 | `jsonl` | 协议事件信封，一行一个 JSON | 启动错误及 warn / error Notice；info 留在 jsonl |
 
 json 结果字段为 `session_id, status, error, result, steps, tool_calls, usage, duration_ms`。
-jsonl 每行直接序列化 `protocol::Event`：`seq, session_id, session_generation, kind, data, run_id,
-parent_session_id, parent_invocation_id, model_call_id, agent`。子事件身份保留在同一信封中；
+jsonl 每行直接序列化 `protocol::Event`：`seq, session_id, session_generation, kind, data,
+parent_session_id, model_call_id, agent`。子事件身份保留在同一信封中；
 会话和操作通知也原样输出，恢复时不输出历史。
 各格式共用主会话结果累积，在新步和流重试时重置正文缓冲，并从主会话 `turn_ended` 取得状态与用量。
 子 Agent 事件不修改主会话结果，也不结束本次 run；JSONL 同样按最终状态返回退出码。

@@ -117,7 +117,6 @@ public:
              int tab_stop = 8) noexcept;
     /// @brief 用 ch 填充区域；宽字符在右缘放不下时降级为空格。
     void fill(Rect r, char32_t ch, const Style& s) noexcept;
-    void hline(int row, int col0, int col1, const Style& s) noexcept; ///< U+2500 横线
 
     /// @brief 返回共享本表面存储的子视图（裁剪到宿主范围）。
     Surface view(Rect r) noexcept;
@@ -158,6 +157,5 @@ void present(Terminal& term, Surface& back, Surface& front, std::string& out,
 inline constexpr std::size_t k_intern_max = 4096;
 bool intern_overflowed() noexcept; ///< 表项是否超过上限
 void intern_reset() noexcept;      ///< 清空 intern 表
-std::size_t intern_size() noexcept; ///< 当前表项数
 
 } // namespace dagent::tui

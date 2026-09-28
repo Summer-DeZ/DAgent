@@ -14,7 +14,7 @@ public:
     void context(std::size_t used, std::size_t limit);
     void todo(int done, int total, bool shown);
     void set_theme(const tui::ThemeTokens& theme) { theme_ = &theme; invalidate(); }
-    void set_trigger(int percent) { trigger_ = percent; }
+    void set_trigger(int percent) { if (trigger_ != percent) { trigger_ = percent; invalidate(); } }
     tui::Size measure(tui::Size available) const override { return {available.cols, 1}; }
     void render(tui::Surface&) override;
 

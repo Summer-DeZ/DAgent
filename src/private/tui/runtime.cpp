@@ -577,7 +577,6 @@ void Runtime::run() {
         prune_timers();
         const int timeout = poll_timeout(Clock::now());
         const int rc = ::poll(fds, 3, timeout);
-        wakeups_.fetch_add(1, std::memory_order_relaxed);
         if (rc < 0) {
             if (errno == EINTR) continue;
             quit_.store(true, std::memory_order_release); // poll 失败：收摊
@@ -636,7 +635,6 @@ void Runtime::run() {
         frame();
 
         present(term_, back_, front_, out_, cursor_);
-        frames_.fetch_add(1, std::memory_order_relaxed);
         last_frame_ = Clock::now();
 
         // intern 溢出：作废双缓冲，下一帧全量重写。
@@ -648,29 +646,6 @@ void Runtime::run() {
             dirty_ = true;
         }
     }
-}
-
-// ---- 挂起/恢复 ----
-
-void Runtime::run_external(std::function<void()> fn) {
-    term_.suspend();
-    fn();
-    resume_after_suspend();
-}
-
-void Runtime::suspend_process() {
-    term_.suspend();
-    ::kill(0, SIGTSTP);
-    resume_after_suspend();
-}
-
-/// @brief 恢复后作废双缓冲，整树补画。
-void Runtime::resume_after_suspend() {
-    term_.resume();
-    front_.resize(0, 0);
-    root_.invalidate_tree();
-    check_size(); // 挂起期间终端尺寸可能变过
-    dirty_ = true;
 }
 
 // ---- ScrollbackMouse ----

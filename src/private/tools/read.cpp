@@ -52,9 +52,9 @@ std::vector<std::string> suggest_similar(const Context& ctx, const std::string& 
 
 class ReadCall final : public PreparedTool {
 public:
-    ReadCall(const agent::InvocationContext& invocation, Context& ctx, workspace::Resolved target,
+    ReadCall(Context& ctx, workspace::Resolved target,
              std::string display, int offset, int limit, bool directory)
-        : PreparedTool(invocation), ctx_(ctx), target_(std::move(target)), display_(std::move(display)),
+        : ctx_(ctx), target_(std::move(target)), display_(std::move(display)),
           offset_(offset), limit_(limit), directory_(directory) {
         intent_.kind = agent::ToolKind::read;
         intent_.paths = {to_intent(target_, agent::Access::read)};
@@ -193,8 +193,7 @@ public:
     const Spec& spec() const override { return spec_; }
 
     std::expected<std::unique_ptr<PreparedTool>, Result> prepare(
-        std::string_view arguments, Context& ctx,
-        const agent::InvocationContext& invocation) const override {
+        std::string_view arguments, Context& ctx) const override {
         auto args = detail::parse_arguments(arguments);
         if (!args) return std::unexpected(error_result(args.error()));
         std::string err;
@@ -225,7 +224,7 @@ public:
         }
         const int start = offset && *offset > 0 ? static_cast<int>(*offset) : 1;
         const int lines = limit && *limit > 0 ? static_cast<int>(*limit) : ctx.options().read_default_lines;
-        return std::make_unique<ReadCall>(invocation, ctx, resolved, display, start, lines,
+        return std::make_unique<ReadCall>(ctx, resolved, display, start, lines,
                                           kind == workspace::FileKind::directory);
     }
 

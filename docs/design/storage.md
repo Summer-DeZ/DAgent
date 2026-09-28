@@ -93,7 +93,7 @@ FROM sessions WHERE cwd=? AND (parent_id IS NULL OR parent_id='') ORDER BY updat
 子会话不进 `/resume` 与 `sessions` 列表，需要时用 `list_children` 取。
 
 `HistoryRead` 打开时捕获会话元信息与 MAX(seq) 高水位，之后按 seq 推进：每页扫描量不超过 `history_scan_limit`，无显示项的一页也推进，
-游标对前端不透明。页之间只保存核心 `HistoryCursor` 的验证元数据（ordinal、开放调用、裁剪目标），不构造 Conversation。
+Storage 内部顺序推进 next_seq，Backend 为每一页分配独立的查询游标并校验会话归属。页之间只保存核心 `HistoryCursor` 的验证元数据（ordinal、开放调用、裁剪目标），不构造 Conversation。
 读完、关闭或失败后再读返回 `invalid_state`。记录损坏（payload JSON 或核心字段非法）报 corrupt。
 
 ## 6. 库损坏

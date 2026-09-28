@@ -62,7 +62,6 @@ protocol::SessionSnapshot to_protocol(const runtime::RuntimeSnapshot& snapshot) 
         protocol::OperationInfo operation;
         operation.kind = snapshot.operation;
         operation.run_id = snapshot.run_id;
-        operation.phase = snapshot.phase;
         out.current_operation = std::move(operation);
     }
     for (const runtime::QueuedInput& input : snapshot.queue) {
@@ -71,6 +70,7 @@ protocol::SessionSnapshot to_protocol(const runtime::RuntimeSnapshot& snapshot) 
     out.context.used = snapshot.used_tokens;
     out.context.limit = snapshot.token_limit;
     out.context.window = snapshot.window_tokens;
+    out.context.trigger_percent = snapshot.trigger_percent;
     out.work_plan = agent::to_json(agent::View(snapshot.work_plan));
     for (const agent::McpServerState& state : snapshot.mcp) {
         out.mcp.push_back(nlohmann::json{{"name", state.name},

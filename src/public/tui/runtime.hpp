@@ -53,8 +53,6 @@ public:
         router_.set_global(&h);
     }
     /// @brief 压入/弹出模态处理器。
-    void push_modal(EventHandler& h) { router_.push(h); }
-    void pop_modal(EventHandler& h) { router_.pop(h); }
 
     // ---- 鼠标（run() 之前或渲染线程）----
 
@@ -86,13 +84,6 @@ public:
     /// @brief 取消定时器；对已执行/已取消的 id 是空操作。
     void cancel(TimerId id);
 
-    // ---- 挂起/恢复（渲染线程内调用）----
-
-    /// @brief 挂起界面执行 fn（如外部编辑器），完成后恢复并整屏重画。
-    void run_external(std::function<void()> fn);
-    /// @brief 挂起框架并向进程组发 SIGTSTP（Ctrl+Z），SIGCONT 后恢复并重画。
-    void suspend_process();
-
     /// @brief 写系统剪贴板；返回是否完整写出。
     bool set_clipboard(std::string_view text) { return term_.set_clipboard(text); }
 
@@ -107,10 +98,6 @@ public:
     /// @brief 进入渲染循环（当前线程即渲染线程），阻塞至退出。
     void run();
 
-    /// @brief 累计帧数。
-    uint64_t frames() const noexcept { return frames_.load(std::memory_order_relaxed); }
-    /// @brief 主循环唤醒次数。
-    uint64_t wakeups() const noexcept { return wakeups_.load(std::memory_order_relaxed); }
 
 private:
     using Clock = std::chrono::steady_clock;
@@ -135,7 +122,6 @@ private:
     void finish_handshake(bool commit);     ///< commit=false 表示超时
     void report_caps();
 
-    void resume_after_suspend();
 
     void dispatch_mouse(const Event& e);
     bool deliver_mouse(EventHandler& h, const Widget* w, Event e);
@@ -211,8 +197,6 @@ private:
     // ---- 跨线程原子 ----
     std::atomic<bool> quit_{false};
     std::atomic<bool> wake_pending_{false}; ///< 管道内已有未消费的唤醒字节
-    std::atomic<uint64_t> frames_{0};
-    std::atomic<uint64_t> wakeups_{0};
     std::atomic<std::thread::id> render_thread_{};
 
     // ---- 仅渲染线程触碰 ----
@@ -263,8 +247,7 @@ struct Command {
 /// @note 必须先于 Runtime 销毁。
 class Keymap : public EventHandler {
 public:
-    explicit Keymap(Runtime& rt) noexcept;
-    ~Keymap() override;
+    Keymap() = default;
     Keymap(const Keymap&) = delete;
     Keymap& operator=(const Keymap&) = delete;
 
@@ -272,8 +255,6 @@ public:
     void add(Command c);
     /// @brief 注册绑定；按键串非法或命令 id 不存在时返回 false。
     bool bind(std::string_view keys, std::string_view command_id);
-    /// @brief 设置 <leader> 按键与序列等待超时；按键串非法则清除 leader。
-    void set_leader(std::string_view key, std::chrono::milliseconds timeout);
     const std::vector<Command>& commands() const noexcept { return commands_; }
 
     bool on_event(const Event& e) override;
@@ -285,33 +266,20 @@ private:
         Mods mods = Mods::none;
         bool operator==(const KeyPress&) const noexcept = default;
     };
-    struct Token {
-        bool leader = false; ///< "<leader>" 占位
-        KeyPress key{};
-        bool operator==(const Token&) const noexcept = default;
-    };
     struct Binding {
-        std::vector<Token> keys;
+        KeyPress key;
         size_t command = 0; ///< commands_ 下标
     };
 
     static std::optional<KeyPress> press_from(const Event& e);
     static bool parse_key(std::string_view text, Mods mods, KeyPress& out);
-    static bool parse_token(std::string_view text, Token& out);
-    static bool parse_binding(std::string_view text, std::vector<Token>& out);
+    static bool parse_binding(std::string_view text, KeyPress& out);
 
-    void arm_timeout();
-    void reset_sequence();
     void execute(size_t command_index);
 
-    Runtime& rt_;
     std::vector<Command> commands_;
     std::vector<Binding> bindings_;
-    std::optional<KeyPress> leader_;
-    std::chrono::milliseconds timeout_{500}; ///< 序列等待超时
-    std::vector<KeyPress> pending_; ///< 已按下的序列前缀（非空 = 模态已压栈）
-    bool modal_active_ = false;
-    TimerId timeout_id_ = 0;
+
 };
 
 } // namespace dagent::tui

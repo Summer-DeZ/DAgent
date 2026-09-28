@@ -26,10 +26,10 @@ constexpr std::string_view kDescription = R"(Run a bash command in the workspace
 
 class BashCall final : public PreparedTool {
 public:
-    BashCall(const agent::InvocationContext& invocation, const Context& ctx, std::string command,
+    BashCall(const Context& ctx, std::string command,
              exec::Analysis analysis, std::optional<std::chrono::milliseconds> timeout,
              std::string environment_name, exec::Environment environment)
-        : PreparedTool(invocation), root_(ctx.root()), process_options_(ctx.process()),
+        : root_(ctx.root()), process_options_(ctx.process()),
           max_result_bytes_(ctx.options().max_result_bytes), collect_bytes_(ctx.options().bash_collect_bytes), command_(std::move(command)),
           environment_name_(std::move(environment_name)), environment_(std::move(environment)),
           analysis_(std::move(analysis)), timeout_(timeout) {
@@ -169,7 +169,7 @@ private:
 
         std::string raw; // 给视图的「完整输出」（exec 已按上限保留头尾）
         if (outcome) {
-            raw = base::to_valid_utf8(base::strip_ansi(outcome->out.text));
+            raw = base::to_valid_utf8(base::strip_ansi(outcome->out));
             view.exit_code = outcome->exit_code;
             view.signal = outcome->signal;
             view.timed_out = outcome->timed_out;
@@ -183,7 +183,7 @@ private:
         constexpr std::size_t kStatusRoom = 512;
         const std::size_t body_budget =
             max_result_bytes_ > kStatusRoom ? max_result_bytes_ - kStatusRoom : max_result_bytes_ / 2;
-        std::string body = base::truncate_middle(raw, body_budget).text;
+        std::string body = base::truncate_middle(raw, body_budget);
         std::string text = body.empty() ? "(no output)" : body;
 
         view.output = raw;
@@ -245,8 +245,7 @@ public:
     const Spec& spec() const override { return spec_; }
 
     std::expected<std::unique_ptr<PreparedTool>, Result> prepare(
-        std::string_view arguments, Context& ctx,
-        const agent::InvocationContext& invocation) const override {
+        std::string_view arguments, Context& ctx) const override {
         auto args = detail::parse_arguments(arguments);
         if (!args) return std::unexpected(error_result(args.error()));
         std::string err;
@@ -279,7 +278,7 @@ public:
         } else {
             timeout = ctx.process().default_timeout; // exec 里 0 表示不限
         }
-        return std::make_unique<BashCall>(invocation, ctx, command, std::move(analysis), timeout, std::move(environment_name), std::move(environment));
+        return std::make_unique<BashCall>(ctx, command, std::move(analysis), timeout, std::move(environment_name), std::move(environment));
     }
 
 private:

@@ -48,8 +48,6 @@ struct SessionConfig {
 
 /// @brief 会话的只读快照：UI/协议适配只消费值，不接触内部容器。
 struct SessionSnapshot {
-    SessionId id;
-    std::string model;
     PermissionMode permission_mode = PermissionMode::workspace;
     bool read_only = false;
     bool planning = false;
@@ -83,15 +81,10 @@ public:
     RequestShape request_shape() const;
     ModelParams model_params() const;
     std::size_t estimated_tokens();
-    /// @brief 本轮动作内部身份；不落库。
-    std::string next_invocation_id();
-    std::vector<ToolSpec> tool_specs() const { return catalog_.specs(); }
-    std::vector<std::string> tool_names() const { return catalog_.names(); }
 
     // 运行期协作者：TurnRunner/ActionDispatcher 使用，不向 UI 暴露。
     Policy& policy() { return policy_; }
     const Policy& policy() const { return policy_; }
-    const WorkPlan& plan() const { return plan_; }
     ControlActionExecutor& control() { return control_; }
     ActionCatalog& catalog() { return catalog_; }
     ModelSession& model() { return *model_; }
@@ -120,7 +113,6 @@ private:
     Compactor compactor_;
     ControlActionExecutor control_;
     SessionCommitter committer_;
-    std::uint64_t invocation_seq_ = 0;
 };
 
 } // namespace dagent::agent

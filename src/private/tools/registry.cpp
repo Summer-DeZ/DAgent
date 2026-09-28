@@ -65,10 +65,10 @@ std::vector<agent::ToolSpec> ToolSession::specs() const {
 }
 
 std::expected<std::unique_ptr<agent::PreparedTool>, agent::ToolResult> ToolSession::prepare(
-    std::string_view name, std::string_view arguments, const agent::InvocationContext& invocation) const {
+    std::string_view name, std::string_view arguments) const {
     const Tool* tool = registry_.find(name);
     if (tool == nullptr) return std::unexpected(detail::error_result(std::format("unknown tool: {}", name)));
-    return tool->prepare(arguments, context_, invocation);
+    return tool->prepare(arguments, context_);
 }
 
 void add_mcp(Registry& registry, std::shared_ptr<mcp::Client> client) {

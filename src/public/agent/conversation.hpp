@@ -62,7 +62,6 @@ public:
     // ---- 读取 ----
     const std::deque<Entry>& entries() const { return entries_; }
     std::size_t tokens() const;
-    std::int64_t next_ordinal() const { return next_ordinal_; }
 
     /// @brief system 放最前面，其后是全部 entries 的 message。要求闭合。
     Request build(const std::string& system, const std::vector<ToolSpec>& tools,

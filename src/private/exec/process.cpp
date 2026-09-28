@@ -96,8 +96,8 @@ public:
         if (tail_.size() > tail_cap_) tail_.erase(0, tail_.size() - tail_cap_);
     }
 
-    base::Truncated finish() const {
-        if (total_ <= head_cap_ + tail_cap_) return {head_ + tail_, total_, false};
+    std::string finish() const {
+        if (total_ <= head_cap_ + tail_cap_) return head_ + tail_;
 
         const std::size_t head_end = base::utf8_floor(head_, head_.size());
         std::size_t tail_skip = 0;
@@ -108,7 +108,7 @@ public:
         std::string text = head_.substr(0, head_end);
         text += "\n... " + std::to_string(omitted) + " bytes omitted ...\n";
         text += tail_.substr(tail_skip);
-        return {std::move(text), total_, true};
+        return text;
     }
 
 private:

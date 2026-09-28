@@ -21,7 +21,6 @@ public:
 
     void set_footer(std::string);
     void set_footer_tone(bool error, bool accent);
-    void set_placeholder(std::string);
     void set_active(bool);
     void set_theme(const tui::ThemeTokens&);
 
@@ -44,7 +43,6 @@ private:
 
     std::string footer_;
     bool footer_error_ = false, footer_accent_ = false;
-    std::string placeholder_ = std::string(ui::text().box_placeholder);
     bool active_ = false;
     const tui::ThemeTokens* theme_ = &tui::dark_theme();
 };

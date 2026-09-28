@@ -40,7 +40,6 @@ void report_retry(const RetryInfo& info, const Sink& sink) {
 
 RunOutcome TurnRunner::finish(Session& session, Run& run, const RunServices& services, TurnStatus status,
                               std::string error) {
-    run.enter_phase(RunPhase::finalizing);
     session.committer().repair_open_calls(); // 补未闭合调用，不额外发 ToolFinished
     session.committer().record_turn_end(status, error, run.steps(), run.tool_calls(), run.usage());
     session.committer().sync();
@@ -59,7 +58,6 @@ RunOutcome TurnRunner::run(Session& session, Run& run, const RunServices& base_s
     const Sink& sink = services.sink;
     const std::stop_token stop = services.stop;
 
-    run.enter_phase(RunPhase::preparing_context);
     input = base::to_valid_utf8(input);
     const auto mentions = skill_mentions(input);
     std::vector<SkillView> requested;
@@ -96,7 +94,6 @@ RunOutcome TurnRunner::run(Session& session, Run& run, const RunServices& base_s
         Reply reply;
         try {
             // MCP 的重连、等待、断线通报只由主会话做；子会话只用构造时的快照。
-            run.enter_phase(RunPhase::preparing_context);
             if (session.is_main() && services.resources != nullptr)
                 services.resources->begin_step(sink, stop);
             // 自动压缩在 StepStarted 之前（docs/design/agent.md §2）：界面在一步开始后作废的内容不含压缩提示。
@@ -107,7 +104,6 @@ RunOutcome TurnRunner::run(Session& session, Run& run, const RunServices& base_s
             }
             session.committer().check_broken();
             sink(StepStarted{run.steps()});
-            run.enter_phase(RunPhase::requesting_model);
             for (int attempt = 0; ; ++attempt) {
                 const Request request = session.build_request();
                 estimated = session.estimator().estimate(request);
@@ -172,7 +168,6 @@ RunOutcome TurnRunner::run(Session& session, Run& run, const RunServices& base_s
             return finish(session, run, services, TurnStatus::done, "");
         }
 
-        run.enter_phase(RunPhase::dispatching);
         const ActionDispatcher::Outcome outcome =
             dispatcher.dispatch(reply.message.tool_calls, max_tool_calls - run.tool_calls());
         run.count_calls(outcome.handled);
@@ -195,7 +190,6 @@ RunOutcome TurnRunner::compact(Session& session, Run& run, const RunServices& ba
     const Sink& sink = services.sink;
     const std::stop_token stop = services.stop;
 
-    run.enter_phase(RunPhase::compacting);
     TurnStatus status = TurnStatus::done;
     try {
         if (auto change = session.compactor().summarize(session.conversation(), session.request_shape(),
@@ -207,7 +201,6 @@ RunOutcome TurnRunner::compact(Session& session, Run& run, const RunServices& ba
         status = error.kind() == ModelError::Kind::cancelled ? TurnStatus::interrupted : TurnStatus::failed;
         if (status == TurnStatus::failed) sink(Notice{Notice::Level::error, error.what()});
     }
-    run.enter_phase(RunPhase::finalizing);
     session.committer().sync();
     session.committer().check_broken();
     return run.finish(status, "");

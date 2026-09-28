@@ -181,17 +181,29 @@ public:
 
     void start() { request(); }
     void cancel() {
-        const std::lock_guard lock(mutex_);
-        cancelled_ = true;
+        std::string cursor;
+        {
+            const std::lock_guard lock(mutex_);
+            cancelled_ = true;
+            cursor = std::exchange(cursor_, {});
+        }
+        close_cursor(cursor);
     }
 
 private:
+    void close_cursor(const std::string& cursor) {
+        if (!cursor.empty())
+            client_.call_async("session.history_close", {{"cursor", cursor}},
+                               [](std::expected<nlohmann::json, protocol::RpcError>) {});
+    }
+
     void request() {
         nlohmann::json params{{"session_id", session_id_}, {"limit", 100}};
         {
             const std::lock_guard lock(mutex_);
             if (cancelled_) return;
-            if (!cursor_.empty()) params["cursor"] = cursor_;
+            // 从这里到响应到达，游标归在途请求所有；cancel 由 handle 关闭响应中的新游标。
+            if (!cursor_.empty()) params["cursor"] = std::exchange(cursor_, {});
         }
         auto self = shared_from_this();
         client_.call_async("session.history", std::move(params),
@@ -201,10 +213,11 @@ private:
     }
 
     void handle(std::expected<nlohmann::json, protocol::RpcError> response) {
+        const std::lock_guard gate_lock(gate_->mutex);
         if (!response) {
-            const std::string message = response.error().message;
+            if (!gate_->open || cancelled()) return;
             auto self = shared_from_this();
-            rt_.post([self, message] {
+            rt_.post([self, message = response.error().message] {
                 const std::lock_guard lock(self->gate_->mutex);
                 if (!self->gate_->open || self->cancelled()) return;
                 if (self->on_error) self->on_error(message);
@@ -212,35 +225,27 @@ private:
             return;
         }
         std::vector<protocol::HistoryItem> items;
-        for (const auto& item : response->value("items", nlohmann::json::array())) {
+        for (const auto& item : response->value("items", nlohmann::json::array()))
             items.push_back(item.get<protocol::HistoryItem>());
-        }
         std::string next;
         if (const auto it = response->find("next_cursor"); it != response->end() && it->is_string())
             next = it->get<std::string>();
-        if (cancelled()) {
-            if (!next.empty()) {
-                client_.call_async("session.history_close", {{"cursor", next}},
-                                   [](std::expected<nlohmann::json, protocol::RpcError>) {});
-            }
-            return;
+        bool discard;
+        {
+            const std::lock_guard lock(mutex_);
+            discard = cancelled_ || !gate_->open;
+            if (!discard) cursor_ = next;
         }
+        if (discard) { close_cursor(next); return; }
         auto self = shared_from_this();
-        rt_.post([self, items = std::move(items), next]() mutable {
+        rt_.post([self, items = std::move(items), done = next.empty()]() mutable {
             const std::lock_guard lock(self->gate_->mutex);
             if (!self->gate_->open || self->cancelled()) return;
             for (const auto& item : items) {
                 if (self->on_item) self->on_item(item);
             }
-            if (!next.empty()) {
-                {
-                    const std::lock_guard lock(self->mutex_);
-                    self->cursor_ = next;
-                }
-                self->request();
-            } else if (self->on_done) {
-                self->on_done();
-            }
+            if (!done) self->request();
+            else if (self->on_done) self->on_done();
         });
     }
 
@@ -291,14 +296,13 @@ public:
           prompt_(*input_, [this](std::string text) { submit(std::move(text)); },
                   [this] { recall(); }, [this] { prompt_changed(); },
                   [this] { return completion_.visible(); }),
-          keys_(rt_), dialog_(rt_, [this] { interrupt(); }), model_dialog_(rt_),
+          dialog_(rt_, [this] { interrupt(); }), model_dialog_(rt_),
           toasts_(rt_), panel_(rt_),
           completion_(rt_, *input_, [this] { completion_kind_.clear(); }),
           branch_(std::move(branch)), project_root_(std::move(project_root)) {
         apply_snapshot(initial);
         project_path_ = display_path(project_root_);
         status_->project(project_path_);
-        status_->set_trigger(trigger_percent_);
         side_->set_project(project_path_, branch_);
         side_->set_version(DAGENT_VERSION);
         add_pane("main", id_, {});
@@ -320,6 +324,8 @@ public:
     }
 
     ~Shell() override {
+        cancel_history();
+        for (auto& pane : panes_) if (pane.pager) pane.pager->cancel();
         {
             const std::lock_guard lock(gate_->mutex);
             gate_->open = false;
@@ -337,6 +343,8 @@ public:
         rt_.run();
         terminal_.restore();
         exiting_ = true;
+        cancel_history();
+        for (auto& pane : panes_) if (pane.pager) pane.pager->cancel();
         if (client_.connected()) {
             try {
                 client_.call("backend.shutdown");
@@ -431,6 +439,8 @@ private:
     }
 
     void apply_snapshot(const protocol::SessionSnapshot& snapshot) {
+        if (snapshot.session_generation < generation_ || snapshot.state_seq < state_seq_) return;
+        state_seq_ = snapshot.state_seq;
         snapshot_ = snapshot;
         id_ = snapshot.session_id;
         generation_ = snapshot.session_generation;
@@ -444,6 +454,7 @@ private:
         window_tokens_ = snapshot.context.window;
         mcp_states_ = decode_mcp(snapshot.mcp);
         side_->set_mcp(mcp_label(mcp_states_));
+        status_->set_trigger(snapshot.context.trigger_percent);
         status_->context(worked_tokens_, token_limit_);
         side_->set_context(worked_tokens_, token_limit_);
         if (!panes_.empty()) {
@@ -473,10 +484,15 @@ private:
             route_sub_event(event);
             return;
         }
-        if (const auto decoded = decode_event(event)) apply_live(*decoded);
+        if (event.session_id != id_) return;
+        const bool update_state = event.seq > state_seq_;
+        state_seq_ = std::max(state_seq_, event.seq);
+        if (const auto decoded = decode_event(event)) apply_live(*decoded, update_state);
     }
 
     void apply_session_changed(const protocol::Event& event) {
+        if (event.session_generation < generation_) return;
+        cancel_history();
         id_ = event.session_id;
         generation_ = event.session_generation;
         const bool replace = event.data.value("replace_transcript", true);
@@ -509,15 +525,13 @@ private:
         if (index == 0) return;
         const auto decoded = decode_event(event);
         if (!decoded) return;
-        if (const auto* sub = std::get_if<SubEvent>(&decoded->payload)) {
-            panes_[index].transcript->apply_live(sub->event());
-        }
+        panes_[index].transcript->apply_live(*decoded);
     }
 
-    void apply_live(const Event& event) {
-        active_transcript().apply_live(event);
+    void apply_live(const Event& event, bool update_state) {
+        panes_.front().transcript->apply_live(event);
         std::visit(Overloaded{
-                       [&](const TurnStarted&) { set_busy(true); refresh_snapshot(); },
+                       [&](const TurnStarted&) { if (update_state) { set_busy(true); refresh_snapshot(); } },
                        [&](const StepStarted&) { phase_ = std::string(ui::text().act_thinking); step_begin_ = Clock::now(); },
                        [&](const TextDelta&) { phase_ = std::string(ui::text().act_generating); },
                        [&](const ReasoningDelta&) { phase_ = std::string(ui::text().act_generating); },
@@ -527,6 +541,7 @@ private:
                            std::erase_if(running_, [&](const Running& running) { return running.id == e.id; });
                        },
                        [&](const ContextUpdate& e) {
+                           if (!update_state) return;
                            status_->context(e.used, e.limit);
                            side_->set_context(e.used, e.limit);
                        },
@@ -542,12 +557,14 @@ private:
                                                  : tui::Notice::Severity::info);
                        },
                        [&](const ModeChanged& e) {
+                           if (!update_state) return;
                            planning_ = e.planning;
                            mode_ = e.mode;
                            active_transcript().set_session(mode_label(), model_label_);
                            update_prompt_footer();
                        },
                        [&](const TurnEnded&) {
+                           if (!update_state) return;
                            dialog_.close();
                            set_busy(false);
                            refresh_snapshot();
@@ -571,22 +588,32 @@ private:
         refresh_mcp(); activity();
     }
 
+    void cancel_history() {
+        if (history_pager_) history_pager_->cancel();
+        history_pager_.reset();
+    }
+
     void refresh_history() {
+        cancel_history();
         const std::string id = id_;
+        const auto generation = generation_;
+        auto items = std::make_shared<std::vector<protocol::HistoryItem>>();
         auto pager = std::make_shared<HistoryPager>(client_, rt_, gate_, id);
-        pager->on_item = [this, id](const protocol::HistoryItem& item) {
-            if (id_ != id || exiting_) return;
-            pending_history_.push_back(item);
-        };
-        pager->on_done = [this, id] {
-            if (id_ != id || exiting_) return;
-            reset_transcript(true, pending_history_.size());
-            for (const auto& item : pending_history_) active_transcript().append_history(item);
-            pending_history_.clear();
+        pager->on_item = [items](const protocol::HistoryItem& item) { items->push_back(item); };
+        pager->on_done = [this, id, generation, items] {
+            if (id_ != id || generation_ != generation || exiting_) return;
+            reset_transcript(true, items->size());
+            for (const auto& item : *items) panes_.front().transcript->append_history(item);
+            history_pager_.reset();
             root_.invalidate_tree();
             refresh_mcp();
         };
-        history_pagers_[id] = pager;
+        pager->on_error = [this, id, generation](std::string message) {
+            if (id_ != id || generation_ != generation || exiting_) return;
+            history_pager_.reset();
+            toast(std::string(ui::text().toast_resume_failed) + message, tui::Notice::Severity::error);
+        };
+        history_pager_ = pager;
         pager->start();
     }
 
@@ -1276,12 +1303,12 @@ private:
     std::shared_ptr<CallbackGate> gate_ = std::make_shared<CallbackGate>();
     std::optional<ThemeSet> themes_;
     bool resumed_ = false;
-    std::vector<protocol::HistoryItem> history_, pending_history_;
+    std::vector<protocol::HistoryItem> history_;
     std::string initial_prompt_;
     std::vector<protocol::PublicModel> models_;
     std::vector<ProviderKind> provider_kinds_;
     protocol::SessionSnapshot snapshot_;
-    std::map<std::string, std::shared_ptr<HistoryPager>> history_pagers_;
+    std::shared_ptr<HistoryPager> history_pager_;
     tui::ThemeTokens theme_ = tui::dark_theme();
     uint32_t theme_epoch_ = 0;
     std::string theme_choice_ = "follow";
@@ -1310,10 +1337,9 @@ private:
     std::filesystem::path project_root_;
     std::string active_interaction_, model_name_, model_label_;
     std::string mode_ = "ask";
-    std::uint64_t generation_ = 0;
+    std::uint64_t generation_ = 0, state_seq_ = 0;
     bool planning_ = false, read_only_ = false;
     std::size_t worked_tokens_ = 0, token_limit_ = 0, window_tokens_ = 0;
-    int trigger_percent_ = 80;
     std::vector<McpStatus> mcp_states_;
     std::vector<CommandUi> command_ui_;
     struct Running { std::string id, summary; Clock::time_point begin; };

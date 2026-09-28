@@ -23,7 +23,7 @@ Runtime::Runtime(Deps deps)
 
 Runtime::~Runtime() { shutdown(); }
 
-StartResult Runtime::start(const StartOptions& options) { return controller_->start(options); }
+bool Runtime::start(const StartOptions& options) { return controller_->start(options); }
 
 RuntimeSnapshot Runtime::snapshot() const {
     RuntimeSnapshot snapshot = controller_->snapshot();
@@ -56,8 +56,8 @@ std::expected<void, RuntimeError> Runtime::add_model(agent::ModelInput input, Mo
 
 std::expected<void, RuntimeError> Runtime::compact() { return controller_->compact(); }
 
-std::expected<bool, RuntimeError> Runtime::revoke_grant(const std::string& grant_id) {
-    return controller_->revoke_grant(grant_id);
+std::expected<void, RuntimeError> Runtime::revoke_grant(std::string grant_id, GrantRevoked done) {
+    return controller_->revoke_grant(std::move(grant_id), std::move(done));
 }
 
 std::expected<void, RuntimeError> Runtime::cycle_permission() {

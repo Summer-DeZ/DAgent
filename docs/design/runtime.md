@@ -62,10 +62,10 @@ stateDiagram-v2
   backend 借此保证 `input.submit` 的响应先于该输入的 `turn_started` 进入发送队列。执行线程只取队首 `ready` 的输入，
   取出时才创建 Run（`run-N`）。
 - **取回**：`recall_last` 原子移除最后一条仍排队的输入，空输入框按 ↑ 时使用（B04）。
-- **命令**：new/resume/select_model/add_model/compact 只在空闲时接受；命令从接受到结束占用空闲入口，普通输入不能越过它。
+- **命令**：new/resume/select_model/add_model/compact/revoke_grant 只在空闲时接受；命令从接受到结束占用空闲入口，普通输入不能越过它。
   busy 时返回 `RuntimeError::busy`（B07）。
-- **即时操作**：`cycle_permission`（运行中也可，对之后的决策生效）、`toggle_planning`（要求空闲）、`revoke_grant`、`cancel`
-  不进命令队列（B08）。`cancel(run_id)` 只取消身份仍匹配的当前 Run，旧 id 返回 false。
+- **即时操作**：`cycle_permission`（运行中也可，对之后的决策生效）、`toggle_planning`（要求空闲）、`cancel`
+  不进命令队列（B08）。`cancel(run_id)` 只取消身份仍匹配的当前 Run，旧 id 返回 false。取消句柄只由 `CurrentRun` 保存；cancel/shutdown 在锁内取得局部共享引用，在锁外触发停止。
 - **drain**：Run 收尾时先把状态置回 ready 再发布 `TurnEnded`；无论 status 为何都继续出队下一条。手动压缩完成发
   `operation_finished` 后同样继续（B06）。
 
@@ -85,16 +85,15 @@ new/resume/切模型先在旧会话空闲时准备候选（`PendingReplace`）�
 
 ## 3. 快照与事件发布
 
-`RuntimeSnapshot` 是面向前端的只读状态：session_id、generation、state_seq、公开模型、权限档/planning/read_only、busy 与当前操作
-（turn/compact/replacing + run_id + phase）、排队输入、上下文用量与窗口、项目路径、WorkPlan、MCP 状态、记录 broken、会话授权。
+`RuntimeSnapshot` 是面向前端的只读状态：session_id、generation、公开模型、权限档/planning/read_only、busy 与当前操作
+（turn/compact/replacing + run_id）、排队输入、上下文用量与窗口、项目路径、WorkPlan、MCP 状态、记录 broken、会话授权。
 
-控制器用一把发布锁同时完成「应用事件到快照、分配事件序号、交给 `EventSink`」，保证快照的 `state_seq=S` 之后到达的事件都是
-`seq > S`。事件载荷是核心 `agent::Event` 或 runtime 自己的 `ControlEvent`：
+控制器用一把发布锁完成「应用事件到快照、交给 `EventSink`」。线上 seq/state_seq 仅由 backend Publisher 分配；
+runtime 不维护重复计数。事件载荷是核心 `agent::Event` 或 runtime 自己的 `ControlEvent`：
 
 | ControlEvent | 含义 |
 | --- | --- |
 | `session_replaced` | new/resume/切模型安装完成；`replace_transcript` 指出前端是否清空对话（切模型为 false），`resumed` 表示显式恢复 |
-| `models_changed` | 模型清单变化 |
 | `operation_finished` | 手动压缩结束，带 status/error |
 | `failed` | 控制命令失败，`operation` 指出动作 |
 

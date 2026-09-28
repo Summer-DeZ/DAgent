@@ -30,7 +30,8 @@ bool Client::connected() const {
     return !closing_ && error_.empty();
 }
 
-nlohmann::json Client::call(const std::string& method, nlohmann::json params) {
+nlohmann::json Client::call(const std::string& method, nlohmann::json params,
+                            std::chrono::milliseconds timeout) {
     auto state = std::make_shared<SyncPending>();
     std::string id;
     {
@@ -45,7 +46,16 @@ nlohmann::json Client::call(const std::string& method, nlohmann::json params) {
         throw std::runtime_error(channel_.error().empty() ? "failed to send the request" : channel_.error());
     }
     std::unique_lock lock(state->mutex);
-    state->cv.wait(lock, [&] { return state->ready; });
+    if (timeout.count() > 0) {
+        if (!state->cv.wait_for(lock, timeout, [&] { return state->ready; })) {
+            lock.unlock();
+            const std::lock_guard pending_lock(mutex_);
+            sync_.erase(id);
+            throw std::runtime_error(method + " timed out");
+        }
+    } else {
+        state->cv.wait(lock, [&] { return state->ready; });
+    }
     if (!state->connection_error.empty()) throw std::runtime_error(state->connection_error);
     if (state->error) throw RpcFailure(*state->error);
     return state->result;

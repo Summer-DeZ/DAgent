@@ -13,14 +13,13 @@ DAgent 外围模块的最底层。头文件在 `src/public/base/`，实现在 `s
 | 能力 | 头文件 | 主要接口 |
 | --- | --- | --- |
 | 日志：全局初始化、按模块命名的 logger、滚动文件、崩溃时刷盘 | `base/log.hpp` | `init_log`、`logger`、`shutdown_log` |
-| 读取 `.env` 文件、查找密钥，不写进进程环境 | `base/dotenv.hpp` | `Secrets`、`parse_dotenv` |
 | 文本处理：UTF-8 校验与修复、按字符边界截断、清理 ANSI 转义、base64 解码 | `base/text.hpp` | `to_valid_utf8`、`truncate_middle`、`strip_ansi`、`base64_decode` |
 | JSON 脱敏 | `base/json.hpp` | `redact` |
 
-两条约定：
+约定：
 
+- `truncate_middle` 直接返回截断后的字符串；截断标记保留省略字节数。`exec::Result.out/err` 同样直接保存字符串。
 - **日志只写文件。** 交互模式下终端归 TUI 所有，写到 stdout/stderr 的内容会把界面弄花。
-- **`.env` 里的密钥只保存在内存中。** 如果写进进程环境，模型通过 bash 执行的每条命令都会继承这些密钥。
 
 ---
 
@@ -69,38 +68,7 @@ DAGENT_LOG=net=debug,warn         # net 模块 debug，其余模块 warn
 
 ---
 
-## 3. 密钥：Secrets
-
-这是 base 提供的通用解析工具；当前 app 不调用它，也不搜索任何 `.env` 文件。DAgent 的模型密钥只从安装根的
-`models.json` 读取，具体规则见 [app](app.md)。
-
-```cpp
-const std::filesystem::path files[] = {root / ".env.dev", root / ".env"};
-const auto secrets = base::Secrets::load(files);
-std::optional<std::string> key = secrets.get("DEEPSEEK_API_KEY");
-```
-
-- `load` 按顺序读取各个文件，文件不存在就跳过；同一个键以**先读到的**为准。
-- `get` 先查进程环境变量，再查文件内容。
-- 不调用 `setenv`，文件里的值不会传给子进程。
-
-文件格式：
-
-| 写法 | 结果 |
-| --- | --- |
-| `KEY=value` | `value`，首尾空白去掉 |
-| `export KEY=value` | 允许 `export ` 前缀 |
-| `# ...` | 整行是注释 |
-| `KEY=sk-abc  # 注释` | `sk-abc`：不带引号的值在「空白 + `#`」处结束 |
-| `KEY=a#b` | `a#b`：前面没有空白的 `#` 属于值本身 |
-| `KEY = "a # b" # 注释` | `a # b`：引号内的内容原样保留，右引号后面可以跟注释；`=` 两侧可以有空白 |
-| `KEY="l1\nl2"` | 双引号内只转义 `\n` |
-| `KEY='l1\nl2'` | 单引号内不做任何转义 |
-| `KEY= # 注释` | 空值 |
-
----
-
-## 4. 文本工具
+## 3. 文本工具
 
 | 接口 | 行为 |
 | --- | --- |
@@ -113,7 +81,7 @@ std::optional<std::string> key = secrets.get("DEEPSEEK_API_KEY");
 
 ---
 
-## 5. JSON 脱敏
+## 4. JSON 脱敏
 
 `redact(json, fields)` 递归处理对象和数组，把键名（ASCII 比较，忽略大小写）**完全等于** `fields` 中某一项
 的值替换成 `"***"`。它只按键名匹配，所以以键值对数组形式存放的 HTTP 头，或者 `x-api-key` 这种不在列表里的
@@ -121,7 +89,7 @@ std::optional<std::string> key = secrets.get("DEEPSEEK_API_KEY");
 
 ---
 
-## 6. 依赖与构建
+## 5. 依赖与构建
 
 - spdlog v1.17.0，在 `cmake/deps.cmake` 里通过 FetchContent 从源码构建，并开启 `SPDLOG_USE_STD_FORMAT`（使用 std::format，不依赖 fmt）。不使用系统的 spdlog 包，因为它是基于 fmt 构建的，与这个选项不兼容。
 - 在 CMake 之外链接 spdlog 的程序，需要加上 `-DSPDLOG_COMPILED_LIB -DSPDLOG_USE_STD_FORMAT`（完整的链接写法见 [docs/README.md](../README.md) 的「临时检测程序」）。

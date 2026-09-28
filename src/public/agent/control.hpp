@@ -26,14 +26,14 @@ class DelegationChannel; ///< port_delegation.hpp
 
 /// @brief ask：向用户提问。
 struct AskRequest {
-    InvocationContext invocation;
+    std::string call_id;
     std::string summary;
     AskView view;
 };
 
 /// @brief exit_plan：计划确认。
 struct PlanConfirmation {
-    InvocationContext invocation;
+    std::string call_id;
     std::string summary;
     AskView view;
     std::string plan; ///< 模型提交的完整方案
@@ -41,20 +41,18 @@ struct PlanConfirmation {
 
 /// @brief todo：整份计划替换。
 struct PlanReplacement {
-    InvocationContext invocation;
     std::string summary;
     TodoView plan;
 };
 
 /// @brief task：一次父子委派。
 struct DelegationRequest {
-    InvocationContext invocation;
+    std::string call_id;
     std::string summary;
     std::string agent, prompt;
 };
 
 struct SkillActivation {
-    InvocationContext invocation;
     std::string summary, name;
 };
 
@@ -69,7 +67,7 @@ std::vector<ToolSpec> control_action_specs(bool include_task, const std::vector<
 /// @brief 解析一个控制动作调用；错误返回 is_error 的 ToolResult（保留原错误文本）。
 std::expected<ControlRequest, ToolResult> parse_control_action(std::string_view name,
                                                                std::string_view arguments,
-                                                               const InvocationContext&,
+                                                               std::string_view call_id,
                                                                const std::vector<SubagentDef>& subagents);
 
 /// @brief 控制动作执行器：ask 计数、计划选项语义、todo 计划替换事实与 task 委派。

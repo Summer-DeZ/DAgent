@@ -1,8 +1,8 @@
 /// @file history_read.hpp
-/// @brief 只读历史分页查询：固定高水位、跨页验证游标与显示投影。
+/// @brief 只读历史分页查询：固定高水位、顺序读取与显示投影。
 ///
 /// 由 session.history 打开；不初始化/修复数据库、不取写锁、不构造 Session/模型/MCP。
-/// 每页扫描上限由 storage::Options 配置，游标由后端原样回传；读完/关闭/连接关闭时释放。
+/// 每页扫描上限由 storage::Options 配置，查询身份由后端管理；读完/关闭/连接关闭时释放。
 #pragma once
 
 #include <cstdint>
@@ -20,7 +20,6 @@ class HistoryRead {
 public:
     struct Page {
         std::vector<agent::HistoryItem> items;
-        std::string cursor; ///< 下一页游标；空表示已读完
         bool done = false;
     };
 
@@ -31,8 +30,8 @@ public:
     HistoryRead(const HistoryRead&) = delete;
     HistoryRead& operator=(const HistoryRead&) = delete;
 
-    /// @brief 读取一页；cursor 为空表示第一页。读完或失败后再读抛 invalid_state。
-    Page read(const std::string& cursor, std::size_t limit);
+    /// @brief 顺序读取下一页。读完或失败后再读抛 invalid_state。
+    Page read(std::size_t limit);
     std::int64_t upper_seq() const;
 
 private:

@@ -6,7 +6,6 @@
 #pragma once
 
 #include <cstdint>
-#include <memory>
 #include <optional>
 #include <string>
 #include <variant>
@@ -79,7 +78,7 @@ struct AskView {
     std::vector<AskOption> options;
     std::vector<int> selected;
     std::string other;
-    bool multi_select = false, allow_other = true, cancelled = false;
+    bool cancelled = false;
 };
 
 struct TaskStep {
@@ -88,11 +87,10 @@ struct TaskStep {
 };
 
 struct TaskView {
-    std::string agent, task, session_id, result;
+    std::string agent, session_id, result;
     std::vector<TaskStep> steps;
-    int model_calls = 0, tool_calls = 0;
+    int tool_calls = 0;
     double seconds = 0;
-    bool interrupted = false;
 };
 
 struct SkillView { std::string name, path; };
@@ -100,10 +98,6 @@ struct SkillView { std::string name, path; };
 using TodoList = std::vector<TodoItem>;
 using ToolView = std::variant<std::monostate, ReadView, FileChangeView, BashView, GrepView, GlobView,
                               McpView, TodoList, AskView, TaskView, SkillView>;
-
-struct Usage {
-    std::int64_t prompt = 0, completion = 0, cached = 0;
-};
 
 struct ToolFinished {
     std::string id, name, summary, text;
@@ -125,7 +119,7 @@ struct ReasoningDelta {
 };
 struct StreamReset {};
 struct ToolPending {
-    std::string id, name;
+    std::string name;
 };
 struct ToolStarted {
     std::string id, name, summary;
@@ -140,11 +134,9 @@ struct Retrying {
 };
 struct Compacted {
     std::size_t before = 0, after = 0;
-    bool summarized = false;
 };
 struct ContextUpdate {
     std::size_t used = 0, limit = 0;
-    Usage usage;
 };
 struct Notice {
     NoticeLevel level = NoticeLevel::info;
@@ -160,33 +152,16 @@ struct ModeChanged {
 struct TurnEnded {
     TurnStatus status = TurnStatus::done;
     std::string error;
-    int steps = 0, tool_calls = 0;
-    Usage usage;
-};
-
-struct EventBox; // 前向声明，定义在 Event 之后（variant 的 alternative 必须是完整类型）
-
-/// @brief 子 Agent 事件：身份来自协议信封，内层是子会话里真正发生的事。
-struct SubEvent {
-    std::string session, agent, call_id;
-    std::shared_ptr<const EventBox> boxed;
-
-    const auto& event() const;
 };
 
 using EventPayload =
     std::variant<TurnStarted, StepStarted, TextDelta, ReasoningDelta, StreamReset, ToolPending,
-                 ToolStarted, ToolOutput, ToolFinished, SubEvent, Retrying, Compacted, ContextUpdate,
+                 ToolStarted, ToolOutput, ToolFinished, Retrying, Compacted, ContextUpdate,
                  Notice, ModelChanged, ModeChanged, TurnEnded>;
 struct Event {
     EventPayload payload;
 };
-struct EventBox {
-    Event event;
-};
-inline const auto& SubEvent::event() const { return boxed->event; }
-
-/// @brief 协议实时事件 → UI 事件；不显示的会话/操作通知返回 nullopt，子事件恢复身份包装。
+/// @brief 协议实时事件 → UI 事件；身份由调用方路由，不显示的通知返回 nullopt。
 std::optional<Event> decode_event(const protocol::Event& event);
 
 /// @brief 历史条目 → 静态 UI 事件；一条 assistant 可产生思考与正文两个事件。

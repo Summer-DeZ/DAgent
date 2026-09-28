@@ -19,9 +19,9 @@ constexpr std::string_view kDescription = R"(List workspace files using a glob p
 
 class GlobCall final : public PreparedTool {
 public:
-    GlobCall(const agent::InvocationContext& invocation, const Context& ctx, workspace::Resolved root,
+    GlobCall(const Context& ctx, workspace::Resolved root,
              std::string pattern)
-        : PreparedTool(invocation), root_(std::move(root)), search_options_(ctx.search()),
+        : root_(std::move(root)), search_options_(ctx.search()),
           pattern_(std::move(pattern)), max_files_(ctx.options().glob_max_files),
           max_result_bytes_(ctx.options().max_result_bytes) {
         // workspace::files 返回的路径相对查询根；拼上前缀才是相对工作区根、模型能直接 read 的路径
@@ -102,8 +102,7 @@ public:
     const Spec& spec() const override { return spec_; }
 
     std::expected<std::unique_ptr<PreparedTool>, Result> prepare(
-        std::string_view arguments, Context& ctx,
-        const agent::InvocationContext& invocation) const override {
+        std::string_view arguments, Context& ctx) const override {
         auto args = detail::parse_arguments(arguments);
         if (!args) return std::unexpected(error_result(args.error()));
         std::string err;
@@ -121,7 +120,7 @@ public:
             return std::unexpected(error_result(std::format(
                 "path must be a directory; {} is a file. Use read to see its contents", detail::display_path(ctx, root))));
         }
-        return std::make_unique<GlobCall>(invocation, ctx, std::move(root), pattern);
+        return std::make_unique<GlobCall>(ctx, std::move(root), pattern);
     }
 
 private:

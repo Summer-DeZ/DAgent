@@ -21,15 +21,6 @@ TurnStatus status_from(std::string_view value) {
     return TurnStatus::done;
 }
 
-Usage usage_from(const json& data) {
-    Usage usage;
-    if (!data.is_object()) return usage;
-    usage.prompt = data.value("prompt", std::int64_t{0});
-    usage.completion = data.value("completion", std::int64_t{0});
-    usage.cached = data.value("cached", std::int64_t{0});
-    return usage;
-}
-
 TodoList todo_from(const json& items) {
     TodoList out;
     if (!items.is_array()) return out;
@@ -111,24 +102,19 @@ ToolView decode_tool_view(const json& view) {
         }
         out.selected = view.value("selected", std::vector<int>{});
         out.other = text_field(view, "other");
-        out.multi_select = view.value("multi_select", false);
-        out.allow_other = view.value("allow_other", true);
         out.cancelled = view.value("cancelled", false);
         return out;
     }
     if (kind == "task") {
         TaskView out;
         out.agent = text_field(view, "agent");
-        out.task = text_field(view, "task");
         out.session_id = text_field(view, "session_id");
         out.result = text_field(view, "result");
         for (const json& step : view.value("steps", json::array())) {
             out.steps.push_back({text_field(step, "summary"), step.value("is_error", false)});
         }
-        out.model_calls = view.value("model_calls", 0);
         out.tool_calls = view.value("tool_calls", 0);
         out.seconds = view.value("seconds", 0.0);
-        out.interrupted = view.value("interrupted", false);
         return out;
     }
     return std::monostate{};
@@ -140,7 +126,7 @@ std::optional<EventPayload> decode_payload(std::string_view kind, const json& da
     if (kind == "text") return TextDelta{data.value("text", "")};
     if (kind == "reasoning") return ReasoningDelta{data.value("text", "")};
     if (kind == "stream_reset") return StreamReset{};
-    if (kind == "tool_pending") return ToolPending{data.value("id", ""), data.value("name", "")};
+    if (kind == "tool_pending") return ToolPending{data.value("name", "")};
     if (kind == "tool_started")
         return ToolStarted{data.value("id", ""), data.value("name", ""), data.value("summary", "")};
     if (kind == "tool_output") return ToolOutput{data.value("id", ""), data.value("chunk", "")};
@@ -167,14 +153,12 @@ std::optional<EventPayload> decode_payload(std::string_view kind, const json& da
         Compacted out;
         out.before = data.value("before", std::size_t{0});
         out.after = data.value("after", std::size_t{0});
-        out.summarized = data.value("summarized", false);
         return out;
     }
     if (kind == "context") {
         ContextUpdate out;
         out.used = data.value("used", std::size_t{0});
         out.limit = data.value("limit", std::size_t{0});
-        out.usage = usage_from(data);
         return out;
     }
     if (kind == "notice") {
@@ -193,9 +177,6 @@ std::optional<EventPayload> decode_payload(std::string_view kind, const json& da
         TurnEnded out;
         out.status = status_from(data.value("status", "done"));
         out.error = data.value("error", "");
-        out.steps = data.value("steps", 0);
-        out.tool_calls = data.value("tool_calls", 0);
-        out.usage = usage_from(data.value("usage", json::object()));
         return out;
     }
     return std::nullopt;
@@ -206,12 +187,6 @@ std::optional<EventPayload> decode_payload(std::string_view kind, const json& da
 std::optional<Event> decode_event(const protocol::Event& event) {
     std::optional<EventPayload> payload = decode_payload(event.kind, event.data);
     if (!payload) return std::nullopt;
-    if (event.parent_session_id) {
-        Event inner{std::move(*payload)};
-        return Event{SubEvent{event.session_id, event.agent.value_or(""),
-                              event.model_call_id.value_or(""),
-                              std::make_shared<const EventBox>(EventBox{std::move(inner)})}};
-    }
     return Event{std::move(*payload)};
 }
 
@@ -238,14 +213,7 @@ std::vector<Event> decode_history(const protocol::HistoryItem& item) {
         out.interrupted = item.result.value("interrupted", false);
         out.view = decode_tool_view(item.result.value("view", json::object()));
         events.push_back(Event{std::move(out)});
-    } else if (item.kind == "turn_end") {
-        TurnEnded out;
-        out.status = status_from(item.status);
-        out.error = item.error;
-        out.steps = item.steps;
-        out.tool_calls = item.tool_calls;
-        out.usage = usage_from(item.usage);
-        events.push_back(Event{std::move(out)});
+
     }
     return events;
 }

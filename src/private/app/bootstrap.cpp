@@ -44,7 +44,8 @@ agent::PermissionMode permission_mode(const Config& config, const runtime::Boots
 /// @brief 会话工厂的装配值：cwd/工具/存储/沙箱探测/提示词与启动权限档。
 SessionAssembly::Options session_options(const Config& config, const runtime::BootstrapOptions& options,
                                          const std::shared_ptr<Assembly>& assembly,
-                                         const std::shared_ptr<Configuration>& configuration) {
+                                         const std::shared_ptr<Configuration>& configuration,
+                                         const ModelFactory& make_session) {
     SessionAssembly::Options out;
     out.assembly = assembly;
     const HomePaths paths(config.root);
@@ -69,7 +70,7 @@ SessionAssembly::Options session_options(const Config& config, const runtime::Bo
     out.initial.read_only = options.read_only;
     out.initial.planning = options.plan;
     const llm::ProviderConfig& selected = config.models.at(config.model);
-    out.default_model = ModelSelection{llm::to_public(selected), assembly->make_model_session(selected)};
+    out.default_model = ModelSelection{llm::to_public(selected), make_session(selected)};
     out.resolve_model = [configuration](const std::string& name) { return configuration->resolve(name); };
     return out;
 }
@@ -109,16 +110,15 @@ runtime::Assembled assemble_backend(const runtime::BootstrapOptions& options) {
     runtime::Assembled out;
     out.configuration = configuration;
     out.queries = std::make_shared<QueryGatewayImpl>(config.session, options.cwd, config.project_root,
-                                                     config.search, skills, config.process);
+                                                     config.search, skills, config.process, config.ui.completion_max_files);
     out.default_model = config.model;
     out.progress_interval_ms = static_cast<int>(config.agent.progress.interval.count());
     if (options.mode == "sessions" || options.mode == "models") return out;
 
     workspace::ContextOptions context; context.process = config.process;
     auto assembly = Assembly::create(config.mcp_servers, config.mcp,
-                                     workspace::collect_environment(options.cwd, context), config.subagents,
-                                     config.models, make_session);
-    auto session = session_options(config, options, assembly, configuration);
+                                     workspace::collect_environment(options.cwd, context), config.subagents);
+    auto session = session_options(config, options, assembly, configuration, make_session);
     session.skills = skills;
     out.factory = std::make_unique<SessionAssembly>(std::move(session));
     return out;

@@ -4,6 +4,7 @@
 /// 读取线程只做匹配与回调转交；事件按协议交给前端（由前端 post 到自己的线程）。
 #pragma once
 
+#include <chrono>
 #include <condition_variable>
 #include <cstdint>
 #include <expected>
@@ -50,7 +51,8 @@ public:
     Client& operator=(const Client&) = delete;
 
     /// @brief 同步请求；后端返回错误抛 RpcFailure，连接结束抛 std::runtime_error。
-    nlohmann::json call(const std::string& method, nlohmann::json params = nlohmann::json::object());
+    nlohmann::json call(const std::string& method, nlohmann::json params = nlohmann::json::object(),
+                        std::chrono::milliseconds timeout = {});
 
     /// @brief 异步请求；响应到达时在读取线程回调（可直接 post 到 UI）。
     void call_async(std::string method, nlohmann::json params,

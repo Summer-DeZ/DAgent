@@ -106,8 +106,8 @@ std::size_t utf8_floor(std::string_view s, std::size_t pos) {
     return pos;
 }
 
-Truncated truncate_middle(std::string_view s, std::size_t max_bytes) {
-    if (s.size() <= max_bytes) return {std::string(s), s.size(), false};
+std::string truncate_middle(std::string_view s, std::size_t max_bytes) {
+    if (s.size() <= max_bytes) return std::string(s);
 
     const std::size_t head_budget = max_bytes / 2;
     const std::size_t tail_budget = max_bytes - head_budget;
@@ -121,7 +121,7 @@ Truncated truncate_middle(std::string_view s, std::size_t max_bytes) {
     out.append(s.substr(0, head_end));
     out += std::format("\n…省略 {} 字节…\n", tail_start - head_end);
     out.append(s.substr(tail_start));
-    return {std::move(out), s.size(), true};
+    return out;
 }
 
 std::string strip_ansi(std::string_view s) {

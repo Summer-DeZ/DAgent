@@ -37,7 +37,7 @@ class SessionAssembly final : public runtime::SessionFactory {
 public:
     /// @brief 整个后端不变的装配值；每个会话的权限/模型/子 Agent 收窄在创建时单独解析。
     struct Options {
-        std::shared_ptr<Assembly> assembly; ///< MCP、环境事实、子 Agent 定义与模型表
+        std::shared_ptr<Assembly> assembly; ///< MCP、环境事实与子 Agent 定义
         std::shared_ptr<const agent::SkillCatalog> skills;
         agent::Options agent;               ///< 上下文预算、调用上限、进度间隔
         std::filesystem::path cwd, project_root, control_root;
@@ -63,8 +63,7 @@ public:
 
     std::string resolve_session(std::optional<std::string_view> prefix) override;
     const agent::SubagentDef* find_subagent(std::string_view name) const override;
-    std::unique_ptr<runtime::SessionInstance> create_new(std::optional<runtime::SessionState> state,
-                                                        const agent::Sink& replay) override;
+    std::unique_ptr<runtime::SessionInstance> create_new(std::optional<runtime::SessionState> state) override;
     std::unique_ptr<runtime::SessionInstance> resume(std::string_view session_id,
                                                     std::optional<runtime::SessionState> state,
                                                     const agent::Sink& replay) override;
@@ -74,8 +73,7 @@ public:
                                                                   const agent::Sink& replay) override;
     std::unique_ptr<runtime::SessionInstance> create_child(const agent::DelegationContext& context,
                                                           const agent::SubagentDef& def,
-                                                          const agent::DerivedPermission& permission,
-                                                          const agent::Sink& replay) override;
+                                                          const agent::DerivedPermission& permission) override;
 
 private:
     struct Impl;

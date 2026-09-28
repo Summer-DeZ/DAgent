@@ -9,6 +9,7 @@
 #include <optional>
 #include <stdexcept>
 #include <string>
+#include <utility>
 #include <variant>
 #include <vector>
 
@@ -76,7 +77,8 @@ public:
         exhausted,        ///< 可重试的错误用完了重试次数，或 Retry-After 太长
     };
 
-    ModelError(Kind kind, Reply partial, const std::string& what);
+    ModelError(Kind kind, Reply partial, const std::string& what)
+        : std::runtime_error(what), kind_(kind), partial_(std::move(partial)) {}
 
     Kind kind() const noexcept { return kind_; }
     const Reply& partial() const noexcept { return partial_; }

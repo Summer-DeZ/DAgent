@@ -38,11 +38,10 @@ struct QueuedInput {
     std::string text;
 };
 
-/// @brief 面向前端的只读状态；取值与事件序号在同一短锁边界发布。
+/// @brief 面向前端的只读状态；取值与事件投影在同一短锁边界发布。
 struct RuntimeSnapshot {
     std::string session_id;
     std::uint64_t generation = 0;
-    std::uint64_t state_seq = 0;
     agent::PublicModel model;
     agent::PermissionMode permission_mode = agent::PermissionMode::workspace;
     bool planning = false;
@@ -50,7 +49,6 @@ struct RuntimeSnapshot {
     bool busy = false;
     std::string operation; ///< "turn" / "compact" / "replacing"；空表示空闲
     std::string run_id;
-    std::string phase;
     std::vector<QueuedInput> queue;
     std::size_t used_tokens = 0;
     std::size_t token_limit = 0;
@@ -68,7 +66,6 @@ struct RuntimeSnapshot {
 struct ControlEvent {
     enum class Kind {
         session_replaced,   ///< new/resume/切模型安装完成（前端重置或刷新历史）
-        models_changed,     ///< 模型清单变化（添加模型成功保存）
         operation_finished, ///< 手动压缩结束（清 busy 并 drain）
         failed,             ///< 控制操作失败；operation 指出动作
     };
@@ -83,7 +80,6 @@ struct ControlEvent {
 using EventPayload = std::variant<agent::Event, ControlEvent>;
 
 struct Event {
-    std::uint64_t seq = 0;
     std::string session_id;
     std::uint64_t generation = 0;
     EventPayload payload;
@@ -114,11 +110,6 @@ struct StartOptions {
     bool continue_last = false;
 };
 
-struct StartResult {
-    bool resumed = false;
-    std::vector<agent::Event> replay;
-};
-
 class SessionController {
 public:
     struct Deps {
@@ -135,7 +126,7 @@ public:
     SessionController& operator=(const SessionController&) = delete;
 
     /// @brief 同步创建/恢复初始会话；失败抛异常，由启动装配处理。
-    StartResult start(const StartOptions&);
+    bool start(const StartOptions&);
     /// @brief 关闭：停止新输入、清队列、取消当前 Run、唤醒交互、join 执行线程。
     void shutdown();
 
@@ -150,6 +141,7 @@ public:
 
     /// new/resume/select/add 的异步结果回调（执行线程调用）；为空时只用事件通知。
     using CommandDone = std::function<void(std::expected<void, RuntimeError>)>;
+    using GrantRevoked = std::function<void(std::expected<bool, RuntimeError>)>;
     using ModelAdded = std::function<void(agent::PublicModel, std::string selection_error)>;
 
     std::expected<void, RuntimeError> new_session(CommandDone done = {});
@@ -157,7 +149,7 @@ public:
     std::expected<void, RuntimeError> select_model(std::string name, CommandDone done = {});
     std::expected<void, RuntimeError> add_model(agent::ModelInput input, ModelAdded done = {});
     std::expected<void, RuntimeError> compact();
-    std::expected<bool, RuntimeError> revoke_grant(const std::string& grant_id);
+    std::expected<void, RuntimeError> revoke_grant(std::string grant_id, GrantRevoked done);
 
     std::expected<void, RuntimeError> cycle_permission();
     std::expected<void, RuntimeError> toggle_planning();
@@ -177,17 +169,17 @@ private:
     };
     enum class State { empty, ready, executing, replacing, closing, closed };
     struct Command {
-        enum class Kind { new_session, resume, select_model, add_model, compact };
+        enum class Kind { new_session, resume, select_model, add_model, compact, revoke_grant };
         Kind kind = Kind::new_session;
         std::string value;
         agent::ModelInput model;
         CommandDone done;
         ModelAdded model_done;
+        GrantRevoked grant_done;
     };
     struct PendingReplace {
         std::unique_ptr<SessionInstance> instance;
         std::vector<agent::Event> replay;
-        bool added_model = false;
         bool resumed = false;
     };
 
@@ -201,7 +193,7 @@ private:
     std::expected<void, RuntimeError> enqueue(Command command);
     PendingReplace prepare_new();
     PendingReplace prepare_resume(const std::string& session_id);
-    PendingReplace prepare_switch(const std::string& model_name, bool added_model);
+    PendingReplace prepare_switch(const std::string& model_name);
     void install(PendingReplace pending, bool replace_transcript);
 
     void publish(EventPayload payload, const std::string& session_id, std::uint64_t generation);
@@ -227,14 +219,12 @@ private:
     std::uint64_t generation_ = 0;
     State state_ = State::empty;
     std::optional<CurrentRun> run_;
-    std::shared_ptr<RunControl> control_; ///< 当前操作持有的取消句柄（供 run.cancel 即时触发）
     std::uint64_t input_seq_ = 0;
     std::uint64_t run_seq_ = 0;
     bool closed_ = false;
 
-    mutable std::mutex publish_mutex_; ///< 快照 + 事件序号 + 入队发布
+    mutable std::mutex publish_mutex_; ///< 快照更新与事件发布
     RuntimeSnapshot snapshot_;
-    std::uint64_t event_seq_ = 0;
 
     std::jthread worker_;
 };

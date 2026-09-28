@@ -15,8 +15,6 @@
 #include <utility>
 #include <vector>
 
-#include "base/text.hpp"
-
 namespace dagent::exec {
 
 struct Prepared;
@@ -56,7 +54,7 @@ struct Result {
     std::optional<int> exit_code;   ///< 正常退出时有值
     std::optional<int> signal;      ///< 被信号杀死时有值
     bool timed_out = false;
-    base::Truncated out, err;       ///< 各自按 Options::max_output_bytes 截断
+    std::string out, err;       ///< 各自按 Options::max_output_bytes 截断
     std::chrono::milliseconds elapsed;
 };
 

@@ -44,7 +44,7 @@ sequenceDiagram
 
 ## 2. 身份与版本
 
-业务协议版本 major=1、minor=0（与 JSON-RPC 的 `jsonrpc:"2.0"` 分开），两端不等直接返回 `version_mismatch`。
+业务协议版本 major=1、minor=1（与 JSON-RPC 的 `jsonrpc:"2.0"` 分开），两端不等直接返回 `version_mismatch`。
 
 | 身份 | 作用 |
 | --- | --- |
@@ -68,7 +68,8 @@ sequenceDiagram
 | `input.submit` / `input.recall_last` | 读线程 | input_id（仅表示入队）/ 取回的最后一条排队输入或 null |
 | `run.cancel` | 读线程 | cancel_requested 或 already_finished；不是运行终态 |
 | `interaction.answer` | 读线程 | accepted；已关闭返回 `interaction_closed` |
-| `session.cycle_permission` / `toggle_planning` / `grants` / `revoke_grant` | 读线程 | 生效后的快照 / 授权列表 / removed |
+| `session.cycle_permission` / `toggle_planning` / `grants` | 读线程 | 生效后的快照 / 授权列表 |
+| `session.revoke_grant` | 读线程校验并入会话执行队列 | 执行线程提交撤销与记录后返回 removed |
 | `model.list` | 读线程 | 公开模型、provider 种类、default_name、selected_name |
 | `session.new` / `resume` / `select_model`、`model.add`、`session.compact` | 命令线程 | 成功返回快照；`model.add` 返回 model/selected/selection_error；compact 返回 operation_id，完成走 `operation.finished` |
 | `session.list` / `children` / `history` / `history_close`、`workspace.info` / `complete` | 查询线程 | 会话列表、子会话、HistoryItem 页与游标、项目信息、文件候选 |
@@ -76,12 +77,11 @@ sequenceDiagram
 读线程只做校验与即时操作，不会被模型调用阻塞；耗时命令与只读查询各有一个工作线程，查询失败不影响执行中的 Run。
 
 `session.history` 首次调用捕获高水位，返回不透明游标；每页最多扫描 100 条记录，读完、`history_close` 或连接关闭时释放，
-已释放游标返回 `invalid_state`。历史查询不取写锁、不恢复会话、不构造模型或 MCP（记录路线 L22）。
+每页分配连接内唯一、单次消费且绑定 session_id 的游标。跨会话、已消费或已释放游标返回 `invalid_state`。历史查询不取写锁、不恢复会话、不构造模型或 MCP（记录路线 L22）。
 
 ## 4. 事件与快照
 
-通知方法为 `event`，信封字段：seq、session_id、session_generation、kind、data，以及可选的 run_id、parent_session_id、
-parent_invocation_id、model_call_id、agent。子 Agent 事件在后端展平身份，不再嵌套。
+通知方法为 `event`，信封字段：seq、session_id、session_generation、kind、data，以及可选的 parent_session_id、model_call_id、agent。子 Agent 事件在后端展平身份，不再嵌套。
 
 | kind | 来源 |
 | --- | --- |
@@ -92,8 +92,10 @@ parent_invocation_id、model_call_id、agent。子 Agent 事件在后端展平�
 | `operation.finished` | 手动压缩结束 |
 | `interaction.requested` / `interaction.closed` | 审批/问答的激活（data 为 InteractionRequest：id、approval/question、载荷）与关闭 |
 
-快照与事件在 Publisher 的同一短锁边界内取值、分配 seq 并入队：快照 `state_seq=S`，之后应用 `seq > S` 的事件。
-前端按 generation 路由，旧 generation 的响应不能覆盖新会话。
+Publisher 在捕获快照前后比较已发布 seq，并在同一短锁边界分配序号与入队；事件有 seq，快照带 state_seq。
+前端拒绝旧 generation 或低于已应用状态水位的快照；已被快照覆盖的状态事件不再覆盖快照。
+快照不包含正文，正文/工具展示仍按顺序投影到所属会话文档，与当前选中的页面无关。
+context 显式携带 used/limit/window/trigger_percent；删除空的 phase、children、context.usage 与未使用事件身份字段。
 
 `tool_output` 的原始字节可能截断 UTF-8 字符：backend 按调用 id 暂存不完整的尾部字节，在 JSON 编码前与下一块拼接，
 `tool_finished` 前补发剩余部分。

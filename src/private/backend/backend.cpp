@@ -217,6 +217,7 @@ void Backend::quit() {
     query_cv_.notify_all();
     query_thread_.request_stop();
     if (query_thread_.joinable()) query_thread_.join();
+    histories_.clear();
     if (runtime_) runtime_->shutdown();
     if (publisher_) {
         publisher_->flush();
@@ -359,12 +360,12 @@ void Backend::dispatch(const protocol::Request& request) {
     if (method == "session.revoke_grant") {
         if (!check_target(id, params)) return;
         const std::string grant_id = params.value("grant_id", "");
-        const auto removed = runtime_->revoke_grant(grant_id);
-        if (!removed) {
-            fail_target(id, removed.error());
-            return;
-        }
-        respond(id, {{"grant_id", grant_id}, {"removed", *removed}});
+        const auto accepted = runtime_->revoke_grant(
+            grant_id, [this, id, grant_id](std::expected<bool, runtime::RuntimeError> removed) {
+                if (!removed) fail_target(id, removed.error());
+                else respond(id, {{"grant_id", grant_id}, {"removed", *removed}});
+            });
+        if (!accepted) fail_target(id, accepted.error());
         return;
     }
     if (method == "session.cycle_permission") {
@@ -577,8 +578,7 @@ void Backend::initialize(const std::string& id, const nlohmann::json& params) {
         }
         start.continue_last = params.value("continue_last", false);
         try {
-            const runtime::StartResult started = runtime_->start(start);
-            resumed = started.resumed;
+            resumed = runtime_->start(start);
         } catch (const std::exception& error) {
             runtime_.reset();
             protocol::RpcError rpc;
@@ -784,52 +784,41 @@ void Backend::history(const std::string& id, const nlohmann::json& params) {
     }
     const std::string cursor = params.value("cursor", "");
     const std::size_t limit = params.value("limit", std::size_t{100});
-    std::shared_ptr<runtime::HistoryReader> reader;
-    {
-        const std::lock_guard lock(state_mutex_);
-        if (!cursor.empty()) {
-            const auto it = histories_.find(cursor);
-            if (it == histories_.end()) {
-                protocol::RpcError rpc;
-                rpc.code = protocol::rpc_code::kBusinessError;
-                rpc.kind = protocol::error_kind::kInvalidState;
-                rpc.message = "the history cursor is no longer valid";
-                fail(id, rpc);
-                return;
-            }
-            reader = it->second;
-            histories_.erase(it);
-        }
-    }
-    if (!reader) {
-        try {
-            reader = queries_->open_history(session_id);
-        } catch (const runtime::QueryError& failure) {
-            fail(id, query_error(failure));
+    std::unique_ptr<runtime::HistoryReader> reader;
+    if (!cursor.empty()) {
+        const auto it = histories_.find(cursor);
+        if (it == histories_.end() || it->second->session_id() != session_id) {
+            protocol::RpcError rpc;
+            rpc.code = protocol::rpc_code::kBusinessError;
+            rpc.kind = protocol::error_kind::kInvalidState;
+            rpc.message = "the history cursor does not belong to this query";
+            fail(id, rpc);
             return;
         }
+        reader = std::move(it->second);
+        histories_.erase(it);
+    } else {
+        reader = queries_->open_history(session_id);
     }
-    runtime::HistoryPage page = reader->read(cursor, limit);
+    runtime::HistoryPage page = reader->read(limit);
+    const auto upper_seq = reader->upper_seq();
     nlohmann::json items = nlohmann::json::array();
     for (const agent::HistoryItem& item : page.items) items.push_back(to_protocol(item));
     nlohmann::json next = nullptr;
     if (!page.done) {
-        next = page.cursor;
-        const std::lock_guard lock(state_mutex_);
-        histories_[page.cursor] = reader;
+        const std::string token = std::format("history-{}", ++history_seq_);
+        next = token;
+        histories_.emplace(token, std::move(reader));
     }
     respond(id, {{"session_id", session_id},
-                 {"upper_seq", reader->upper_seq()},
+                 {"upper_seq", upper_seq},
                  {"items", std::move(items)},
                  {"next_cursor", std::move(next)}});
 }
 
 void Backend::history_close(const std::string& id, const nlohmann::json& params) {
     const std::string cursor = params.value("cursor", "");
-    {
-        const std::lock_guard lock(state_mutex_);
-        if (!cursor.empty()) histories_.erase(cursor);
-    }
+    if (!cursor.empty()) histories_.erase(cursor);
     respond(id, {{"closed", true}});
 }
 
@@ -874,8 +863,6 @@ void Backend::handle_control(const runtime::ControlEvent& control, const runtime
         publisher_->send_event(std::move(out));
         break;
     }
-    case runtime::ControlEvent::Kind::models_changed:
-        break; // session.changed / model.list 已覆盖
     case runtime::ControlEvent::Kind::operation_finished: {
         std::string operation_id;
         {

@@ -100,8 +100,10 @@ private:
     bool query_closed_ = false;
     std::jthread query_thread_;
 
-    std::mutex state_mutex_; ///< histories / pending compact 身份
-    std::map<std::string, std::shared_ptr<runtime::HistoryReader>> histories_;
+    // 查询线程独占；每一页使用连接内唯一、单次消费的游标。
+    std::map<std::string, std::unique_ptr<runtime::HistoryReader>> histories_;
+    std::uint64_t history_seq_ = 0;
+    std::mutex state_mutex_; ///< pending compact 身份
     std::string pending_compact_id_;
     std::uint64_t compact_seq_ = 0;
 

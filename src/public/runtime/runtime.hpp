@@ -46,11 +46,12 @@ public:
     Runtime& operator=(const Runtime&) = delete;
 
     /// @brief 同步创建/恢复初始会话；失败抛 std::exception（由启动装配处理）。
-    StartResult start(const StartOptions& options);
+    bool start(const StartOptions& options);
     RuntimeSnapshot snapshot() const;
 
 
     using CommandDone = SessionController::CommandDone;
+    using GrantRevoked = SessionController::GrantRevoked;
     using ModelAdded = SessionController::ModelAdded;
 
     std::expected<std::string, RuntimeError> submit(std::string text,
@@ -61,7 +62,7 @@ public:
     std::expected<void, RuntimeError> select_model(std::string name, CommandDone done = {});
     std::expected<void, RuntimeError> add_model(agent::ModelInput input, ModelAdded done = {});
     std::expected<void, RuntimeError> compact();
-    std::expected<bool, RuntimeError> revoke_grant(const std::string& grant_id);
+    std::expected<void, RuntimeError> revoke_grant(std::string grant_id, GrantRevoked done);
     std::expected<void, RuntimeError> cycle_permission();
     std::expected<void, RuntimeError> toggle_planning();
     bool cancel(std::string_view run_id);

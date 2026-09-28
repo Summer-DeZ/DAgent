@@ -53,10 +53,10 @@ std::string blocks_to_text(const std::vector<nlohmann::json>& content) {
 
 class McpCall final : public PreparedTool {
 public:
-    McpCall(const agent::InvocationContext& invocation, std::shared_ptr<mcp::Client> client,
+    McpCall(std::shared_ptr<mcp::Client> client,
             const mcp::Tool& tool, nlohmann::json args, std::chrono::milliseconds timeout,
             std::size_t max_result_bytes)
-        : PreparedTool(invocation), client_(std::move(client)), tool_(tool), args_(std::move(args)),
+        : client_(std::move(client)), tool_(tool), args_(std::move(args)),
           timeout_(timeout), max_result_bytes_(max_result_bytes) {
         intent_.kind = agent::ToolKind::external;
         intent_.summary = std::format("Call MCP tool {}", tool_.qualified_name);
@@ -103,7 +103,7 @@ private:
         if (text.empty() && !outcome.structured.is_null())
             text = outcome.structured.dump(); // 只给结构化结果的 server
         if (text.empty()) text = "(no result)";
-        text = base::truncate_middle(base::to_valid_utf8(std::move(text)), max_result_bytes_).text;
+        text = base::truncate_middle(base::to_valid_utf8(std::move(text)), max_result_bytes_);
 
         Result result;
         result.model_text = std::move(text);
@@ -138,11 +138,10 @@ public:
     const Spec& spec() const override { return spec_; }
 
     std::expected<std::unique_ptr<PreparedTool>, Result> prepare(
-        std::string_view arguments, Context& ctx,
-        const agent::InvocationContext& invocation) const override {
+        std::string_view arguments, Context& ctx) const override {
         auto args = detail::parse_arguments(arguments);
         if (!args) return std::unexpected(error_result(args.error()));
-        return std::make_unique<McpCall>(invocation, client_, tool_, std::move(*args),
+        return std::make_unique<McpCall>(client_, tool_, std::move(*args),
                                          ctx.options().mcp_call_timeout, ctx.options().max_result_bytes);
     }
 

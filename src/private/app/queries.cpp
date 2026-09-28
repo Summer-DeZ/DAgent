@@ -21,14 +21,14 @@ namespace {
 /// @brief storage::HistoryRead → runtime::HistoryReader（只读分页 + 释放语义）。
 class HistoryReaderImpl final : public runtime::HistoryReader {
 public:
-    explicit HistoryReaderImpl(std::unique_ptr<storage::HistoryRead> read) : read_(std::move(read)) {}
+    HistoryReaderImpl(std::unique_ptr<storage::HistoryRead> read, std::string session_id)
+        : read_(std::move(read)), session_id_(std::move(session_id)) {}
 
-    runtime::HistoryPage read(const std::string& cursor, std::size_t limit) override {
+    runtime::HistoryPage read(std::size_t limit) override {
         try {
-            storage::HistoryRead::Page page = read_->read(cursor, limit);
+            storage::HistoryRead::Page page = read_->read(limit);
             runtime::HistoryPage out;
             out.items = std::move(page.items);
-            out.cursor = std::move(page.cursor);
             out.done = page.done;
             return out;
         } catch (const storage::StorageError& error) {
@@ -37,8 +37,6 @@ public:
     }
     const std::string& session_id() const override { return session_id_; }
     std::int64_t upper_seq() const override { return read_->upper_seq(); }
-
-    void bind_session(std::string id) { session_id_ = std::move(id); }
 
 private:
     std::unique_ptr<storage::HistoryRead> read_;
@@ -49,9 +47,10 @@ private:
 
 QueryGatewayImpl::QueryGatewayImpl(storage::Options storage, std::filesystem::path cwd,
                                    std::filesystem::path project_root, workspace::SearchOptions search,
-                                   std::shared_ptr<const agent::SkillCatalog> skills, exec::Options process)
+                                   std::shared_ptr<const agent::SkillCatalog> skills, exec::Options process,
+                                   std::size_t completion_max_files)
     : skills_(std::move(skills)), process_(std::move(process)), storage_(std::move(storage)), cwd_(std::move(cwd)), project_root_(std::move(project_root)),
-      search_(std::move(search)) {}
+      search_(std::move(search)), completion_max_files_(completion_max_files) {}
 
 std::vector<runtime::SessionSummary> QueryGatewayImpl::sessions(std::size_t limit) {
     std::vector<runtime::SessionSummary> out;
@@ -67,10 +66,8 @@ std::vector<runtime::SessionSummary> QueryGatewayImpl::sessions(std::size_t limi
 
 std::unique_ptr<runtime::HistoryReader> QueryGatewayImpl::open_history(std::string_view session_id) {
     try {
-        auto reader =
-            std::make_unique<HistoryReaderImpl>(storage::HistoryRead::open(storage_, session_id));
-        reader->bind_session(std::string(session_id));
-        return reader;
+        return std::make_unique<HistoryReaderImpl>(
+            storage::HistoryRead::open(storage_, session_id), std::string(session_id));
     } catch (const storage::StorageError& error) {
         rethrow(error);
     }
@@ -93,24 +90,22 @@ runtime::WorkspaceInfo QueryGatewayImpl::workspace() {
     info.cwd = cwd_;
     info.project_root = project_root_;
     workspace::ContextOptions options; options.process = process_;
-    const workspace::Environment env = workspace::collect_environment(cwd_, options);
-    if (env.git) {
-        info.branch = env.git->branch;
-        if (!env.git->status_summary.empty()) info.branch += "*";
+    const auto git = workspace::collect_git_status(cwd_, options);
+    if (git) {
+        info.branch = git->branch;
+        if (git->dirty) info.branch += "*";
     }
     return info;
 }
 
 std::vector<runtime::FileCandidate> QueryGatewayImpl::complete(std::string_view query, std::size_t limit) {
-    if (file_cache_.empty()) {
-        workspace::FilesQuery files;
-        files.root = project_root_;
-        files.max_files = 5000;
-        file_cache_ = workspace::files(files, search_);
-    }
+    workspace::FilesQuery query_options;
+    query_options.root = project_root_;
+    query_options.max_files = completion_max_files_;
+    const auto candidates = workspace::files(query_options, search_);
     std::vector<runtime::FileCandidate> out;
-    for (std::size_t index : workspace::fuzzy_rank(query, file_cache_, limit)) {
-        out.push_back({file_cache_[index], false});
+    for (std::size_t index : workspace::fuzzy_rank(query, candidates, limit)) {
+        out.push_back({candidates[index], false});
     }
     return out;
 }

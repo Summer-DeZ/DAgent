@@ -17,7 +17,7 @@ namespace dagent::protocol {
 
 /// 业务协议版本（与 JSON-RPC 的 jsonrpc="2.0" 分开）。
 inline constexpr int kMajor = 1;
-inline constexpr int kMinor = 0;
+inline constexpr int kMinor = 1;
 
 struct PublicModel {
     std::string name, kind, model, base_url;
@@ -45,22 +45,17 @@ struct QueueItem {
 struct OperationInfo {
     std::string kind; ///< turn / compact / replacing
     std::string run_id; ///< 无运行时为空
-    std::string phase;
 };
 
 struct ContextInfo {
     std::size_t used = 0, limit = 0;
+    int trigger_percent = 0; ///< 配置中的压缩触发百分比
     std::size_t window = 0; ///< 配置的窗口预算；模型表单默认值用
-    Usage usage;
 };
 
 struct RecordingInfo {
     bool broken = false;
     std::string error;
-};
-
-struct ChildInfo {
-    std::string session_id, agent, call_id;
 };
 
 /// @brief session.* 的权威只读状态；字段与运行时快照一一对应。
@@ -76,7 +71,6 @@ struct SessionSnapshot {
     ContextInfo context;
     nlohmann::json work_plan = nlohmann::json::array();
     nlohmann::json mcp = nlohmann::json::array();
-    std::vector<ChildInfo> children;
     RecordingInfo recording;
 };
 
@@ -100,9 +94,7 @@ struct Event {
     std::uint64_t session_generation = 0;
     std::string kind;
     nlohmann::json data = nlohmann::json::object();
-    std::optional<std::string> run_id;
     std::optional<std::string> parent_session_id;
-    std::optional<std::string> parent_invocation_id;
     std::optional<std::string> model_call_id;
     std::optional<std::string> agent;
 };
@@ -147,8 +139,6 @@ void to_json(nlohmann::json&, const ContextInfo&);
 void from_json(const nlohmann::json&, ContextInfo&);
 void to_json(nlohmann::json&, const RecordingInfo&);
 void from_json(const nlohmann::json&, RecordingInfo&);
-void to_json(nlohmann::json&, const ChildInfo&);
-void from_json(const nlohmann::json&, ChildInfo&);
 void to_json(nlohmann::json&, const SessionSnapshot&);
 void from_json(const nlohmann::json&, SessionSnapshot&);
 void to_json(nlohmann::json&, const HistoryItem&);

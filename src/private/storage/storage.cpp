@@ -466,7 +466,11 @@ public:
             throw to_record_error(error);
         }
     }
-    void sync() override { sqlite3_db_cacheflush(db_.get()); }
+    void sync() override {
+        const int result = sqlite3_db_cacheflush(db_.get());
+        if (result != SQLITE_OK)
+            throw agent::RecordError(agent::RecordError::Kind::io, sqlite3_errstr(result));
+    }
     const agent::SessionMeta& meta() const override { return meta_; }
 
 private:
@@ -601,20 +605,10 @@ std::unique_ptr<HistoryRead> HistoryRead::open(const Options& options, std::stri
     return std::unique_ptr<HistoryRead>(new HistoryRead(std::move(impl)));
 }
 
-HistoryRead::Page HistoryRead::read(const std::string& cursor, std::size_t limit) {
+HistoryRead::Page HistoryRead::read(std::size_t limit) {
     Impl& impl = *impl_;
     if (impl.released) {
         fail(StorageError::Kind::invalid_state, "history query is closed");
-    }
-    if (!cursor.empty()) {
-        try {
-            const auto value = std::stoll(cursor);
-            if (value != impl.next_seq) fail(StorageError::Kind::invalid_state, "unknown history cursor");
-        } catch (const std::invalid_argument&) {
-            fail(StorageError::Kind::invalid_state, "unknown history cursor");
-        } catch (const std::out_of_range&) {
-            fail(StorageError::Kind::invalid_state, "unknown history cursor");
-        }
     }
 
     try {
@@ -649,8 +643,6 @@ HistoryRead::Page HistoryRead::read(const std::string& cursor, std::size_t limit
         page.done = impl.next_seq > impl.upper_seq;
         if (page.done) {
             impl.release();
-        } else {
-            page.cursor = std::to_string(impl.next_seq);
         }
         return page;
     } catch (...) {
