@@ -16,6 +16,7 @@
 #include "agent/committer.hpp"
 #include "agent/compaction.hpp"
 #include "agent/control.hpp"
+#include "agent/run.hpp"
 #include "agent/events.hpp"
 #include "agent/options.hpp"
 #include "agent/permission.hpp"
@@ -95,7 +96,7 @@ public:
     void begin_run(const RunServices& services, Run& run);
     void end_run() { committer_.clear_sink(); control_.begin_turn({}); run_ = nullptr; }
 
-    /// @brief 执行线程上的即时快照；由 SessionController 发布给跨线程查询。
+    /// @brief 执行线程上的即时快照；由 Runtime 发布给跨线程查询。
     SessionSnapshot snapshot();
 
 private:

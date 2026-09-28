@@ -20,7 +20,6 @@ namespace dagent::agent {
 /// @brief 一次委派的父侧不可变上下文；执行时构造，寿命覆盖本次调用。
 struct DelegationContext {
     std::string parent_session_id;
-    std::string run_id;   ///< 父当前 Run 身份（后端实例内）
     std::string call_id;  ///< 父会话里这次 task 调用的 model_call_id
     PermissionMode parent_mode = PermissionMode::workspace;
     bool parent_planning = false;

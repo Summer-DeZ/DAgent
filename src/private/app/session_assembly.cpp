@@ -87,12 +87,12 @@ agent::SessionConfig make_session_config(const SessionAssembly::Options& base, S
     return config;
 }
 
-agent::ActionCatalog::Config catalog_config(const SessionSpec& spec, const Assembly& assembly,
+agent::ActionCatalog::Config catalog_config(const SessionSpec& spec, const std::vector<agent::SubagentDef>& subagents,
                                              std::shared_ptr<const agent::SkillCatalog> skills) {
     agent::ActionCatalog::Config config;
     config.allowed_tools = spec.allowed_tools;
     config.skills = std::move(skills);
-    if (!spec.child) config.subagents = assembly.subagents();
+    if (!spec.child) config.subagents = subagents;
     config.include_task = !spec.child && !config.subagents.empty();
     return config;
 }
@@ -100,12 +100,12 @@ agent::ActionCatalog::Config catalog_config(const SessionSpec& spec, const Assem
 /// @brief MCP 步骤边界与断连文本：把具体 MCP 错误翻译成核心的 ResourceError。
 class HubResources final : public agent::SessionResources {
 public:
-    HubResources(std::shared_ptr<Assembly> assembly, tools::Registry& registry)
-        : assembly_(std::move(assembly)), registry_(registry) {}
+    HubResources(std::shared_ptr<tools::McpHub> hub, tools::Registry& registry)
+        : hub_(std::move(hub)), registry_(registry) {}
 
     void begin_step(const agent::Sink& sink, std::stop_token stop) override {
         try {
-            assembly_->hub()->apply_pending(registry_, sink, stop);
+            hub_->apply_pending(registry_, sink, stop);
         } catch (const mcp::McpError& error) {
             throw agent::ResourceError(error.kind() == mcp::McpError::Kind::cancelled
                                             ? agent::ResourceError::Kind::cancelled
@@ -114,23 +114,23 @@ public:
         }
     }
     std::string mark_disconnected(std::string_view server, std::string_view reason) override {
-        return assembly_->hub()->mark_disconnected(server, std::string(reason));
+        return hub_->mark_disconnected(server, std::string(reason));
     }
-    void report_pending(const agent::Sink& sink) override { assembly_->hub()->report_pending(sink); }
+    void report_pending(const agent::Sink& sink) override { hub_->report_pending(sink); }
 
 private:
-    std::shared_ptr<Assembly> assembly_;
+    std::shared_ptr<tools::McpHub> hub_;
     tools::Registry& registry_;
 };
 
 /// @brief 一个已装配会话：owns 工具环境、MCP 资源、记录写入器与核心 Session。
 class Instance final : public runtime::SessionInstance {
 public:
-    Instance(std::shared_ptr<Assembly> assembly, std::shared_ptr<agent::SessionLease> lease,
+    Instance(std::shared_ptr<tools::McpHub> hub, std::shared_ptr<agent::SessionLease> lease,
              std::unique_ptr<tools::Context> context, std::unique_ptr<tools::Registry> registry,
              std::unique_ptr<tools::ToolSession> tools, std::unique_ptr<HubResources> resources,
              std::unique_ptr<agent::Session> session)
-        : assembly_(std::move(assembly)), lease_(std::move(lease)), context_(std::move(context)),
+        : hub_(std::move(hub)), lease_(std::move(lease)), context_(std::move(context)),
           registry_(std::move(registry)), tools_(std::move(tools)), resources_(std::move(resources)),
           session_(std::move(session)) {}
 
@@ -141,12 +141,12 @@ public:
     agent::Session& session() override { return *session_; }
     agent::SessionResources& resources() override { return *resources_; }
     std::vector<agent::McpServerState> mcp_states() const override {
-        return assembly_->hub()->states();
+        return hub_->states();
     }
     std::shared_ptr<agent::SessionLease> lease() const override { return lease_; }
 
 private:
-    std::shared_ptr<Assembly> assembly_;
+    std::shared_ptr<tools::McpHub> hub_;
     std::shared_ptr<agent::SessionLease> lease_;
     std::unique_ptr<tools::Context> context_;
     std::unique_ptr<tools::Registry> registry_;
@@ -182,7 +182,6 @@ SessionSpec derive_child(const SessionAssembly::Options& base, const agent::Suba
 
 struct SessionAssembly::Impl {
     Options options;
-    std::shared_ptr<Assembly> assembly;
 
     ModelSelection pick(const std::string& name) const {
         if (name.empty()) return options.default_model;
@@ -218,21 +217,21 @@ struct SessionAssembly::Impl {
         auto registry = std::make_unique<tools::Registry>();
         tools::add_builtin(*registry);
         // 每个新目录先继承现有连接，再按该会话的工具限制收窄。
-        assembly->hub()->snapshot(*registry);
+        options.hub->snapshot(*registry);
         if (spec.allowed_tools) registry->retain(*spec.allowed_tools);
         auto tools_session = std::make_unique<tools::ToolSession>(*registry, *context);
-        auto resources = std::make_unique<HubResources>(assembly, *registry);
+        auto resources = std::make_unique<HubResources>(options.hub, *registry);
         auto session = std::make_unique<agent::Session>(
             std::move(config), std::move(meta), std::move(journal), spec.model.session, *tools_session,
-            catalog_config(spec, *assembly, options.skills), std::move(conversation), std::move(plan));
-        return std::make_unique<Instance>(assembly, std::move(lease), std::move(context),
+            catalog_config(spec, options.subagents, options.skills), std::move(conversation), std::move(plan));
+        return std::make_unique<Instance>(options.hub, std::move(lease), std::move(context),
                                           std::move(registry), std::move(tools_session),
                                           std::move(resources), std::move(session));
     }
 
     std::unique_ptr<Instance> create_new(const std::optional<runtime::SessionState>& state) {
         SessionSpec spec = top_level(state, {});
-        std::string system_prompt = render_prompt(options, spec, assembly->environment());
+        std::string system_prompt = render_prompt(options, spec, options.environment);
         agent::SessionConfig config = make_session_config(options, spec, std::move(system_prompt));
 
         auto store = storage::open_store(options.storage);
@@ -256,7 +255,7 @@ struct SessionAssembly::Impl {
         SessionSpec spec = derive_child(options, def, permission, context);
         spec.model = pick(!def.model.empty() ? def.model : context.model);
 
-        std::string system_prompt = render_prompt(options, spec, assembly->environment());
+        std::string system_prompt = render_prompt(options, spec, options.environment);
         agent::SessionConfig config = make_session_config(options, spec, std::move(system_prompt));
 
         agent::SessionMeta meta = new_meta(spec);
@@ -292,7 +291,7 @@ struct SessionAssembly::Impl {
         agent::RecoveryResult restored = recovery.restore(records);
 
         SessionSpec spec = top_level(state, model_name);
-        std::string system_prompt = render_prompt(options, spec, assembly->environment());
+        std::string system_prompt = render_prompt(options, spec, options.environment);
         agent::SessionConfig config = make_session_config(options, spec, std::move(system_prompt));
         auto journal = store->open_writer_resume(session_id);
         agent::SessionMeta meta = journal->meta();
@@ -327,8 +326,6 @@ struct SessionAssembly::Impl {
 SessionAssembly::SessionAssembly(Options options)
     : impl_(std::make_unique<Impl>()) {
     impl_->options = std::move(options);
-    impl_->assembly = impl_->options.assembly;
-    if (!impl_->assembly) throw std::invalid_argument("session assembly requires an Assembly");
 }
 
 SessionAssembly::~SessionAssembly() = default;
@@ -338,7 +335,9 @@ std::string SessionAssembly::resolve_session(std::optional<std::string_view> pre
 }
 
 const agent::SubagentDef* SessionAssembly::find_subagent(std::string_view name) const {
-    return impl_->assembly->find_subagent(name);
+    const auto& definitions = impl_->options.subagents;
+    const auto found = std::ranges::find(definitions, name, &agent::SubagentDef::name);
+    return found == definitions.end() ? nullptr : &*found;
 }
 
 std::unique_ptr<runtime::SessionInstance> SessionAssembly::create_new(

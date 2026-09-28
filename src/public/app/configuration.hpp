@@ -15,7 +15,7 @@
 #include "agent/model_input.hpp"
 #include "agent/port_model.hpp"
 #include "agent/public_model.hpp"
-#include "app/config.hpp"
+#include "llm/provider.hpp"
 #include "app/session_assembly.hpp"
 #include "runtime/factory.hpp"
 
@@ -23,8 +23,9 @@ namespace dagent::app {
 
 class Configuration final : public runtime::ConfigurationGateway {
 public:
-    Configuration(std::filesystem::path root, std::filesystem::path cwd,
-                  std::vector<std::string> overrides, Config config,
+    Configuration(std::filesystem::path root,
+                  std::vector<std::string> overrides, std::map<std::string, llm::ProviderConfig> models,
+                  std::filesystem::path theme_file,
                   std::function<std::shared_ptr<agent::ModelSession>(const llm::ProviderConfig&)> make_session);
 
     std::vector<agent::PublicModel> models() const override;
@@ -36,9 +37,9 @@ public:
     ModelSelection resolve(const std::string& name);
 
 private:
-    std::filesystem::path root_, cwd_;
+    std::filesystem::path root_, theme_file_;
     std::vector<std::string> overrides_;
-    Config config_;
+    std::map<std::string, llm::ProviderConfig> models_;
     std::function<std::shared_ptr<agent::ModelSession>(const llm::ProviderConfig&)> make_session_;
 };
 

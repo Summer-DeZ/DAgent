@@ -148,8 +148,9 @@ resume_id, continue_last, log_level}`。后端的 `app::assemble_backend` 依次
 1. 维护命令执行 runtime sync/list，不创建会话。普通启动读取 config/ 下配置及 runtime 快照，按 argv 顺序应用 `--set` 与 `--model`；无效时返回 `config_error`，前端以 2 退出。
 2. 初始化日志：`<root>/logs/dagent-<pid>.log`；交互模式关闭 stderr sink，run 与查询模式沿用配置。
 3. 查询模式只构造配置网关与只读查询；interactive/run 模式另外收集一次工作区环境（git、AGENTS.md）、探测沙箱、
-   读取子 Agent 定义与提示词，创建 `Assembly`（MCP Hub、环境事实、子 Agent 定义）与 `SessionAssembly`。
-模型解析与客户端工厂由 Configuration/启动装配负责；Assembly 不再保存第二份模型表。
+   读取子 Agent 定义与提示词，直接创建共享 `McpHub`；环境事实和子定义存入 `SessionAssembly::Options`。
+`HubResources` 与会话实例只持有共享 MCP Hub，不依赖装配数据包装。
+模型解析与客户端工厂由 Configuration/启动装配负责；`load_models` 只读取模型文件并按序应用模型覆写，切模型不重复加载工具环境、MCP、Git 与子定义。Configuration 仅保存模型目录与主题路径，不保存完整 Config。
 
 4. `SessionAssembly` 实现 `runtime::SessionFactory`：为每个会话渲染 system prompt、建立 `tools::Context` / Registry、
    打开记录写入器并取得写租约；存储路径固定为 `<root>/data/dagent.db`。

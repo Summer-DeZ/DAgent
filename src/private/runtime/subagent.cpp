@@ -55,12 +55,10 @@ public:
             };
         }
         const agent::Asker asker{};
-        const std::string run_id = std::format("{}-child", context_.run_id);
 
         agent::RunServices services{child_sink, approver, asker, nullptr, &instance_->resources(),
                                     context_.stop};
-        agent::Run run(run_id);
-        run.begin(context_.stop);
+        agent::Run run;
 
         const auto began = std::chrono::steady_clock::now();
         session.begin_run(services, run);

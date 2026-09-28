@@ -12,6 +12,7 @@
 #include <vector>
 
 #include "agent/control.hpp"
+#include "agent/skills.hpp"
 #include "agent/message.hpp"
 #include "agent/port_tool.hpp"
 #include "agent/subagent_def.hpp"

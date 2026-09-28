@@ -256,7 +256,7 @@ target_link_libraries(dagent_client PUBLIC dagent_protocol dagent_ipc dagent_bas
 # runtime：会话控制、交互代理、子执行与只读查询协调；只经核心端口访问具体实现。
 add_library(dagent_runtime STATIC
     private/runtime/interaction.cpp
-    private/runtime/controller.cpp
+    private/runtime/session_control.cpp
     private/runtime/subagent.cpp
     private/runtime/runtime.cpp
 )
@@ -272,7 +272,6 @@ add_library(dagent_app_config STATIC
     private/app/toolchain.cpp
     private/app/config.cpp
     private/app/bootstrap.cpp
-    private/app/assembly.cpp
     private/app/session_assembly.cpp
     private/app/configuration.cpp
     private/app/queries.cpp

@@ -16,7 +16,8 @@
 #include "agent/skills.hpp"
 #include "agent/port_model.hpp"
 #include "agent/public_model.hpp"
-#include "app/assembly.hpp"
+#include "tools/mcp_hub.hpp"
+#include "workspace/context.hpp"
 #include "exec/process.hpp"
 #include "exec/sandbox.hpp"
 #include "runtime/factory.hpp"
@@ -37,7 +38,9 @@ class SessionAssembly final : public runtime::SessionFactory {
 public:
     /// @brief 整个后端不变的装配值；每个会话的权限/模型/子 Agent 收窄在创建时单独解析。
     struct Options {
-        std::shared_ptr<Assembly> assembly; ///< MCP、环境事实与子 Agent 定义
+        std::shared_ptr<tools::McpHub> hub;
+        workspace::Environment environment;
+        std::vector<agent::SubagentDef> subagents;
         std::shared_ptr<const agent::SkillCatalog> skills;
         agent::Options agent;               ///< 上下文预算、调用上限、进度间隔
         std::filesystem::path cwd, project_root, control_root;

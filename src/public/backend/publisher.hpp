@@ -17,7 +17,7 @@
 #include "ipc/channel.hpp"
 #include "lib/nlohmann/json.hpp"
 #include "protocol/dto.hpp"
-#include "runtime/controller.hpp"
+#include "runtime/state.hpp"
 
 namespace dagent::backend {
 

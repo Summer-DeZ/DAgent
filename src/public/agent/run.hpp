@@ -1,17 +1,13 @@
 /// @file run.hpp
-/// @brief 一次 turn 或 compact 的运行状态：计数、取消与唯一结束结果。
+/// @brief 一次 turn 或 compact 的核心状态：技能、计数与唯一结束结果。
 ///
 /// Run 只在本后端实例内有效，不落库（状态机 §3）。
 #pragma once
 
-#include <functional>
-#include <optional>
-#include <stop_token>
 #include <string>
 #include <utility>
 
 #include "agent/events.hpp"
-#include "agent/identity.hpp"
 #include "agent/reply.hpp"
 #include "agent/skills.hpp"
 
@@ -27,23 +23,12 @@ struct RunOutcome {
 
 class Run {
 public:
-    explicit Run(RunId id) : id_(std::move(id)) {}
+    Run() = default;
     Run(const Run&) = delete;
     Run& operator=(const Run&) = delete;
 
     RunSkills& skills() { return skills_; }
     const RunSkills& skills() const { return skills_; }
-
-    const RunId& id() const { return id_; }
-
-    /// @brief 绑定外部取消链：外部 stop 触发时同步取消本 Run；已经触发时立即取消。
-    void begin(std::stop_token external) {
-        external_.emplace(external, [this] { request_cancel(); });
-    }
-
-    /// @brief 幂等：只触发 stop_source，不伪造终态。
-    void request_cancel() { stop_.request_stop(); }
-    std::stop_token stop_token() const { return stop_.get_token(); }
 
     void count_step() { ++steps_; }
     int steps() const { return steps_; }
@@ -75,9 +60,6 @@ public:
 
 private:
     RunSkills skills_;
-    RunId id_;
-    std::stop_source stop_;
-    std::optional<std::stop_callback<std::function<void()>>> external_;
     int steps_ = 0, tool_calls_ = 0;
     Usage total_;
     bool grace_ = false;

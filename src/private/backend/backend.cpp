@@ -426,7 +426,7 @@ void Backend::dispatch(const protocol::Request& request) {
     if (method == "input.submit") {
         if (!check_target(id, params)) return;
         const std::string text = params.value("text", "");
-        // 接受响应在 accepted 回调里先入发送队列；SessionController 在此之前不允许该输入出队，
+        // 接受响应在 accepted 回调里先入发送队列；Runtime 在此之前不允许该输入出队，
         // 保证对应 TurnStarted 不会先于本响应（协议 §4.2）。
         const auto accepted = runtime_->submit(text, [this, id](const std::string& input_id) {
             respond(id, {{"input_id", input_id}, {"accepted", true}});

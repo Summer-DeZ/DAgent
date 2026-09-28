@@ -1,4 +1,5 @@
-#include "runtime/controller.hpp"
+#include "runtime/runtime.hpp"
+#include "runtime/subagent.hpp"
 
 #include <algorithm>
 #include <format>
@@ -23,13 +24,7 @@ Overloaded(Ts...) -> Overloaded<Ts...>;
 
 } // namespace
 
-SessionController::SessionController(Deps deps) : deps_(std::move(deps)) {
-    worker_ = std::jthread([this](std::stop_token stop) { worker(stop); });
-}
-
-SessionController::~SessionController() { shutdown(); }
-
-bool SessionController::start(const StartOptions& options) {
+bool Runtime::start(const StartOptions& options) {
     // 初始化后的完整状态通过快照和历史查询交付。
     const agent::Sink initial_replay = [](const agent::Event&) {};
 
@@ -38,11 +33,11 @@ bool SessionController::start(const StartOptions& options) {
     if (options.resume_id || options.continue_last) {
         const std::optional<std::string_view> prefix =
             options.resume_id ? std::optional<std::string_view>(*options.resume_id) : std::nullopt;
-        const std::string id = deps_.factory->resolve_session(prefix);
-        instance = deps_.factory->resume(id, std::nullopt, initial_replay);
+        const std::string id = factory_->resolve_session(prefix);
+        instance = factory_->resume(id, std::nullopt, initial_replay);
         resumed = true;
     } else {
-        instance = deps_.factory->create_new(std::nullopt);
+        instance = factory_->create_new(std::nullopt);
     }
 
     std::shared_ptr<SessionInstance> shared(std::move(instance));
@@ -57,7 +52,7 @@ bool SessionController::start(const StartOptions& options) {
     return resumed;
 }
 
-void SessionController::shutdown() {
+void Runtime::shutdown() {
     std::shared_ptr<RunControl> control;
     {
         const std::lock_guard lock(mutex_);
@@ -70,7 +65,7 @@ void SessionController::shutdown() {
     }
     if (control) control->stop.request_stop();
     cv_.notify_all();
-    if (deps_.broker != nullptr) deps_.broker->cancel_all();
+    if (interactive_) broker_.cancel_all();
     worker_.request_stop();
     if (worker_.joinable()) worker_.join();
     {
@@ -81,12 +76,17 @@ void SessionController::shutdown() {
     }
 }
 
-RuntimeSnapshot SessionController::snapshot() const {
-    const std::lock_guard lock(publish_mutex_);
-    return snapshot_;
+RuntimeSnapshot Runtime::snapshot() const {
+    RuntimeSnapshot snapshot;
+    {
+        const std::lock_guard lock(publish_mutex_);
+        snapshot = snapshot_;
+    }
+    snapshot.mcp = mcp_states();
+    return snapshot;
 }
 
-std::vector<agent::McpServerState> SessionController::mcp_states() const {
+std::vector<agent::McpServerState> Runtime::mcp_states() const {
     std::shared_ptr<SessionInstance> instance;
     {
         const std::lock_guard lock(mutex_);
@@ -95,11 +95,11 @@ std::vector<agent::McpServerState> SessionController::mcp_states() const {
     return instance ? instance->mcp_states() : std::vector<agent::McpServerState>{};
 }
 
-std::string SessionController::next_input_id() { return std::format("in-{}", ++input_seq_); }
+std::string Runtime::next_input_id() { return std::format("in-{}", ++input_seq_); }
 
-std::string SessionController::next_run_id() { return std::format("run-{}", ++run_seq_); }
+std::string Runtime::next_run_id() { return std::format("run-{}", ++run_seq_); }
 
-void SessionController::refresh_snapshot(SessionInstance& instance) {
+void Runtime::refresh_snapshot(SessionInstance& instance) {
     agent::Session& session = instance.session();
     RuntimeSnapshot next;
     next.session_id = session.meta().id;
@@ -133,7 +133,7 @@ void SessionController::refresh_snapshot(SessionInstance& instance) {
     snapshot_ = std::move(next);
 }
 
-void SessionController::sync_control_snapshot() {
+void Runtime::sync_control_snapshot() {
     const std::lock_guard lock(mutex_);
     const std::lock_guard publish(publish_mutex_);
     snapshot_.generation = generation_;
@@ -148,7 +148,7 @@ void SessionController::sync_control_snapshot() {
     }
 }
 
-void SessionController::publish(EventPayload payload, const std::string& session_id,
+void Runtime::publish(EventPayload payload, const std::string& session_id,
                                 std::uint64_t generation) {
     Event event;
     {
@@ -157,11 +157,11 @@ void SessionController::publish(EventPayload payload, const std::string& session
         event.generation = generation;
         event.payload = std::move(payload);
         apply_to_snapshot(event);
-        if (deps_.sink) deps_.sink(event);
+        if (frontend_) frontend_->event(event);
     }
 }
 
-void SessionController::publish_control(ControlEvent event) {
+void Runtime::publish_control(ControlEvent event) {
     std::string session_id;
     std::uint64_t generation = 0;
     {
@@ -172,7 +172,7 @@ void SessionController::publish_control(ControlEvent event) {
     publish(EventPayload{std::move(event)}, session_id, generation);
 }
 
-void SessionController::apply_to_snapshot(const Event& event) {
+void Runtime::apply_to_snapshot(const Event& event) {
     // EventPayload 是 variant<agent::Event, ControlEvent>：核心事件要先取出内层 variant 再分派，
     // 否则快照字段不会随实时事件更新（前端按快照显示标签，必须保持一致）。
     const auto* core = std::get_if<agent::Event>(&event.payload);
@@ -200,7 +200,7 @@ void SessionController::apply_to_snapshot(const Event& event) {
                *core);
 }
 
-void SessionController::finalize_execution() {
+void Runtime::finalize_execution() {
     std::shared_ptr<SessionInstance> instance;
     {
         const std::lock_guard lock(mutex_);
@@ -212,7 +212,7 @@ void SessionController::finalize_execution() {
     if (instance) refresh_snapshot(*instance);
 }
 
-std::expected<std::string, RuntimeError> SessionController::submit(
+std::expected<std::string, RuntimeError> Runtime::submit(
     std::string text, std::function<void(const std::string&)> accepted) {
     std::string id;
     bool wake = false;
@@ -247,7 +247,7 @@ std::expected<std::string, RuntimeError> SessionController::submit(
     return id;
 }
 
-std::optional<QueuedInput> SessionController::recall_last() {
+std::optional<QueuedInput> Runtime::recall_last() {
     std::optional<QueuedInput> recalled;
     {
         const std::lock_guard lock(mutex_);
@@ -266,7 +266,7 @@ std::optional<QueuedInput> SessionController::recall_last() {
     return recalled;
 }
 
-std::expected<void, RuntimeError> SessionController::enqueue(Command command) {
+std::expected<void, RuntimeError> Runtime::enqueue(Command command) {
     {
         const std::lock_guard lock(mutex_);
         if (closed_ || state_ == State::closing || state_ == State::closed) {
@@ -286,14 +286,14 @@ std::expected<void, RuntimeError> SessionController::enqueue(Command command) {
     return {};
 }
 
-std::expected<void, RuntimeError> SessionController::new_session(CommandDone done) {
+std::expected<void, RuntimeError> Runtime::new_session(CommandDone done) {
     Command command;
     command.kind = Command::Kind::new_session;
     command.done = std::move(done);
     return enqueue(std::move(command));
 }
 
-std::expected<void, RuntimeError> SessionController::resume(std::string session_id, CommandDone done) {
+std::expected<void, RuntimeError> Runtime::resume(std::string session_id, CommandDone done) {
     Command command;
     command.kind = Command::Kind::resume;
     command.value = std::move(session_id);
@@ -301,7 +301,7 @@ std::expected<void, RuntimeError> SessionController::resume(std::string session_
     return enqueue(std::move(command));
 }
 
-std::expected<void, RuntimeError> SessionController::select_model(std::string name, CommandDone done) {
+std::expected<void, RuntimeError> Runtime::select_model(std::string name, CommandDone done) {
     Command command;
     command.kind = Command::Kind::select_model;
     command.value = std::move(name);
@@ -309,7 +309,7 @@ std::expected<void, RuntimeError> SessionController::select_model(std::string na
     return enqueue(std::move(command));
 }
 
-std::expected<void, RuntimeError> SessionController::add_model(agent::ModelInput input, ModelAdded done) {
+std::expected<void, RuntimeError> Runtime::add_model(agent::ModelInput input, ModelAdded done) {
     Command command;
     command.kind = Command::Kind::add_model;
     command.model = std::move(input);
@@ -317,13 +317,13 @@ std::expected<void, RuntimeError> SessionController::add_model(agent::ModelInput
     return enqueue(std::move(command));
 }
 
-std::expected<void, RuntimeError> SessionController::compact() {
+std::expected<void, RuntimeError> Runtime::compact() {
     Command command;
     command.kind = Command::Kind::compact;
     return enqueue(std::move(command));
 }
 
-std::expected<void, RuntimeError> SessionController::revoke_grant(std::string grant_id, GrantRevoked done) {
+std::expected<void, RuntimeError> Runtime::revoke_grant(std::string grant_id, GrantRevoked done) {
     Command command;
     command.kind = Command::Kind::revoke_grant;
     command.value = std::move(grant_id);
@@ -331,7 +331,7 @@ std::expected<void, RuntimeError> SessionController::revoke_grant(std::string gr
     return enqueue(std::move(command));
 }
 
-std::expected<void, RuntimeError> SessionController::cycle_permission() {
+std::expected<void, RuntimeError> Runtime::cycle_permission() {
     std::shared_ptr<SessionInstance> instance;
     std::uint64_t generation = 0;
     {
@@ -362,7 +362,7 @@ std::expected<void, RuntimeError> SessionController::cycle_permission() {
     return {};
 }
 
-std::expected<void, RuntimeError> SessionController::toggle_planning() {
+std::expected<void, RuntimeError> Runtime::toggle_planning() {
     std::shared_ptr<SessionInstance> instance;
     std::uint64_t generation = 0;
     {
@@ -391,16 +391,16 @@ std::expected<void, RuntimeError> SessionController::toggle_planning() {
     return {};
 }
 
-std::expected<std::string, RuntimeError> SessionController::resolve_session(
+std::expected<std::string, RuntimeError> Runtime::resolve_session(
     std::optional<std::string_view> prefix) {
     try {
-        return deps_.factory->resolve_session(prefix);
+        return factory_->resolve_session(prefix);
     } catch (const std::exception& error) {
         return std::unexpected(RuntimeError{RuntimeError::Kind::not_found, error.what()});
     }
 }
 
-bool SessionController::cancel(std::string_view run_id) {
+bool Runtime::cancel(std::string_view run_id) {
     std::shared_ptr<RunControl> control;
     {
         const std::lock_guard lock(mutex_);
@@ -411,7 +411,7 @@ bool SessionController::cancel(std::string_view run_id) {
     return true;
 }
 
-void SessionController::install(PendingReplace pending, bool replace_transcript) {
+void Runtime::install(PendingReplace pending, bool replace_transcript) {
     std::shared_ptr<SessionInstance> instance(std::move(pending.instance));
     const std::string session_id = instance->session().meta().id;
     std::uint64_t generation = 0;
@@ -434,7 +434,7 @@ void SessionController::install(PendingReplace pending, bool replace_transcript)
     }
 }
 
-SessionController::PendingReplace SessionController::prepare_new() {
+Runtime::PendingReplace Runtime::prepare_new() {
     runtime::SessionState state;
     {
         const std::lock_guard lock(mutex_);
@@ -444,11 +444,11 @@ SessionController::PendingReplace SessionController::prepare_new() {
         state.model = current_->session().config().provider.name;
     }
     PendingReplace pending;
-    pending.instance = deps_.factory->create_new(state);
+    pending.instance = factory_->create_new(state);
     return pending;
 }
 
-SessionController::PendingReplace SessionController::prepare_resume(const std::string& session_id) {
+Runtime::PendingReplace Runtime::prepare_resume(const std::string& session_id) {
     PendingReplace pending;
     pending.resumed = true;
     runtime::SessionState state;
@@ -459,13 +459,13 @@ SessionController::PendingReplace SessionController::prepare_resume(const std::s
         state.read_only = current_->session().config().read_only;
         state.model = current_->session().config().provider.name;
     }
-    pending.instance = deps_.factory->resume(session_id, state, [&](const agent::Event& event) {
+    pending.instance = factory_->resume(session_id, state, [&](const agent::Event& event) {
         pending.replay.push_back(event);
     });
     return pending;
 }
 
-SessionController::PendingReplace SessionController::prepare_switch(const std::string& model_name) {
+Runtime::PendingReplace Runtime::prepare_switch(const std::string& model_name) {
     std::shared_ptr<agent::SessionLease> lease;
     runtime::SessionState state;
     {
@@ -477,14 +477,14 @@ SessionController::PendingReplace SessionController::prepare_switch(const std::s
         state.model = current_->session().config().provider.name;
     }
     PendingReplace pending;
-    pending.instance = deps_.factory->prepare_switch_model(
+    pending.instance = factory_->prepare_switch_model(
         model_name, std::move(lease), state, [&](const agent::Event& event) {
             pending.replay.push_back(event);
         });
     return pending;
 }
 
-void SessionController::execute_command(const Command& command) {
+void Runtime::execute_command(const Command& command) {
     if (command.kind == Command::Kind::revoke_grant) {
         try {
             std::shared_ptr<SessionInstance> instance;
@@ -548,8 +548,8 @@ void SessionController::execute_command(const Command& command) {
         } else if (command.kind == Command::Kind::select_model) {
             install(prepare_switch(command.value), false);
         } else if (command.kind == Command::Kind::add_model) {
-            if (deps_.configuration == nullptr) throw std::runtime_error("model configuration is not available");
-            saved_model = deps_.configuration->add_model(command.model);
+            if (configuration_ == nullptr) throw std::runtime_error("model configuration is not available");
+            saved_model = configuration_->add_model(command.model);
             install(prepare_switch(saved_model->name), false);
         }
         installed = true;
@@ -580,7 +580,7 @@ void SessionController::execute_command(const Command& command) {
     drain();
 }
 
-void SessionController::run_input(const QueuedInput& input) {
+void Runtime::run_input(const QueuedInput& input) {
     std::shared_ptr<SessionInstance> instance;
     CurrentRun run;
     std::uint64_t generation = 0;
@@ -598,24 +598,23 @@ void SessionController::run_input(const QueuedInput& input) {
         publish(EventPayload{event}, session_id, generation);
     };
     const agent::Approver approver =
-        deps_.broker == nullptr
+        !interactive_
             ? agent::Approver{}
             : agent::Approver([this, session_id, generation](const agent::Approval& approval,
                                                              std::stop_token stop) {
-                  return deps_.broker->request_approval(approval, session_id, generation, stop);
+                  return broker_.request_approval(approval, session_id, generation, stop);
               });
     const agent::Asker asker =
-        deps_.broker == nullptr
+        !interactive_
             ? agent::Asker{}
             : agent::Asker([this, session_id, generation](const agent::Question& question,
                                                           std::stop_token stop) {
-                  return deps_.broker->request_answer(question, session_id, generation, stop);
+                  return broker_.request_answer(question, session_id, generation, stop);
               });
 
-    agent::RunServices services{sink, approver, asker, deps_.delegation, &instance->resources(),
+    agent::RunServices services{sink, approver, asker, subagent_.get(), &instance->resources(),
                                 run.control->stop.get_token()};
-    agent::Run agent_run(run.id);
-    agent_run.begin(run.control->stop.get_token());
+    agent::Run agent_run;
     agent::Session& session = instance->session();
     session.begin_run(services, agent_run);
     agent::TurnRunner runner;
@@ -624,7 +623,7 @@ void SessionController::run_input(const QueuedInput& input) {
     finalize_execution();
 }
 
-void SessionController::run_compact() {
+void Runtime::run_compact() {
     std::shared_ptr<SessionInstance> instance;
     CurrentRun run;
     std::uint64_t generation = 0;
@@ -641,10 +640,9 @@ void SessionController::run_compact() {
     };
     const agent::Approver approver{};
     const agent::Asker asker{};
-    agent::RunServices services{sink, approver, asker, deps_.delegation, &instance->resources(),
+    agent::RunServices services{sink, approver, asker, subagent_.get(), &instance->resources(),
                                 run.control->stop.get_token()};
-    agent::Run agent_run(run.id);
-    agent_run.begin(run.control->stop.get_token());
+    agent::Run agent_run;
     agent::Session& session = instance->session();
     session.begin_run(services, agent_run);
     agent::TurnRunner runner;
@@ -665,7 +663,7 @@ void SessionController::run_compact() {
     publish(EventPayload{finished}, session_id, generation);
 }
 
-void SessionController::drain() {
+void Runtime::drain() {
     for (;;) {
         std::optional<QueuedInput> next;
         {
@@ -681,7 +679,7 @@ void SessionController::drain() {
     }
 }
 
-void SessionController::worker(std::stop_token stop) {
+void Runtime::worker(std::stop_token stop) {
     for (;;) {
         std::optional<Command> command;
         std::optional<QueuedInput> input;

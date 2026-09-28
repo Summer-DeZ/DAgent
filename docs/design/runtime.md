@@ -9,12 +9,11 @@ runtime 位于后端进程内，负责「哪个会话在执行、下一条输入
 
 ```mermaid
 classDiagram
-    Runtime *-- SessionController
     Runtime *-- InteractionBroker
     Runtime *-- SubagentExecutor
     Runtime --> SessionFactory
     Runtime --> ConfigurationGateway
-    SessionController *-- SessionInstance : current_
+    Runtime *-- SessionInstance : current_
     SessionInstance *-- Session
     SessionInstance *-- SessionLease
     SubagentExecutor ..|> DelegationChannel
@@ -23,13 +22,15 @@ classDiagram
 
 | 对象 | 拥有 | 职责 |
 | --- | --- | --- |
-| `Runtime` | 控制器、交互代理、子执行器、工厂 | backend 看到的外观：快照、控制操作、交互回答、关闭 |
-| `SessionController` | 当前 `SessionInstance`、普通输入队列、命令队列、当前操作、generation、发布快照 | 所有可写操作经一个串行执行线程决定先后 |
+| `Runtime` | 当前会话、输入/命令队列、当前操作、generation、快照、交互代理、子执行器与工厂 | 唯一控制入口；可写操作由一个串行执行线程排序，取消/回答走即时路径 |
 | `InteractionBroker` | pending 表、单模态激活队列 | 审批/问答一次性终结；回答与取消走即时路径 |
 | `SubagentExecutor` | 本次委派组的子实例（调用栈内） | 实现核心 `DelegationChannel`：创建子会话、跑一轮、收集 `TaskView`、销毁 |
 
 `SessionInstance` 是一个已装配会话：核心 `Session` 与其工具目录、MCP 资源、记录写入器和写租约同寿。
 runtime 只看到核心类型；`tools::Context`、`Registry`、`SqliteJournal` 等具体对象留在 app 装配内部。
+
+公开状态与事件位于 `runtime/state.hpp`；`runtime.cpp` 负责组装与交互出口，`session_control.cpp` 实现 Runtime 的会话调度，两个文件共同实现一个控制类。
+运行 ID 与取消源仅由 Runtime 的当前操作持有，`RunServices.stop` 直接传至核心和子执行，核心 Run 不再转发取消或复制运行身份。
 
 ### 装配端口（`runtime/factory.hpp`）
 

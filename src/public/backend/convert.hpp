@@ -10,7 +10,7 @@
 #include "lib/nlohmann/json.hpp"
 #include "protocol/dto.hpp"
 #include "protocol/rpc.hpp"
-#include "runtime/controller.hpp"
+#include "runtime/state.hpp"
 
 namespace dagent::backend {
 

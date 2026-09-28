@@ -9,6 +9,7 @@
 #include <utility>
 
 #include "agent/port_delegation.hpp"
+#include "base/json.hpp"
 #include "lib/nlohmann/json.hpp"
 
 namespace dagent::agent {
@@ -16,64 +17,9 @@ namespace {
 
 using nlohmann::json;
 
-std::string where(std::string_view key) { return std::format("argument {}", key); }
-
-/// 字符串字段收到数字时的宽容处理（与 tools 的参数解析保持同一行为）。
-std::optional<std::string> string_from(const json& value) {
-    if (value.is_string()) return value.get<std::string>();
-    if (value.is_number_integer()) return value.dump();
-    return std::nullopt;
-}
-
-std::expected<json, std::string> parse_arguments(std::string_view arguments) {
-    const std::string_view trimmed = [](std::string_view s) {
-        const auto is_space = [](unsigned char c) {
-            return c == ' ' || c == '\t' || c == '\n' || c == '\r';
-        };
-        while (!s.empty() && is_space(s.front())) s.remove_prefix(1);
-        while (!s.empty() && is_space(s.back())) s.remove_suffix(1);
-        return s;
-    }(arguments);
-    if (trimmed.empty()) return json::object();
-    json parsed;
-    try {
-        parsed = json::parse(trimmed);
-    } catch (const json::parse_error& e) {
-        return std::unexpected(std::format("arguments are not valid JSON: {}", e.what()));
-    }
-    if (!parsed.is_object()) return std::unexpected("arguments must be a JSON object");
-    return parsed;
-}
-
-std::string require_string(const json& args, std::string_view key, std::string& err) {
-    const auto it = args.find(key);
-    if (it == args.end() || it->is_null()) {
-        err = std::format("{} is required", where(key));
-        return {};
-    }
-    if (const auto text = string_from(*it)) {
-        if (text->empty()) {
-            err = std::format("{} must not be empty", where(key));
-            return {};
-        }
-        return *text;
-    }
-    err = std::format("{} must be a string", where(key));
-    return {};
-}
-
-std::optional<bool> get_bool(const json& args, std::string_view key, std::string& err) {
-    const auto it = args.find(key);
-    if (it == args.end() || it->is_null()) return std::nullopt;
-    if (it->is_boolean()) return it->get<bool>();
-    if (it->is_string()) {
-        const std::string text = it->get<std::string>();
-        if (text == "true") return true;
-        if (text == "false") return false;
-    }
-    err = std::format("{} must be a boolean", where(key));
-    return std::nullopt;
-}
+using base::parse_arguments;
+using base::require_string;
+using base::get_bool;
 
 ToolResult error_result(std::string text) {
     ToolResult result;
@@ -483,7 +429,6 @@ ToolResult ControlActionExecutor::run_delegation(const DelegationRequest& reques
     if (services_.delegation == nullptr) return error_result("task is not available in this run");
     DelegationContext context;
     context.parent_session_id = services_.session_id;
-    context.run_id = services_.run->id();
     context.call_id = request.call_id;
     if (services_.policy != nullptr) {
         context.parent_mode = services_.policy->mode();

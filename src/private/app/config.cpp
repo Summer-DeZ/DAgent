@@ -640,26 +640,15 @@ std::vector<mcp::ServerConfig> parse_mcp_servers(const json& root) {
     return servers;
 }
 
-Config load_config(const LoadOptions& options) {
-    const fs::path root = absolute_path(options.root);
-    const fs::path cwd = options.cwd.empty() ? fs::current_path() : absolute_path(options.cwd);
-    const HomePaths paths(root);
-    const fs::path config_file = paths.config;
-    const fs::path models_file = paths.models;
-    require_private_file(models_file);
-    json config_json = parse_file(config_file);
-    require_private_file(paths.mcp);
-    json mcp_json = parse_file(paths.mcp);
-    if (config_json.contains("mcp")) fail(ConfigError::Kind::invalid, "MCP configuration belongs in config/mcp.json");
-    config_json["mcp"] = std::move(mcp_json);
-    const json models_json = parse_file(models_file);
-    resolve_paths(config_json, root);
-
+ModelCatalog load_models(const fs::path& root, const std::vector<std::string>& overrides) {
+    const fs::path file = HomePaths(absolute_path(root)).models;
+    require_private_file(file);
+    const json models_json = parse_file(file);
     std::vector<std::string> model_log;
     std::string selected = Node(models_json, "").child("default").str();
     json models = Node(models_json, "").child("models").has()
                       ? Node(models_json, "").child("models").raw() : json{};
-    for (const auto& entry : options.overrides) {
+    for (const auto& entry : overrides) {
         if (entry.starts_with("@model=")) {
             const std::string choice = entry.substr(7);
             if (models.is_object() && models.contains(choice)) {
@@ -671,9 +660,32 @@ Config load_config(const LoadOptions& options) {
                 models[selected]["model"] = choice;
                 model_log.push_back(std::format("--model {} overrides model id in {}", choice, selected));
             }
-        } else {
-            config_json.merge_patch(override_layer(entry, cwd));
         }
+    }
+    ModelCatalog catalog;
+    catalog.models = map_models(Node(models, "/models"));
+    catalog.selected = std::move(selected);
+    catalog.selection_log = std::move(model_log);
+    if (!catalog.models.contains(catalog.selected))
+        fail(ConfigError::Kind::invalid, "models.json default names an unknown model: " + catalog.selected);
+    return catalog;
+}
+
+Config load_config(const LoadOptions& options) {
+    const fs::path root = absolute_path(options.root);
+    const fs::path cwd = options.cwd.empty() ? fs::current_path() : absolute_path(options.cwd);
+    const HomePaths paths(root);
+    const fs::path config_file = paths.config;
+    json config_json = parse_file(config_file);
+    require_private_file(paths.mcp);
+    json mcp_json = parse_file(paths.mcp);
+    if (config_json.contains("mcp")) fail(ConfigError::Kind::invalid, "MCP configuration belongs in config/mcp.json");
+    config_json["mcp"] = std::move(mcp_json);
+    resolve_paths(config_json, root);
+
+    ModelCatalog catalog = load_models(root, options.overrides);
+    for (const auto& entry : options.overrides) {
+        if (!entry.starts_with("@model=")) config_json.merge_patch(override_layer(entry, cwd));
     }
     warn_unknown(config_json);
 
@@ -681,11 +693,9 @@ Config load_config(const LoadOptions& options) {
     Config config;
     config.root = root;
     config.project_root = cwd;
-    config.model_selection_log = std::move(model_log);
-    config.models = map_models(Node(models, "/models"));
-    config.model = std::move(selected);
-    if (!config.models.contains(config.model))
-        fail(ConfigError::Kind::invalid, "models.json default names an unknown model: " + config.model);
+    config.model_selection_log = std::move(catalog.selection_log);
+    config.models = std::move(catalog.models);
+    config.model = std::move(catalog.selected);
     config.ui.theme_file = node.child("ui").child("theme_file").str();
     config.ui.completion_max_files = size_option(node.required("ui"), "completion_max_files");
     config.system_prompt_file = node.child("prompts").child("system").str((paths.prompts / "system.md").string());

@@ -76,7 +76,16 @@ private:
     Kind kind_;
 };
 
-/// @brief 读取安装目录中的两份 JSON，再叠加 overrides。未知键只记 warn。
+/// @brief 模型文件与按序选择；不加载工具、MCP 或工作区环境。
+struct ModelCatalog {
+    std::map<std::string, llm::ProviderConfig> models;
+    std::string selected;
+    std::vector<std::string> selection_log;
+};
+ModelCatalog load_models(const std::filesystem::path& root,
+                         const std::vector<std::string>& overrides);
+
+/// @brief 加载启动配置、模型目录与运行环境，再叠加 overrides。未知键只记 warn。
 Config load_config(const LoadOptions&);
 
 /// @brief 读取 <root>/agents/*.md：frontmatter + 正文。目录不存在时返回空，不报错。

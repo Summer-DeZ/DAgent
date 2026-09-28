@@ -52,9 +52,7 @@ RunOutcome TurnRunner::finish(Session& session, Run& run, const RunServices& ser
     return outcome;
 }
 
-RunOutcome TurnRunner::run(Session& session, Run& run, const RunServices& base_services, std::string input) {
-    RunServices services = base_services;
-    services.stop = run.stop_token();
+RunOutcome TurnRunner::run(Session& session, Run& run, const RunServices& services, std::string input) {
     const Sink& sink = services.sink;
     const std::stop_token stop = services.stop;
 
@@ -78,7 +76,7 @@ RunOutcome TurnRunner::run(Session& session, Run& run, const RunServices& base_s
     const int max_tool_calls = session.config().options.run.max_tool_calls;
     const std::size_t context_limit = session.compactor().budget().limit;
 
-    ActionDispatcher dispatcher(session, run, services);
+    ActionDispatcher dispatcher(session, services);
 
     const auto on_stream = [&](const StreamEvent& event) { report_stream(event, sink); };
     const auto on_retry = [&](const RetryInfo& info) { report_retry(info, sink); };
@@ -184,9 +182,7 @@ RunOutcome TurnRunner::run(Session& session, Run& run, const RunServices& base_s
     }
 }
 
-RunOutcome TurnRunner::compact(Session& session, Run& run, const RunServices& base_services) {
-    RunServices services = base_services;
-    services.stop = run.stop_token();
+RunOutcome TurnRunner::compact(Session& session, Run& run, const RunServices& services) {
     const Sink& sink = services.sink;
     const std::stop_token stop = services.stop;
 

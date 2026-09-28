@@ -10,28 +10,17 @@
 #include <string_view>
 #include <vector>
 
-#include "lib/nlohmann/json.hpp"
+#include "base/json.hpp"
 #include "tools/tools.hpp"
 #include "workspace/files.hpp"
 
 namespace dagent::tools::detail {
 
-// ---------------------------------------------------------------- 参数解析
-
-/// @brief 把模型给的 arguments 变成 JSON 对象：空串按 {}；坏 JSON 返回带 nlohmann 报错位置的信息。
-std::expected<nlohmann::json, std::string> parse_arguments(std::string_view arguments);
-
-/// @brief 必填字符串字段；缺失、类型错（含宽容字符串数字）、空串时写 err 并返回空。
-std::string require_string(const nlohmann::json& args, std::string_view key, std::string& err);
-
-/// @brief 可选字符串字段；类型错时写 err。
-std::optional<std::string> get_string(const nlohmann::json& args, std::string_view key, std::string& err);
-
-/// @brief 可选整数字段。宽容一种常见错误：收到字符串 "10" 时照常接受；其他类型写 err。
-std::optional<std::int64_t> get_int(const nlohmann::json& args, std::string_view key, std::string& err);
-
-/// @brief 可选布尔字段。宽容 "true"/"false" 字符串；其他类型写 err。
-std::optional<bool> get_bool(const nlohmann::json& args, std::string_view key, std::string& err);
+using base::parse_arguments;
+using base::require_string;
+using base::get_string;
+using base::get_int;
+using base::get_bool;
 
 // ---------------------------------------------------------------- 结果与路径
 

@@ -14,7 +14,9 @@ DAgent 外围模块的最底层。头文件在 `src/public/base/`，实现在 `s
 | --- | --- | --- |
 | 日志：全局初始化、按模块命名的 logger、滚动文件、崩溃时刷盘 | `base/log.hpp` | `init_log`、`logger`、`shutdown_log` |
 | 文本处理：UTF-8 校验与修复、按字符边界截断、清理 ANSI 转义、base64 解码 | `base/text.hpp` | `to_valid_utf8`、`truncate_middle`、`strip_ansi`、`base64_decode` |
-| JSON 脱敏 | `base/json.hpp` | `redact` |
+| JSON 参数解析与脱敏 | `base/json.hpp` | `parse_arguments`、`require_string`、`get_string`、`get_int`、`get_bool`、`redact` |
+
+核心控制动作和普通工具共用 JSON 参数解析规则，业务 Schema 校验仍由各自模块负责。
 
 约定：
 

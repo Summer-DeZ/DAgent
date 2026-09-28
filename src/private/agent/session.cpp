@@ -76,7 +76,7 @@ void Session::begin_run(const RunServices& services, Run& run) {
     committer_.set_sink(services.sink);
     control_.begin_turn(ControlActionExecutor::Services{&services.asker, &services.approver,
                                                         services.delegation, &policy_, config_.read_only,
-                                                        services.sink, &run, meta_.id, config_.provider.name, catalog_.names(),
+                                                        services.sink, meta_.id, config_.provider.name, catalog_.names(),
                                                         [this](std::string_view name) { return activate_skill(name); }});
 }
 

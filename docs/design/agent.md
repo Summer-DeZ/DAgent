@@ -34,7 +34,7 @@ flowchart TD
 | --- | --- | --- |
 | `Session` | `session.hpp` | 一份对话的长期状态：Conversation、WorkPlan、Policy、模型与工具环境、Compactor、控制动作执行器、提交器；只暴露构造请求、快照与策略控制 |
 | `SessionConfig` | `session.hpp` | 已解析的会话配置：Options、公开模型、提示词文本、cwd/项目根/控制根、沙箱中立值、权限档、只读/planning、是否主会话 |
-| `Run` | `run.hpp` | 一次 turn 或 compact：id、steps/tool_calls/usage、取消源、一次性 `finish` 返回 `RunOutcome`；不落库 |
+| `Run` | `run.hpp` | 一次 turn 或 compact：本轮技能、steps/tool_calls/usage、一次性 `finish` 返回 `RunOutcome`；不落库 |
 | `TurnRunner` | `turn_runner.hpp` | 阻塞循环算法与唯一收尾；无跨会话状态，只经 Session/Run/RunServices 工作 |
 | `ActionCatalog` | `catalog.hpp` | 稳定的动作顺序与准备入口：普通工具、控制动作、动态 MCP |
 | `ActionDispatcher` | `dispatch.hpp` | 一批调用的准备、权限、分组执行与有序提交 |
@@ -57,11 +57,11 @@ stop_token；不含配置、终端、数据库路径或查找任意对象的方�
 | task 组线程 | 每个并发子 Agent 一个，同时最多 `run.max_parallel_tasks`（配置文件为 4，必须为正整数）；在组内创建并运行子会话 |
 | MCP 连接/读取线程 | 由 tools 的 McpHub 与 mcp Client 持有；只交接状态与标志，不直接改工具目录或调用 Sink |
 
-Session 只在所属执行线程推进对话、工具目录、模型和记录。跨线程只开放 Policy 的模式切换/撤销、Run 的取消和发布出去的快照。
+Session 只在所属执行线程推进对话、工具目录、模型和记录。跨线程只开放 Policy 的模式切换/撤销、runtime 当前操作的取消和发布出去的快照。
 `Sink` 必须线程安全：`ToolOutput` 可从工具线程发出，子 Agent 事件可从 task 线程发出。`Approver` / `Asker` 可能阻塞等待，
 由 runtime 的交互代理实现；持有 Policy 锁时不调用它们。
 
-一轮使用 Run 的 stop_token（绑定外部取消链），贯穿模型、重试等待、权限等待、工具、摘要和 MCP 连接等待；
+一轮直接使用 RunServices.stop（runtime 当前操作的 token），贯穿模型、重试等待、权限等待、工具、摘要和 MCP 连接等待；
 子 Run 共享父的取消。MCP 后台连接使用自身线程的 token，一轮取消不关闭后台连接。
 
 ## 2. 执行入口与事件

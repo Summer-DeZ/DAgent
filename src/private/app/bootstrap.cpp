@@ -5,7 +5,6 @@
 #include <memory>
 #include <system_error>
 
-#include "app/assembly.hpp"
 #include "app/config.hpp"
 #include "app/skills.hpp"
 #include "app/toolchain.hpp"
@@ -43,11 +42,9 @@ agent::PermissionMode permission_mode(const Config& config, const runtime::Boots
 
 /// @brief 会话工厂的装配值：cwd/工具/存储/沙箱探测/提示词与启动权限档。
 SessionAssembly::Options session_options(const Config& config, const runtime::BootstrapOptions& options,
-                                         const std::shared_ptr<Assembly>& assembly,
                                          const std::shared_ptr<Configuration>& configuration,
                                          const ModelFactory& make_session) {
     SessionAssembly::Options out;
-    out.assembly = assembly;
     const HomePaths paths(config.root);
     if (std::filesystem::exists(paths.instructions))
         out.user_instructions = workspace::read_text(paths.instructions, config.files).content;
@@ -99,7 +96,7 @@ runtime::Assembled assemble_backend(const runtime::BootstrapOptions& options) {
 
     const ModelFactory make_session = make_model_factory(config);
     auto configuration =
-        std::make_shared<Configuration>(options.root, options.cwd, options.overrides, config, make_session);
+        std::make_shared<Configuration>(options.root, options.overrides, config.models, config.ui.theme_file, make_session);
 
     auto skills = std::make_shared<agent::SkillCatalog>(*load_skills(paths.skills, config.files));
     for (auto& skill : skills->definitions) {
@@ -116,9 +113,10 @@ runtime::Assembled assemble_backend(const runtime::BootstrapOptions& options) {
     if (options.mode == "sessions" || options.mode == "models") return out;
 
     workspace::ContextOptions context; context.process = config.process;
-    auto assembly = Assembly::create(config.mcp_servers, config.mcp,
-                                     workspace::collect_environment(options.cwd, context), config.subagents);
-    auto session = session_options(config, options, assembly, configuration, make_session);
+    auto session = session_options(config, options, configuration, make_session);
+    session.hub = std::make_shared<tools::McpHub>(config.mcp_servers, config.mcp);
+    session.environment = workspace::collect_environment(options.cwd, context);
+    session.subagents = std::move(config.subagents);
     session.skills = skills;
     out.factory = std::make_unique<SessionAssembly>(std::move(session));
     return out;

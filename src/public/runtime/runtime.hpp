@@ -1,7 +1,7 @@
 /// @file runtime.hpp
 /// @brief Runtime：backend 协议适配看到的会话控制外观。
 ///
-/// 组装 SessionController、交互代理与子执行；前端只提交意图、
+/// 持有串行会话调度、交互代理与子执行；前端只提交意图、
 /// 消费快照/事件并回答交互，不持具体装配对象或写业务状态。
 #pragma once
 
@@ -13,7 +13,12 @@
 #include "agent/events.hpp"
 #include "agent/model_input.hpp"
 #include "agent/public_model.hpp"
-#include "runtime/controller.hpp"
+#include "runtime/state.hpp"
+#include <condition_variable>
+#include <deque>
+#include <expected>
+#include <mutex>
+#include <thread>
 #include "runtime/factory.hpp"
 #include "runtime/interaction.hpp"
 
@@ -50,9 +55,9 @@ public:
     RuntimeSnapshot snapshot() const;
 
 
-    using CommandDone = SessionController::CommandDone;
-    using GrantRevoked = SessionController::GrantRevoked;
-    using ModelAdded = SessionController::ModelAdded;
+    using CommandDone = std::function<void(std::expected<void, RuntimeError>)>;
+    using GrantRevoked = std::function<void(std::expected<bool, RuntimeError>)>;
+    using ModelAdded = std::function<void(agent::PublicModel, std::string selection_error)>;
 
     std::expected<std::string, RuntimeError> submit(std::string text,
                                                     std::function<void(const std::string&)> accepted = {});
@@ -76,6 +81,73 @@ public:
     void shutdown();
 
 private:
+    std::vector<agent::McpServerState> mcp_states() const;
+    struct RunControl {
+        std::stop_source stop;
+    };
+    struct CurrentRun {
+        std::string id;
+        std::string operation;
+        std::shared_ptr<RunControl> control;
+    };
+    enum class State { empty, ready, executing, replacing, closing, closed };
+    struct Command {
+        enum class Kind { new_session, resume, select_model, add_model, compact, revoke_grant };
+        Kind kind = Kind::new_session;
+        std::string value;
+        agent::ModelInput model;
+        CommandDone done;
+        ModelAdded model_done;
+        GrantRevoked grant_done;
+    };
+    struct PendingReplace {
+        std::unique_ptr<SessionInstance> instance;
+        std::vector<agent::Event> replay;
+        bool resumed = false;
+    };
+
+    void worker(std::stop_token stop);
+    void execute_command(const Command& command);
+    bool front_ready_locked() const { return !queue_.empty() && queue_.front().ready; }
+    void drain();
+    void run_input(const QueuedInput& input);
+    void run_compact();
+
+    std::expected<void, RuntimeError> enqueue(Command command);
+    PendingReplace prepare_new();
+    PendingReplace prepare_resume(const std::string& session_id);
+    PendingReplace prepare_switch(const std::string& model_name);
+    void install(PendingReplace pending, bool replace_transcript);
+
+    void publish(EventPayload payload, const std::string& session_id, std::uint64_t generation);
+    void publish_control(ControlEvent event);
+    void sync_control_snapshot();
+    void finalize_execution();
+    void refresh_snapshot(SessionInstance& instance);
+    void apply_to_snapshot(const Event& event);
+    std::string next_input_id();
+    std::string next_run_id();
+
+    mutable std::mutex mutex_;                  ///< 控制状态：实例/队列/命令/状态
+    std::condition_variable_any cv_;
+    struct QueueEntry {
+        QueuedInput input;
+        bool ready = true; ///< 接受响应已入发送队列后才允许出队
+    };
+    std::deque<Command> commands_;
+    bool command_pending_ = false; ///< 命令从接受到执行结束均占用空闲入口
+    std::deque<QueueEntry> queue_;
+    std::shared_ptr<SessionInstance> current_;
+    std::uint64_t generation_ = 0;
+    State state_ = State::empty;
+    std::optional<CurrentRun> run_;
+    std::uint64_t input_seq_ = 0;
+    std::uint64_t run_seq_ = 0;
+    bool closed_ = false;
+
+    mutable std::mutex publish_mutex_; ///< 快照更新与事件发布
+    RuntimeSnapshot snapshot_;
+
     void interaction_requested(const InteractionRequest& request) override;
     void interaction_closed(const std::string& interaction_id) override;
 
@@ -83,8 +155,9 @@ private:
     std::unique_ptr<SessionFactory> factory_;
     InteractionBroker broker_;
     std::unique_ptr<SubagentExecutor> subagent_;
-    std::unique_ptr<SessionController> controller_;
+    bool interactive_;
     Frontend* frontend_ = nullptr;
+    std::jthread worker_;
 };
 
 } // namespace dagent::runtime

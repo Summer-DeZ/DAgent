@@ -16,7 +16,6 @@
 #include "agent/action.hpp"
 #include "agent/events.hpp"
 #include "agent/permission.hpp"
-#include "agent/run.hpp"
 #include "agent/subagent_def.hpp"
 #include "agent/work_plan.hpp"
 
@@ -81,7 +80,6 @@ public:
         Policy* policy = nullptr;
         bool base_read_only = false;       ///< exit_plan 接受后恢复的启动只读初值
         Sink sink;
-        Run* run = nullptr;              ///< owner 线程中的当前 Run；只在阻塞问答前后更新阶段
         std::string session_id;          ///< 委派上下文的父会话身份
         std::string model;               ///< 父当前模型配置名（默认子模型继承）
         std::vector<std::string> tool_names; ///< 委派默认子名单
