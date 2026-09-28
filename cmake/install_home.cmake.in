@@ -1,0 +1,21 @@
+# Install resources in the current home layout without overwriting user files.
+set(source "@CMAKE_SOURCE_DIR@/home")
+set(destination "$ENV{DESTDIR}${CMAKE_INSTALL_PREFIX}")
+file(GLOB_RECURSE resources RELATIVE "${source}"
+    "${source}/config/*.json" "${source}/prompts/*" "${source}/agents/*"
+    "${source}/skills/*" "${source}/themes/*")
+foreach(resource IN LISTS resources)
+    if(resource STREQUAL "config/models.json" OR resource STREQUAL "config/mcp.json")
+        continue()
+    endif()
+    set(target "${resource}")
+    string(REPLACE ".example.json" ".json" target "${target}")
+    if(NOT EXISTS "${destination}/${target}")
+        get_filename_component(parent "${destination}/${target}" DIRECTORY)
+        file(MAKE_DIRECTORY "${parent}")
+        configure_file("${source}/${resource}" "${destination}/${target}" COPYONLY)
+        if(target STREQUAL "config/models.json" OR target STREQUAL "config/mcp.json")
+            file(CHMOD "${destination}/${target}" PERMISSIONS OWNER_READ OWNER_WRITE)
+        endif()
+    endif()
+endforeach()

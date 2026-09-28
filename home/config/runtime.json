@@ -1,0 +1,97 @@
+{
+  "version": 1,
+  "packages": {
+    "bash": {
+      "kind": "files",
+      "version": "host-snapshot",
+      "bin": "bin",
+      "files": {
+        "bin/bash": "command:bash"
+      },
+      "programs": {
+        "bash": "bin/bash"
+      }
+    },
+    "git": {
+      "kind": "files",
+      "version": "host-snapshot",
+      "bin": "bin",
+      "files": {
+        "bin/git": "command:git",
+        "libexec/git-core": "/usr/lib/git-core",
+        "share/git-core": "/usr/share/git-core"
+      },
+      "env": {
+        "GIT_EXEC_PATH": "{root}/libexec/git-core",
+        "GIT_TEMPLATE_DIR": "{root}/share/git-core/templates"
+      },
+      "programs": {
+        "git": "bin/git"
+      }
+    },
+    "uv": {
+      "version": "0.12.19",
+      "bin": ".",
+      "programs": {
+        "uv": "uv",
+        "uvx": "uvx"
+      },
+      "assets": {
+        "Linux-aarch64": {
+          "url": "https://github.com/astral-sh/uv/releases/download/0.12.19/uv-aarch64-unknown-linux-musl.tar.gz",
+          "sha256": "ad8d8448a2ff642ba62c2f684d7dd22a03f8eb3fc9918c2c3e8ec975f4ed6710"
+        },
+        "Linux-x86_64": {
+          "url": "https://github.com/astral-sh/uv/releases/download/0.12.19/uv-x86_64-unknown-linux-musl.tar.gz",
+          "sha256": "db7278c9f57981338fddff1fb250e11964bc0a4fafcb9eed8303fdb117dc067b"
+        }
+      }
+    },
+    "rg": {
+      "version": "15.2.0",
+      "bin": ".",
+      "programs": {
+        "rg": "rg"
+      },
+      "assets": {
+        "Linux-aarch64": {
+          "url": "https://github.com/BurntSushi/ripgrep/releases/download/15.2.0/ripgrep-15.2.0-aarch64-unknown-linux-musl.tar.gz",
+          "sha256": "800b1e7206afe799dfb5a6901f23147cfaabe0e52210538100f61e86e1740915"
+        },
+        "Linux-x86_64": {
+          "url": "https://github.com/BurntSushi/ripgrep/releases/download/15.2.0/ripgrep-15.2.0-x86_64-unknown-linux-musl.tar.gz",
+          "sha256": "33e15bcf1624b25cdd2a55813a47a2f95dbe126268203e76aa6a585d1e7b149c"
+        }
+      }
+    },
+    "node": {
+      "version": "24.21.0",
+      "bin": "bin",
+      "programs": {
+        "node": "bin/node",
+        "npm": "bin/npm",
+        "npx": "bin/npx"
+      },
+      "assets": {
+        "Linux-aarch64": {
+          "url": "https://nodejs.org/dist/v24.21.0/node-v24.21.0-linux-arm64.tar.xz",
+          "sha256": "6ad1325edbdb5649c379b75a237147a666c95d4f9ae8d340fef2d1575d289ad2"
+        },
+        "Linux-x86_64": {
+          "url": "https://nodejs.org/dist/v24.21.0/node-v24.21.0-linux-x64.tar.xz",
+          "sha256": "fd8e59d5a511510f6a298afb548f18c7d2b1be404d8b4a27d94fbe49f56cb2d6"
+        }
+      }
+    },
+    "python": {
+      "kind": "python",
+      "version": "3.13.15",
+      "bin": "bin",
+      "programs": {
+        "python": "bin/python",
+        "python3": "bin/python3"
+      }
+    }
+  },
+  "environments": {}
+}

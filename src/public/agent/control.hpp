@@ -53,7 +53,12 @@ struct DelegationRequest {
     std::string agent, prompt;
 };
 
-using ControlRequest = std::variant<AskRequest, PlanConfirmation, PlanReplacement, DelegationRequest>;
+struct SkillActivation {
+    InvocationContext invocation;
+    std::string summary, name;
+};
+
+using ControlRequest = std::variant<AskRequest, PlanConfirmation, PlanReplacement, DelegationRequest, SkillActivation>;
 
 /// @brief 准备结果：普通工具或类型化控制请求。
 using PreparedAction = std::variant<std::unique_ptr<PreparedTool>, ControlRequest>;
@@ -82,6 +87,7 @@ public:
         std::string session_id;          ///< 委派上下文的父会话身份
         std::string model;               ///< 父当前模型配置名（默认子模型继承）
         std::vector<std::string> tool_names; ///< 委派默认子名单
+        std::function<ToolResult(std::string_view)> activate_skill;
     };
 
     ControlActionExecutor() = default;

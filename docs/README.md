@@ -61,8 +61,11 @@ dev 构建默认从源码树的 `home/` 读取配置、提示词和主题；显�
 | [workspace：文件、搜索、diff、项目上下文](design/workspace.md) | 路径解析与原子写入、ripgrep 调用与 fzy 模糊匹配、unified diff 的 hunk 合并、git 信息与 AGENTS.md 收集、inja 模板渲染 |
 | [llm：模型客户端与 Provider](design/llm.md) | ProviderConfig 与公开描述、Codec、各 provider 编解码、错误分类与预算、流式累积与重试 |
 | [storage：会话存储](design/storage.md) | 存储端口实现、schema 与迁移、写入事务与崩溃、跨进程写锁、只读列表与历史分页、库损坏处理 |
+| [skills：全局技能](design/skills.md) | SKILL.md 发现、本轮激活、上下文投影、权限、子 Agent、列表与补全 |
+| [home：配置、资源与状态](design/home.md) | 目录职责、用户指令、首次安装与唯一配置布局 |
+| [toolchain：托管工具与依赖](design/toolchain.md) | 工具版本、显式 sync、Skill/MCP 独立环境、宿主依赖边界 |
 | [app：配置与命令行](design/app.md) | 两个入口与库、自包含安装根、配置与提示词、模型添加与写锁、命令行、后端装配、run 输出、信号与退出码 |
-| [mcp：MCP 客户端](design/mcp.md) | 现代与经典协议的识别规则、stdio / Streamable HTTP 传输、请求头与 x-mcp-header、会话过期恢复、超时取消断连、错误分类与已知限制 |
+| [mcp：MCP 客户端](design/mcp.md) | server/discover 协议发现、stdio 托管环境、Streamable HTTP、超时取消断连与已知限制 |
 | [tools：工具层](design/tools.md) | 两阶段 prepare/run 与核心的边界、参数与路径约定、FileTracker、各工具给模型的文本与报错、View 与会话序列化、对核心的要求 |
 | [终端 UI 框架](design/tui-framework.md) | 框架能做什么、分层与对象关系、应用怎样接入、各模块的职责。源码注释中的 `§N` 指这份文档的章节 |
 
@@ -71,6 +74,7 @@ dev 构建默认从源码树的 `home/` 读取配置、提示词和主题；显�
 ```bash
 cmake --preset dev                                        # 生成到 build/dev（Ninja，Debug）
 cmake --build --preset dev --target dagent dagent-backend # 两个正式可执行文件，输出在 build/dev/src/
+build/dev/src/dagent runtime sync                         # 首次配置模型后显式准备工具环境
 build/dev/src/dagent                                      # 交互界面（dev 构建默认安装根为源码树 home/）
 build/dev/src/dagent run "提示词"                          # 非交互一轮；--output text|json|jsonl
 build/dev/src/dagent sessions                             # 当前目录最近的会话
@@ -83,7 +87,7 @@ build/dev/src/dagent --list-models
 ```bash
 cmake -S . -B build/release -G Ninja -DCMAKE_BUILD_TYPE=Release
 cmake --build build/release --target dagent dagent-backend
-cmake --install build/release --prefix <安装根>   # 两个可执行文件、config.json、models.json(0600)、提示词、themes/、agents/
+cmake --install build/release --prefix <安装根>   # 两个可执行文件、config/、prompts/、themes/、agents/、skills/；仅补充缺失资源
 ```
 
 测试只保留冻结 TUI 框架的真实用例：
@@ -102,11 +106,11 @@ cmake --build --preset dev && ctest --test-dir build/dev   # 运行 test/tui（t
 
 运行时用例在真实子进程里跑，经管道或 pty 注入按键、鼠标与终端应答。
 
-依赖：CMake ≥ 3.25、支持 C++23 的编译器、Boost ≥ 1.83（Boost.Test）、libcurl。第三方头文件
+依赖：CMake ≥ 3.25、支持 C++23 的编译器、Boost ≥ 1.83（Boost.Test）、libcurl、OpenSSL Crypto。第三方头文件
 随仓库放在 `src/public/lib/`（nlohmann/json v3.12.0、dtl、SQLite amalgamation）；需要源码构建的第三方库在 `cmake/deps.cmake`
-中以 FetchContent 引入（spdlog v1.17.0、tree-sitter v0.27.0、tree-sitter-bash v0.25.1、inja v3.5.0、CLI11 v2.7.2），
+中以 FetchContent 引入（spdlog v1.17.0、tree-sitter v0.27.0、tree-sitter-bash v0.25.1、inja v3.5.0、CLI11 v2.7.2、yaml-cpp 0.8.0），
 首次配置需要联网；exec 的沙箱另需系统库 libseccomp（`apt install libseccomp-dev`）；workspace 的搜索与
-项目上下文另需运行时程序 ripgrep 与 git。
+项目上下文使用 runtime sync 准备的 ripgrep 与 git。首次安装配置见 [home](design/home.md)。
 
 ### 临时检测程序
 
@@ -121,9 +125,9 @@ g++ -std=c++23 -Wall -Wextra -DSPDLOG_COMPILED_LIB -DSPDLOG_USE_STD_FORMAT \
     $b/src/libdagent_app_config.a $b/src/libdagent_runtime.a $b/src/libtools.a $b/src/libdagent_llm.a \
     $b/src/libdagent_storage.a $b/src/libdagent_agent.a $b/src/libdagent_mcp.a $b/src/libdagent_workspace.a \
     $b/src/libdagent_net.a $b/src/libdagent_exec.a \
-    $b/src/libdagent_base.a $b/_deps/spdlog-build/libspdlogd.a \
+    $b/src/libdagent_base.a $b/_deps/spdlog-build/libspdlogd.a $b/_deps/yaml-cpp-build/libyaml-cppd.a \
     $b/_deps/tree-sitter-build/libtree-sitter.a $b/libtree-sitter-bash.a \
-    -lcurl -lseccomp -pthread -o temp/check
+    -lcurl -lcrypto -lseccomp -pthread -o temp/check
 ```
 
 ## 目录约定

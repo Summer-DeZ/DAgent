@@ -41,14 +41,14 @@ struct GitOutput {
 
 // 所有 git 调用都带 --no-optional-locks（不和用户同时在跑的 git 抢锁）和 core.quotepath=off（中文路径不转义）。
 GitOutput run_git(const fs::path& cwd, std::vector<std::string> args, std::chrono::milliseconds timeout,
-                  std::stop_token stop) {
+                  std::stop_token stop, const exec::Options& process) {
     exec::Command cmd;
     cmd.argv = {"git", "--no-optional-locks", "-c", "core.quotepath=off"};
     cmd.argv.insert(cmd.argv.end(), std::make_move_iterator(args.begin()), std::make_move_iterator(args.end()));
     cmd.cwd = cwd;
     cmd.timeout = timeout;
     try {
-        const exec::Result result = exec::run(cmd, {}, {}, stop);
+        const exec::Result result = exec::run(cmd, process, {}, stop);
         if (result.exit_code && *result.exit_code == 0) return {true, std::move(result.out.text)};
     } catch (const std::exception&) {
         // 没装 git、不是仓库、超时、被取消……都按「没有 git 信息」处理，不抛给调用方
@@ -59,13 +59,13 @@ GitOutput run_git(const fs::path& cwd, std::vector<std::string> args, std::chron
 std::optional<GitInfo> collect_git(const fs::path& cwd, const ContextOptions& opt, std::stop_token stop) {
     // 三条命令互不依赖，并发跑，避免大仓库上慢慢叠加等待时间。
     auto root_future = std::async(std::launch::async, [&] {
-        return run_git(cwd, {"rev-parse", "--show-toplevel"}, opt.git_timeout, stop);
+        return run_git(cwd, {"rev-parse", "--show-toplevel"}, opt.git_timeout, stop, opt.process);
     });
     auto status_future = std::async(std::launch::async, [&] {
-        return run_git(cwd, {"status", "--porcelain=v2", "--branch"}, opt.git_timeout, stop);
+        return run_git(cwd, {"status", "--porcelain=v2", "--branch"}, opt.git_timeout, stop, opt.process);
     });
     auto log_future = std::async(std::launch::async, [&] {
-        return run_git(cwd, {"log", "--oneline", "-n", "5"}, opt.git_timeout, stop);
+        return run_git(cwd, {"log", "--oneline", "-n", "5"}, opt.git_timeout, stop, opt.process);
     });
 
     const GitOutput root = root_future.get();

@@ -34,6 +34,8 @@ struct ServerConfig {
     Transport transport = Transport::stdio;
     std::vector<std::string> command; ///< stdio：完整 argv（命令与参数），argv[0] 按 PATH 查找
     std::vector<std::pair<std::string, std::string>> env; ///< stdio：注入子进程的环境变量
+    std::filesystem::path cwd;
+    std::string environment = "managed"; ///< managed, project, or mcp/<name>
     std::string url;      ///< http：MCP endpoint
     net::Headers headers; ///< http：附加请求头（如 Authorization）
 };

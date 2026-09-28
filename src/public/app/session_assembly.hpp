@@ -13,6 +13,7 @@
 #include <string_view>
 
 #include "agent/options.hpp"
+#include "agent/skills.hpp"
 #include "agent/port_model.hpp"
 #include "agent/public_model.hpp"
 #include "app/assembly.hpp"
@@ -37,6 +38,7 @@ public:
     /// @brief 整个后端不变的装配值；每个会话的权限/模型/子 Agent 收窄在创建时单独解析。
     struct Options {
         std::shared_ptr<Assembly> assembly; ///< MCP、环境事实、子 Agent 定义与模型表
+        std::shared_ptr<const agent::SkillCatalog> skills;
         agent::Options agent;               ///< 上下文预算、调用上限、进度间隔
         std::filesystem::path cwd, project_root, control_root;
         std::optional<std::filesystem::path> git_root;
@@ -47,6 +49,7 @@ public:
         exec::SandboxOptions sandbox_options;
         exec::Support sandbox; ///< 启动时探测一次
         storage::Options storage;
+        std::string user_instructions;
         std::string system_prompt, compact_prompt; ///< 主会话提示词模板
         runtime::SessionState initial;             ///< 启动权限档/只读/规划；model 空表示 default_model
         ModelSelection default_model;

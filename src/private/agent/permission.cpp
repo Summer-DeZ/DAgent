@@ -27,8 +27,8 @@ bool is_relative_to(const fs::path& path, const fs::path& base) {
 }
 
 bool sensitive_control_path(const fs::path& path, const fs::path& root) {
-    return path == root / "models.json" || path == root / "dagent.db" ||
-           is_relative_to(path, root / "logs");
+    return is_relative_to(path, root / "config") || is_relative_to(path, root / "data") ||
+           is_relative_to(path, root / "logs") || is_relative_to(path, root / "run");
 }
 
 std::string exec_rule_id(std::string_view command, std::string_view cwd) {
@@ -98,6 +98,10 @@ Policy::PathClass Policy::classify(const ResourceIntent& intent) const {
         if (part == ".ssh" || part == ".gnupg") return PathClass::sensitive;
     }
     if (sensitive_name(path.filename().string())) return PathClass::sensitive;
+    if (intent.access == Access::read)
+        for (const auto& directory : sandbox_options_.skill_readable)
+            if (inside_dir(path, directory)) return PathClass::normal;
+    if (intent.access == Access::write && inside_dir(path, control_root_ / "runtime")) return PathClass::guarded;
     if (!intent.inside_workspace) return PathClass::outside;
     return PathClass::normal;
 }
@@ -143,6 +147,9 @@ ExecutionGrant Policy::grant_for_exec(SandboxProfile profile, GrantSource source
     }
 
     grant.readable = {workspace_root_};
+    grant.readable.insert(grant.readable.end(), sandbox_options_.runtime_readable.begin(), sandbox_options_.runtime_readable.end());
+    grant.readable.insert(grant.readable.end(), sandbox_options_.skill_readable.begin(),
+                          sandbox_options_.skill_readable.end());
     grant.readable.insert(grant.readable.end(), sandbox_options_.extra_readable.begin(),
                           sandbox_options_.extra_readable.end());
     grant.readable.insert(grant.readable.end(), sandbox_options_.extra_writable.begin(),
@@ -152,13 +159,13 @@ ExecutionGrant Policy::grant_for_exec(SandboxProfile profile, GrantSource source
         grant.writable.insert(grant.writable.end(), sandbox_options_.extra_writable.begin(),
                               sandbox_options_.extra_writable.end());
     }
-    grant.protected_read = {control_root_ / "models.json", control_root_ / "dagent.db",
-                            control_root_ / "logs", workspace_root_ / ".env"};
+    grant.protected_read = {control_root_ / "config", control_root_ / "data",
+                            control_root_ / "logs", control_root_ / "run", workspace_root_ / ".env"};
     if (const char* home = std::getenv("HOME")) {
         grant.protected_read.emplace_back(fs::path(home) / ".ssh");
         grant.protected_read.emplace_back(fs::path(home) / ".gnupg");
     }
-    grant.protected_write = {project_root_ / ".git"};
+    grant.protected_write = {project_root_ / ".git", control_root_ / "runtime"};
     grant.protected_write.insert(grant.protected_write.end(), grant.protected_read.begin(),
                                  grant.protected_read.end());
     return grant;

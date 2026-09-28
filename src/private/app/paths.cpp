@@ -13,7 +13,7 @@
 namespace dagent::app {
 namespace fs = std::filesystem;
 
-InstallationPaths installation_paths() {
+HomePaths home_paths() {
     fs::path root;
     if (const char* value = std::getenv("DAGENT_HOME"); value != nullptr && *value != '\0') {
         std::error_code ec;
@@ -45,7 +45,7 @@ InstallationPaths installation_paths() {
     }
     ::close(fd);
     ::unlink(probe.c_str());
-    return {root, root / "config.json", root / "models.json", root / "dagent.db", root / "logs"};
+    return HomePaths(root);
 }
 
 } // namespace dagent::app

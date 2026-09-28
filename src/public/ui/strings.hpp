@@ -68,6 +68,12 @@ struct Strings {
     std::string_view panel_theme;
     std::string_view panel_help;
     std::string_view panel_files;
+    std::string_view cmd_skills;
+    std::string_view panel_skills;
+    std::string_view panel_skill_footer;
+    std::string_view panel_no_skills;
+    std::string_view toast_skills_failed;
+    std::string_view card_skill;
     std::string_view panel_search;
     std::string_view panel_command_footer;
     std::string_view panel_session_footer;

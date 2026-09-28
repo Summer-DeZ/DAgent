@@ -129,6 +129,11 @@ std::variant<Args, int> parse_args(int argc, char** argv) {
     CLI::App* sessions = app.add_subcommand("sessions", "list recent sessions");
     sessions->fallthrough();
 
+    auto* runtime = app.add_subcommand("runtime", "manage private tool environments");
+    runtime->require_subcommand(1, 1);
+    auto* runtime_sync = runtime->add_subcommand("sync", "prepare pinned runtimes and dependencies");
+    auto* runtime_list = runtime->add_subcommand("list", "show installed runtime state");
+
     // 最多一个子命令：进入子命令之后，提示词里再出现 run/sessions 也只是普通的词。
     app.require_subcommand(0, 1);
 
@@ -154,7 +159,9 @@ std::variant<Args, int> parse_args(int argc, char** argv) {
     }
 
     Args args;
-    if (run->parsed()) {
+    if (runtime_sync->parsed()) args.mode = Mode::runtime_sync;
+    else if (runtime_list->parsed()) args.mode = Mode::runtime_list;
+    else if (run->parsed()) {
         args.mode = Mode::run;
         args.prompt = join_words(run_words);
     } else if (sessions->parsed()) {

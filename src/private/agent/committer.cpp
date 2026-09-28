@@ -37,9 +37,9 @@ void SessionCommitter::check_broken() {
                                 error_)});
 }
 
-std::int64_t SessionCommitter::commit_user(std::string text) {
+std::int64_t SessionCommitter::commit_user(std::string text, const std::vector<SkillView>& skills) {
     const std::int64_t ordinal = conversation_.add_user(text);
-    append(record_codec::user(ordinal, text));
+    append(record_codec::user(ordinal, text, skills));
     check_broken();
     return ordinal;
 }

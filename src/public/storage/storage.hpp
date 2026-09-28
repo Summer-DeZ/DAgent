@@ -25,6 +25,7 @@ namespace dagent::storage {
 /// @brief 会话选项；数据库位置由安装根固定，只有记录与脱敏策略可配置。
 struct Options {
     std::filesystem::path database;
+    std::filesystem::path lock_directory;
     std::size_t history_scan_limit = 0;
     std::vector<std::string> redact_fields{"api_key", "authorization", "token"};
 };
@@ -51,7 +52,7 @@ private:
     Kind kind_;
 };
 
-/// @brief 同一 session_id 的跨进程可写所有权（安装根 `.runtime/session-locks/<id>.lock` 的 flock）。
+/// @brief 同一 session_id 的跨进程可写所有权（home `run/session-locks/<id>.lock` 的 flock）。
 ///
 /// 同一进程内按路径复用同一个 flock，供同会话切模型复用；跨进程冲突直接报 session_in_use。
 /// FD 为 CLOEXEC；锁文件不 unlink。只读历史查询不取锁。

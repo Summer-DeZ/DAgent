@@ -118,9 +118,13 @@ struct TaskView {
     bool operator==(const TaskView&) const = default;
 };
 
+struct SkillView {
+    std::string name, path;
+};
+
 /// monostate：prepare 阶段就失败的调用（参数错误等），界面只显示文本。
 using View = std::variant<std::monostate, ReadView, FileChangeView, BashView, GrepView, GlobView,
-                          McpView, TodoView, AskView, TaskView>;
+                          McpView, TodoView, AskView, TaskView, SkillView>;
 
 /// @brief 执行信号：不是展示事实，而是执行层需要核心处理的事件。
 struct McpDisconnected {

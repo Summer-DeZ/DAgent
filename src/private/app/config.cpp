@@ -1,4 +1,6 @@
 #include "app/config.hpp"
+#include "app/home.hpp"
+#include "app/toolchain.hpp"
 #include "llm/llm.hpp"
 
 #include <algorithm>
@@ -169,7 +171,7 @@ void require_private_file(const fs::path& file) {
 class ModelWriteLock {
 public:
     explicit ModelWriteLock(const fs::path& root) {
-        const fs::path path = root / ".runtime" / "models.lock";
+        const fs::path path = HomePaths(root).run / "models.lock";
         std::error_code ec;
         fs::create_directories(path.parent_path(), ec);
         if (ec) fail(ConfigError::Kind::io, "cannot create the model lock directory: " + ec.message());
@@ -263,7 +265,7 @@ bool known_key(std::string_view key) {
     if (known_keys().contains(std::string(key))) return true;
     constexpr std::string_view prefixes[] = {"session.redact_fields", "process.env_deny",
                                               "sandbox.extra_readable", "sandbox.extra_writable",
-                                              "network.credentials", "mcp.servers"};
+                                              "network.credentials", "mcp.mcpServers"};
     return std::ranges::any_of(prefixes, [&](std::string_view prefix) {
         return key == prefix || (key.starts_with(prefix) && key.size() > prefix.size() &&
                                  key[prefix.size()] == '.');
@@ -578,13 +580,13 @@ agent::SubagentDef parse_subagent(const fs::path& file, const std::string& text,
 
 } // namespace
 
-std::filesystem::path project_root(const std::filesystem::path& cwd) {
+std::filesystem::path project_root(const std::filesystem::path& cwd, const exec::Options& process) {
     exec::Command cmd;
     cmd.argv = {"git", "rev-parse", "--show-toplevel"};
     cmd.cwd = cwd;
     cmd.timeout = std::chrono::milliseconds{2000};
     try {
-        const exec::Result result = exec::run(cmd);
+        const exec::Result result = exec::run(cmd, process);
         if (result.exit_code.value_or(1) == 0) {
             const std::string text = trim_end(result.out.text);
             if (!text.empty()) return absolute_under(cwd, text);
@@ -600,7 +602,7 @@ std::vector<mcp::ServerConfig> parse_mcp_servers(const json& root) {
     if (!list->is_object()) fail(ConfigError::Kind::type, "/mcpServers must be an object");
     std::map<std::string, std::string> cleaned;
     for (const auto& [name, entry] : list->items()) {
-        const std::string where = "/mcp/servers/" + name;
+        const std::string where = "/mcpServers/" + name;
         if (!entry.is_object()) fail(ConfigError::Kind::type, where + " must be an object");
         const std::string normalized = mcp::sanitize_name(name);
         if (normalized.empty() || normalized.find("__") != std::string::npos)
@@ -615,6 +617,7 @@ std::vector<mcp::ServerConfig> parse_mcp_servers(const json& root) {
         }
         mcp::ServerConfig server;
         server.name = name;
+        server.environment = entry.value("environment", "managed");
         if (type == "stdio") {
             const auto command = entry.find("command");
             if (command == entry.end() || !command->is_string()) fail(ConfigError::Kind::type, where + "/command must be a string");
@@ -654,10 +657,15 @@ std::vector<mcp::ServerConfig> parse_mcp_servers(const json& root) {
 Config load_config(const LoadOptions& options) {
     const fs::path root = absolute_path(options.root);
     const fs::path cwd = options.cwd.empty() ? fs::current_path() : absolute_path(options.cwd);
-    const fs::path config_file = root / "config.json";
-    const fs::path models_file = root / "models.json";
+    const HomePaths paths(root);
+    const fs::path config_file = paths.config;
+    const fs::path models_file = paths.models;
     require_private_file(models_file);
     json config_json = parse_file(config_file);
+    require_private_file(paths.mcp);
+    json mcp_json = parse_file(paths.mcp);
+    if (config_json.contains("mcp")) fail(ConfigError::Kind::invalid, "MCP configuration belongs in config/mcp.json");
+    config_json["mcp"] = std::move(mcp_json);
     const json models_json = parse_file(models_file);
     resolve_paths(config_json, root);
 
@@ -686,24 +694,25 @@ Config load_config(const LoadOptions& options) {
     const Node node(config_json, "");
     Config config;
     config.root = root;
-    config.project_root = project_root(cwd);
+    config.project_root = cwd;
     config.model_selection_log = std::move(model_log);
     config.models = map_models(Node(models, "/models"));
     config.model = std::move(selected);
     if (!config.models.contains(config.model))
         fail(ConfigError::Kind::invalid, "models.json default names an unknown model: " + config.model);
     config.ui.theme_file = node.child("ui").child("theme_file").str();
-    config.system_prompt_file = node.child("prompts").child("system").str((root / "system.md").string());
-    config.compact_prompt_file = node.child("prompts").child("compact").str((root / "compact.md").string());
+    config.system_prompt_file = node.child("prompts").child("system").str((paths.prompts / "system.md").string());
+    config.compact_prompt_file = node.child("prompts").child("compact").str((paths.prompts / "compact.md").string());
     config.http = map_http(node.required("http"));
     config.process = map_process(node.required("process"));
     config.sandbox = map_sandbox(node.child("sandbox"), cwd);
     config.files = map_files(node.required("files"));
     config.search = map_search(node.required("search"));
     config.session = map_session(node.required("session"));
-    config.session.database = root / "dagent.db";
+    config.session.database = paths.database;
+    config.session.lock_directory = paths.run / "session-locks";
     config.log = map_log(node.required("log"));
-    config.log.file = root / "logs" / std::format("dagent-{}.log", ::getpid());
+    config.log.file = paths.logs / std::format("dagent-{}.log", ::getpid());
     config.mcp = map_mcp(node.required("mcp"));
     config.mcp.http = config.http;
     config.mcp.process = config.process;
@@ -720,9 +729,26 @@ Config load_config(const LoadOptions& options) {
         else fail(ConfigError::Kind::type, v.pointer() + " must be ask, workspace or unrestricted");
     }
     config.credentials = map_credentials(node.child("network"));
-    if (const Node servers = node.child("mcp").child("servers"); servers.has())
-        config.mcp_servers = parse_mcp_servers(json{{"mcpServers", servers.raw()}});
-    config.subagents = load_subagents(root / "agents", config.models);
+    config.mcp_servers = parse_mcp_servers(node.required("mcp").raw());
+    Toolchain toolchain(paths);
+    config.tools.environments = toolchain.environments();
+    config.process.environment = config.tools.environments.at("managed").variables;
+    config.mcp.process = config.process;
+    if (config.search.rg_path.empty()) config.search.rg_path = toolchain.program("rg");
+    config.project_root = project_root(cwd, config.process);
+    for (auto& server : config.mcp_servers) {
+        if (server.transport != mcp::Transport::stdio) continue;
+        server.cwd = server.environment == "project" ? cwd : root;
+        if (server.environment == "project") continue;
+        if (fs::path(server.command.front()).has_parent_path() && fs::path(server.command.front()).is_relative())
+            server.command.front() = (root / server.command.front()).lexically_normal().string();
+        const auto found = config.tools.environments.find(server.environment);
+        if (found == config.tools.environments.end()) fail(ConfigError::Kind::invalid, "unknown MCP environment: " + server.environment);
+        auto variables = found->second.variables;
+        variables.insert(variables.end(), server.env.begin(), server.env.end());
+        server.env = std::move(variables);
+    }
+    config.subagents = load_subagents(paths.agents, config.models);
     return config;
 }
 
@@ -753,7 +779,7 @@ std::vector<agent::SubagentDef> load_subagents(
 llm::ProviderConfig add_model(const fs::path& root_path,
                                 const llm::ProviderConfig& model) {
     const fs::path root = absolute_path(root_path);
-    const fs::path file = root / "models.json";
+    const fs::path file = HomePaths(root).models;
     ModelWriteLock lock(root);
     require_private_file(file);
     json document = parse_file(file);

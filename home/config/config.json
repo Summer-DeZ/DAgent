@@ -1,0 +1,86 @@
+{
+  "context": {
+    "compaction_target_percent": 60,
+    "compaction_trigger_percent": 80,
+    "safety_margin_tokens": 8192,
+    "window_tokens": 262144
+  },
+  "files": {
+    "max_read_bytes": 8388608,
+    "max_write_bytes": 1048576
+  },
+  "http": {
+    "connect_timeout_seconds": 30,
+    "idle_timeout_seconds": 120,
+    "max_body_bytes": 2097152,
+    "max_error_body_bytes": 4096,
+    "timeout_seconds": 300,
+    "verify_host": true,
+    "verify_peer": true
+  },
+  "log": {
+    "also_stderr": false,
+    "level": "info",
+    "max_file_bytes": 5242880,
+    "max_files": 3
+  },
+  "network": {
+    "credentials": {}
+  },
+  "permissions": "workspace",
+  "process": {
+    "default_timeout_ms": 300000,
+    "drain_after_exit_ms": 200,
+    "env_deny": [
+      "*KEY*",
+      "*TOKEN*",
+      "*SECRET*",
+      "*PASSWORD*"
+    ],
+    "kill_grace_ms": 2000,
+    "max_output_bytes": 262144
+  },
+  "progress": {
+    "interval_ms": 1000
+  },
+  "prompts": {
+    "compact": "prompts/compact.md",
+    "system": "prompts/system.md"
+  },
+  "run": {
+    "max_model_calls": 24,
+    "max_model_retries": 2,
+    "max_parallel_tasks": 4,
+    "max_parallel_tools": 8,
+    "max_tool_calls": 35
+  },
+  "sandbox": {
+    "extra_readable": [],
+    "extra_writable": [],
+    "version": 1
+  },
+  "search": {
+    "rg_path": ""
+  },
+  "session": {
+    "history_scan_limit": 100,
+    "redact_fields": [
+      "api_key",
+      "authorization",
+      "token"
+    ]
+  },
+  "tools": {
+    "bash_collect_bytes": 4194304,
+    "bash_max_timeout_ms": 600000,
+    "glob_max_files": 200,
+    "grep_max_matches": 200,
+    "max_result_bytes": 32768,
+    "mcp_call_timeout_ms": 120000,
+    "read_default_lines": 2000,
+    "read_max_line_bytes": 2000
+  },
+  "ui": {
+    "theme_file": "themes/dagent.json"
+  }
+}

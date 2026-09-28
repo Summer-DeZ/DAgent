@@ -1,5 +1,6 @@
 #include <algorithm>
 #include <chrono>
+#include <cstdlib>
 #include <format>
 #include <utility>
 
@@ -15,6 +16,7 @@ namespace {
 
 constexpr std::string_view kDescription = R"(Run a bash command in the workspace root.
 
+- The default environment is managed by DAgent. Use environment=project only for the user project's host toolchain; use a skill's configured environment when instructed.
 - Every call already starts in the workspace root. Do not prefix commands with cd to that same directory; use relative paths. Use cd subdir && ... only to enter a different directory. Directory and environment changes do not persist between calls.
 - stdout and stderr are returned together. Commands are terminated on timeout; timeout_ms is in milliseconds and capped at 10 minutes.
 - Commands run in a sandbox by default: no writes outside the workspace (except /tmp) and no network access. Sandbox restrictions are reported in the result. Use another approach or explain the restriction to the user; do not keep retrying.
@@ -25,13 +27,15 @@ constexpr std::string_view kDescription = R"(Run a bash command in the workspace
 class BashCall final : public PreparedTool {
 public:
     BashCall(const agent::InvocationContext& invocation, const Context& ctx, std::string command,
-             exec::Analysis analysis, std::optional<std::chrono::milliseconds> timeout)
+             exec::Analysis analysis, std::optional<std::chrono::milliseconds> timeout,
+             std::string environment_name, exec::Environment environment)
         : PreparedTool(invocation), root_(ctx.root()), process_options_(ctx.process()),
           max_result_bytes_(ctx.options().max_result_bytes), collect_bytes_(ctx.options().bash_collect_bytes), command_(std::move(command)),
+          environment_name_(std::move(environment_name)), environment_(std::move(environment)),
           analysis_(std::move(analysis)), timeout_(timeout) {
         intent_.kind = agent::ToolKind::exec;
         agent::CommandIntent cmd;
-        cmd.command = command_;
+        cmd.command = "[environment=" + environment_name_ + "] " + command_;
         cmd.analysis_version = analysis_.version;
         cmd.syntax = analysis_.syntax == exec::SyntaxStatus::valid   ? agent::SyntaxState::valid
                      : analysis_.syntax == exec::SyntaxStatus::error ? agent::SyntaxState::error
@@ -53,7 +57,7 @@ public:
         auto line = command_;
         if (const auto nl = line.find('\n'); nl != std::string::npos) line = line.substr(0, nl);
         if (line.size() > 100) line = line.substr(0, 100);
-        intent_.summary = std::format("Run {}", line);
+        intent_.summary = std::format("Run [{}] {}", environment_name_, line);
     }
 
 private:
@@ -84,11 +88,16 @@ private:
         }
 
         exec::Command cmd;
-        cmd.argv = {"bash", "-c", command_};
+        cmd.argv = {environment_.shell.string(), "--noprofile", "--norc", "-c", command_};
         cmd.cwd = root_;
         cmd.merge_stderr = true;
         cmd.timeout = timeout_;
-        cmd.inherit_env = !sandboxed;
+        cmd.inherit_env = environment_name_ == "project" && !sandboxed;
+        cmd.env_set = environment_.variables;
+        if (environment_name_ == "project") {
+            process_options_.environment.clear();
+            if (const char* path = std::getenv("PATH")) cmd.env_set.emplace_back("PATH", path);
+        }
         // 固定消息语言：报错文本（strerror）不随系统 locale 变化，给模型和沙箱判断都是稳定输入。
         // 用 C.UTF-8 而不是 C，否则 ls 会把中文文件名转义成 \346… 这样的八进制。
         cmd.env_set.emplace_back("LC_ALL", "C.UTF-8");
@@ -98,7 +107,8 @@ private:
                                                         "CDPATH", "GLOBIGNORE",
                                                         "PROMPT_COMMAND", "LD_PRELOAD", "LD_LIBRARY_PATH",
                                                         "PYTHONPATH", "PERL5LIB", "RUBYOPT"});
-            cmd.env_set.emplace_back("PATH", "/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin");
+            if (environment_name_ == "project")
+                cmd.env_set.emplace_back("PATH", "/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin");
             cmd.env_set.emplace_back("HOME", private_home);
             cmd.env_set.emplace_back("XDG_CONFIG_HOME", private_home + "/config");
             cmd.env_set.emplace_back("XDG_CACHE_HOME", private_home + "/cache");
@@ -135,7 +145,7 @@ private:
             std::chrono::steady_clock::now() - started);
 
         agent::BashView view;
-        view.command = command_;
+        view.command = "[" + environment_name_ + "] " + command_;
         view.sandbox = std::string(agent::to_string(grant.sandbox));
         view.backend = grant.backend;
         view.grant_source = std::string(agent::to_string(grant.source));
@@ -210,6 +220,8 @@ private:
     std::size_t max_result_bytes_ = 0;
     std::size_t collect_bytes_ = 0;
     std::string command_;
+    std::string environment_name_;
+    exec::Environment environment_;
     exec::Analysis analysis_; ///< 完整分析树只在实现里；核心只看 CommandIntent 摘要
     std::optional<std::chrono::milliseconds> timeout_;
 };
@@ -223,6 +235,7 @@ public:
             {"type", "object"},
             {"properties",
              {{"command", {{"type", "string"}, {"description", "Bash command to execute"}}},
+              {"environment", {{"type", "string"}, {"description", "managed (default), project (host toolchain), or a configured skills/<name> environment"}}},
               {"timeout_ms",
                {{"type", "integer"}, {"description", "Timeout in milliseconds; maximum 600000 (10 minutes), default 300000"}}}}},
             {"required", std::vector<std::string>{"command"}},
@@ -241,6 +254,16 @@ public:
         const auto timeout_ms = detail::get_int(*args, "timeout_ms", err);
         if (!err.empty()) return std::unexpected(error_result(err));
 
+        std::string environment_name = detail::get_string(*args, "environment", err).value_or("managed");
+        if (!err.empty()) return std::unexpected(error_result(err));
+        exec::Environment environment;
+        if (environment_name == "project") {
+            environment.shell = ctx.options().environments.at("managed").shell;
+        } else {
+            const auto found = ctx.options().environments.find(environment_name);
+            if (found == ctx.options().environments.end()) return std::unexpected(error_result("Unknown runtime environment: " + environment_name));
+            environment = found->second;
+        }
         exec::Analysis analysis = exec::analyze(command);
         if (analysis.syntax != exec::SyntaxStatus::valid) {
             std::string message = analysis.syntax_message.empty() ? "bash syntax could not be analyzed"
@@ -256,7 +279,7 @@ public:
         } else {
             timeout = ctx.process().default_timeout; // exec 里 0 表示不限
         }
-        return std::make_unique<BashCall>(invocation, ctx, command, std::move(analysis), timeout);
+        return std::make_unique<BashCall>(invocation, ctx, command, std::move(analysis), timeout, std::move(environment_name), std::move(environment));
     }
 
 private:

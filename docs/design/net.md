@@ -55,7 +55,7 @@ if (resp.status != 200) { /* resp.body 是错误体 */ }
 
 ### 选项：HttpOptions
 
-对应 `home/config.json` 的 `"http"` 段。时长为 0 表示不限制。
+对应 `home/config/config.json` 的 `"http"` 段。时长为 0 表示不限制。
 
 | 字段 | 默认值 | 说明 |
 | --- | --- | --- |

@@ -7,6 +7,8 @@
 
 #include "app/assembly.hpp"
 #include "app/config.hpp"
+#include "app/skills.hpp"
+#include "app/toolchain.hpp"
 #include "app/configuration.hpp"
 #include "app/queries.hpp"
 #include "app/session_assembly.hpp"
@@ -45,6 +47,9 @@ SessionAssembly::Options session_options(const Config& config, const runtime::Bo
                                          const std::shared_ptr<Configuration>& configuration) {
     SessionAssembly::Options out;
     out.assembly = assembly;
+    const HomePaths paths(config.root);
+    if (std::filesystem::exists(paths.instructions))
+        out.user_instructions = workspace::read_text(paths.instructions, config.files).content;
     out.agent = config.agent;
     out.cwd = options.cwd;
     out.project_root = config.project_root;
@@ -72,6 +77,13 @@ SessionAssembly::Options session_options(const Config& config, const runtime::Bo
 } // namespace
 
 runtime::Assembled assemble_backend(const runtime::BootstrapOptions& options) {
+    const HomePaths paths(options.root);
+    if (options.mode == "runtime-sync" || options.mode == "runtime-list") {
+        Toolchain toolchain(paths);
+        runtime::Assembled out;
+        out.maintenance = options.mode == "runtime-sync" ? toolchain.sync() : toolchain.status();
+        return out;
+    }
     Config config;
     try {
         config = load_config({options.root, options.cwd, options.overrides});
@@ -88,18 +100,27 @@ runtime::Assembled assemble_backend(const runtime::BootstrapOptions& options) {
     auto configuration =
         std::make_shared<Configuration>(options.root, options.cwd, options.overrides, config, make_session);
 
+    auto skills = std::make_shared<agent::SkillCatalog>(*load_skills(paths.skills, config.files));
+    for (auto& skill : skills->definitions) {
+        const auto name = "skills/" + skill.name;
+        if (config.tools.environments.contains(name))
+            skill.body += "\n\nFor commands belonging to this skill, set the bash environment parameter to " + name + ".";
+    }
     runtime::Assembled out;
     out.configuration = configuration;
     out.queries = std::make_shared<QueryGatewayImpl>(config.session, options.cwd, config.project_root,
-                                                     config.search);
+                                                     config.search, skills, config.process);
     out.default_model = config.model;
     out.progress_interval_ms = static_cast<int>(config.agent.progress.interval.count());
     if (options.mode == "sessions" || options.mode == "models") return out;
 
+    workspace::ContextOptions context; context.process = config.process;
     auto assembly = Assembly::create(config.mcp_servers, config.mcp,
-                                     workspace::collect_environment(options.cwd, {}), config.subagents,
+                                     workspace::collect_environment(options.cwd, context), config.subagents,
                                      config.models, make_session);
-    out.factory = std::make_unique<SessionAssembly>(session_options(config, options, assembly, configuration));
+    auto session = session_options(config, options, assembly, configuration);
+    session.skills = skills;
+    out.factory = std::make_unique<SessionAssembly>(std::move(session));
     return out;
 }
 

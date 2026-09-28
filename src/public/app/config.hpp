@@ -1,5 +1,5 @@
 /// @file config.hpp
-/// @brief 安装目录中的 config.json + models.json 配置加载。
+/// @brief Home config/ 下主配置、模型、MCP 与托管环境配置加载。
 #pragma once
 
 #include <chrono>
@@ -87,7 +87,7 @@ llm::ProviderConfig add_model(const std::filesystem::path& root,
                                 const llm::ProviderConfig& model);
 
 /// @brief git 根（`git rev-parse --show-toplevel`），不在仓库里或 git 不可用时退回 cwd。
-std::filesystem::path project_root(const std::filesystem::path& cwd);
+std::filesystem::path project_root(const std::filesystem::path& cwd, const exec::Options& process = {});
 
 /// @brief 把 `{"mcpServers": {...}}` 映射成 mcp::ServerConfig；${VAR} 从进程环境展开，变量不存在时抛
 /// invalid（指出 server 和字段）。server 名按 mcp::sanitize_name 清理后必须互不相同、且不含 "__"。

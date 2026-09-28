@@ -1,16 +1,6 @@
 {
   "default": "local",
   "models": {
-    "deepseekv4.1 flash": {
-      "api_key": "sk-60b1b079389747299cb30a6dce9ed35c",
-      "base_url": "https://api.deepseek.com",
-      "context_window": 1000000,
-      "include_usage": true,
-      "kind": "openai-chat",
-      "max_tokens": 384000,
-      "model": "deepseek-flash",
-      "send_reasoning_content": false
-    },
     "local": {
       "base_url": "http://127.0.0.1:10009/v1",
       "context_window": 120832,

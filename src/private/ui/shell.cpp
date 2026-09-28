@@ -703,6 +703,7 @@ private:
             throw std::logic_error("invalid key binding: " + shortcut);
     }
     void register_commands() {
+        add_command("skill.pick", std::string(ui::text().cmd_skills), std::string(ui::text().cmd_session), {}, "/skills", [this] { skill_panel(); });
         add_command("panel.commands", std::string(ui::text().cmd_palette), std::string(ui::text().cmd_view), "ctrl+p", {}, [this] { command_panel(); });
         add_command("session.interrupt", std::string(ui::text().cmd_interrupt), std::string(ui::text().cmd_session), "escape", {}, [this] { interrupt(); });
         add_command("session.cancel", std::string(ui::text().cmd_cancel), std::string(ui::text().cmd_session), "ctrl+c", {}, [this] { cancel(); });
@@ -1001,6 +1002,31 @@ private:
         }
         panel_.open(std::string(ui::text().panel_commands), std::move(rows), std::string(ui::text().panel_command_footer));
     }
+    void skill_panel() {
+        panel_.open(std::string(ui::text().panel_skills),
+                    {{std::string(ui::text().panel_loading), {}, {}, false, {}}},
+                    std::string(ui::text().panel_skill_footer), false);
+        request("skills.list", {}, [this](const nlohmann::json& value) {
+            std::vector<Panel::Row> rows;
+            for (const auto& skill : value.value("skills", nlohmann::json::array())) {
+                const std::string name = skill.value("name", "");
+                rows.push_back({name, skill.value("description", ""), {}, true, [this, name] {
+                    std::string text = input_->text();
+                    if (!text.empty() && text.back() != ' ') text += ' ';
+                    input_->set_text({});
+                    input_->insert(text + "$" + name + " ");
+                }});
+            }
+            if (rows.empty()) rows.push_back({std::string(ui::text().panel_no_skills), {}, {}, false, {}});
+            for (const auto& item : value.value("diagnostics", nlohmann::json::array()))
+                rows.push_back({item.value("path", ""), item.value("message", ""), "invalid", false, {}});
+            panel_.open(std::string(ui::text().panel_skills), std::move(rows),
+                        std::string(ui::text().panel_skill_footer));
+        }, [this](const protocol::RpcError& error) {
+            panel_.close();
+            toast(std::string(ui::text().toast_skills_failed) + error.message, tui::Notice::Severity::error);
+        });
+    }
     void session_panel() {
         panel_.open(std::string(ui::text().panel_sessions), {{std::string(ui::text().panel_loading), {}, {}, false, {}}}, std::string(ui::text().panel_session_footer), false);
         request("session.list", {{"limit", 50}}, [this](const nlohmann::json& value) {
@@ -1112,6 +1138,30 @@ private:
         }
         const std::size_t token = value.find_last_of(" \t\r\n");
         const std::size_t begin = token == std::string::npos ? 0 : token + 1;
+        if (begin < value.size() && value[begin] == '$') {
+            if (completion_kind_ != "skill") {
+                completion_kind_ = "skill";
+                completion_.open(std::string(ui::text().panel_skills), [this](std::string_view query, auto done) {
+                    request("skills.list", {}, [query = std::string(query), done = std::move(done)](const nlohmann::json& value) mutable {
+                        std::vector<Completion::Item> items;
+                        for (const auto& skill : value.value("skills", nlohmann::json::array())) {
+                            const std::string name = skill.value("name", "");
+                            const auto hits = subsequence_hits(query, name);
+                            if (query.empty() || hits.size() == query.size())
+                                items.push_back({"$" + name, name, skill.value("description", ""), hits});
+                        }
+                        done(std::move(items));
+                    });
+                }, std::string(ui::text().panel_skill_footer),
+                [this](const Completion::Item& item, bool) {
+                    std::string text = input_->text();
+                    const std::size_t split = text.find_last_of(" \t\r\n");
+                    text.erase(split == std::string::npos ? 0 : split + 1);
+                    text += item.value + " "; input_->set_text({}); input_->insert(text);
+                });
+            }
+            completion_.refresh(std::string_view(value).substr(begin + 1)); return;
+        }
         if (begin < value.size() && value[begin] == '@') {
             if (completion_kind_ != "file") {
                 completion_kind_ = "file";

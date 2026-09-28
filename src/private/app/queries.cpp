@@ -48,8 +48,9 @@ private:
 } // namespace
 
 QueryGatewayImpl::QueryGatewayImpl(storage::Options storage, std::filesystem::path cwd,
-                                   std::filesystem::path project_root, workspace::SearchOptions search)
-    : storage_(std::move(storage)), cwd_(std::move(cwd)), project_root_(std::move(project_root)),
+                                   std::filesystem::path project_root, workspace::SearchOptions search,
+                                   std::shared_ptr<const agent::SkillCatalog> skills, exec::Options process)
+    : skills_(std::move(skills)), process_(std::move(process)), storage_(std::move(storage)), cwd_(std::move(cwd)), project_root_(std::move(project_root)),
       search_(std::move(search)) {}
 
 std::vector<runtime::SessionSummary> QueryGatewayImpl::sessions(std::size_t limit) {
@@ -91,7 +92,8 @@ runtime::WorkspaceInfo QueryGatewayImpl::workspace() {
     runtime::WorkspaceInfo info;
     info.cwd = cwd_;
     info.project_root = project_root_;
-    const workspace::Environment env = workspace::collect_environment(cwd_);
+    workspace::ContextOptions options; options.process = process_;
+    const workspace::Environment env = workspace::collect_environment(cwd_, options);
     if (env.git) {
         info.branch = env.git->branch;
         if (!env.git->status_summary.empty()) info.branch += "*";

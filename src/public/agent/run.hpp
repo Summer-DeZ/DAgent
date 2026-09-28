@@ -14,6 +14,7 @@
 #include "agent/events.hpp"
 #include "agent/identity.hpp"
 #include "agent/reply.hpp"
+#include "agent/skills.hpp"
 
 namespace dagent::agent {
 
@@ -47,6 +48,9 @@ public:
     Run(RunKind kind, RunId id) : kind_(kind), id_(std::move(id)) {}
     Run(const Run&) = delete;
     Run& operator=(const Run&) = delete;
+
+    RunSkills& skills() { return skills_; }
+    const RunSkills& skills() const { return skills_; }
 
     const RunId& id() const { return id_; }
     RunKind kind() const { return kind_; }
@@ -82,6 +86,7 @@ public:
     RunOutcome finish(TurnStatus status, std::string error) {
         if (finished_) return outcome_;
         finished_ = true;
+        skills_ = {};
         enter_phase(RunPhase::finished);
         outcome_.kind = kind_;
         outcome_.status = status;
@@ -94,6 +99,7 @@ public:
     bool finished() const { return finished_; }
 
 private:
+    RunSkills skills_;
     RunKind kind_;
     RunId id_;
     std::atomic<RunPhase> phase_ = RunPhase::ready;

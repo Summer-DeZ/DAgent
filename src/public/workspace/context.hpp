@@ -9,6 +9,7 @@
 #include <stop_token>
 #include <string>
 #include <vector>
+#include "exec/process.hpp"
 
 #include "lib/nlohmann/json.hpp"
 #include "workspace/error.hpp"
@@ -36,6 +37,7 @@ struct Environment {
 };
 
 struct ContextOptions {
+    exec::Options process;
     std::chrono::milliseconds git_timeout{2000};
     std::size_t max_instructions_bytes = 32 << 10;
     std::vector<std::string> instruction_files{"AGENTS.md"};

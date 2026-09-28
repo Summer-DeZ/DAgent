@@ -182,6 +182,7 @@ target_link_libraries(dagent_app_cli
 
 # 核心 agent：中立消息模型、动作/控制契约、Session/Run/循环、调度、权限与记录语义。
 add_library(dagent_agent STATIC
+    private/agent/skills.cpp
     private/agent/action.cpp
     private/agent/control.cpp
     private/agent/catalog.cpp
@@ -268,6 +269,8 @@ target_link_libraries(dagent_runtime PUBLIC dagent_agent)
 
 # 后端配置与具体适配对象装配：SessionFactory/ConfigurationGateway/QueryGateway 的实现。
 add_library(dagent_app_config STATIC
+    private/app/skills.cpp
+    private/app/toolchain.cpp
     private/app/config.cpp
     private/app/bootstrap.cpp
     private/app/assembly.cpp
@@ -288,6 +291,7 @@ endif()
 target_link_libraries(dagent_app_config
     PUBLIC dagent_runtime dagent_llm tools dagent_storage dagent_workspace dagent_exec dagent_mcp
            dagent_base
+    PRIVATE yaml-cpp::yaml-cpp CURL::libcurl OpenSSL::Crypto
 )
 
 # backend：RPC 方法适配与事件 DTO 转换；不链接 TUI。

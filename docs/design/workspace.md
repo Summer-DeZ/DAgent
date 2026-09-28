@@ -165,6 +165,6 @@ inja 抛 `InjaError` 时，转成 `bad_template`，如果错误带了行号就�
   vendor 在 `src/public/lib/nlohmann/` 的那份包成 `nlohmann_json::nlohmann_json` interface target 给
   inja 用，避免同一个翻译单元里出现两份 nlohmann（会撞 include guard 和 ODR）。
 - **ripgrep ≥ 13**、**git**：运行时依赖，通过 exec 调用（只传 argv，不经过 shell），不是编译期依赖。
-  找不到 `rg` 时 `search.rg_path`（`home/config.json`）可以覆盖自动探测的路径。
+  找不到 `rg` 时 `search.rg_path`（`home/config/config.json`）可以覆盖自动探测的路径。
 - `dagent_workspace` 对外公开链接 `dagent_base`，`dagent_exec` 和 `inja` 只是私有依赖（不出现在
   workspace 的公开头文件里）。

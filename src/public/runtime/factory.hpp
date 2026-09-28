@@ -26,6 +26,7 @@
 #include "agent/public_model.hpp"
 #include "agent/run_services.hpp"
 #include "agent/session.hpp"
+#include "agent/skills.hpp"
 #include "agent/subagent_def.hpp"
 
 namespace dagent::runtime {
@@ -155,6 +156,7 @@ public:
     virtual std::unique_ptr<HistoryReader> open_history(std::string_view session_id) = 0;
     virtual std::vector<ChildSummary> children(std::string_view session_id) = 0;
     virtual WorkspaceInfo workspace() = 0;
+    virtual const agent::SkillCatalog& skills() const = 0;
     virtual std::vector<FileCandidate> complete(std::string_view query, std::size_t limit) = 0;
 };
 
@@ -172,6 +174,7 @@ struct BootstrapOptions {
 
 /// @brief 装配结果：backend 只经这些端口访问具体实现。
 struct Assembled {
+    nlohmann::json maintenance;
     std::shared_ptr<ConfigurationGateway> configuration;
     std::shared_ptr<QueryGateway> queries;
     std::unique_ptr<SessionFactory> factory; ///< 纯查询模式（sessions/models）为空

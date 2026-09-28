@@ -180,9 +180,13 @@ void Client::Impl::start() {
         throw McpError{McpError::Kind::spawn, config_.name + ": stdio server is missing command"};
     exec::Command cmd;
     cmd.argv = config_.command;
+    cmd.cwd = config_.cwd;
+    cmd.inherit_env = config_.environment == "project";
     cmd.env_set = config_.env;
     try {
-        child_ = exec::Child::spawn(cmd, opt_.process);
+        auto process = opt_.process;
+        if (config_.environment == "project") process.environment.clear();
+        child_ = exec::Child::spawn(cmd, process);
     } catch (const exec::ExecError& e) {
         throw McpError{McpError::Kind::spawn, config_.name + ": " + e.what()};
     }

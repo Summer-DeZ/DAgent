@@ -6,16 +6,9 @@
 
 #include <filesystem>
 #include <stdexcept>
+#include "app/home.hpp"
 
 namespace dagent::app {
-
-struct InstallationPaths {
-    std::filesystem::path root;
-    std::filesystem::path config;
-    std::filesystem::path models;
-    std::filesystem::path database;
-    std::filesystem::path logs;
-};
 
 /// @brief 安装根不可用（不存在/不可写）时抛出；前端按配置错误返回退出码 2。
 class InstallError : public std::runtime_error {
@@ -24,6 +17,6 @@ public:
 };
 
 /// @brief DAGENT_HOME、dev 默认 home 或 /proc/self/exe 的父目录；同时验证根存在、是目录且可写。
-InstallationPaths installation_paths();
+HomePaths home_paths();
 
 } // namespace dagent::app

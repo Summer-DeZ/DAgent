@@ -25,7 +25,19 @@ std::string join_names(const std::vector<ToolSpec>& specs) {
 
 ActionCatalog::ActionCatalog(ToolSession& tools, Config config)
     : tools_(tools), config_(std::move(config)),
-      control_specs_(control_action_specs(config_.include_task, config_.subagents)) {}
+      control_specs_(control_action_specs(config_.include_task, config_.subagents)) {
+    if (config_.skills && !config_.skills->definitions.empty()) {
+        std::vector<std::string> names;
+        for (const auto& skill : config_.skills->definitions) names.push_back(skill.name);
+        ToolSpec spec;
+        spec.name = "skill";
+        spec.description = "Load a skill's full instructions for this turn. Call before performing work matching its description. Repeated activation is deduplicated.";
+        spec.parameters = {{"type", "object"},
+            {"properties", {{"name", {{"type", "string"}, {"enum", names}}}}},
+            {"required", {"name"}}, {"additionalProperties", false}};
+        control_specs_.push_back(std::move(spec));
+    }
+}
 
 bool ActionCatalog::control_enabled(std::string_view name) const {
     if (config_.allowed_tools.empty()) return true;

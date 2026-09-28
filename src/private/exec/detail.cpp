@@ -74,6 +74,7 @@ std::vector<std::string> make_environment(const Command& cmd, const Options& opt
     }
 
     for (const auto& [name, value] : kDefaultEnv) set_entry(env, name, value);
+    for (const auto& [name, value] : opt.environment) set_entry(env, name, value);
     for (const auto& name : cmd.env_unset) remove_entry(env, name);
     for (const auto& [name, value] : cmd.env_set) set_entry(env, name, value);
     return env;

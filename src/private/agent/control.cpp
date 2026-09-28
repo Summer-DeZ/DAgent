@@ -343,6 +343,14 @@ std::expected<ControlRequest, ToolResult> parse_control_action(std::string_view 
                                                                std::string_view arguments,
                                                                const InvocationContext& invocation,
                                                                const std::vector<SubagentDef>& subagents) {
+    if (name == "skill") {
+        auto args = parse_arguments(arguments);
+        if (!args) return std::unexpected(error_result(args.error()));
+        std::string error;
+        auto selected = require_string(*args, "name", error);
+        if (!error.empty()) return std::unexpected(error_result(error));
+        return ControlRequest{SkillActivation{invocation, "Load skill " + selected, std::move(selected)}};
+    }
     if (name == "todo") return parse_todo(arguments, invocation);
     if (name == "ask") return parse_ask(arguments, invocation);
     if (name == "exit_plan") return parse_exit_plan(arguments, invocation);
@@ -359,6 +367,10 @@ ToolResult ControlActionExecutor::execute(const ControlRequest& request, std::st
     if (const auto* ask = std::get_if<AskRequest>(&request)) return run_ask(*ask, stop);
     if (const auto* plan = std::get_if<PlanConfirmation>(&request)) return run_plan_confirmation(*plan, stop);
     if (const auto* replacement = std::get_if<PlanReplacement>(&request)) return run_plan_replacement(*replacement);
+    if (const auto* skill = std::get_if<SkillActivation>(&request)) {
+        if (stop.stop_requested()) { ToolResult result; result.interrupted = true; return result; }
+        return services_.activate_skill(skill->name);
+    }
     return run_delegation(std::get<DelegationRequest>(request), stop);
 }
 

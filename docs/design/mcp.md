@@ -38,6 +38,11 @@ stdio server 冷启动时间包含在发现超时内，调用方需要按真实�
 
 ### stdio
 
+连接定义来自 `home/config/mcp.json` 的 `mcpServers`。默认 `environment: managed` 使用
+托管工具和干净环境；`mcp/<name>` 使用 runtime sync 准备的独立依赖，cwd 为 home。
+显式 `project` 使用宿主工具及工作区 cwd。server 的 `env` 最后覆盖环境变量。
+工具准备、锁文件和版本生命周期见 [toolchain](toolchain.md)。
+
 子进程通过 `exec::Child` 启动，进程环境和结束宽限使用 `exec::Options`；`ServerConfig::env`
 显式注入的变量不受环境过滤。stderr 由进程层交付日志。
 

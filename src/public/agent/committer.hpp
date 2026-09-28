@@ -32,7 +32,7 @@ public:
     void clear_sink() { sink_ = nullptr; }
 
     // ---- live_message ----
-    std::int64_t commit_user(std::string text);
+    std::int64_t commit_user(std::string text, const std::vector<SkillView>& skills = {});
     std::int64_t commit_assistant(const Reply& reply);
     /// @brief 按原序提交一个工具结果；todo 的 WorkPlan 替换与 tool 记录在同一提交内完成。
     std::int64_t commit_tool(const ToolCall& call, std::string_view summary, const ToolResult& result,

@@ -85,3 +85,17 @@ FetchContent_MakeAvailable(CLI11)
 # 网络隔离用 libseccomp（Ubuntu: apt install libseccomp-dev）。
 find_package(PkgConfig REQUIRED)
 pkg_check_modules(SECCOMP REQUIRED IMPORTED_TARGET libseccomp)
+
+# Agent Skills YAML frontmatter. No dependency test or utility targets.
+set(YAML_CPP_BUILD_TESTS OFF CACHE BOOL "" FORCE)
+set(YAML_CPP_BUILD_TOOLS OFF CACHE BOOL "" FORCE)
+set(YAML_CPP_INSTALL OFF CACHE BOOL "" FORCE)
+FetchContent_Declare(yaml-cpp
+    GIT_REPOSITORY https://github.com/jbeder/yaml-cpp.git
+    GIT_TAG 0.8.0
+    GIT_SHALLOW TRUE
+)
+FetchContent_MakeAvailable(yaml-cpp)
+
+# Runtime archive integrity.
+find_package(OpenSSL REQUIRED COMPONENTS Crypto)

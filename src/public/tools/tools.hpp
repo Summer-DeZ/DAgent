@@ -13,6 +13,7 @@
 #include <filesystem>
 #include <functional>
 #include <memory>
+#include <map>
 #include <optional>
 #include <stop_token>
 #include <string>
@@ -42,6 +43,7 @@ using PreparedTool = agent::PreparedTool; ///< 准备完成的普通工具（核
 
 /// @brief 工具选项，对应 config.json 的 "tools" 段。
 struct Options {
+    std::map<std::string, exec::Environment> environments;
     std::size_t max_result_bytes = 0; ///< 每次调用交给模型的文本上限
     std::size_t bash_collect_bytes = 0; ///< 中断时保留的命令输出上限
     int read_default_lines = 0;

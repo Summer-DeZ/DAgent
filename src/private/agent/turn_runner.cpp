@@ -61,8 +61,20 @@ RunOutcome TurnRunner::run(Session& session, Run& run, const RunServices& base_s
 
     run.enter_phase(RunPhase::preparing_context);
     input = base::to_valid_utf8(input);
-    session.committer().commit_user(input);
+    const auto mentions = skill_mentions(input);
+    std::vector<SkillView> requested;
+    for (const auto& name : mentions) {
+        const auto* skill = session.config().skills ? session.config().skills->find(name) : nullptr;
+        requested.push_back({name, skill ? skill->file.string() : std::string{}});
+    }
+    session.committer().commit_user(input, requested);
     sink(TurnStarted{input});
+    for (const auto& name : mentions) {
+        if (stop.stop_requested()) return finish(session, run, services, TurnStatus::interrupted, "");
+        const auto result = session.activate_skill(name);
+        if (result.is_error) return finish(session, run, services, TurnStatus::failed, result.model_text);
+        sink(Notice{Notice::Level::info, "Loaded skill: " + name});
+    }
 
     const int max_model_calls = session.config().options.run.max_model_calls;
     const int max_tool_calls = session.config().options.run.max_tool_calls;

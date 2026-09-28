@@ -81,7 +81,17 @@ int main(int argc, char** argv) {
     const dagent::app::Args& args = std::get<dagent::app::Args>(parsed);
 
     try {
-        const dagent::app::InstallationPaths paths = dagent::app::installation_paths();
+        const dagent::app::HomePaths paths = dagent::app::home_paths();
+
+        if (args.mode == Mode::runtime_sync || args.mode == Mode::runtime_list) {
+            dagent::app::BackendLaunch launch;
+            launch.root = paths.root;
+            launch.cwd = args.cwd;
+            launch.mode = args.mode == Mode::runtime_sync ? "runtime-sync" : "runtime-list";
+            auto session = dagent::app::BackendSession::start(launch, {});
+            std::cout << session.initialized().at("maintenance").dump(2) << '\n';
+            return 0;
+        }
 
         // 查询模式：启动本前端独占的后端，经私有协议完成初始化与查询。
         // 启动配置与密钥只在后端解析；前端不读配置文件。

@@ -40,7 +40,13 @@ std::string render_prompt(const SessionAssembly::Options& base, const SessionSpe
     vars.sandbox_backend = base.sandbox.backend;
     vars.sandbox_missing = base.sandbox.missing;
     vars.permission_mode = spec.state.planning ? "plan" : std::string(agent::to_string(spec.state.mode));
-    return render_system_prompt(spec.prompt_template, env, vars);
+    std::string prompt = render_system_prompt(spec.prompt_template, env, vars);
+    if (!base.user_instructions.empty())
+        prompt += "\n\n# Global user instructions\nCurrent user requests and project-specific instructions take precedence over these general preferences.\n" + base.user_instructions;
+    if (base.skills && (spec.allowed_tools.empty() ||
+        std::ranges::find(spec.allowed_tools, "skill") != spec.allowed_tools.end()))
+        prompt += base.skills->prompt();
+    return prompt;
 }
 
 /// @brief 把装配值与会话差异固化成 SessionConfig；规范化 provider/context 的窗口关系。
@@ -51,6 +57,7 @@ agent::SessionConfig make_session_config(const SessionAssembly::Options& base, S
     spec.agent.context.window_tokens = provider.context_window;
 
     agent::SessionConfig config;
+    config.skills = base.skills;
     config.options = spec.agent;
     config.provider = provider;
     config.system_prompt = std::move(system_prompt);
@@ -60,7 +67,16 @@ agent::SessionConfig make_session_config(const SessionAssembly::Options& base, S
     config.control_root = base.control_root;
     config.sandbox_options = agent::SandboxConfig{base.sandbox_options.version,
                                                   base.sandbox_options.extra_readable,
-                                                  base.sandbox_options.extra_writable};
+                                                  base.sandbox_options.extra_writable, {}, {}};
+    for (const auto& [name, environment] : base.tools.environments)
+        for (const auto& directory : environment.readable)
+            config.sandbox_options.runtime_readable.push_back(directory);
+    if (base.skills)
+        for (const auto& skill : base.skills->definitions)
+            config.sandbox_options.skill_readable.push_back(skill.file.parent_path());
+    std::ranges::sort(config.sandbox_options.runtime_readable);
+    const auto unique_paths = std::ranges::unique(config.sandbox_options.runtime_readable);
+    config.sandbox_options.runtime_readable.erase(unique_paths.begin(), unique_paths.end());
     config.sandbox = agent::SandboxSupport{base.sandbox.backend, base.sandbox.read_only_ready(),
                                            base.sandbox.workspace_ready(), base.sandbox.missing};
     config.permission_mode = spec.state.mode;
@@ -71,9 +87,11 @@ agent::SessionConfig make_session_config(const SessionAssembly::Options& base, S
     return config;
 }
 
-agent::ActionCatalog::Config catalog_config(const SessionSpec& spec, const Assembly& assembly) {
+agent::ActionCatalog::Config catalog_config(const SessionSpec& spec, const Assembly& assembly,
+                                             std::shared_ptr<const agent::SkillCatalog> skills) {
     agent::ActionCatalog::Config config;
     config.allowed_tools = spec.allowed_tools;
+    config.skills = std::move(skills);
     if (!spec.child) config.subagents = assembly.subagents();
     config.include_task = !spec.child && !config.subagents.empty();
     return config;
@@ -212,7 +230,7 @@ struct SessionAssembly::Impl {
         auto resources = std::make_unique<HubResources>(assembly, *registry);
         auto session = std::make_unique<agent::Session>(
             std::move(config), std::move(meta), std::move(journal), spec.model.session, *tools_session,
-            catalog_config(spec, *assembly), std::move(conversation), std::move(plan));
+            catalog_config(spec, *assembly, options.skills), std::move(conversation), std::move(plan));
         return std::make_unique<Instance>(assembly, std::move(lease), std::move(context),
                                           std::move(registry), std::move(tools_session),
                                           std::move(resources), std::move(session));

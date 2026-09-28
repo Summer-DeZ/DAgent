@@ -1,7 +1,7 @@
 ---
 name: explore
 description: Read-only codebase search. Use when locating code, tracing definitions, or answering questions that span many files.
-tools: [read, grep, glob]
+tools: [skill, read, grep, glob]
 permission: read_only
 max_model_calls: 12
 max_tool_calls: 20

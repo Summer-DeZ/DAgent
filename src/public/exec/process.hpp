@@ -6,6 +6,7 @@
 #include <cstddef>
 #include <filesystem>
 #include <functional>
+#include <map>
 #include <optional>
 #include <stdexcept>
 #include <stop_token>
@@ -20,8 +21,15 @@ namespace dagent::exec {
 
 struct Prepared;
 
+struct Environment {
+    std::filesystem::path shell;
+    std::vector<std::pair<std::string, std::string>> variables;
+    std::vector<std::filesystem::path> readable;
+};
+
 /// @brief 执行选项，对应 config/dagent.json 的 "process" 段。
 struct Options {
+    std::vector<std::pair<std::string, std::string>> environment;
     std::chrono::milliseconds default_timeout{300000};  ///< 未指定 timeout 时用；为 0 表示不限
     std::size_t max_output_bytes = 256 << 10;           ///< 每一路输出保留的上限，超出后保留头尾
     std::chrono::milliseconds kill_grace{2000};         ///< SIGTERM 之后等多久再 SIGKILL

@@ -23,6 +23,7 @@ public:
     struct Config {
         std::vector<std::string> allowed_tools; ///< 空 = 全部；子 Agent 的收窄名单
         std::vector<SubagentDef> subagents;     ///< task 的描述与枚举
+        std::shared_ptr<const SkillCatalog> skills;
         bool include_task = false;              ///< 主 Agent 且定义表非空
     };
 

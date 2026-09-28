@@ -4,7 +4,13 @@
 /.env.*
 /compile_commands.json
 /temp/
-/home/dagent.db*
 /home/logs/
 /.claude
 /.opencode
+
+/home/config/models.json
+/home/config/mcp.json
+/home/data/
+/home/run/
+/home/runtime/
+/home/cache/

@@ -1,6 +1,7 @@
 #include "agent/conversation.hpp"
 
 #include <cassert>
+#include <algorithm>
 #include <format>
 #include <set>
 #include <utility>
@@ -76,7 +77,7 @@ std::size_t Conversation::tokens() const {
 }
 
 Request Conversation::build(const std::string& system, const std::vector<ToolSpec>& tools,
-                            const ModelParams& params) const {
+                            const ModelParams& params, std::string_view turn_context) const {
     assert(!validate().has_value());
 
     Request request;
@@ -92,6 +93,11 @@ Request Conversation::build(const std::string& system, const std::vector<ToolSpe
     prompt.content = system;
     request.messages.push_back(std::move(prompt));
     for (const Entry& entry : entries_) request.messages.push_back(entry.message);
+    if (!turn_context.empty()) {
+        const auto user = std::find_if(request.messages.rbegin(), request.messages.rend(),
+                                      [](const Message& m) { return m.role == Role::user; });
+        if (user != request.messages.rend()) user->content += turn_context;
+    }
     return request;
 }
 

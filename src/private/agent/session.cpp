@@ -25,12 +25,49 @@ ModelParams Session::model_params() const {
 }
 
 RequestShape Session::request_shape() const {
-    return RequestShape{config_.system_prompt, catalog_.specs(), model_params()};
+    return RequestShape{config_.system_prompt, catalog_.specs(),
+                        run_ ? run_->skills().context() : std::string{}, model_params()};
 }
 
 Request Session::build_request() const {
     const RequestShape shape = request_shape();
-    return conversation_.build(shape.system, shape.tools, shape.params);
+    return conversation_.build(shape.system, shape.tools, shape.params, shape.turn_context);
+}
+
+ToolResult Session::activate_skill(std::string_view name) {
+    ToolResult result;
+    const auto* skill = config_.skills ? config_.skills->find(name) : nullptr;
+    if (!skill || !run_ || !catalog_.contains("skill")) {
+        result.is_error = true;
+        result.model_text = "Skill is unavailable: " + std::string(name);
+        return result;
+    }
+    result.display = SkillView{skill->name, skill->file.string()};
+    if (run_->skills().contains(name)) {
+        result.model_text = "Skill already active for this turn: " + skill->name;
+        return result;
+    }
+    RunSkills candidate = run_->skills();
+    candidate.activate(*skill);
+    // Activation can happen while an assistant tool batch is open. Estimate only the
+    // irreducible request here; the normal compactor handles older history next step.
+    Conversation minimum;
+    std::string input;
+    for (auto it = conversation_.entries().rbegin(); it != conversation_.entries().rend(); ++it) {
+        if (it->message.role == Role::user) { input = it->message.content; break; }
+    }
+    minimum.add_user(std::move(input));
+    if (estimator_.estimate(minimum.build(config_.system_prompt, catalog_.specs(), model_params(),
+                                           candidate.context())) > compactor_.budget().limit) {
+        result.is_error = true;
+        result.model_text = "Skill instructions exceed the context budget: " + skill->name +
+                            ". Select fewer skills or use a larger model window.";
+        return result;
+    }
+    run_->skills() = std::move(candidate);
+    result.model_text = "Loaded skill for this turn: " + skill->name +
+                        ". Full instructions are in the Active skills block on the latest user message.";
+    return result;
 }
 
 std::size_t Session::estimated_tokens() { return estimator_.estimate(build_request()); }
@@ -38,10 +75,12 @@ std::size_t Session::estimated_tokens() { return estimator_.estimate(build_reque
 std::string Session::next_invocation_id() { return std::format("inv-{}", ++invocation_seq_); }
 
 void Session::begin_run(const RunServices& services, Run& run) {
+    run_ = &run;
     committer_.set_sink(services.sink);
     control_.begin_turn(ControlActionExecutor::Services{&services.asker, &services.approver,
                                                         services.delegation, &policy_, config_.read_only,
-                                                        services.sink, &run, meta_.id, config_.provider.name, catalog_.names()});
+                                                        services.sink, &run, meta_.id, config_.provider.name, catalog_.names(),
+                                                        [this](std::string_view name) { return activate_skill(name); }});
 }
 
 SessionSnapshot Session::snapshot() {

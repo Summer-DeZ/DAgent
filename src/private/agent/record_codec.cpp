@@ -79,8 +79,14 @@ Record system(std::string_view text, std::string_view model) {
     return {"system", json{{"schema", 1}, {"text", text}, {"model", model}}};
 }
 
-Record user(std::int64_t n, std::string_view text) {
-    return {"user", json{{"n", n}, {"text", text}}};
+Record user(std::int64_t n, std::string_view text, const std::vector<SkillView>& skills) {
+    json payload{{"n", n}, {"text", text}};
+    if (!skills.empty()) {
+        payload["skills"] = json::array();
+        for (const auto& skill : skills)
+            payload["skills"].push_back({{"name", skill.name}, {"path", skill.path}});
+    }
+    return {"user", std::move(payload)};
 }
 
 Record assistant(std::int64_t n, const Reply& reply) {
@@ -188,6 +194,13 @@ DecodedRecord decode(std::string_view type, const nlohmann::json& payload) {
         UserRecord record;
         record.n = integer_field(type, payload, "n");
         record.text = string_field(type, payload, "text");
+        if (const auto skills = payload.find("skills"); skills != payload.end()) {
+            if (!skills->is_array()) corrupt(type, "skills must be an array");
+            for (const auto& skill : *skills) {
+                require_object(type, skill);
+                record.skills.push_back({string_field(type, skill, "name"), string_field(type, skill, "path")});
+            }
+        }
         return record;
     }
     if (type == "assistant") {

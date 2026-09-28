@@ -31,6 +31,7 @@ namespace dagent::agent {
 
 /// @brief 已解析的会话配置：不读配置文件、不含密钥；由装配层提供。
 struct SessionConfig {
+    std::shared_ptr<const SkillCatalog> skills;
     Options options; ///< 上下文预算与调用上限
     PublicModel provider;
     std::string system_prompt;
@@ -77,6 +78,7 @@ public:
     const Conversation& conversation() const { return conversation_; }
     std::optional<std::string> validate() const { return conversation_.validate(); }
 
+    ToolResult activate_skill(std::string_view name);
     Request build_request() const;
     RequestShape request_shape() const;
     ModelParams model_params() const;
@@ -98,12 +100,13 @@ public:
 
     /// @brief 一轮开始：绑定提交通知出口并重置控制动作的本轮能力。
     void begin_run(const RunServices& services, Run& run);
-    void end_run() { committer_.clear_sink(); }
+    void end_run() { committer_.clear_sink(); control_.begin_turn({}); run_ = nullptr; }
 
     /// @brief 执行线程上的即时快照；由 SessionController 发布给跨线程查询。
     SessionSnapshot snapshot();
 
 private:
+    Run* run_ = nullptr; ///< non-owning; bound only during begin_run/end_run
     SessionConfig config_;
     SessionMeta meta_;
     std::unique_ptr<JournalWriter> journal_;

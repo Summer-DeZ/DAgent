@@ -120,3 +120,7 @@ version_mismatch、closing；前端只按 kind 分支，不解析文案。模型
   `turn_ended`（忽略带 parent_session_id 的子 Agent 结束事件），再 shutdown。`LegacyOutputCodec` 把协议事件还原成原
   text/json/jsonl 输出，子事件恢复原 `sub_event` 包装；协议新增的会话/操作/交互通知不进入公开输出（见 [app](app.md#6-run-输出)）。
 - **sessions / --list-models**：以查询模式初始化（不创建会话、不启动 MCP、不收集 git 环境），调用 `session.list` / `model.list` 后退出。
+
+## Skill queries
+
+`skills.list` is a read-only query returning `skills: [{name, description, path}]` and `diagnostics: [{path, message}]`. `input.submit` remains text-only. Tool presentation adds `kind: "skill"` with `name` and `path`. See [skills](skills.md).

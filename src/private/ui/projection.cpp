@@ -79,6 +79,7 @@ ToolView decode_tool_view(const json& view) {
         out.elapsed_ms = view.value("elapsed_ms", 0);
         return out;
     }
+    if (kind == "skill") return SkillView{text_field(view, "name"), text_field(view, "path")};
     if (kind == "grep") {
         GrepView out;
         out.pattern = text_field(view, "pattern");

@@ -146,7 +146,7 @@ std::optional<CompactionChange> Compactor::compact(Mode mode, const Conversation
                                                    std::stop_token stop) {
     check_stop(stop);
     const auto estimate = [&](const Conversation& c) {
-        return estimator.estimate(c.build(shape.system, shape.tools, shape.params));
+        return estimator.estimate(c.build(shape.system, shape.tools, shape.params, shape.turn_context));
     };
     const auto before = estimate(conversation);
     if (budget_.limit == 0 && !conversation.entries().empty()) {

@@ -18,7 +18,7 @@
 | `list_children(options, parent_id)` | 按父会话升序列出子会话，供界面切换 |
 | `new_id()` | 生成 UUIDv7 |
 
-`Options::database` 由装配固定为 `<root>/dagent.db`。`history_scan_limit` 由 `session.history_scan_limit` 提供每页扫描上限，必须为正整数。`redact_fields` 默认包含 `api_key`、`authorization`、
+`Options::database` 由装配固定为 `<root>/data/dagent.db`，`lock_directory` 为 `<root>/run/session-locks`。首次写入自动建立数据库父目录。`history_scan_limit` 由 `session.history_scan_limit` 提供每页扫描上限，必须为正整数。`redact_fields` 默认包含 `api_key`、`authorization`、
 `token`；payload 在序列化和写库前递归脱敏，只改交给持久化的副本。存储层自身的失败为 `StorageError{io, not_found,
 corrupt, invalid_state}`，经端口返回核心前转换成 `RecordError`，交给 app 查询适配时转换成 `runtime::QueryError`。
 
@@ -73,7 +73,7 @@ CREATE TABLE events (
 
 ## 4. 写所有权
 
-同一 session_id 同时只允许一个可写执行者。`SessionWriteLease` 对安装根下 `.runtime/session-locks/<id>.lock` 加 `flock`：
+同一 session_id 同时只允许一个可写执行者。`SessionWriteLease` 对安装根下 `run/session-locks/<id>.lock` 加 `flock`：
 
 - 在创建或恢复可写会话前取得；被其他进程持有时报 `session … is already in use by another process`。
 - 同一进程内按路径复用同一个句柄，同会话切模型不会再次加锁；FD 为 CLOEXEC，工具子进程不继承。

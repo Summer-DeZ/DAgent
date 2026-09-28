@@ -5,7 +5,7 @@
 | 目标 | 内容 | 依赖 |
 | --- | --- | --- |
 | `dagent_app_cli` | 命令行解析、安装根、后端启动器、run 输出适配、进程信号 | client、protocol、ipc、base；CLI11 私有 |
-| `dagent_app_config` | 配置/模型/子 Agent 定义读取、提示词渲染、会话与查询装配（实现 runtime 端口） | runtime、llm、tools、storage、workspace、exec、mcp、base |
+| `dagent_app_config` | 托管工具准备、配置/资源读取、提示词渲染、会话与查询装配 | runtime、llm、tools、storage、workspace、exec、mcp、base、curl、OpenSSL Crypto |
 | `dagent`（`app/main.cpp`） | 前端可执行文件 | `dagent_app_cli` + `dagent_ui` |
 | `dagent-backend`（`app/backend_main.cpp`） | 后端可执行文件，只接受 `--ipc-fd` | `dagent_backend` + `dagent_app_config` |
 
@@ -22,35 +22,35 @@
 启动会在根目录创建并删除一个 0600 临时文件以确认可写。失败以配置类错误退出，并提示通过 `DAGENT_HOME`
 选择可写目录；不会回落到 HOME 或 XDG 目录。
 
-```
+```text
 <root>/
 ├── dagent
-├── dagent-backend    前端从同目录启动
-├── config.json
-├── models.json       必须为 0600
-├── system.md         主提示词
-├── compact.md        压缩提示词
+├── dagent-backend     前端从同目录启动
+├── config/            config.json、models.json、mcp.json、runtime.json
+├── prompts/           system.md、compact.md
+├── AGENTS.md          可选的全局用户指令
 ├── themes/
-│   └── dagent.json
-├── agents/           子 Agent 定义（*.md）
-├── dagent.db         首次写入会话时创建
-├── .runtime/         会话写锁与模型文件写锁
-└── logs/
-    └── dagent-<pid>.log
+├── agents/            子 Agent 定义
+├── skills/            全局 Skill
+├── data/dagent.db     首次写入会话时创建
+├── run/               runtime、模型与会话写锁
+├── runtime/           托管工具与消费者依赖环境
+├── cache/packages/    下载与包缓存
+└── logs/              dagent-<pid>.log
 ```
 
 数据库和日志路径不可配置。日志带 pid（前后端各自一个文件），因此同一安装根的多个进程不会争用 rotating sink。
 前端解析安装根后在 `app.initialize` 里交给后端；后端不自行决定安装根。
 
 源码树中这些可管理文件统一放在 `home/`；dev 可执行文件无需设置环境变量就会读取这个目录。显式
-`DAGENT_HOME` 仍然具有最高优先级。安装时 `home/` 中的配置、提示词和主题复制到安装根。
+`DAGENT_HOME` 仍然具有最高优先级。安装只补充缺失资源，不覆盖已有文件。目录职责与首次配置见 [home](home.md)，工具环境见 [toolchain](toolchain.md)。
 
 ## 2. 配置与提示词
 
-`config.json` 由用户维护，包含权限、MCP、UI、HTTP、上下文、工具、进程和日志策略；`models.json` 保存模型
+`config/config.json` 由用户维护，包含权限、UI、HTTP、上下文、工具、进程和日志策略；`config/models.json` 保存模型
 条目和默认模型。加载不做分层合并，不读项目配置、`.mcp.json`、`.env` 或 XDG 路径，也没有信任子系统。
 `prompts.system` 和 `prompts.compact` 分别指定主提示词与上下文压缩提示词；相对路径以安装根为准，默认是
-`system.md` 与 `compact.md`。两份提示词都由后端在启动会话时从文件读取，不编入二进制，因此修改后无需重新构建。
+`prompts/system.md` 与 `prompts/compact.md`。两份提示词都由后端在启动会话时从文件读取，不编入二进制，因此修改后无需重新构建。
 只有后端读取 config.json、models.json、提示词与凭据；前端只读取初始化结果给出的 UI 主题文件。
 
 `models.json`：
@@ -76,12 +76,12 @@
 交互界面的 `/model` 面板可按 `a` 添加模型。表单收集 kind、配置名、base URL、模型 ID、密钥、输出上限和
 上下文窗口；支持 `openai-chat`、`anthropic`、`ollama`。后端在落盘前用与启动相同的解析器校验全部模型，拒绝
 重名或缺失必填字段，然后通过同目录临时文件、fsync、rename 原子更新 `models.json`，保留其 0600 权限。
-整个「重读 → 校验 → 写入」由安装根 `.runtime/models.lock` 的短期 flock 包围，两个前端同时添加模型不会丢失另一项。
+整个「重读 → 校验 → 写入」由安装根 `run/models.lock` 的短期 flock 包围，两个前端同时添加模型不会丢失另一项。
 添加成功后当前会话立即切换到新模型，`default` 不自动改变。`temperature`、`extra_body` 等高级字段仍可直接编辑 JSON。
 
-`config.json` 的 MCP server 位于 `mcp.servers`。stdio 项支持 `command`、`args`、`env`，HTTP 项支持 `url`、
-`headers`；字符串中的 `${VAR}` 从进程环境展开。`mcp.connect_timeout_ms` 与 `mcp.probe_timeout_ms` 和 servers
-同处一个段。
+`config/mcp.json` 独立保存 `mcpServers`、`connect_timeout_ms` 和 `probe_timeout_ms`，要求 0600。
+stdio 项支持 `command`、`args`、`env`、`environment`，HTTP 项支持 `url`、`headers`；`${VAR}` 从进程环境展开。
+`config/config.json` 不再允许重复声明 `mcp`。stdio 默认使用托管环境，可指定 `mcp/<name>` 或显式 `project`。
 
 配置中的相对路径统一相对于安装根；`--set key=value` 中的相对路径相对于 cwd。未知键记 warning，类型和值错误
 抛 `ConfigError`。`--set` 是一次性覆写，不写回配置；`--model` 命中名字时选择条目，否则临时覆写当前模型 ID。
@@ -90,7 +90,7 @@
 相对路径按 workspace cwd 解析。它们只扩大兼容后端的显式范围，不改变 profile 能力结论，也不会覆盖控制数据、
 敏感读取或 `.git` 保护。
 
-运行策略的数值由 `home/config.json` 显式提供，缺少必填项时报配置错误，不从程序默认值补齐。
+运行策略的数值由 `home/config/config.json` 显式提供，缺少必填项时报配置错误，不从程序默认值补齐。
 
 | 配置位置 | 用途 | 随附值 |
 |---|---|---|
@@ -123,6 +123,8 @@ dagent [选项] [提示词…]
 dagent run [选项] <提示词…>
 dagent sessions
 dagent --list-models
+dagent runtime sync
+dagent runtime list
 
 通用：-C/--cwd  -m/--model  --set  -r/--resume  --continue  --log-level
       --permissions <ask|workspace|unrestricted>  --read-only  --plan
@@ -142,16 +144,15 @@ run： --output <text|json|jsonl>
 前端解析 CLI 与安装根后启动后端，发送 `app.initialize{root, cwd, mode, ordered_overrides, permissions, read_only, plan,
 resume_id, continue_last, log_level}`。后端的 `app::assemble_backend` 依次：
 
-1. 读取 config.json / models.json，按 argv 顺序应用 `--set` 与 `--model`；无效时返回 `config_error`，前端以 2 退出。
+1. 维护命令执行 runtime sync/list，不创建会话。普通启动读取 config/ 下配置及 runtime 快照，按 argv 顺序应用 `--set` 与 `--model`；无效时返回 `config_error`，前端以 2 退出。
 2. 初始化日志：`<root>/logs/dagent-<pid>.log`；交互模式关闭 stderr sink，run 与查询模式沿用配置。
 3. 查询模式只构造配置网关与只读查询；interactive/run 模式另外收集一次工作区环境（git、AGENTS.md）、探测沙箱、
    读取子 Agent 定义与提示词，创建 `Assembly`（MCP Hub、环境事实、子 Agent 定义、模型表）与 `SessionAssembly`。
 4. `SessionAssembly` 实现 `runtime::SessionFactory`：为每个会话渲染 system prompt、建立 `tools::Context` / Registry、
-   打开记录写入器并取得写租约；存储路径固定为 `<root>/dagent.db`。
+   打开记录写入器并取得写租约；存储路径固定为 `<root>/data/dagent.db`。
 
 权限初值优先用 `--permissions`，再用 config.json，默认 workspace。凭据只在 app 内部的 `llm::ProviderConfig` 中出现，
-对外只返回 `PublicModel`。CMake 安装把两个可执行文件、config.json、system.md、compact.md、themes/、agents/ 放到同一目录，
-并以 0600 安装 `models.json`。
+对外只返回 `PublicModel`。CMake 安装两个可执行文件和分目录资源，模型与 MCP 由不含私有凭据的模板首次生成，权限为 0600。
 
 ## 6. run 输出
 
@@ -185,3 +186,7 @@ stdout 被关闭时 jsonl 请求取消本轮并返回 1，text / json 最终写�
 | run 的 failed / limit / denied，启动或通信失败，jsonl 写出失败 | 1 |
 | 参数或配置错误（包括后端返回 `config_error`） | 2 |
 | run 被信号中断，或交互因进程中断信号退出 | 130 |
+
+## Global skills
+
+The backend discovers `<root>/skills/*/SKILL.md` once at startup and shares an immutable catalog with sessions and the query gateway. See [skills](skills.md) for format, diagnostics, and restart behavior.

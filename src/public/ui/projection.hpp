@@ -95,9 +95,11 @@ struct TaskView {
     bool interrupted = false;
 };
 
+struct SkillView { std::string name, path; };
+
 using TodoList = std::vector<TodoItem>;
 using ToolView = std::variant<std::monostate, ReadView, FileChangeView, BashView, GrepView, GlobView,
-                              McpView, TodoList, AskView, TaskView>;
+                              McpView, TodoList, AskView, TaskView, SkillView>;
 
 struct Usage {
     std::int64_t prompt = 0, completion = 0, cached = 0;

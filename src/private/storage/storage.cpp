@@ -133,6 +133,10 @@ public:
         if (access == Access::read_only) {
             std::error_code ec;
             if (!fs::exists(file_, ec)) fail(StorageError::Kind::not_found, "session database does not exist");
+        } else if (!file_.parent_path().empty()) {
+            std::error_code ec;
+            fs::create_directories(file_.parent_path(), ec);
+            if (ec) fail(StorageError::Kind::io, "cannot create session database directory: " + ec.message());
         }
         open(access == Access::read_only);
         try {
@@ -333,7 +337,7 @@ std::vector<Summary> list_children(const Options& options, std::string_view pare
 namespace {
 
 fs::path lock_path(const Options& options, std::string_view session_id) {
-    return options.database.parent_path() / ".runtime" / "session-locks" /
+    return options.lock_directory /
            (std::string(session_id) + ".lock");
 }
 

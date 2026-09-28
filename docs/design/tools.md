@@ -270,7 +270,7 @@ dangerous / known_readonly 仍由 exec 的原分析函数计算，核心不重�
 
 ## 7. 配置与构建
 
-- 选项对应 `home/config.json` 的 `tools` 段：`max_result_bytes`（32 KiB，约 8k token）、
+- 选项对应 `home/config/config.json` 的 `tools` 段：`max_result_bytes`（32 KiB，约 8k token）、
   `read_default_lines`（2000）、`read_max_line_bytes`（2000）、`grep_max_matches`（200）、`glob_max_files`（200）、
   `bash_max_timeout_ms`（600000）、`mcp_call_timeout_ms`（120000），由 app 映射。文件读写上限沿用 `files` 段：
   `max_read_bytes` 是 read 能翻页的最大文件（8 MiB），`max_write_bytes` 是写入上限（1 MiB）。

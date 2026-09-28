@@ -24,7 +24,7 @@ namespace dagent::agent::record_codec {
 // ---- 编码 ----
 
 Record system(std::string_view text, std::string_view model);
-Record user(std::int64_t n, std::string_view text);
+Record user(std::int64_t n, std::string_view text, const std::vector<SkillView>& skills = {});
 Record assistant(std::int64_t n, const Reply& reply);
 Record tool_started(const ToolStarted& event);
 Record tool(std::int64_t n, const ToolCall& call, std::string_view summary, const ToolResult& result);
@@ -45,6 +45,7 @@ struct SystemRecord {
 struct UserRecord {
     std::int64_t n = 0;
     std::string text;
+    std::vector<SkillView> skills; ///< explicit requests only; never restored as active guidance
 };
 
 struct AssistantRecord {

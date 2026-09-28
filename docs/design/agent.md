@@ -202,7 +202,7 @@ TurnEnded
 执行工具看 `tool_calls` 是否为空，不依赖服务端的 finish reason。正文因 `length` 或 `content_filter` 截断时提示后
 结束，不自动续写；空正文且没有调用（包括仅有思考）不加入历史，警告后结束。
 
-运行限制必填于 `home/config.json` 的 `run` 段，程序没有业务默认值。随附配置为 `max_model_calls=24`、`max_tool_calls=35`、`max_model_retries=2`、`max_parallel_tasks=4`、`max_parallel_tools=8`。调用上限为 0 表示不限；并发数必须大于 0。未知工具、参数失败和策略拒绝
+运行限制必填于 `home/config/config.json` 的 `run` 段，程序没有业务默认值。随附配置为 `max_model_calls=24`、`max_tool_calls=35`、`max_model_retries=2`、`max_parallel_tasks=4`、`max_parallel_tools=8`。调用上限为 0 表示不限；并发数必须大于 0。未知工具、参数失败和策略拒绝
 也消耗已处理调用预算；因中断、同批拒绝或超额而跳过的调用不消耗执行预算。超额调用回填 T8，若还有模型步数，
 给予一次总结机会；普通总结或继续要工具都以 `limit` 收尾，后者不再执行工具。摘要不计入主循环的 steps 或总 usage。
 
@@ -405,7 +405,7 @@ target  = limit × compaction_target_percent / 100
 
 ## 9. 提示词与环境快照
 
-[system.md](../../home/system.md) 和 [compact.md](../../home/compact.md) 位于安装根，由 app 装配在创建或恢复会话前
+[system.md](../../home/prompts/system.md) 和 [compact.md](../../home/prompts/compact.md) 位于 Home 的 prompts/，由 app 装配在创建或恢复会话前
 读取并渲染（`app/prompt`）。`config.json` 的 `prompts.system` 与 `prompts.compact` 可以改名或指向其它文件，相对路径规则见
 [app](app.md)。提示词不再编入二进制，修改后下一次会话立即生效。模板都经 workspace 的 inja 渲染，模板错误
 或文件读取失败会使启动失败。
@@ -544,3 +544,7 @@ todo/ask/exit_plan/task 控制动作、MCP tools、并发子 Agent、终端与�
 
 子 Agent 之间不直接通信、不向父追问、不跨轮存活、不参与 MCP 重连与通知投递，也不支持多级嵌套与单独的凭据配置。
 构建与真实功能验证约定见 [文档索引](../README.md)。
+
+## Turn-scoped skills
+
+The `skill` control action activates guidance in the current `RunSkills`; explicit `$name` references take the same path before the first model request. `RequestShape.turn_context` is projected onto a request copy and included in compaction estimates. It is never stored as conversation text. Skill activation is serial and respects the subagent tool whitelist. See [skills](skills.md) for lifetime and history semantics.

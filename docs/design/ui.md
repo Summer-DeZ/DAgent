@@ -232,3 +232,7 @@ Ctrl+M 需要终端提供可区分的扩展按键编码；传统终端把它与 
 后端保留当前会话。历史条目带当时的模型标签。密钥不进入面板、协议 DTO 或日志。
 
 本地 Qwen 与 Ollama 的跨协议切换、失败保留和回放已真实验证；远端切换尚未验证。
+
+## Skill selection
+
+`/skills` opens the skill catalog and discovery diagnostics. Selecting a skill inserts `$name` without submitting; typing `$` opens skill completion. Both reuse the existing application panel/completion widgets and fetch metadata through `skills.list`. Skill tool results use a dedicated card projection. See [skills](skills.md).

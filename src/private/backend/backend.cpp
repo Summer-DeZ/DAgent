@@ -418,7 +418,7 @@ void Backend::dispatch(const protocol::Request& request) {
     }
     if (method == "session.list" || method == "session.children" || method == "session.history" ||
         method == "session.history_close" || method == "workspace.info" ||
-        method == "workspace.complete") {
+        method == "workspace.complete" || method == "skills.list") {
         push_query(Job{id, method, params});
         return;
     }
@@ -550,6 +550,11 @@ void Backend::initialize(const std::string& id, const nlohmann::json& params) {
         rpc.kind = protocol::error_kind::kConfigError;
         rpc.message = config_error.what();
         fail(id, rpc);
+        return;
+    }
+    if (!assembled.maintenance.is_null()) {
+        initialized_ = true;
+        respond(id, {{"maintenance", std::move(assembled.maintenance)}});
         return;
     }
     default_model_ = assembled.default_model;
@@ -717,6 +722,15 @@ void Backend::handle_query(Job job) {
             history_close(job.id, job.params);
         } else if (job.method == "workspace.info") {
             workspace_info(job.id, job.params);
+        } else if (job.method == "skills.list") {
+            const auto& catalog = queries_->skills();
+            nlohmann::json skills = nlohmann::json::array(), diagnostics = nlohmann::json::array();
+            for (const auto& skill : catalog.definitions)
+                skills.push_back({{"name", skill.name}, {"description", skill.description},
+                                  {"path", skill.file.string()}});
+            for (const auto& diagnostic : catalog.diagnostics)
+                diagnostics.push_back({{"path", diagnostic.path}, {"message", diagnostic.message}});
+            respond(job.id, {{"skills", std::move(skills)}, {"diagnostics", std::move(diagnostics)}});
         } else if (job.method == "workspace.complete") {
             workspace_complete(job.id, job.params);
         }

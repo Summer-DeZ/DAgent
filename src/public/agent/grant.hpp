@@ -46,6 +46,8 @@ struct SandboxConfig {
     int version = 1;
     std::vector<std::filesystem::path> extra_readable;
     std::vector<std::filesystem::path> extra_writable;
+    std::vector<std::filesystem::path> skill_readable;
+    std::vector<std::filesystem::path> runtime_readable;
 };
 
 std::string_view to_string(SandboxProfile);          ///< "read_only" / "workspace_write" / "full_access"

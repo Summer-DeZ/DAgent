@@ -21,10 +21,8 @@ include(cmake/deps.cmake)
 add_subdirectory(src)
 
 install(TARGETS dagent dagent-backend RUNTIME DESTINATION .)
-install(FILES home/config.json home/system.md home/compact.md DESTINATION .)
-install(FILES home/models.json DESTINATION .
-        PERMISSIONS OWNER_READ OWNER_WRITE)
-install(DIRECTORY home/themes home/agents DESTINATION .)
+configure_file(cmake/install_home.cmake.in ${CMAKE_BINARY_DIR}/install_home.cmake @ONLY)
+install(SCRIPT ${CMAKE_BINARY_DIR}/install_home.cmake)
 
 enable_testing()
 add_subdirectory(test)

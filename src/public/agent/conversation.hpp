@@ -66,7 +66,7 @@ public:
 
     /// @brief system 放最前面，其后是全部 entries 的 message。要求闭合。
     Request build(const std::string& system, const std::vector<ToolSpec>& tools,
-                  const ModelParams& params) const;
+                  const ModelParams& params, std::string_view turn_context = {}) const;
 
     /// @brief 检查消息历史的协议不变式；返回第一条违反的描述。debug 构建里 build 开头 assert 它为空。
     std::optional<std::string> validate() const;
