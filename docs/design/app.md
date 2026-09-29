@@ -61,9 +61,9 @@
   "models": {
     "local": {
       "kind": "openai-chat",
-      "base_url": "http://127.0.0.1:10009/v1",
-      "model": "Qwen3.8-Flash-Next",
-      "context_window": 262144,
+      "base_url": "http://127.0.0.1:10010/v1",
+      "model": "Qwen3.6-35B-A3B",
+      "context_window": 131072,
       "max_tokens": 8192
     }
   }

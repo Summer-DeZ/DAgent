@@ -73,6 +73,7 @@ add_library(dagent_exec STATIC
     private/exec/child.cpp
     private/exec/shell.cpp
     private/exec/sandbox.cpp
+    private/exec/srt.cpp
 )
 
 target_include_directories(dagent_exec PUBLIC ${CMAKE_SOURCE_DIR}/src/public)
@@ -270,6 +271,7 @@ target_link_libraries(dagent_runtime PUBLIC dagent_agent)
 add_library(dagent_app_config STATIC
     private/app/skills.cpp
     private/app/toolchain.cpp
+    private/app/sandbox_status.cpp
     private/app/config.cpp
     private/app/bootstrap.cpp
     private/app/session_assembly.cpp
@@ -320,3 +322,13 @@ add_executable(dagent private/app/main.cpp)
 target_compile_features(dagent PRIVATE cxx_std_23)
 target_compile_options(dagent PRIVATE -Wall -Wextra)
 target_link_libraries(dagent PRIVATE dagent_app_cli dagent_ui)
+
+# SRT bridge 是程序资源：构建时复制到二进制旁的 libexec/，安装时随二进制覆盖。
+set(DAGENT_BRIDGE ${CMAKE_CURRENT_SOURCE_DIR}/private/exec/srt_bridge.mjs)
+add_custom_command(OUTPUT ${CMAKE_CURRENT_BINARY_DIR}/libexec/srt_bridge.mjs
+    COMMAND ${CMAKE_COMMAND} -E make_directory ${CMAKE_CURRENT_BINARY_DIR}/libexec
+    COMMAND ${CMAKE_COMMAND} -E copy_if_different ${DAGENT_BRIDGE} ${CMAKE_CURRENT_BINARY_DIR}/libexec/srt_bridge.mjs
+    DEPENDS ${DAGENT_BRIDGE}
+    COMMENT "Copying SRT bridge to libexec")
+add_custom_target(dagent_bridge ALL DEPENDS ${CMAKE_CURRENT_BINARY_DIR}/libexec/srt_bridge.mjs)
+add_dependencies(dagent dagent_bridge)

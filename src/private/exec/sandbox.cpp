@@ -148,24 +148,8 @@ bool sensitive_name(std::string_view name) {
 
 void collect_sensitive(const std::filesystem::path& root,
                        std::vector<std::filesystem::path>& protected_paths) {
-    std::error_code ec;
-    std::filesystem::recursive_directory_iterator it(
-        root, std::filesystem::directory_options::skip_permission_denied, ec), end;
-    for (; !ec && it != end; it.increment(ec)) {
-        const auto status = it->symlink_status(ec);
-        if (ec) break;
-        if (std::filesystem::is_symlink(status)) {
-            if (it->is_directory(ec)) it.disable_recursion_pending();
-            continue;
-        }
-        const std::string name = it->path().filename().string();
-        const bool protected_dir = std::filesystem::is_directory(status) &&
-                                   (name == ".ssh" || name == ".gnupg");
-        if (protected_dir || sensitive_name(name)) protected_paths.push_back(normalized(it->path()));
-        if (protected_dir) it.disable_recursion_pending();
-    }
-    if (ec) throw ExecError{ExecError::Kind::sandbox,
-                            "scan sensitive paths under " + root.string() + ": " + ec.message()};
+    const std::vector<std::filesystem::path> found = sensitive_paths(root);
+    protected_paths.insert(protected_paths.end(), found.begin(), found.end());
 }
 
 void add_tree_except(int ruleset_fd, const std::filesystem::path& raw_root, std::uint64_t allowed,
@@ -295,6 +279,30 @@ void build_filter(std::vector<sock_filter>& filter, sock_fprog& program, bool& h
 }
 
 } // namespace
+
+std::vector<std::filesystem::path> sensitive_paths(const std::filesystem::path& root) {
+    std::vector<std::filesystem::path> out;
+    std::error_code ec;
+    if (!std::filesystem::exists(root, ec)) return out;
+    std::filesystem::recursive_directory_iterator it(
+        root, std::filesystem::directory_options::skip_permission_denied, ec), end;
+    for (; !ec && it != end; it.increment(ec)) {
+        const auto status = it->symlink_status(ec);
+        if (ec) break;
+        if (std::filesystem::is_symlink(status)) {
+            if (it->is_directory(ec)) it.disable_recursion_pending();
+            continue;
+        }
+        const std::string name = it->path().filename().string();
+        const bool protected_dir = std::filesystem::is_directory(status) &&
+                                   (name == ".ssh" || name == ".gnupg");
+        if (protected_dir || sensitive_name(name)) out.push_back(normalized(it->path()));
+        if (protected_dir) it.disable_recursion_pending();
+    }
+    if (ec) throw ExecError{ExecError::Kind::sandbox,
+                            "scan sensitive paths under " + root.string() + ": " + ec.message()};
+    return out;
+}
 
 std::unique_ptr<Prepared> prepare(const Policy& policy) {
     const Support support = probe();

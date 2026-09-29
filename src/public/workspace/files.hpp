@@ -5,6 +5,7 @@
 #include <cstdint>
 #include <filesystem>
 #include <optional>
+#include <memory>
 #include <string>
 #include <string_view>
 
@@ -33,6 +34,7 @@ enum class Eol { lf, crlf, mixed, none };
 struct Stamp {
     std::filesystem::file_time_type mtime;
     std::uintmax_t size = 0;
+    std::uint64_t device = 0, inode = 0;
     bool operator==(const Stamp&) const = default;
 };
 
@@ -44,6 +46,27 @@ struct TextFile {
 };
 
 enum class FileKind { text, binary, missing, directory };
+
+/// Metadata-only reference captured before approval. All later I/O is relative to the pinned
+/// directory; replacement of a parent or target requires preparing the operation again.
+class FileReference {
+public:
+    explicit FileReference(const std::filesystem::path& canonical_path);
+    ~FileReference();
+    FileReference(FileReference&&) noexcept;
+    FileReference& operator=(FileReference&&) noexcept;
+    FileReference(const FileReference&) = delete;
+    FileReference& operator=(const FileReference&) = delete;
+    FileKind kind() const;
+    std::optional<Stamp> stamp() const;
+    void validate() const;
+    TextFile read(const FileOptions&) const;
+    Stamp write(std::string_view, Eol, bool, const std::optional<Stamp>&, const FileOptions&);
+    std::filesystem::path directory_path() const;
+private:
+    struct Impl;
+    std::unique_ptr<Impl> impl_;
+};
 
 /// @brief 看前 8 KiB 里有没有 NUL 字节。文件不存在返回 missing，不抛异常。
 FileKind probe(const std::filesystem::path&);

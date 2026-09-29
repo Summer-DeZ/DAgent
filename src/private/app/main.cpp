@@ -83,11 +83,14 @@ int main(int argc, char** argv) {
     try {
         const dagent::app::HomePaths paths = dagent::app::home_paths();
 
-        if (args.mode == Mode::runtime_sync || args.mode == Mode::runtime_list) {
+        if (args.mode == Mode::runtime_sync || args.mode == Mode::runtime_list ||
+            args.mode == Mode::sandbox_status) {
             dagent::app::BackendLaunch launch;
             launch.root = paths.root;
             launch.cwd = args.cwd;
-            launch.mode = args.mode == Mode::runtime_sync ? "runtime-sync" : "runtime-list";
+            launch.mode = args.mode == Mode::runtime_sync    ? "runtime-sync"
+                          : args.mode == Mode::runtime_list  ? "runtime-list"
+                                                             : "sandbox-status";
             auto session = dagent::app::BackendSession::start(launch, {});
             std::cout << session.initialized().at("maintenance").dump(2) << '\n';
             return 0;

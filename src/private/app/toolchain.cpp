@@ -297,8 +297,11 @@ json Toolchain::sync() {
     for (const auto& [name, spec] : environments.items()) {
         std::cerr << "Preparing environment: " << name << std::endl;
         const auto slash = name.find('/');
-        if (slash == std::string::npos || (name.substr(0, slash) != "skills" && name.substr(0, slash) != "mcp") ||
-            !identifier(name.substr(slash + 1))) throw std::runtime_error("environment name must be skills/<name> or mcp/<name>");
+        const std::string_view group = slash == std::string::npos ? std::string_view{} : std::string_view(name).substr(0, slash);
+        if (group != "skills" && group != "mcp" && group != "internal")
+            throw std::runtime_error("environment name must be skills/<name>, mcp/<name> or internal/<name>");
+        if (slash == std::string::npos || !identifier(name.substr(slash + 1)))
+            throw std::runtime_error("invalid environment name: " + name);
         const auto kind = spec.at("kind").get<std::string>();
         const fs::path lockfile = within(paths_.root, spec.at("lockfile").get<std::string>());
         std::string identity = spec.dump() + read(lockfile) + next["packages"].dump();

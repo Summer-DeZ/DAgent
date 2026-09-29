@@ -1,4 +1,5 @@
 #include "workspace/context.hpp"
+#include "workspace/files.hpp"
 
 #include <algorithm>
 #include <cstdlib>
@@ -41,14 +42,16 @@ struct GitOutput {
 
 // 所有 git 调用都带 --no-optional-locks（不和用户同时在跑的 git 抢锁）和 core.quotepath=off（中文路径不转义）。
 GitOutput run_git(const fs::path& cwd, std::vector<std::string> args, std::chrono::milliseconds timeout,
-                  std::stop_token stop, const exec::Options& process) {
+                  std::stop_token stop, const ContextOptions& options) {
     exec::Command cmd;
-    cmd.argv = {"git", "--no-optional-locks", "-c", "core.quotepath=off"};
+    cmd.argv = {"/usr/bin/git", "--no-optional-locks", "-c", "core.quotepath=off",
+                "-c", "core.fsmonitor=false", "-c", "core.hooksPath=/dev/null", "-c", "core.pager=cat"};
+    cmd.env_set = {{"GIT_CONFIG_NOSYSTEM", "1"}, {"GIT_CONFIG_GLOBAL", "/dev/null"}};
     cmd.argv.insert(cmd.argv.end(), std::make_move_iterator(args.begin()), std::make_move_iterator(args.end()));
     cmd.cwd = cwd;
     cmd.timeout = timeout;
     try {
-        const exec::Result result = exec::run(cmd, process, {}, stop);
+        const exec::Result result = options.sandbox.run(cmd, options.process, {}, stop);
         if (result.exit_code && *result.exit_code == 0) return {true, std::move(result.out)};
     } catch (const std::exception&) {
         // 没装 git、不是仓库、超时、被取消……都按「没有 git 信息」处理，不抛给调用方
@@ -104,13 +107,13 @@ GitStatus parse_git_status(const std::string& text) {
 std::optional<GitInfo> collect_git(const fs::path& cwd, const ContextOptions& opt, std::stop_token stop) {
     // 三条命令互不依赖，并发跑，避免大仓库上慢慢叠加等待时间。
     auto root_future = std::async(std::launch::async, [&] {
-        return run_git(cwd, {"rev-parse", "--show-toplevel"}, opt.git_timeout, stop, opt.process);
+        return run_git(cwd, {"rev-parse", "--show-toplevel"}, opt.git_timeout, stop, opt);
     });
     auto status_future = std::async(std::launch::async, [&] {
-        return run_git(cwd, {"status", "--porcelain=v2", "--branch"}, opt.git_timeout, stop, opt.process);
+        return run_git(cwd, {"status", "--porcelain=v2", "--branch"}, opt.git_timeout, stop, opt);
     });
     auto log_future = std::async(std::launch::async, [&] {
-        return run_git(cwd, {"log", "--oneline", "-n", "5"}, opt.git_timeout, stop, opt.process);
+        return run_git(cwd, {"log", "--oneline", "-n", "5"}, opt.git_timeout, stop, opt);
     });
 
     const GitOutput root = root_future.get();
@@ -154,13 +157,12 @@ std::vector<Instructions> collect_instructions(const fs::path& cwd,
     };
     std::vector<Loaded> loaded;
     for (const fs::path& candidate : candidates) {
-        std::error_code ec;
-        if (!fs::is_regular_file(candidate, ec)) continue;
-        std::ifstream in(candidate, std::ios::binary);
-        if (!in) continue;
-        std::string content((std::istreambuf_iterator<char>(in)), std::istreambuf_iterator<char>());
-        if (in.bad()) continue;
-        loaded.push_back({candidate, std::move(content)});
+        try {
+            FileReference reference(fs::absolute(candidate).lexically_normal());
+            if (reference.kind() != FileKind::text) continue;
+            const auto file = reference.read(FileOptions{opt.max_instructions_bytes, 0});
+            loaded.push_back({candidate, file.content});
+        } catch (const WorkspaceError&) { continue; }
     }
 
     std::size_t budget = opt.max_instructions_bytes;
@@ -190,7 +192,7 @@ std::vector<Instructions> collect_instructions(const fs::path& cwd,
 std::optional<GitStatus> collect_git_status(const fs::path& cwd, const ContextOptions& opt,
                                            std::stop_token stop) {
     const auto status = run_git(cwd, {"status", "--porcelain=v2", "--branch"},
-                                opt.git_timeout, stop, opt.process);
+                                opt.git_timeout, stop, opt);
     if (!status.ok) return std::nullopt;
     return parse_git_status(status.text);
 }

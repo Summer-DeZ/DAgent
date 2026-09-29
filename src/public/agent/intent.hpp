@@ -57,7 +57,7 @@ struct PreparedIntent {
     ToolKind kind = ToolKind::read;
     std::vector<ResourceIntent> paths;  ///< read/write 涉及的路径
     std::optional<CommandIntent> command; ///< exec 时有效
-    std::string preview;                ///< write/edit：unified diff，给确认对话框
+    std::string preview;                ///< 授权读取后生成的 write/edit unified diff
     std::string summary;                ///< 一行描述，如「编辑 src/a.cpp（+3 −1）」
 };
 

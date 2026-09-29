@@ -21,5 +21,8 @@ include(cmake/deps.cmake)
 add_subdirectory(src)
 
 install(TARGETS dagent dagent-backend RUNTIME DESTINATION .)
+
+# 程序资源：SRT bridge 随二进制版本走，不经过“保留已有用户文件”的 Home 安装逻辑。
+install(FILES src/private/exec/srt_bridge.mjs DESTINATION libexec)
 configure_file(cmake/install_home.cmake.in ${CMAKE_BINARY_DIR}/install_home.cmake @ONLY)
 install(SCRIPT ${CMAKE_BINARY_DIR}/install_home.cmake)

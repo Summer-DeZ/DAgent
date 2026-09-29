@@ -6,6 +6,7 @@
 #include <system_error>
 
 #include "app/config.hpp"
+#include "app/sandbox_status.hpp"
 #include "app/skills.hpp"
 #include "app/toolchain.hpp"
 #include "app/configuration.hpp"
@@ -59,7 +60,38 @@ SessionAssembly::Options session_options(const Config& config, const runtime::Bo
     out.search = config.search;
     out.process = config.process;
     out.sandbox_options = config.sandbox;
-    out.sandbox = exec::probe();
+    // SRT 是首选后端：真实做一次隔离启动探测；不可用时退回现有 Landlock 后端（S09 再移除）。
+    if (auto runtime = sandbox_runtime(paths)) {
+        const nlohmann::json probe = sandbox_probe(*runtime, paths.runtime / "sandbox");
+        if (probe.value("ok", false)) {
+            exec::Support support;
+            support.backend = "srt";
+            support.filesystem_write = true;
+            support.filesystem_read = true;
+            support.protected_subpaths = true;
+            support.private_tmp = true;
+            support.network_block = true;
+            support.local_socket_block = true;
+            support.process_control_block = true;
+            support.child_signals = true;
+            out.sandbox = std::move(support);
+            out.srt = std::move(runtime);
+        } else {
+            out.sandbox = exec::probe();
+            base::logger("app")->warn("SRT sandbox is not ready ({}); falling back to the Landlock backend",
+                                      probe.value("error", std::string{"unknown"}));
+        }
+    } else {
+        out.sandbox = exec::probe();
+    }
+    if (out.srt) {
+        out.tools.srt = out.srt;
+        out.tools.sandbox_state_root = paths.runtime / "sandbox";
+    }
+    out.search.sandbox.runtime = out.srt;
+    out.search.sandbox.state_root = paths.runtime / "sandbox";
+    out.search.sandbox.protected_read = {paths.root / "config", paths.root / "data",
+                                         paths.root / "logs", paths.root / "run"};
     out.storage = config.session;
     out.system_prompt = workspace::read_text(config.system_prompt_file, config.files).content;
     out.compact_prompt = workspace::read_text(config.compact_prompt_file, config.files).content;
@@ -80,6 +112,11 @@ runtime::Assembled assemble_backend(const runtime::BootstrapOptions& options) {
         Toolchain toolchain(paths);
         runtime::Assembled out;
         out.maintenance = options.mode == "runtime-sync" ? toolchain.sync() : toolchain.status();
+        return out;
+    }
+    if (options.mode == "sandbox-status") {
+        runtime::Assembled out;
+        out.maintenance = sandbox_status(paths);
         return out;
     }
     Config config;
@@ -106,14 +143,20 @@ runtime::Assembled assemble_backend(const runtime::BootstrapOptions& options) {
     }
     runtime::Assembled out;
     out.configuration = configuration;
-    out.queries = std::make_shared<QueryGatewayImpl>(config.session, options.cwd, config.project_root,
-                                                     config.search, skills, config.process, config.ui.completion_max_files);
+
     out.default_model = config.model;
     out.progress_interval_ms = static_cast<int>(config.agent.progress.interval.count());
-    if (options.mode == "sessions" || options.mode == "models") return out;
+    if (options.mode == "sessions" || options.mode == "models") {
+        out.queries = std::make_shared<QueryGatewayImpl>(config.session, options.cwd, config.project_root,
+                                                       config.search, skills, config.process, config.ui.completion_max_files);
+        return out;
+    }
 
     workspace::ContextOptions context; context.process = config.process;
     auto session = session_options(config, options, configuration, make_session);
+    context.sandbox = session.search.sandbox;
+    out.queries = std::make_shared<QueryGatewayImpl>(config.session, options.cwd, config.project_root,
+                                                   session.search, skills, config.process, config.ui.completion_max_files);
     session.hub = std::make_shared<tools::McpHub>(config.mcp_servers, config.mcp);
     session.environment = workspace::collect_environment(options.cwd, context);
     session.subagents = std::move(config.subagents);

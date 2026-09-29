@@ -158,7 +158,7 @@ double fzy_score(std::string_view needle, std::string_view hay) {
 GrepResult grep(const GrepQuery& q, const SearchOptions& opt, std::stop_token stop) {
     const fs::path rg = find_rg(opt);
 
-    std::vector<std::string> argv{rg.string(), "--json", "--no-messages", "--color=never",
+    std::vector<std::string> argv{rg.string(), "--no-config", "--json", "--no-messages", "--color=never",
                                   "--max-columns", "500", "--max-columns-preview"};
     if (q.fixed_strings) argv.emplace_back("--fixed-strings");
     argv.emplace_back(q.case_insensitive ? "--ignore-case" : "--smart-case");
@@ -243,7 +243,7 @@ GrepResult grep(const GrepQuery& q, const SearchOptions& opt, std::stop_token st
 
     exec::Result outcome;
     try {
-        outcome = exec::run(cmd, {}, on_output, inner.get_token());
+        outcome = opt.sandbox.run(cmd, {}, on_output, inner.get_token());
     } catch (const exec::ExecError& e) {
         if (e.kind() == exec::ExecError::Kind::cancelled && !stop.stop_requested()) return result;
         rethrow_run(e);
@@ -255,7 +255,7 @@ GrepResult grep(const GrepQuery& q, const SearchOptions& opt, std::stop_token st
 std::vector<std::string> files(const FilesQuery& q, const SearchOptions& opt, std::stop_token stop) {
     const fs::path rg = find_rg(opt);
 
-    std::vector<std::string> argv{rg.string(), "--files", "--null", "--no-messages", "--color=never"};
+    std::vector<std::string> argv{rg.string(), "--no-config", "--files", "--null", "--no-messages", "--color=never"};
     if (q.hidden) argv.emplace_back("--hidden");
     for (const std::string& glob : q.globs) {
         argv.emplace_back("--glob");
@@ -290,7 +290,7 @@ std::vector<std::string> files(const FilesQuery& q, const SearchOptions& opt, st
 
     exec::Result outcome;
     try {
-        outcome = exec::run(cmd, {}, on_output, inner.get_token());
+        outcome = opt.sandbox.run(cmd, {}, on_output, inner.get_token());
     } catch (const exec::ExecError& e) {
         if (e.kind() == exec::ExecError::Kind::cancelled && !stop.stop_requested()) {
             // 数量够了主动停掉 rg，按正常结果返回

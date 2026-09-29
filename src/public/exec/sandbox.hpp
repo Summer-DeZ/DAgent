@@ -22,6 +22,9 @@ struct SandboxOptions {
     /// 用户维护的持久读取/写入范围；相对路径由配置层按 workspace 解析。
     std::vector<std::filesystem::path> extra_readable;
     std::vector<std::filesystem::path> extra_writable;
+    /// 持久网络目标（`host` 或 `host:port`）；denied 优先。
+    std::vector<std::string> network_allowed;
+    std::vector<std::string> network_denied;
 };
 
 struct Policy {
@@ -32,12 +35,19 @@ struct Policy {
     std::vector<std::filesystem::path> writable;
     /// writable/readable 中的子树不能重新放行这些路径；兼容后端无法落实时 prepare 失败。
     std::vector<std::filesystem::path> protected_read;
+    std::vector<std::filesystem::path> read_exceptions;
     std::vector<std::filesystem::path> protected_write;
     bool allow_network = false;
     bool allow_local_sockets = false;
     bool private_tmp = true;
     bool protect_sensitive_names = true;
+    /// 已批准的 host:port 网络目标；受限后端只能放行这些目标（空表示全部拒绝）。
+    std::vector<std::string> network_targets;
 };
+
+/// @brief 枚举 root 下已存在的敏感路径（.env、*.pem、*.key、id_*、.ssh、.gnupg）。
+/// 执行后端用它把保护落实到显式拒绝规则；不存在的名字不返回，避免制造占位点。
+std::vector<std::filesystem::path> sensitive_paths(const std::filesystem::path& root);
 
 struct Prepared;
 

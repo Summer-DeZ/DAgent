@@ -6,6 +6,7 @@
 #pragma once
 
 #include <functional>
+#include <optional>
 #include <stop_token>
 #include <string>
 #include <string_view>
@@ -26,6 +27,9 @@ public:
 
     const PreparedIntent& intent() const { return intent_; }
 
+    virtual std::optional<PreparedIntent> preview_request() const { return std::nullopt; }
+    std::optional<ToolResult> prepare_preview(const ExecutionGrant&);
+
     /// @brief 在调用线程上阻塞执行；不抛异常：取消返回 interrupted，环境失败返回 is_error 结果。
     ToolResult execute(const ExecutionGrant& grant,
                        const std::function<void(std::string_view)>& on_output, std::stop_token stop);
@@ -36,6 +40,7 @@ protected:
     PreparedIntent intent_; ///< 由各实现的 prepare 填好（中立摘要）
 
 private:
+    virtual std::optional<ToolResult> do_prepare_preview(const ExecutionGrant&) { return std::nullopt; }
     virtual ToolResult do_execute(const ExecutionGrant&, const std::function<void(std::string_view)>&,
                                   std::stop_token) = 0;
 

@@ -82,7 +82,7 @@ RunOutcome TurnRunner::run(Session& session, Run& run, const RunServices& servic
     const auto on_retry = [&](const RetryInfo& info) { report_retry(info, sink); };
 
     for (;;) {
-        if (run.steps() >= max_model_calls) {
+        if (max_model_calls > 0 && run.steps() >= max_model_calls) {
             return finish(session, run, services, TurnStatus::limit,
                           "model call limit reached for this turn");
         }
@@ -167,7 +167,8 @@ RunOutcome TurnRunner::run(Session& session, Run& run, const RunServices& servic
         }
 
         const ActionDispatcher::Outcome outcome =
-            dispatcher.dispatch(reply.message.tool_calls, max_tool_calls - run.tool_calls());
+            dispatcher.dispatch(reply.message.tool_calls,
+                                max_tool_calls > 0 ? max_tool_calls - run.tool_calls() : -1); // -1：不限
         run.count_calls(outcome.handled);
         switch (outcome.stop) {
         case ActionDispatcher::Outcome::Stop::interrupted:

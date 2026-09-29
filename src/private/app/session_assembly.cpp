@@ -67,7 +67,9 @@ agent::SessionConfig make_session_config(const SessionAssembly::Options& base, S
     config.control_root = base.control_root;
     config.sandbox_options = agent::SandboxConfig{base.sandbox_options.version,
                                                   base.sandbox_options.extra_readable,
-                                                  base.sandbox_options.extra_writable, {}, {}};
+                                                  base.sandbox_options.extra_writable, {}, {},
+                                                  base.sandbox_options.network_allowed,
+                                                  base.sandbox_options.network_denied};
     for (const auto& [name, environment] : base.tools.environments)
         for (const auto& directory : environment.readable)
             config.sandbox_options.runtime_readable.push_back(directory);
@@ -212,8 +214,8 @@ struct SessionAssembly::Impl {
                                             std::unique_ptr<agent::JournalWriter> journal,
                                             std::shared_ptr<agent::SessionLease> lease,
                                             agent::Conversation conversation, agent::WorkPlan plan) {
-        auto context = std::make_unique<tools::Context>(options.cwd, options.tools, options.files,
-                                                        options.search, options.process);
+        auto context = std::make_unique<tools::Context>(options.cwd, options.control_root, options.tools,
+                                                        options.files, options.search, options.process);
         auto registry = std::make_unique<tools::Registry>();
         tools::add_builtin(*registry);
         // 每个新目录先继承现有连接，再按该会话的工具限制收窄。

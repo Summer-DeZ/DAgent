@@ -28,9 +28,9 @@ constexpr std::string_view kDescription = R"(Search file contents in the workspa
 
 class GrepCall final : public PreparedTool {
 public:
-    GrepCall(const Context& ctx, workspace::Resolved root,
+    GrepCall(Context& ctx, workspace::Resolved root,
              workspace::GrepQuery query, bool files_only)
-        : root_(std::move(root)), search_options_(ctx.search()),
+        : ctx_(ctx), root_(std::move(root)), reference_(root_.path), search_options_(ctx.search()),
           files_only_(files_only), max_result_bytes_(ctx.options().max_result_bytes),
           query_(std::move(query)) {
         // workspace::grep 返回的路径相对查询根（查询根是文件时相对它所在的目录）；
@@ -44,7 +44,10 @@ public:
     }
 
 private:
-    Result do_execute(const Grant&, const std::function<void(std::string_view)>&, std::stop_token stop) override {
+    Result do_execute(const Grant& grant, const std::function<void(std::string_view)>&, std::stop_token stop) override {
+        ctx_.require_access(grant, root_, agent::Access::read);
+        reference_.validate();
+        search_options_.sandbox.read_exceptions = grant.read_exceptions;
         workspace::GrepResult found;
         try {
             found = workspace::grep(query_, search_options_, stop);
@@ -54,6 +57,15 @@ private:
                 return error_result(std::format("invalid regular expression: {}", e.what()));
             throw;
         }
+        reference_.validate();
+        // 搜索根被批准不代表根内敏感内容被批准：输出前先过滤受保护路径。
+        std::error_code root_ec;
+        const std::filesystem::path root_base =
+            std::filesystem::is_directory(root_.path, root_ec) ? root_.path : root_.path.parent_path();
+        std::erase_if(found.matches, [&](const workspace::Match& match) {
+            const std::filesystem::path absolute = root_base / match.path;
+            return !ctx_.can_read(grant, absolute);
+        });
         for (workspace::Match& match : found.matches) match.path = path_prefix_ + match.path;
 
         constexpr std::size_t kNoteRoom = 64;
@@ -109,7 +121,9 @@ private:
         return result;
     }
 
+    Context& ctx_;
     workspace::Resolved root_;
+    workspace::FileReference reference_;
     workspace::SearchOptions search_options_;
     bool files_only_ = false;
     std::size_t max_result_bytes_ = 0;

@@ -36,7 +36,12 @@ std::vector<std::string> suggest_similar(const Context& ctx, const std::string& 
         std::string needle = detail::expand_home(raw);
         const auto pick = [&](std::string_view key) {
             std::vector<std::string> out;
-            for (const std::size_t i : workspace::fuzzy_rank(key, pool, 3)) out.push_back(pool[i]);
+            for (const std::size_t i : workspace::fuzzy_rank(key, pool, 8)) {
+                const fs::path candidate = ctx.root() / pool[i];
+                if (ctx.content_restricted(candidate, true)) continue; // 受保护路径不进候选
+                out.push_back(pool[i]);
+                if (out.size() == 3) break;
+            }
             return out;
         };
         std::vector<std::string> picks = pick(needle);
@@ -54,7 +59,7 @@ class ReadCall final : public PreparedTool {
 public:
     ReadCall(Context& ctx, workspace::Resolved target,
              std::string display, int offset, int limit, bool directory)
-        : ctx_(ctx), target_(std::move(target)), display_(std::move(display)),
+        : ctx_(ctx), target_(std::move(target)), reference_(target_.path), display_(std::move(display)),
           offset_(offset), limit_(limit), directory_(directory) {
         intent_.kind = agent::ToolKind::read;
         intent_.paths = {to_intent(target_, agent::Access::read)};
@@ -62,17 +67,19 @@ public:
     }
 
 private:
-    Result do_execute(const Grant&, const std::function<void(std::string_view)>&, std::stop_token) override {
-        return directory_ ? list_directory() : read_file();
+    Result do_execute(const Grant& grant, const std::function<void(std::string_view)>&, std::stop_token) override {
+        ctx_.require_access(grant, target_, agent::Access::read);
+        return directory_ ? list_directory(grant) : read_file();
     }
 
-    Result list_directory() {
+    Result list_directory(const Grant& grant) {
         std::vector<std::string> names;
         bool too_many = false, cut = false;
         std::error_code ec;
-        fs::directory_iterator it(target_.path, fs::directory_options::skip_permission_denied, ec), end;
+        fs::directory_iterator it(reference_.directory_path(), fs::directory_options::skip_permission_denied, ec), end;
         if (ec) return error_result(std::format("cannot read directory {}: {}", display_, ec.message()));
         for (; it != end && !ec; it.increment(ec)) {
+            if (!ctx_.can_read(grant, target_.path / it->path().filename())) continue;
             const bool is_dir = it->is_directory(ec);
             names.emplace_back(it->path().filename().string() + (!ec && is_dir ? "/" : ""));
             if (names.size() > max_files()) {
@@ -106,7 +113,7 @@ private:
     }
 
     Result read_file() {
-        const workspace::TextFile file = workspace::read_text(target_.path, ctx_.files());
+        const workspace::TextFile file = reference_.read(ctx_.files());
         agent::ReadView view;
         view.path = display_;
         view.truncated = file.truncated;
@@ -170,6 +177,7 @@ private:
 
     Context& ctx_;
     workspace::Resolved target_;
+    workspace::FileReference reference_;
     std::string display_;
     int offset_ = 1, limit_ = 0;
     bool directory_ = false;
@@ -206,7 +214,7 @@ public:
 
         const workspace::Resolved resolved = resolve_arg(ctx, path);
         const std::string display = detail::display_path(ctx, resolved);
-        const workspace::FileKind kind = workspace::probe(resolved.path);
+        const workspace::FileKind kind = workspace::FileReference(resolved.path).kind();
 
         if (kind == workspace::FileKind::missing) {
             std::string text = std::format("file does not exist: {}", display);

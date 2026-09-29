@@ -96,7 +96,9 @@ json to_json(const Event& event) {
                             {"writable", paths_json(e.grant.writable)},
                             {"protected_read", paths_json(e.grant.protected_read)},
                             {"protected_write", paths_json(e.grant.protected_write)},
-                            {"network_targets", e.grant.network_targets}};
+                            {"network_targets", e.grant.network_targets},
+                            {"revision", e.grant.revision},
+                            {"read_exceptions", paths_json(e.grant.read_exceptions)}};
             },
             [](const ToolOutput& e) {
                 // chunk 是原始字节，先过一遍 UTF-8 再进 JSON（docs/design/agent.md §2）。

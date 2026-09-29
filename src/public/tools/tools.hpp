@@ -2,7 +2,7 @@
 /// @brief 工具层：把外围模块包装成模型能调用的工具——定义名字、说明和参数 Schema，解析校验模型给的
 /// 参数，调用外围模块，把结果整理成「给模型的文本」和「给界面与会话的展示数据」。
 ///
-/// 两阶段：prepare 解析校验预演（无副作用），execute 真正执行。权限决策、调度、消息历史都不在这里：
+/// prepare 仅声明需求；授权后 prepare_preview 读取并生成预览，写授权后 execute 执行。权限决策、调度、消息历史都不在这里：
 /// 工具只陈述自己打算做什么（PreparedIntent 中立摘要），允许/询问/拒绝由核心决定。execute 不抛异常，
 /// 一切失败都是 is_error 的 ToolResult。
 #pragma once
@@ -28,6 +28,7 @@
 #include "agent/tool_data.hpp"
 #include "exec/process.hpp"
 #include "exec/sandbox.hpp"
+#include "exec/srt.hpp"
 #include "exec/shell.hpp"
 #include "lib/nlohmann/json.hpp"
 #include "mcp/client.hpp"
@@ -44,6 +45,8 @@ using PreparedTool = agent::PreparedTool; ///< 准备完成的普通工具（核
 /// @brief 工具选项，对应 config.json 的 "tools" 段。
 struct Options {
     std::map<std::string, exec::Environment> environments;
+    std::optional<exec::SrtRuntime> srt;             ///< SRT 后端资源；为空表示使用 Landlock 后端
+    std::filesystem::path sandbox_state_root;        ///< 每执行私有目录的父目录（SRT）
     std::size_t max_result_bytes = 0; ///< 每次调用交给模型的文本上限
     std::size_t bash_collect_bytes = 0; ///< 中断时保留的命令输出上限
     int read_default_lines = 0;
@@ -58,13 +61,18 @@ struct Options {
 /// 内部持有 FileTracker：模型读过/写过的文件 → 当时的 Stamp（edit/write 用它做 stale 检测）。
 class Context {
 public:
-    Context(std::filesystem::path root, Options opt, workspace::FileOptions files,
-            workspace::SearchOptions search, exec::Options process);
+    Context(std::filesystem::path root, std::filesystem::path control_root, Options opt,
+            workspace::FileOptions files, workspace::SearchOptions search, exec::Options process);
     ~Context();
     Context(const Context&) = delete;
     Context& operator=(const Context&) = delete;
 
     const std::filesystem::path& root() const; ///< 工作区根，即工具路径参数的基准
+    const std::filesystem::path& control_root() const; ///< 代理控制面根（配置/数据/日志/运行）
+    /// 内容是否受保护：敏感名、控制面、.git 内部或工作区外；这些路径的内容必须先批准再读取。
+    bool content_restricted(const std::filesystem::path& path, bool inside_workspace) const;
+    bool can_read(const Grant&, const std::filesystem::path&) const;
+    void require_access(const Grant&, const workspace::Resolved&, agent::Access) const;
     const Options& options() const;
     const workspace::FileOptions& files() const;
     const workspace::SearchOptions& search() const;
@@ -84,7 +92,7 @@ class Tool {
 public:
     virtual ~Tool() = default;
     virtual const Spec& spec() const = 0;
-    /// @brief 解析、校验、预演。参数有问题时返回 is_error 的 Result。没有副作用（可以读文件）。
+    /// @brief 解析参数与路径元数据；内容读取必须等待授权后的 preview/execute。
     virtual std::expected<std::unique_ptr<PreparedTool>, Result> prepare(
         std::string_view arguments, Context&) const = 0;
 };

@@ -19,9 +19,9 @@ constexpr std::string_view kDescription = R"(List workspace files using a glob p
 
 class GlobCall final : public PreparedTool {
 public:
-    GlobCall(const Context& ctx, workspace::Resolved root,
+    GlobCall(Context& ctx, workspace::Resolved root,
              std::string pattern)
-        : root_(std::move(root)), search_options_(ctx.search()),
+        : ctx_(ctx), root_(std::move(root)), reference_(root_.path), search_options_(ctx.search()),
           pattern_(std::move(pattern)), max_files_(ctx.options().glob_max_files),
           max_result_bytes_(ctx.options().max_result_bytes) {
         // workspace::files 返回的路径相对查询根；拼上前缀才是相对工作区根、模型能直接 read 的路径
@@ -32,7 +32,10 @@ public:
     }
 
 private:
-    Result do_execute(const Grant&, const std::function<void(std::string_view)>&, std::stop_token stop) override {
+    Result do_execute(const Grant& grant, const std::function<void(std::string_view)>&, std::stop_token stop) override {
+        ctx_.require_access(grant, root_, agent::Access::read);
+        reference_.validate();
+        search_options_.sandbox.read_exceptions = grant.read_exceptions;
         workspace::FilesQuery query;
         query.root = root_.path;
         query.globs = {pattern_};
@@ -52,6 +55,12 @@ private:
                 return error_result(std::format("invalid glob pattern: {}", e.what()));
             throw;
         }
+        reference_.validate();
+        // 搜索根被批准不代表根内敏感内容被批准：输出前过滤受保护路径。
+        std::erase_if(found, [&](const std::string& file) {
+            const std::filesystem::path absolute = root_.path / file;
+            return !ctx_.can_read(grant, absolute);
+        });
         for (std::string& file : found) file = path_prefix_ + file;
 
         const bool truncated = found.size() >= max_files_;
@@ -78,7 +87,9 @@ private:
         return result;
     }
 
+    Context& ctx_;
     workspace::Resolved root_;
+    workspace::FileReference reference_;
     workspace::SearchOptions search_options_;
     std::string pattern_;
     std::size_t max_files_ = 0, max_result_bytes_ = 0;

@@ -76,48 +76,7 @@ struct Region {
     std::size_t first = 0, last = 0;
 };
 
-class EditCall final : public PreparedTool {
-public:
-    EditCall(Context& ctx, workspace::Resolved target,
-             std::string path, std::string new_content, workspace::Eol eol, bool bom,
-             workspace::Stamp expect, std::string success_text, agent::FileChangeView view)
-        : ctx_(ctx), target_(std::move(target)), path_(std::move(path)),
-          new_content_(std::move(new_content)), eol_(eol), bom_(bom), expect_(expect),
-          success_text_(std::move(success_text)), view_(std::move(view)) {
-        intent_.kind = agent::ToolKind::write;
-        intent_.paths = {to_intent(target_, agent::Access::write)};
-        intent_.preview = view_.diff;
-        intent_.summary = std::format("Edit {} (+{} -{})", path_, view_.added, view_.removed);
-    }
-
-private:
-    Result do_execute(const Grant&, const std::function<void(std::string_view)>&, std::stop_token) override {
-        try {
-            workspace::write_text(target_.path, new_content_, eol_, bom_, expect_, ctx_.files());
-        } catch (const workspace::WorkspaceError& e) {
-            if (e.kind() == workspace::WorkspaceError::Kind::stale)
-                return error_result(std::format(
-                    "{} is stale - it changed since your last read (possibly by bash or the user); read it again before editing", path_));
-            throw;
-        }
-        if (const auto stamp = workspace::stamp_of(target_.path)) ctx_.track(target_, *stamp);
-        Result result;
-        result.model_text = success_text_;
-        result.display = view_;
-        return result;
-    }
-
-    Context& ctx_;
-    workspace::Resolved target_;
-    std::string path_;
-    std::string new_content_;
-    workspace::Eol eol_ = workspace::Eol::lf;
-    bool bom_ = false;
-    workspace::Stamp expect_;
-    std::string success_text_;
-    agent::FileChangeView view_;
-};
-
+/// 在 content 上执行替换；匹配数为 0 或（不 replace_all 时）多于 1 返回 nullopt。
 /// 改动处前后各 4 行（带行号），多处改动时总量按预算截断。返回放不下的区域数。
 std::size_t build_snippets(const std::string& new_content, const std::vector<Region>& regions,
                            std::size_t budget, std::size_t max_line_bytes, std::string& out) {
@@ -145,6 +104,48 @@ std::size_t build_snippets(const std::string& new_content, const std::vector<Reg
     }
     return dropped;
 }
+
+class EditCall final : public PreparedTool {
+public:
+    EditCall(Context& ctx, workspace::Resolved target, std::string display, std::string old_string,
+             std::string new_string, bool replace_all)
+        : ctx_(ctx), target_(std::move(target)), reference_(target_.path), path_(std::move(display)),
+          old_string_(std::move(old_string)), new_string_(std::move(new_string)), replace_all_(replace_all) {
+        intent_.kind = agent::ToolKind::write;
+        intent_.paths = {to_intent(target_, agent::Access::write)};
+        intent_.summary = "Edit " + path_;
+        expect_ = ctx_.tracked_stamp(target_);
+        if (!expect_ || expect_ != reference_.stamp())
+            throw workspace::WorkspaceError(workspace::WorkspaceError::Kind::stale,
+                                            "read the current file before editing it");
+    }
+    std::optional<agent::PreparedIntent> preview_request() const override {
+        agent::PreparedIntent request;
+        request.kind = agent::ToolKind::read;
+        request.paths = {to_intent(target_, agent::Access::read)};
+        request.summary = "Read " + path_ + " for edit preview";
+        return request;
+    }
+private:
+    std::optional<Result> do_prepare_preview(const Grant& grant) override;
+    Result do_execute(const Grant& grant, const std::function<void(std::string_view)>&, std::stop_token) override {
+        ctx_.require_access(grant, target_, agent::Access::write);
+        if (!ready_) return error_result("edit preview has not been authorized");
+        ctx_.track(target_, reference_.write(new_content_, eol_, bom_, expect_, ctx_.files()));
+        Result result;
+        result.model_text = success_text_;
+        result.display = view_;
+        return result;
+    }
+    Context& ctx_;
+    workspace::Resolved target_;
+    workspace::FileReference reference_;
+    std::string path_, old_string_, new_string_, new_content_, success_text_;
+    bool replace_all_ = false, ready_ = false, bom_ = false;
+    workspace::Eol eol_ = workspace::Eol::lf;
+    std::optional<workspace::Stamp> expect_;
+    agent::FileChangeView view_;
+};
 
 class EditTool final : public Tool {
 public:
@@ -181,42 +182,31 @@ public:
         const workspace::Resolved resolved = resolve_arg(ctx, path);
         const std::string display = detail::display_path(ctx, resolved);
 
-        const auto tracked = ctx.tracked_stamp(resolved);
-        if (!tracked)
-            return std::unexpected(
-                error_result(std::format("{} has not been read; use read before editing this file", display)));
+        return std::make_unique<EditCall>(ctx, resolved, display, detail::to_lf(*old_string),
+                                           detail::to_lf(*new_string), replace_all.value_or(false));
+    }
 
-        const workspace::FileKind kind = workspace::probe(resolved.path);
-        if (kind == workspace::FileKind::missing)
-            return std::unexpected(error_result(std::format(
-                "{} no longer exists (deleted or moved since your read); check its current location", display)));
-        if (kind == workspace::FileKind::directory)
-            return std::unexpected(error_result(std::format("{} is a directory and cannot be edited", display)));
+private:
+    Spec spec_;
+};
 
-        if (const auto current = workspace::stamp_of(resolved.path); !current || !(*current == *tracked))
-            return std::unexpected(error_result(std::format(
-                "{} is stale - it changed since your last read (possibly by bash or the user); read it again before editing", display)));
-
-        workspace::TextFile file;
-        try {
-            file = workspace::read_text(resolved.path, ctx.files());
-        } catch (const workspace::WorkspaceError& e) {
-            if (e.kind() == workspace::WorkspaceError::Kind::not_text)
-                return std::unexpected(
-                    error_result(std::format("{} is binary; edit cannot modify it", display)));
-            throw;
-        }
+std::optional<Result> EditCall::do_prepare_preview(const Grant& grant) {
+    ctx_.require_access(grant, target_, agent::Access::read);
+    const auto file = reference_.read(ctx_.files());
+    if (file.stamp != *expect_) return error_result("file changed since read; read it again");
+    auto& ctx = ctx_;
+    const auto& display = path_;
         if (file.lossy)
-            return std::unexpected(error_result(std::format(
-                "{} contains invalid UTF-8 (replaced with U+FFFD when read); editing is denied to avoid corrupting the original file", display)));
+            return error_result(std::format(
+                "{} contains invalid UTF-8 (replaced with U+FFFD when read); editing is denied to avoid corrupting the original file", display));
         if (file.truncated)
-            return std::unexpected(error_result(std::format(
-                "{} is larger than the per-read limit; only its beginning was read. Editing is denied to avoid losing the remaining content", display)));
+            return error_result(std::format(
+                "{} is larger than the per-read limit; only its beginning was read. Editing is denied to avoid losing the remaining content", display));
 
-        const std::string old_lf = detail::to_lf(*old_string);
-        const std::string new_lf = detail::to_lf(*new_string);
-        if (old_lf.empty()) return std::unexpected(error_result("old_string must not be empty"));
-        if (old_lf == new_lf) return std::unexpected(error_result("old_string and new_string are identical"));
+        const std::string old_lf = old_string_;
+        const std::string new_lf = new_string_;
+        if (old_lf.empty()) return error_result("old_string must not be empty");
+        if (old_lf == new_lf) return error_result("old_string and new_string are identical");
 
         const std::string& content = file.content;
         const std::vector<std::size_t> positions = find_all(content, old_lf);
@@ -233,17 +223,17 @@ public:
                     *line);
             else
                 text += "\nHint: read this section again; spaces, punctuation and newlines must match exactly.";
-            return std::unexpected(error_result(std::move(text)));
+            return error_result(std::move(text));
         }
-        if (positions.size() > 1 && !replace_all.value_or(false)) {
+        if (positions.size() > 1 && !replace_all_) {
             std::string lines;
             const std::size_t shown = std::min<std::size_t>(positions.size(), 20);
             for (std::size_t i = 0; i < shown; ++i)
                 lines += (i == 0 ? "" : "、") + std::to_string(line_at(content, positions[i]));
-            return std::unexpected(error_result(std::format(
+            return error_result(std::format(
                 "old_string matches {} at {} locations (lines: {}). Expand old_string to make it unique, or pass "
                 "replace_all=true to replace all occurrences.",
-                display, positions.size(), lines)));
+                display, positions.size(), lines));
         }
 
         std::string new_content;
@@ -256,12 +246,12 @@ public:
         }
         new_content.append(content, last, content.size() - last);
         if (new_content == content)
-            return std::unexpected(error_result("replacement makes no change (new_string matches the original text)"));
+            return error_result("replacement makes no change (new_string matches the original text)");
         // 写入上限在 prepare 就拦下：注定失败的调用不应该先弹一次确认
         if (new_content.size() > ctx.files().max_write_bytes)
-            return std::unexpected(error_result(std::format(
+            return error_result(std::format(
                 "edited content is {} bytes; write size limit reached ({} bytes)", new_content.size(),
-                ctx.files().max_write_bytes)));
+                ctx.files().max_write_bytes));
 
         const workspace::Unified diff = workspace::unified_diff(content, new_content, display);
 
@@ -295,14 +285,16 @@ public:
         std::string success = std::format("Edited {} (+{} -{}).\n", display, diff.stat.added,
                                           diff.stat.removed);
         success += snippets;
-        return std::make_unique<EditCall>(ctx, resolved, display, std::move(new_content),
-                                          file.eol, file.bom, *tracked, std::move(success),
-                                          std::move(view));
-    }
-
-private:
-    Spec spec_;
-};
+        new_content_ = std::move(new_content);
+        eol_ = file.eol;
+        bom_ = file.bom;
+        success_text_ = std::move(success);
+        view_ = std::move(view);
+        intent_.preview = view_.diff;
+        intent_.summary = std::format("Edit {} (+{} -{})", path_, view_.added, view_.removed);
+        ready_ = true;
+        return std::nullopt;
+}
 
 } // namespace
 

@@ -10,7 +10,7 @@
 
 namespace dagent::app {
 
-enum class Mode { interactive, run, sessions, models, runtime_sync, runtime_list };
+enum class Mode { interactive, run, sessions, models, runtime_sync, runtime_list, sandbox_status };
 enum class OutputFormat { text, json, jsonl };
 
 struct Args {

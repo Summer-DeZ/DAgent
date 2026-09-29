@@ -27,8 +27,9 @@ bool is_relative_to(const fs::path& path, const fs::path& base) {
 }
 
 bool sensitive_control_path(const fs::path& path, const fs::path& root) {
-    return is_relative_to(path, root / "config") || is_relative_to(path, root / "data") ||
-           is_relative_to(path, root / "logs") || is_relative_to(path, root / "run");
+    return !root.empty() && (is_relative_to(path, root / "config") || is_relative_to(path, root / "data") ||
+           is_relative_to(path, root / "logs") || is_relative_to(path, root / "run") ||
+           is_relative_to(path, root / "runtime"));
 }
 
 std::string exec_rule_id(std::string_view command, std::string_view cwd) {
@@ -40,6 +41,29 @@ std::string read_rule_id(const fs::path& path) {
     return std::format("read-{:x}", std::hash<std::string>{}(path.string()));
 }
 
+std::string network_rule_id(std::string_view host, int port) {
+    return std::format("net-{:x}", std::hash<std::string>{}(std::string(host) + ":" + std::to_string(port)));
+}
+
+std::string network_deny_id(std::string_view host, int port) {
+    return std::format("netdeny-{:x}", std::hash<std::string>{}(std::string(host) + ":" + std::to_string(port)));
+}
+
+/// 配置里的目标模式：完整 `host:port`、裸 `host`，或前导 `*.` 的域名后缀。
+bool network_pattern_matches(std::string_view pattern, const NetworkTarget& target) {
+    if (pattern.empty()) return false;
+    if (const auto colon = pattern.rfind(':'); colon != std::string_view::npos &&
+                                                pattern.find_first_not_of("0123456789", colon + 1) == std::string_view::npos) {
+        if (std::stoi(std::string(pattern.substr(colon + 1))) != target.port) return false;
+        pattern = pattern.substr(0, colon);
+    }
+    if (pattern.starts_with("*.")) {
+        const std::string_view suffix = pattern.substr(1); // ".example.com"
+        return target.host.size() > suffix.size() && target.host.ends_with(suffix);
+    }
+    return pattern == target.host;
+}
+
 bool single_use_only(const Approval& approval) {
     return std::ranges::any_of(approval.requests, [](const Approval::Request& request) {
         return request.kind == Approval::Request::Kind::sensitive_read ||
@@ -49,6 +73,17 @@ bool single_use_only(const Approval& approval) {
 }
 
 } // namespace
+
+ResourceClass classify_resource(const fs::path& path, bool inside_workspace, const fs::path& control_root) {
+    if (sensitive_control_path(path, control_root)) return ResourceClass::guarded;
+    for (const auto& part : path) {
+        if (part == ".git") return ResourceClass::guarded;
+        if (part == ".ssh" || part == ".gnupg") return ResourceClass::sensitive;
+    }
+    if (sensitive_name(path.filename().string())) return ResourceClass::sensitive;
+    if (!inside_workspace) return ResourceClass::outside;
+    return ResourceClass::normal;
+}
 
 std::string_view to_string(PermissionMode mode) {
     switch (mode) {
@@ -92,17 +127,21 @@ bool Policy::inside_dir(const fs::path& path, const fs::path& dir) const {
 
 Policy::PathClass Policy::classify(const ResourceIntent& intent) const {
     const fs::path& path = intent.path;
-    if (sensitive_control_path(path, control_root_)) return PathClass::guarded;
-    for (const auto& part : path) {
-        if (part == ".git") return PathClass::guarded;
-        if (part == ".ssh" || part == ".gnupg") return PathClass::sensitive;
-    }
-    if (sensitive_name(path.filename().string())) return PathClass::sensitive;
+    const auto category = classify_resource(path, intent.inside_workspace, control_root_);
+    if (inside_dir(path, control_root_ / "runtime")) return PathClass::guarded;
+    if (category == ResourceClass::guarded) return PathClass::guarded;
+    if (category == ResourceClass::sensitive) return PathClass::sensitive;
+    const auto& extra = intent.access == Access::read ? sandbox_options_.extra_readable
+                                                     : sandbox_options_.extra_writable;
+    for (const auto& directory : extra)
+        if (inside_dir(path, directory)) return PathClass::normal;
+    if (intent.access == Access::read)
+        for (const auto& directory : sandbox_options_.extra_writable)
+            if (inside_dir(path, directory)) return PathClass::normal;
     if (intent.access == Access::read)
         for (const auto& directory : sandbox_options_.skill_readable)
             if (inside_dir(path, directory)) return PathClass::normal;
-    if (intent.access == Access::write && inside_dir(path, control_root_ / "runtime")) return PathClass::guarded;
-    if (!intent.inside_workspace) return PathClass::outside;
+    if (category == ResourceClass::outside) return PathClass::outside;
     return PathClass::normal;
 }
 
@@ -134,6 +173,7 @@ std::optional<bool> Policy::matches_session(const Approval& approval, const Prep
 
 ExecutionGrant Policy::grant_for_exec(SandboxProfile profile, GrantSource source) const {
     ExecutionGrant grant;
+    grant.revision = revision();
     grant.sandbox = profile;
     grant.source = source;
     grant.backend = profile == SandboxProfile::full_access ? "host" : sandbox_.backend;
@@ -171,6 +211,23 @@ ExecutionGrant Policy::grant_for_exec(SandboxProfile profile, GrantSource source
     return grant;
 }
 
+ExecutionGrant Policy::grant_for_files(const PreparedIntent& intent, GrantSource source) const {
+    ExecutionGrant grant;
+    grant.revision = revision();
+    grant.source = source;
+    grant.backend = "native";
+    grant.protect_sensitive_names = mode() != PermissionMode::unrestricted || read_only() || planning();
+    for (const auto& path : intent.paths) {
+        if (path.access == Access::write) grant.writable.push_back(path.path);
+        else {
+            grant.readable.push_back(path.path);
+            if (classify(path) == PathClass::sensitive || classify(path) == PathClass::guarded)
+                grant.read_exceptions.push_back(path.path);
+        }
+    }
+    return grant;
+}
+
 Verdict Policy::evaluate(const ToolCall& call, const PreparedIntent& intent) const {
     const std::lock_guard lock(rules_mutex_);
     Verdict verdict;
@@ -187,6 +244,9 @@ Verdict Policy::evaluate(const ToolCall& call, const PreparedIntent& intent) con
     };
     const auto answer = [&](Verdict::Kind kind) {
         verdict.kind = kind;
+        if (kind == Verdict::Kind::allow && (intent.kind == ToolKind::read || intent.kind == ToolKind::write))
+            verdict.grant = grant_for_files(intent, mode() == PermissionMode::unrestricted && !read_only() && !planning()
+                                                       ? GrantSource::unrestricted : GrantSource::mode);
         return verdict;
     };
 
@@ -220,7 +280,7 @@ Verdict Policy::evaluate(const ToolCall& call, const PreparedIntent& intent) con
         }
     }
 
-    if (mode() == PermissionMode::unrestricted) {
+    if (mode() == PermissionMode::unrestricted && !read_only() && !planning()) {
         if (intent.kind == ToolKind::exec)
             verdict.grant = grant_for_exec(SandboxProfile::full_access, GrantSource::unrestricted);
         return answer(Verdict::Kind::allow);
@@ -244,7 +304,7 @@ Verdict Policy::evaluate(const ToolCall& call, const PreparedIntent& intent) con
                 return classify(path) == PathClass::outside;
             });
             if (outside != intent.paths.end()) {
-                const std::string dir = outside->path.parent_path().string();
+                const std::string dir = outside->path.string();
                 verdict.approval.requests.push_back({Approval::Request::Kind::read_path, dir,
                                                      "read outside the workspace"});
                 verdict.approval.session_rule = std::format("Allow reads under {} for this session", dir);
@@ -253,8 +313,12 @@ Verdict Policy::evaluate(const ToolCall& call, const PreparedIntent& intent) con
         } else return answer(Verdict::Kind::allow);
         break;
     case ToolKind::write:
-        if (has(PathClass::guarded) || has(PathClass::sensitive)) {
-            verdict.approval.reason = "Modify protected agent data or git internals";
+        if (has(PathClass::guarded)) {
+            verdict.reason = "execution control files require an explicit host maintenance operation";
+            return answer(Verdict::Kind::deny);
+        }
+        if (has(PathClass::sensitive)) {
+            verdict.approval.reason = "Modify sensitive user data";
             for (const auto& path : intent.paths) {
                 const PathClass cls = classify(path);
                 if (cls == PathClass::sensitive || cls == PathClass::guarded)
@@ -339,6 +403,9 @@ Verdict Policy::evaluate(const ToolCall& call, const PreparedIntent& intent) con
 }
 
 ExecutionGrant Policy::grant_for(const Approval& approval, const Decision& decision) const {
+    if (approval.intent.kind == ToolKind::read || approval.intent.kind == ToolKind::write)
+        return grant_for_files(approval.intent, decision.answer == Decision::Answer::allow_session
+                                               ? GrantSource::session : GrantSource::once);
     if (approval.intent.kind != ToolKind::exec) return {};
     if (std::ranges::any_of(approval.requests, [](const Approval::Request& request) {
             return request.kind == Approval::Request::Kind::host_access;
@@ -354,11 +421,12 @@ ExecutionGrant Policy::grant_for(const Approval& approval, const Decision& decis
 void Policy::remember(const Approval& approval, const Decision& decision) {
     if (decision.answer != Decision::Answer::allow_session || single_use_only(approval)) return;
     const std::lock_guard lock(rules_mutex_);
+    revision_.fetch_add(1);
     switch (approval.intent.kind) {
     case ToolKind::write: session_edits_ = true; return;
     case ToolKind::read:
         for (const auto& path : approval.intent.paths)
-            if (classify(path) == PathClass::outside) read_dirs_.push_back(path.path.parent_path());
+            if (classify(path) == PathClass::outside) read_dirs_.push_back(path.path);
         return;
     case ToolKind::external: external_rules_.push_back(approval.tool); return;
     case ToolKind::exec: {
@@ -377,6 +445,10 @@ std::vector<Policy::SessionGrant> Policy::session_grants() const {
     if (session_edits_) grants.push_back({"workspace-edits", "Workspace file edits"});
     for (const auto& path : read_dirs_)
         grants.push_back({read_rule_id(path), "Read under " + path.string()});
+    for (const auto& rule : network_rules_)
+        grants.push_back({rule.id, "Network " + rule.host + ":" + std::to_string(rule.port)});
+    for (const auto& rule : network_denied_)
+        grants.push_back({rule.id, "Denied network " + rule.host + ":" + std::to_string(rule.port)});
     for (const auto& tool : external_rules_) grants.push_back({"external-" + tool, "External tool " + tool});
     for (const auto& rule : exec_rules_) {
         std::string command = rule.command;
@@ -388,32 +460,83 @@ std::vector<Policy::SessionGrant> Policy::session_grants() const {
 
 bool Policy::revoke(std::string_view id) {
     const std::lock_guard lock(rules_mutex_);
-    if (id == "workspace-edits" && session_edits_) { session_edits_ = false; return true; }
+    if (id.starts_with("netdeny-")) {
+        const auto it = std::ranges::find_if(network_denied_, [&](const NetworkRule& rule) { return rule.id == id; });
+        if (it == network_denied_.end()) return false;
+        network_denied_.erase(it);
+        revision_.fetch_add(1);
+        return true;
+    }
+    if (id.starts_with("net-")) {
+        const auto it = std::ranges::find_if(network_rules_, [&](const NetworkRule& rule) { return rule.id == id; });
+        if (it == network_rules_.end()) return false;
+        network_rules_.erase(it);
+        revision_.fetch_add(1);
+        return true;
+    }
+    if (id == "workspace-edits" && session_edits_) { session_edits_ = false; revision_.fetch_add(1); return true; }
     if (id.starts_with("read-")) {
         const auto it = std::ranges::find_if(read_dirs_, [&](const fs::path& path) {
             return read_rule_id(path) == id;
         });
         if (it == read_dirs_.end()) return false;
         read_dirs_.erase(it);
+        revision_.fetch_add(1);
         return true;
     }
     if (id.starts_with("external-")) {
         const auto it = std::ranges::find(external_rules_, id.substr(9));
         if (it == external_rules_.end()) return false;
         external_rules_.erase(it);
+        revision_.fetch_add(1);
         return true;
     }
     const auto it = std::ranges::find_if(exec_rules_, [&](const ExecRule& rule) { return rule.id == id; });
     if (it == exec_rules_.end()) return false;
     exec_rules_.erase(it);
+    revision_.fetch_add(1);
     return true;
 }
 
-void Policy::set_mode(PermissionMode mode) { mode_.store(mode); }
+std::uint64_t Policy::revision() const { return revision_.load(); }
+
+Policy::NetworkDecision Policy::check_network(const NetworkTarget& target) const {
+    const std::lock_guard lock(rules_mutex_);
+    for (const auto& pattern : sandbox_options_.network_denied)
+        if (network_pattern_matches(pattern, target))
+            return {NetworkDecision::Kind::deny, "network target is on the configured deny list"};
+    for (const auto& rule : network_denied_)
+        if (rule.host == target.host && rule.port == target.port)
+            return {NetworkDecision::Kind::deny, "the user denied this network target earlier in the session"};
+    for (const auto& rule : network_rules_)
+        if (rule.host == target.host && rule.port == target.port) return {NetworkDecision::Kind::allow, {}};
+    for (const auto& pattern : sandbox_options_.network_allowed)
+        if (network_pattern_matches(pattern, target)) return {NetworkDecision::Kind::allow, {}};
+    return {NetworkDecision::Kind::ask,
+            std::format("connect to {}:{} from a sandboxed command", target.host, target.port)};
+}
+
+void Policy::remember_network(const NetworkTarget& target) {
+    const std::lock_guard lock(rules_mutex_);
+    const std::string id = network_rule_id(target.host, target.port);
+    if (std::ranges::none_of(network_rules_, [&](const NetworkRule& rule) { return rule.id == id; }))
+        network_rules_.push_back({id, target.host, target.port});
+    revision_.fetch_add(1);
+}
+
+void Policy::remember_denied_network(const NetworkTarget& target) {
+    const std::lock_guard lock(rules_mutex_);
+    const std::string id = network_deny_id(target.host, target.port);
+    if (std::ranges::none_of(network_denied_, [&](const NetworkRule& rule) { return rule.id == id; }))
+        network_denied_.push_back({id, target.host, target.port});
+    revision_.fetch_add(1);
+}
+
+void Policy::set_mode(PermissionMode mode) { mode_.store(mode); revision_.fetch_add(1); }
 PermissionMode Policy::mode() const { return mode_.load(); }
-void Policy::set_read_only(bool value) { read_only_.store(value); }
+void Policy::set_read_only(bool value) { read_only_.store(value); revision_.fetch_add(1); }
 bool Policy::read_only() const { return read_only_.load(); }
-void Policy::set_planning(bool value) { planning_.store(value); }
+void Policy::set_planning(bool value) { planning_.store(value); revision_.fetch_add(1); }
 bool Policy::planning() const { return planning_.load(); }
 
 bool parallel(const Verdict& verdict, const PreparedIntent& intent) {

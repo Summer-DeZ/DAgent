@@ -93,5 +93,11 @@
       }
     }
   },
-  "environments": {}
+  "environments": {
+    "internal/sandbox": {
+      "kind": "node",
+      "lockfile": "config/sandbox/package-lock.json",
+      "package_json": "config/sandbox/package.json"
+    }
+  }
 }

@@ -30,7 +30,8 @@ public:
              exec::Analysis analysis, std::optional<std::chrono::milliseconds> timeout,
              std::string environment_name, exec::Environment environment)
         : root_(ctx.root()), process_options_(ctx.process()),
-          max_result_bytes_(ctx.options().max_result_bytes), collect_bytes_(ctx.options().bash_collect_bytes), command_(std::move(command)),
+          max_result_bytes_(ctx.options().max_result_bytes), collect_bytes_(ctx.options().bash_collect_bytes),
+          srt_(ctx.options().srt), sandbox_state_root_(ctx.options().sandbox_state_root), command_(std::move(command)),
           environment_name_(std::move(environment_name)), environment_(std::move(environment)),
           analysis_(std::move(analysis)), timeout_(timeout) {
         intent_.kind = agent::ToolKind::exec;
@@ -67,57 +68,28 @@ private:
                                 : grant.sandbox == agent::SandboxProfile::full_access ? exec::Mode::full_access
                                                                                       : exec::Mode::workspace_write;
         const bool sandboxed = mode != exec::Mode::full_access;
-        std::unique_ptr<exec::Prepared> prepared;
+        exec::Policy policy;
         if (sandboxed) {
-            exec::Policy policy;
             policy.mode = mode;
             policy.allow_network = grant.allow_network;
             policy.allow_local_sockets = grant.allow_local_sockets;
             policy.private_tmp = grant.private_tmp;
             policy.protect_sensitive_names = grant.protect_sensitive_names;
             policy.readable = grant.readable;
-            policy.writable = grant.writable.empty() ? std::vector<std::filesystem::path>{root_}
-                                                     : grant.writable;
+            policy.writable = grant.writable;
             policy.protected_read = grant.protected_read;
             policy.protected_write = grant.protected_write;
+            policy.network_targets = grant.network_targets;
+        }
+        const bool srt_backend = sandboxed && srt_.has_value() && grant.backend == "srt";
+        std::unique_ptr<exec::Prepared> prepared;
+        if (sandboxed && !srt_backend) {
             try {
                 prepared = exec::prepare(policy);
             } catch (const exec::ExecError& e) {
                 return error_result(std::format("sandbox setup failed; command not executed: {}", e.what()));
             }
         }
-
-        exec::Command cmd;
-        cmd.argv = {environment_.shell.string(), "--noprofile", "--norc", "-c", command_};
-        cmd.cwd = root_;
-        cmd.merge_stderr = true;
-        cmd.timeout = timeout_;
-        cmd.inherit_env = environment_name_ == "project" && !sandboxed;
-        cmd.env_set = environment_.variables;
-        if (environment_name_ == "project") {
-            process_options_.environment.clear();
-            if (const char* path = std::getenv("PATH")) cmd.env_set.emplace_back("PATH", path);
-        }
-        // 固定消息语言：报错文本（strerror）不随系统 locale 变化，给模型和沙箱判断都是稳定输入。
-        // 用 C.UTF-8 而不是 C，否则 ls 会把中文文件名转义成 \346… 这样的八进制。
-        cmd.env_set.emplace_back("LC_ALL", "C.UTF-8");
-        if (prepared && !prepared->private_tmp().empty()) {
-            const std::string private_home(prepared->private_tmp());
-            cmd.env_unset.insert(cmd.env_unset.end(), {"BASH_ENV", "ENV", "BASHOPTS", "SHELLOPTS",
-                                                        "CDPATH", "GLOBIGNORE",
-                                                        "PROMPT_COMMAND", "LD_PRELOAD", "LD_LIBRARY_PATH",
-                                                        "PYTHONPATH", "PERL5LIB", "RUBYOPT"});
-            if (environment_name_ == "project")
-                cmd.env_set.emplace_back("PATH", "/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin");
-            cmd.env_set.emplace_back("HOME", private_home);
-            cmd.env_set.emplace_back("XDG_CONFIG_HOME", private_home + "/config");
-            cmd.env_set.emplace_back("XDG_CACHE_HOME", private_home + "/cache");
-            cmd.env_set.emplace_back("XDG_RUNTIME_DIR", private_home + "/run");
-            cmd.env_set.emplace_back("TMPDIR", private_home);
-            cmd.env_set.emplace_back("TMP", private_home);
-            cmd.env_set.emplace_back("TEMP", private_home);
-        }
-        cmd.sandbox = prepared.get();
 
         std::string collected;
         collected.reserve(std::min(collect_bytes_, process_options_.max_output_bytes));
@@ -132,7 +104,70 @@ private:
         bool interrupted = false, spawn_failed = false, run_failed = false;
         std::string failure;
         try {
-            outcome = exec::run(cmd, process_options_, on_chunk, stop);
+            if (srt_backend) {
+                exec::SrtRequest request;
+                request.runtime = *srt_;
+                request.workspace = root_;
+                request.state_root = sandbox_state_root_;
+                request.command = command_;
+                request.policy = policy;
+                request.environment = environment_.variables;
+                request.timeout = timeout_;
+                request.network_gate = [gate = grant.network_decider](std::string_view host, int port,
+                                                                      std::string& reason, std::stop_token execution_stop) {
+                    if (!gate) {
+                        reason = "runtime network approval is unavailable in this run";
+                        return exec::NetworkGateResult::deny;
+                    }
+                    switch (gate(agent::NetworkTarget{std::string(host), port}, reason, execution_stop)) {
+                    case agent::NetworkAction::allow: return exec::NetworkGateResult::allow;
+                    case agent::NetworkAction::cancel: return exec::NetworkGateResult::cancel;
+                    case agent::NetworkAction::deny: break;
+                    }
+                    return exec::NetworkGateResult::deny;
+                };
+                if (environment_name_ == "project") {
+                    const char* path = std::getenv("PATH");
+                    request.environment.emplace_back(
+                        "PATH", path && *path ? std::string(path)
+                                              : "/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin");
+                }
+                // 固定消息语言：报错文本（strerror）不随系统 locale 变化，给模型和沙箱判断都是稳定输入。
+                // 用 C.UTF-8 而不是 C，否则 ls 会把中文文件名转义成 \346… 这样的八进制。
+                request.environment.emplace_back("LC_ALL", "C.UTF-8");
+                outcome = exec::run_srt(request, process_options_, on_chunk, stop);
+            } else {
+                exec::Command cmd;
+                cmd.argv = {environment_.shell.string(), "--noprofile", "--norc", "-c", command_};
+                cmd.cwd = root_;
+                cmd.merge_stderr = true;
+                cmd.timeout = timeout_;
+                cmd.inherit_env = environment_name_ == "project" && !sandboxed;
+                cmd.env_set = environment_.variables;
+                if (environment_name_ == "project") {
+                    process_options_.environment.clear();
+                    if (const char* path = std::getenv("PATH")) cmd.env_set.emplace_back("PATH", path);
+                }
+                cmd.env_set.emplace_back("LC_ALL", "C.UTF-8");
+                if (prepared && !prepared->private_tmp().empty()) {
+                    const std::string private_home(prepared->private_tmp());
+                    cmd.env_unset.insert(cmd.env_unset.end(), {"BASH_ENV", "ENV", "BASHOPTS", "SHELLOPTS",
+                                                                "CDPATH", "GLOBIGNORE",
+                                                                "PROMPT_COMMAND", "LD_PRELOAD", "LD_LIBRARY_PATH",
+                                                                "PYTHONPATH", "PERL5LIB", "RUBYOPT"});
+                    if (environment_name_ == "project")
+                        cmd.env_set.emplace_back("PATH", "/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin");
+                    cmd.env_set.emplace_back("HOME", private_home);
+                    cmd.env_set.emplace_back("XDG_CONFIG_HOME", private_home + "/config");
+                    cmd.env_set.emplace_back("XDG_CACHE_HOME", private_home + "/cache");
+                    cmd.env_set.emplace_back("XDG_RUNTIME_DIR", private_home + "/run");
+                    cmd.env_set.emplace_back("TMPDIR", private_home);
+                    cmd.env_set.emplace_back("TMP", private_home);
+                    cmd.env_set.emplace_back("TEMP", private_home);
+                }
+                cmd.sandbox = prepared.get();
+                outcome = exec::run(cmd, process_options_, on_chunk, stop);
+            }
         } catch (const exec::ExecError& e) {
             if (e.kind() == exec::ExecError::Kind::cancelled) interrupted = true;
             else {
@@ -219,6 +254,8 @@ private:
     exec::Options process_options_;
     std::size_t max_result_bytes_ = 0;
     std::size_t collect_bytes_ = 0;
+    std::optional<exec::SrtRuntime> srt_;
+    std::filesystem::path sandbox_state_root_;
     std::string command_;
     std::string environment_name_;
     exec::Environment environment_;

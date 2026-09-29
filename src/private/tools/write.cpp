@@ -20,45 +20,71 @@ constexpr std::string_view kDescription = R"(Create a file or completely overwri
 
 class WriteCall final : public PreparedTool {
 public:
-    WriteCall(Context& ctx, workspace::Resolved target,
-              std::string path, std::string content, workspace::Eol eol, bool bom,
-              std::optional<workspace::Stamp> expect, std::string success_text,
-              agent::FileChangeView view)
-        : ctx_(ctx), target_(std::move(target)), path_(std::move(path)),
-          content_(std::move(content)), eol_(eol), bom_(bom), expect_(expect),
-          success_text_(std::move(success_text)), view_(std::move(view)) {
+    WriteCall(Context& ctx, workspace::Resolved target, std::string path, std::string content)
+        : ctx_(ctx), target_(std::move(target)), reference_(target_.path), path_(std::move(path)),
+          content_(std::move(content)) {
         intent_.kind = agent::ToolKind::write;
         intent_.paths = {to_intent(target_, agent::Access::write)};
-        intent_.preview = view_.diff;
-        intent_.summary = std::format("{} {} (+{} -{})", view_.created ? "Create" : "Overwrite", path_,
-                                      view_.added, view_.removed);
-    }
-
-private:
-    Result do_execute(const Grant&, const std::function<void(std::string_view)>&, std::stop_token) override {
-        try {
-            workspace::write_text(target_.path, content_, eol_, bom_, expect_, ctx_.files());
-        } catch (const workspace::WorkspaceError& e) {
-            if (e.kind() == workspace::WorkspaceError::Kind::stale)
-                return error_result(std::format(
-                    "{} is stale - it changed since your last read (possibly by bash or the user); read it again before editing", path_));
-            throw;
+        intent_.summary = "Write " + path_;
+        if (reference_.kind() == workspace::FileKind::directory)
+            throw workspace::WorkspaceError(workspace::WorkspaceError::Kind::io, "cannot write a directory");
+        if (reference_.stamp()) {
+            expect_ = ctx_.tracked_stamp(target_);
+            if (!expect_ || expect_ != reference_.stamp())
+                throw workspace::WorkspaceError(workspace::WorkspaceError::Kind::stale,
+                                                "read the current file before overwriting it");
+        } else {
+            update_preview("");
+            ready_ = true;
         }
-        if (const auto stamp = workspace::stamp_of(target_.path)) ctx_.track(target_, *stamp);
+    }
+    std::optional<agent::PreparedIntent> preview_request() const override {
+        if (ready_) return std::nullopt;
+        agent::PreparedIntent request;
+        request.kind = agent::ToolKind::read;
+        request.paths = {to_intent(target_, agent::Access::read)};
+        request.summary = "Read " + path_ + " for write preview";
+        return request;
+    }
+private:
+    void update_preview(std::string_view before) {
+        const auto diff = workspace::unified_diff(before, content_, path_);
+        view_.path = path_;
+        view_.diff = diff.text;
+        view_.added = static_cast<int>(diff.stat.added);
+        view_.removed = static_cast<int>(diff.stat.removed);
+        view_.created = !expect_;
+        intent_.preview = view_.diff;
+        intent_.summary = std::format("{} {} (+{} -{})", view_.created ? "Create" : "Overwrite",
+                                      path_, view_.added, view_.removed);
+    }
+    std::optional<Result> do_prepare_preview(const Grant& grant) override {
+        ctx_.require_access(grant, target_, agent::Access::read);
+        const auto file = reference_.read(ctx_.files());
+        if (file.stamp != *expect_) return error_result("file changed since read; read it again");
+        if (file.truncated || file.lossy) return error_result("cannot preview incomplete or invalid text");
+        eol_ = file.eol;
+        bom_ = file.bom;
+        update_preview(file.content);
+        ready_ = true;
+        return std::nullopt;
+    }
+    Result do_execute(const Grant& grant, const std::function<void(std::string_view)>&, std::stop_token) override {
+        ctx_.require_access(grant, target_, agent::Access::write);
+        if (!ready_) return error_result("write preview has not been authorized");
+        ctx_.track(target_, reference_.write(content_, eol_, bom_, expect_, ctx_.files()));
         Result result;
-        result.model_text = success_text_;
+        result.model_text = std::format("{} {}.", view_.created ? "Created" : "Overwrote", path_);
         result.display = view_;
         return result;
     }
-
     Context& ctx_;
     workspace::Resolved target_;
-    std::string path_;
-    std::string content_;
+    workspace::FileReference reference_;
+    std::string path_, content_;
     workspace::Eol eol_ = workspace::Eol::lf;
-    bool bom_ = false;
+    bool bom_ = false, ready_ = false;
     std::optional<workspace::Stamp> expect_;
-    std::string success_text_;
     agent::FileChangeView view_;
 };
 
@@ -96,54 +122,7 @@ public:
 
         const workspace::Resolved resolved = resolve_arg(ctx, path);
         const std::string display = detail::display_path(ctx, resolved);
-        const workspace::FileKind kind = workspace::probe(resolved.path);
-        if (kind == workspace::FileKind::directory)
-            return std::unexpected(error_result(std::format("{} is a directory and cannot be written", display)));
-
-        workspace::Eol eol = workspace::Eol::lf;
-        bool bom = false;
-        std::optional<workspace::Stamp> expect;
-        std::string before;
-        const bool existed = kind != workspace::FileKind::missing;
-
-        if (existed) {
-            const auto tracked = ctx.tracked_stamp(resolved);
-            if (!tracked)
-                return std::unexpected(error_result(std::format(
-                    "{} already exists; use read before overwriting it (not required for new files)", display)));
-            if (const auto current = workspace::stamp_of(resolved.path);
-                !current || !(*current == *tracked))
-                return std::unexpected(error_result(std::format(
-                    "{} is stale - it changed since your last read (possibly by bash or the user); read it again before editing", display)));
-            workspace::TextFile file;
-            try {
-                file = workspace::read_text(resolved.path, files);
-            } catch (const workspace::WorkspaceError& e) {
-                if (e.kind() == workspace::WorkspaceError::Kind::not_text)
-                    return std::unexpected(
-                        error_result(std::format("{} is binary; write cannot overwrite it", display)));
-                throw;
-            }
-            eol = file.eol;
-            bom = file.bom;
-            expect = tracked;
-            before = std::move(file.content);
-        }
-
-        const workspace::Unified diff = workspace::unified_diff(before, new_content, display);
-
-        agent::FileChangeView view;
-        view.path = display;
-        view.diff = diff.text;
-        view.added = static_cast<int>(diff.stat.added);
-        view.removed = static_cast<int>(diff.stat.removed);
-        view.created = !existed;
-
-        const std::string success =
-            existed ? std::format("Overwrote {} (+{} -{}).", display, diff.stat.added, diff.stat.removed)
-                    : std::format("Created {} ({} lines).", display, count_lines(new_content));
-        return std::make_unique<WriteCall>(ctx, resolved, display, new_content, eol, bom,
-                                           expect, success, std::move(view));
+        return std::make_unique<WriteCall>(ctx, resolved, display, new_content);
     }
 
 private:

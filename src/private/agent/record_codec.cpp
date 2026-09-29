@@ -107,7 +107,7 @@ Record assistant(std::int64_t n, const Reply& reply) {
 Record tool_started(const ToolStarted& event) {
     json payload = to_json(Event{event});
     payload.erase("type");
-    payload["schema"] = 1;
+    payload["schema"] = 2;
     return {"tool_started", std::move(payload)};
 }
 
@@ -225,7 +225,8 @@ DecodedRecord decode(std::string_view type, const nlohmann::json& payload) {
         return record;
     }
     if (type == "tool_started") {
-        if (integer_field(type, payload, "schema") != 1) corrupt(type, "unknown schema");
+        const auto schema = integer_field(type, payload, "schema");
+        if (schema != 1 && schema != 2) corrupt(type, "unknown schema");
         ToolStartedRecord record;
         ExecutionGrant& grant = record.event.grant;
         const std::string sandbox = string_field(type, payload, "sandbox");
@@ -260,6 +261,10 @@ DecodedRecord decode(std::string_view type, const nlohmann::json& payload) {
         grant.writable = paths("writable");
         grant.protected_read = paths("protected_read");
         grant.protected_write = paths("protected_write");
+        if (schema == 2) {
+            grant.revision = integer_field(type, payload, "revision");
+            grant.read_exceptions = paths("read_exceptions");
+        }
         const auto targets = payload.find("network_targets");
         if (targets == payload.end() || !targets->is_array())
             corrupt(type, "field network_targets must be an array");

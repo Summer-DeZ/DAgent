@@ -1,13 +1,17 @@
 #include "tools/tools.hpp"
 
 #include <map>
+#include <algorithm>
 #include <mutex>
+
+#include "agent/permission.hpp"
 
 namespace dagent::tools {
 namespace fs = std::filesystem;
 
 struct Context::Impl {
     fs::path root;
+    fs::path control_root;
     Options options;
     workspace::FileOptions files;
     workspace::SearchOptions search;
@@ -18,10 +22,11 @@ struct Context::Impl {
     std::map<std::string, workspace::Stamp> tracked;
 };
 
-Context::Context(fs::path root, Options opt, workspace::FileOptions files, workspace::SearchOptions search,
-                 exec::Options process)
+Context::Context(fs::path root, fs::path control_root, Options opt, workspace::FileOptions files,
+                 workspace::SearchOptions search, exec::Options process)
     : impl_(std::make_unique<Impl>()) {
     impl_->root = std::move(root);
+    impl_->control_root = std::move(control_root);
     impl_->options = std::move(opt);
     impl_->files = std::move(files);
     impl_->search = std::move(search);
@@ -31,6 +36,30 @@ Context::Context(fs::path root, Options opt, workspace::FileOptions files, works
 Context::~Context() = default;
 
 const fs::path& Context::root() const { return impl_->root; }
+const fs::path& Context::control_root() const { return impl_->control_root; }
+
+bool Context::content_restricted(const fs::path& path, bool inside_workspace) const {
+    return agent::classify_resource(path, inside_workspace, impl_->control_root) != agent::ResourceClass::normal;
+}
+namespace {
+bool within(const fs::path& path, const fs::path& root) {
+    const auto relative = path.lexically_relative(root);
+    return !relative.empty() && *relative.begin() != "..";
+}
+}
+bool Context::can_read(const Grant& grant, const fs::path& path) const {
+    if (!std::ranges::any_of(grant.readable, [&](const auto& root) { return within(path, root); })) return false;
+    if (!grant.protect_sensitive_names) return true;
+    const auto category = agent::classify_resource(path, within(path, root()), control_root());
+    if (category == agent::ResourceClass::normal || category == agent::ResourceClass::outside) return true;
+    return std::ranges::find(grant.read_exceptions, path) != grant.read_exceptions.end();
+}
+void Context::require_access(const Grant& grant, const workspace::Resolved& target, agent::Access access) const {
+    const bool allowed = access == agent::Access::read ? can_read(grant, target.path)
+        : std::ranges::find(grant.writable, target.path) != grant.writable.end();
+    if (!allowed) throw workspace::WorkspaceError(workspace::WorkspaceError::Kind::io,
+                                                  "file access is outside the approved scope");
+}
 const Options& Context::options() const { return impl_->options; }
 const workspace::FileOptions& Context::files() const { return impl_->files; }
 const workspace::SearchOptions& Context::search() const { return impl_->search; }

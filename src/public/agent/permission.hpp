@@ -26,6 +26,17 @@ enum class PermissionMode {
     unrestricted,
 };
 
+/// @brief 资源分类：策略判定与工具准备共用同一语义，避免两处各写一套敏感名规则。
+enum class ResourceClass {
+    normal,    ///< 普通用户数据
+    sensitive, ///< 敏感用户数据（.env、*.pem、.ssh、.gnupg 等）
+    guarded,   ///< 执行控制面（代理配置/数据/日志/运行目录、.git 内部）
+    outside,   ///< 工作区外
+};
+
+ResourceClass classify_resource(const std::filesystem::path& path, bool inside_workspace,
+                                const std::filesystem::path& control_root);
+
 std::string_view to_string(PermissionMode); ///< "ask" / "workspace" / "unrestricted"
 
 /// @brief 一次权限决策的结果。
@@ -52,6 +63,21 @@ public:
     void remember(const Approval&, const Decision&);
     ExecutionGrant grant_for(const Approval&, const Decision&) const;
 
+    /// @brief 权限修订号：模式、会话规则等任何有效范围变化都会递增。
+    std::uint64_t revision() const;
+
+    struct NetworkDecision {
+        enum class Kind { allow, ask, deny };
+        Kind kind = Kind::ask;
+        std::string reason; ///< deny/ask 时的说明
+    };
+    /// @brief 运行中网络目标的当前判定：配置拒绝优先，其次配置允许与会话规则，最后才需要审批。
+    NetworkDecision check_network(const NetworkTarget&) const;
+    /// @brief 记录一条会话网络规则（按 host:port 精确匹配）。
+    void remember_network(const NetworkTarget&);
+    /// @brief 用户明确拒绝过的目标：本会话内不再弹窗，直接按配置拒绝处理。
+    void remember_denied_network(const NetworkTarget&);
+
     void set_mode(PermissionMode mode);
     PermissionMode mode() const;
     void set_read_only(bool value);
@@ -71,10 +97,12 @@ private:
     /// 命中会话授权时返回 allow_network（exec 之外恒为 false），未命中返回 nullopt。
     std::optional<bool> matches_session(const Approval&, const PreparedIntent&) const;
     ExecutionGrant grant_for_exec(SandboxProfile, GrantSource) const;
+    ExecutionGrant grant_for_files(const PreparedIntent&, GrantSource) const;
 
     std::atomic<PermissionMode> mode_;
     std::atomic<bool> read_only_;
     std::atomic<bool> planning_;
+    std::atomic<std::uint64_t> revision_{0};
     mutable std::mutex rules_mutex_; ///< 保护下面的规则容器；evaluate/remember/revoke/快照共用
     SandboxSupport sandbox_;
     SandboxConfig sandbox_options_;
@@ -85,7 +113,13 @@ private:
     struct ExecRule {
         std::string id, command, cwd;
     };
+    struct NetworkRule {
+        std::string id, host;
+        int port = 0;
+    };
     std::vector<ExecRule> exec_rules_;
+    std::vector<NetworkRule> network_rules_;
+    std::vector<NetworkRule> network_denied_;
     std::vector<std::string> external_rules_;
     std::vector<std::filesystem::path> read_dirs_;
 };

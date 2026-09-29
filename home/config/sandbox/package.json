@@ -1,0 +1,10 @@
+{
+  "name": "dagent-sandbox",
+  "version": "0.0.0",
+  "private": true,
+  "description": "Pinned Anthropic Sandbox Runtime used by the DAgent command sandbox (internal/sandbox).",
+  "license": "Apache-2.0",
+  "dependencies": {
+    "@anthropic-ai/sandbox-runtime": "0.0.77"
+  }
+}
