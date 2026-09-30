@@ -63,7 +63,7 @@ stateDiagram-v2
   backend 借此保证 `input.submit` 的响应先于该输入的 `turn_started` 进入发送队列。执行线程只取队首 `ready` 的输入，
   取出时才创建 Run（`run-N`）。
 - **取回**：`recall_last` 原子移除最后一条仍排队的输入，空输入框按 ↑ 时使用（B04）。
-- **命令**：new/resume/select_model/add_model/compact/revoke_grant 只在空闲时接受；命令从接受到结束占用空闲入口，普通输入不能越过它。
+- **命令**：new/resume/select_model/add_model/compact 只在空闲时接受；命令从接受到结束占用空闲入口，普通输入不能越过它。`revoke_grant` 走即时路径，运行中也可用。
   busy 时返回 `RuntimeError::busy`（B07）。
 - **即时操作**：`cycle_permission`（运行中也可，对之后的决策生效）、`toggle_planning`（要求空闲）、`cancel`
   不进命令队列（B08）。`cancel(run_id)` 只取消身份仍匹配的当前 Run，旧 id 返回 false。取消句柄只由 `CurrentRun` 保存；cancel/shutdown 在锁内取得局部共享引用，在锁外触发停止。

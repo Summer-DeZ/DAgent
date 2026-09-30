@@ -146,6 +146,7 @@ public:
         return hub_->states();
     }
     std::shared_ptr<agent::SessionLease> lease() const override { return lease_; }
+    void revoke_mcp(std::string_view server) override { hub_->revoke(server); }
 
 private:
     std::shared_ptr<tools::McpHub> hub_;
@@ -219,7 +220,8 @@ struct SessionAssembly::Impl {
         auto registry = std::make_unique<tools::Registry>();
         tools::add_builtin(*registry);
         // 每个新目录先继承现有连接，再按该会话的工具限制收窄。
-        options.hub->snapshot(*registry);
+        // 只读/规划上限的会话不接触外部工具 lease：server 进程的权限高于该上限。
+        if (!spec.state.read_only && !spec.state.planning) options.hub->snapshot(*registry);
         if (spec.allowed_tools) registry->retain(*spec.allowed_tools);
         auto tools_session = std::make_unique<tools::ToolSession>(*registry, *context);
         auto resources = std::make_unique<HubResources>(options.hub, *registry);

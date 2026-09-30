@@ -138,7 +138,6 @@ struct Approval {
     std::string session_rule; ///< 选「本会话允许」会记住什么，给界面显示；为空表示不提供这个选项
     std::string agent;          ///< 来源子 Agent 名；主 Agent 自己的审批为空
     std::string origin_call_id; ///< 父会话里那次 task 调用的 id；主 Agent 为空
-    bool can_network = false; ///< bash：是否提供「允许并联网」
     std::string cwd, mode;
     std::vector<Request> requests;
     bool partially_executed = false;
@@ -148,7 +147,6 @@ struct Decision {
     enum class Answer { allow, allow_session, deny, deny_with_feedback };
     Answer answer = Answer::deny;
     std::string feedback; ///< deny_with_feedback 时用户写的说明
-    bool network = false; ///< 只在 can_network 时有意义
 };
 
 using Approver = std::function<Decision(const Approval&, std::stop_token)>;

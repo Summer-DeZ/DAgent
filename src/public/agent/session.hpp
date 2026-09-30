@@ -5,6 +5,7 @@
 /// 配置、密钥与终端留在装配层。
 #pragma once
 
+#include <atomic>
 #include <cstddef>
 #include <filesystem>
 #include <memory>
@@ -16,6 +17,7 @@
 #include "agent/committer.hpp"
 #include "agent/compaction.hpp"
 #include "agent/control.hpp"
+#include "agent/execution_registry.hpp"
 #include "agent/run.hpp"
 #include "agent/events.hpp"
 #include "agent/options.hpp"
@@ -39,7 +41,7 @@ struct SessionConfig {
     std::string compact_prompt;
     std::filesystem::path cwd, project_root, control_root;
     SandboxConfig sandbox_options; ///< 沙箱持久范围（中立值，映射点只在装配边界）
-    SandboxSupport sandbox;        ///< exec::probe() 的中立投影
+    SandboxSupport sandbox;        ///< 启动探测的中立投影
     PermissionMode permission_mode = PermissionMode::workspace;
     bool read_only = false;
     bool planning = false;
@@ -81,11 +83,14 @@ public:
     Request build_request() const;
     RequestShape request_shape() const;
     ModelParams model_params() const;
+    /// @brief 在调用线程上构建请求并估算 tokens；同时缓存供跨线程快照读取。
     std::size_t estimated_tokens();
 
     // 运行期协作者：TurnRunner/ActionDispatcher 使用，不向 UI 暴露。
     Policy& policy() { return policy_; }
     const Policy& policy() const { return policy_; }
+    /// @brief 活跃执行登记：调度层登记，runtime 在权限变化时核对并终止。
+    ExecutionRegistry& executions() { return executions_; }
     ControlActionExecutor& control() { return control_; }
     ActionCatalog& catalog() { return catalog_; }
     ModelSession& model() { return *model_; }
@@ -108,9 +113,11 @@ private:
     ToolSession& tools_;
     ActionCatalog catalog_;
     Policy policy_;
+    ExecutionRegistry executions_;
     WorkPlan plan_;
     Conversation conversation_;
     TokenEstimator estimator_;
+    std::atomic<std::size_t> estimated_tokens_{0};
     Compactor compactor_;
     ControlActionExecutor control_;
     SessionCommitter committer_;

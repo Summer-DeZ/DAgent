@@ -27,6 +27,10 @@ public:
     /// @brief stdout 每收到一行调用一次（行不含换行符）。
     void on_line(std::function<void(std::string_view)> cb);
 
+    /// @brief stderr 每收到一行调用一次（行不含换行符）；未注册时按日志输出。
+    /// 注册前到达的少量行会补发，供 bridge 握手帧这类早于回调的少量状态使用。
+    void on_stderr(std::function<void(std::string_view)> cb);
+
     /// @brief 进程退出时调用一次；已经退出后注册会立即补发。正常情况下 code/signal 恰有一个有值，
     /// 等待子进程失败（极少见，会记日志）时两者都为空。
     void on_exit(std::function<void(std::optional<int> code, std::optional<int> signal)> cb);

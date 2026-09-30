@@ -92,13 +92,12 @@ private:
     };
     enum class State { empty, ready, executing, replacing, closing, closed };
     struct Command {
-        enum class Kind { new_session, resume, select_model, add_model, compact, revoke_grant };
+        enum class Kind { new_session, resume, select_model, add_model, compact };
         Kind kind = Kind::new_session;
         std::string value;
         agent::ModelInput model;
         CommandDone done;
         ModelAdded model_done;
-        GrantRevoked grant_done;
     };
     struct PendingReplace {
         std::unique_ptr<SessionInstance> instance;
@@ -122,6 +121,8 @@ private:
     void publish(EventPayload payload, const std::string& session_id, std::uint64_t generation);
     void publish_control(ControlEvent event);
     void sync_control_snapshot();
+    /// @brief 模式/上限变化后：收窄子会话并终止不再被当前策略覆盖的活跃执行。
+    void apply_permission_change(SessionInstance& instance);
     void finalize_execution();
     void refresh_snapshot(SessionInstance& instance);
     void apply_to_snapshot(const Event& event);

@@ -249,7 +249,10 @@ const std::set<std::string>& known_keys() {
         "run.max_parallel_tasks", "run.max_parallel_tools",
         "session.redact_fields", "session.history_scan_limit", "log.max_file_bytes",
         "log.max_files", "log.level", "log.also_stderr", "progress.interval_ms",
-        "permissions", "ui.theme_file", "ui.completion_max_files", "sandbox.version", "sandbox.allowed_targets", "sandbox.denied_targets", "mcp.connect_timeout_ms", "mcp.probe_timeout_ms",
+        "permissions", "ui.theme_file", "ui.completion_max_files", "sandbox.version", "sandbox.backend",
+        "sandbox.host_access", "sandbox.startup_timeout_ms", "sandbox.network_approval_timeout_ms",
+        "sandbox.max_network_requests_per_execution", "sandbox.allowed_targets", "sandbox.denied_targets",
+        "mcp.connect_timeout_ms", "mcp.probe_timeout_ms",
         "tools.max_result_bytes", "tools.bash_collect_bytes", "tools.read_default_lines", "tools.read_max_line_bytes",
         "tools.grep_max_matches", "tools.glob_max_files", "tools.bash_max_timeout_ms",
         "tools.mcp_call_timeout_ms"};
@@ -372,8 +375,28 @@ exec::Options map_process(const Node& n) {
 exec::SandboxOptions map_sandbox(const Node& n, const fs::path& workspace) {
     exec::SandboxOptions options;
     if (auto v = n.child("version"); v.has()) options.version = v.integer(options.version);
-    if (options.version != 1)
-        fail(ConfigError::Kind::invalid, n.child("version").pointer() + " must be 1");
+    if (options.version != 2) {
+        fail(ConfigError::Kind::invalid,
+             n.child("version").pointer() + " must be 2: sandbox.version 1 was the removed Landlock backend; "
+             "set backend=srt and the timeouts explicitly");
+    }
+    options.backend = n.child("backend").str(options.backend);
+    if (options.backend != "srt")
+        fail(ConfigError::Kind::invalid, n.child("backend").pointer() + " must be srt");
+    options.host_access = n.child("host_access").str(options.host_access);
+    if (options.host_access != "ask_once")
+        fail(ConfigError::Kind::invalid, n.child("host_access").pointer() + " must be ask_once");
+    options.startup_timeout =
+        std::chrono::milliseconds(n.child("startup_timeout_ms").integer(options.startup_timeout.count()));
+    options.network_approval_timeout = std::chrono::milliseconds(
+        n.child("network_approval_timeout_ms").integer(options.network_approval_timeout.count()));
+    options.max_network_requests_per_execution =
+        static_cast<int>(n.child("max_network_requests_per_execution")
+                             .integer(options.max_network_requests_per_execution));
+    if (options.startup_timeout.count() <= 0 || options.network_approval_timeout.count() <= 0 ||
+        options.max_network_requests_per_execution <= 0) {
+        fail(ConfigError::Kind::invalid, "sandbox timeouts and the network request budget must be positive");
+    }
     const auto paths = [&](std::string_view key) {
         std::vector<fs::path> result;
         for (const std::string& value : n.child(key).strings())
@@ -596,6 +619,28 @@ std::vector<mcp::ServerConfig> parse_mcp_servers(const json& root) {
         mcp::ServerConfig server;
         server.name = name;
         server.environment = entry.value("environment", "managed");
+        if (const auto permissions = entry.find("permissions"); permissions != entry.end()) {
+            if (!permissions->is_object()) fail(ConfigError::Kind::type, where + "/permissions must be an object");
+            server.profile_present = true;
+            const auto strings = [&](const char* key, std::vector<std::string>& out) {
+                const auto item = permissions->find(key);
+                if (item == permissions->end()) return;
+                const std::string field = where + "/permissions/" + key;
+                if (!item->is_array()) fail(ConfigError::Kind::type, field + " must be an array");
+                for (const auto& value : *item) {
+                    if (!value.is_string()) fail(ConfigError::Kind::type, field + " entries must be strings");
+                    out.push_back(expand_env(value.get<std::string>(), field));
+                }
+            };
+            std::vector<std::string> read, write;
+            strings("read", read);
+            strings("write", write);
+            strings("network", server.profile_network);
+            for (std::string& path : read) server.profile_read.emplace_back(std::move(path));
+            for (std::string& path : write) server.profile_write.emplace_back(std::move(path));
+        } else {
+            log_app()->warn("{} has no permissions profile; the server will not start", where);
+        }
         if (type == "stdio") {
             const auto command = entry.find("command");
             if (command == entry.end() || !command->is_string()) fail(ConfigError::Kind::type, where + "/command must be a string");
@@ -726,6 +771,14 @@ Config load_config(const LoadOptions& options) {
     config.mcp.process = config.process;
     if (config.search.rg_path.empty()) config.search.rg_path = toolchain.program("rg");
     config.project_root = project_root(cwd, config.process);
+    for (auto& server : config.mcp_servers) {
+        // profile 里的相对路径按 Home 根解析，与其它受信任配置一致。
+        for (auto* paths : {&server.profile_read, &server.profile_write}) {
+            for (auto& path : *paths) {
+                if (path.is_relative()) path = absolute_under(root, path.string());
+            }
+        }
+    }
     for (auto& server : config.mcp_servers) {
         if (server.transport != mcp::Transport::stdio) continue;
         server.cwd = server.environment == "project" ? cwd : root;

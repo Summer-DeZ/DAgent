@@ -56,6 +56,28 @@ dagent
 
 启动和安装统一使用上述布局，不加载根目录旧 config.json/models.json，不提供旧布局迁移命令。
 MCP 连接只使用 `config/mcp.json` 中的 `mcpServers`，不转换旧 `servers` 字段。
+每个 server 必须携带显式 `permissions` profile，否则不启动：
+
+```json
+{
+  "mcpServers": {
+    "note": {
+      "type": "stdio",
+      "command": "/abs/path/node",
+      "args": ["/abs/path/server.mjs"],
+      "environment": "managed",
+      "permissions": {
+        "read": ["/abs/dir"],
+        "write": ["/abs/dir"],
+        "network": ["api.example.com:443"]
+      }
+    }
+  }
+}
+```
+
+stdio server 在 SRT 内按该范围启动（网络是严格 allowlist）；HTTP server 的 `network` 必须显式列出
+endpoint 目标。
 现有个人模型配置和凭据保存在 `config/models.json`；新会话从空数据库开始，由首次写入自动创建。
 
 runtime sync 使用 `run/runtime.lock`，模型写入和会话写入分别使用

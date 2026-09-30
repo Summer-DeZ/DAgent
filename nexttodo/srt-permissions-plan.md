@@ -1,6 +1,10 @@
 # SRT 适配与完整权限链路实施计划
 
-日期：2026-09-29。状态：已实现至 S05 的主要链路，并完成本轮 S05 审查缺口修复与相关 S03/S04 补强。阶段证据与剩余项见 §10.1；尚未完成全部权限计划。S00 仅在指定 AppArmor profile 下通过，默认启动仍受主机限制。
+日期：2026-09-29；更新：2026-09-30。S06–S09 的原验收记录见
+[temp/s06-s10-driver/VERIFY.md](../temp/s06-s10-driver/VERIFY.md)。2026-09-30 已部署匹配当前开发后端路径的
+专用 AppArmor profile，默认启动通过 SRT 探测，无需 `aa-exec`；同时修复子任务结束状态、取消传播和
+并发控制 fd 继承。新证据见 [默认启动与子 Agent 验收](../temp/srt-default-start-20260930/VERIFY.md)。
+下面 §10.1 保留 2026-09-29 的历史状态，不代表当前主机仍被阻塞；未覆盖的完整并发对抗矩阵仍不宣称通过。
 
 ## 1. 目标与完成条件
 
@@ -196,14 +200,19 @@ S01 与 S02 可独立开展；S04 与 S05 在 S03 后可分工。其余按依赖
 | 阶段 | 当前状态 |
 | --- | --- |
 | S00 | 条件通过：`aa-exec -p linux-sandbox` 下 SRT 0.0.77 可启动；默认启动仍失败。未修改系统策略。 |
-| S01 | 文件 grant、配置范围、revision 与保护分类已补强；完整跨运行撤销/传播仍待 S06。 |
-| S02 | runtime/bridge/status 已接通；新安装根完整验收仍待完成。 |
-| S03 | 补齐资源 RAII、只读写范围、握手校验及结构化退出排空；旧 Landlock 路径与完整切换仍待 S09。 |
-| S04 | 补齐 Dispatcher 执行邮箱、控制帧持续读取、退出取消审批；批准继续、拒绝和命令超时已真实验证。完整会话撤销与审计收口仍依赖 S06/S08。 |
-| S05 | 本轮审查缺口已修复：授权后预览、文件 grant 消费与目录/对象锚定、批准后的外部搜索、配置范围、只读搜索/上下文边界与补全过滤。真实验收覆盖下述记录中的场景；不再将文件锚定或预览推迟至 S06。 |
-| S06–S10 | 尚未完整交付，不能据此宣称全部权限正常工作。 |
+| S01 | 文件 grant、配置范围、revision 与保护分类已补强；跨运行撤销/传播在 S06 落地。 |
+| S02 | runtime/bridge/status 已接通；安装根由 `dagent sandbox status` 真实探测验收。 |
+| S03 | SRT 为唯一受限后端（S09 移除 Landlock）；资源 RAII、只读写范围、握手校验（含启动超时看门狗）与结构化退出。 |
+| S04 | Dispatcher 执行邮箱、运行中网络审批、headless 拒绝路径已真实验证。 |
+| S05 | 授权后预览、文件 grant 消费与目录/对象锚定、批准后的外部搜索、配置范围、只读搜索/上下文边界与补全过滤（见 [S05 修复验收](../temp/s05-repair/VERIFY.md)）。 |
+| S06 | 已交付：即时撤销/降权经登记表终止运行中执行（含网络目标回收）、审批等待期间修订号重判且旧批准只降不升、父上限实时传播到活跃子会话并终止越界子执行。证据见 [S06–S10 验收](../temp/s06-s10-driver/VERIFY.md) 场景 02/03/04/08。 |
+| S07 | 已交付：stdio MCP 必须携带显式 profile 并在 SRT 内以严格 allowlist 启动（缺 profile 不启动）、逐工具审批、撤销作废旧连接与 lease 后按 profile 重连、HTTP endpoint 显式授权/不跟随重定向/审计标为 remote。证据同上场景 05/06。 |
+| S08 | 已交付：审批/记录/协议用显式请求范围替换 `can_network` 布尔（permission schema 3，旧记录只读兼容）、对话框呈现请求类型/host 边界/once-only/部分执行/来源、`/permissions` 运行中撤销、授权列表随执行刷新、MCP 状态 boundary、read-only 状态标签。证据同上场景 07/09。 |
+| S09 | 已交付：Landlock/seccomp 后端、`Prepared`/`probe`/`Command::sandbox` 与 libseccomp 依赖移除；`sandbox.version=2`（backend=srt、host_access=ask_once、启动/审批超时与每执行请求预算）；能力只来自真实 SRT 探测，不可用时受限命令不启动、仅保留显式 host 语义。 |
+| S10 | 真实功能验收完成并记录 fixed/partial/blocked：见 [S06–S10 验收](../temp/s06-s10-driver/VERIFY.md)。默认主机 S00 未通过，整体完成仍以宿主前置为准。 |
 
-真实记录：[S05 修复验收](../temp/s05-repair/VERIFY.md)。旧 `temp/s05-live/VERIFY.md` 描述修复前状态，不能再作为 S05 已完成的依据。
+真实记录：[S05 修复验收](../temp/s05-repair/VERIFY.md)、[S06–S10 验收](../temp/s06-s10-driver/VERIFY.md)。
+旧 `temp/s05-live/VERIFY.md` 描述修复前状态，不能再作为 S05 已完成的依据。
 当前路径保护仍遵循 §4.1 的启动快照语义；本轮未声称通过完整并发对抗矩阵或最终安装验收。
 
 ## 11. 真实运行验收矩阵

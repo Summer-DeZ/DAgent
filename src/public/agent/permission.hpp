@@ -39,12 +39,22 @@ ResourceClass classify_resource(const std::filesystem::path& path, bool inside_w
 
 std::string_view to_string(PermissionMode); ///< "ask" / "workspace" / "unrestricted"
 
+/// @brief 生效权限：本会话设置与父级上限合成后的实际结果。
+struct EffectivePermission {
+    PermissionMode mode = PermissionMode::workspace;
+    bool read_only = false;
+    bool planning = false;
+};
+
+/// @brief a 是否严格窄于 b（规划/只读优先，其次模式）。
+bool narrower(const EffectivePermission& a, const EffectivePermission& b);
+
 /// @brief 一次权限决策的结果。
 struct Verdict {
     enum class Kind { allow, ask, deny };
     Kind kind = Kind::deny;
     ExecutionGrant grant; ///< allow 时有效
-    Approval approval;    ///< ask 时有效：reason、session_rule、can_network 已填好
+    Approval approval;    ///< ask 时有效：reason、requests、session_rule 已填好
     std::string reason;   ///< deny 时有效，写入给模型的策略拒绝说明
 };
 
@@ -85,6 +95,12 @@ public:
     void set_planning(bool value);
     bool planning() const;
 
+    /// @brief 生效权限：父级上限激活时取更严者；子会话只能收窄。
+    EffectivePermission effective() const;
+    /// @brief 设置父级权限上限（子会话用）；返回设置后的生效权限并递增 revision。
+    /// 上限只与本会话派生值取更严者，父级之后放宽也不会扩大已派生的子权限。
+    EffectivePermission set_parent_cap(PermissionMode mode, bool read_only, bool planning);
+
     struct SessionGrant { std::string id, description; };
     std::vector<SessionGrant> session_grants() const;
     bool revoke(std::string_view id);
@@ -98,11 +114,17 @@ private:
     std::optional<bool> matches_session(const Approval&, const PreparedIntent&) const;
     ExecutionGrant grant_for_exec(SandboxProfile, GrantSource) const;
     ExecutionGrant grant_for_files(const PreparedIntent&, GrantSource) const;
+    ExecutionGrant grant_for_external(const PreparedIntent&, GrantSource) const;
 
     std::atomic<PermissionMode> mode_;
     std::atomic<bool> read_only_;
     std::atomic<bool> planning_;
+    std::atomic<bool> cap_active_{false};
+    std::atomic<PermissionMode> cap_mode_{PermissionMode::unrestricted};
+    std::atomic<bool> cap_read_only_{false};
+    std::atomic<bool> cap_planning_{false};
     std::atomic<std::uint64_t> revision_{0};
+    std::atomic<std::uint64_t> cap_revision_{0};
     mutable std::mutex rules_mutex_; ///< 保护下面的规则容器；evaluate/remember/revoke/快照共用
     SandboxSupport sandbox_;
     SandboxConfig sandbox_options_;

@@ -1,6 +1,5 @@
 #include "exec/detail.hpp"
 
-#include "exec/sandbox.hpp"
 
 #include <algorithm>
 #include <cerrno>
@@ -122,7 +121,7 @@ void ignore_sigpipe() {
     });
 }
 
-int setup_child(const Prepared* sandbox, const char* cwd) noexcept {
+int setup_child(const char* cwd) noexcept {
     if (::setsid() == -1) return errno;
     struct sigaction dfl {};
     dfl.sa_handler = SIG_DFL;
@@ -133,7 +132,6 @@ int setup_child(const Prepared* sandbox, const char* cwd) noexcept {
     sigemptyset(&none);
     if (::sigprocmask(SIG_SETMASK, &none, nullptr) == -1) return errno;
     if (cwd != nullptr && ::chdir(cwd) == -1) return errno;
-    if (sandbox != nullptr) return apply_in_child(*sandbox);
     return 0;
 }
 

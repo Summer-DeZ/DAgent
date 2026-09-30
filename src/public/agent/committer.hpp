@@ -6,6 +6,7 @@
 #pragma once
 
 #include <cstdint>
+#include <mutex>
 #include <string>
 #include <string_view>
 #include <vector>
@@ -62,19 +63,20 @@ public:
     void record_turn_end_crashed();
     void sync();
 
-    bool broken() const { return broken_; }
-    const std::string& error() const { return error_; }
+    bool broken() const;
+    std::string error() const;
     /// @brief 首次写入失败后只发一次 Notice；每个记录写入点按原顺序调用。
     void check_broken();
 
 private:
     void append(const Record& record);
-    void fail(const std::string& what);
+    void fail_locked(const std::string& what);
 
     Conversation& conversation_;
     WorkPlan& plan_;
     JournalWriter& journal_;
     const Sink* sink_ = nullptr;
+    mutable std::mutex mutex_; ///< 保护 journal 写入与 broken 状态；撤销可从执行线程之外进入
     bool broken_ = false;
     bool notified_ = false;
     std::string error_;

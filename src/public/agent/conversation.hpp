@@ -32,6 +32,8 @@ inline constexpr std::string_view kDenied =
     "The user denied this call. Do not work around it; wait for further instructions.";
 inline constexpr std::string_view kDeniedWithFeedback = "The user denied this call and said: {}";
 inline constexpr std::string_view kPriorDenied = "An earlier call in the same batch was denied; this call was not executed.";
+inline constexpr std::string_view kPermissionTerminated =
+    "The running call was terminated because permissions changed: {}";
 inline constexpr std::string_view kPolicyDenied =
     "The permission policy denied this call: {}. Use an approach that does not need this permission, "
     "or say in your final reply what the user must do.";

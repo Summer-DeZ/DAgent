@@ -178,7 +178,7 @@ struct ApprovalRequest {
     std::string preview_kind = "text", preview_text;
     std::string cwd, mode, session_rule;
     std::vector<ApprovalItem> requests;
-    bool can_network = false, partially_executed = false;
+    bool partially_executed = false;
 };
 
 struct QuestionRequest {
@@ -191,7 +191,6 @@ struct ApprovalAnswer {
     enum class Decision { allow, allow_session, deny, deny_with_feedback };
     Decision decision = Decision::deny;
     std::string feedback;
-    bool network = false;
 };
 
 struct QuestionAnswer {
@@ -212,7 +211,7 @@ struct ModelInput {
 };
 
 struct McpStatus {
-    std::string name, status, error;
+    std::string name, status, error, boundary;
     std::size_t tools = 0;
 };
 

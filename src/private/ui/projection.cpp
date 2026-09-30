@@ -229,7 +229,6 @@ ApprovalRequest decode_approval(const json& payload) {
     out.cwd = payload.value("cwd", "");
     out.mode = payload.value("mode", "");
     out.session_rule = payload.value("session_rule", "");
-    out.can_network = payload.value("can_network", false);
     out.partially_executed = payload.value("partially_executed", false);
     for (const json& request : payload.value("requests", json::array())) {
         out.requests.push_back({request.value("kind", ""), request.value("target", ""),
@@ -255,7 +254,7 @@ std::vector<McpStatus> decode_mcp(const json& array) {
     if (!array.is_array()) return out;
     for (const json& item : array) {
         out.push_back({item.value("name", ""), item.value("status", ""), item.value("error", ""),
-                       item.value("tools", std::size_t{0})});
+                       item.value("boundary", ""), item.value("tools", std::size_t{0})});
     }
     return out;
 }

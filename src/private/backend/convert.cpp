@@ -23,6 +23,12 @@ const char* mcp_status(agent::McpServerState::Status status) {
     return "connecting";
 }
 
+const char* mcp_boundary(std::string_view boundary) {
+    if (boundary == "remote") return "remote";
+    if (boundary == "srt") return "srt";
+    return "unknown";
+}
+
 std::string preview(std::string_view text) {
     const std::size_t newline = text.find('\n');
     std::string line(text.substr(0, newline == std::string_view::npos ? text.size() : newline));
@@ -76,7 +82,8 @@ protocol::SessionSnapshot to_protocol(const runtime::RuntimeSnapshot& snapshot) 
         out.mcp.push_back(nlohmann::json{{"name", state.name},
                                          {"status", mcp_status(state.status)},
                                          {"tools", state.tools},
-                                         {"error", state.error}});
+                                         {"error", state.error},
+                                         {"boundary", mcp_boundary(state.boundary)}});
     }
     out.recording.broken = snapshot.recording_broken;
     out.recording.error = snapshot.recording_error;

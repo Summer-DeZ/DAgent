@@ -39,6 +39,8 @@ public:
     /// 只交付尚未报告的警告，不刷新或等待连接，适合在一轮结束时调用。
     void report_pending(const agent::Sink&);
     std::vector<agent::McpServerState> states() const; ///< 线程安全；ready 表示连接和工具发现完成
+    /// @brief 作废连接与所有旧 lease（空表示全部 server）；下次步骤边界按现有 profile 重连。
+    void revoke(std::string_view server);
 
 private:
     struct Server;

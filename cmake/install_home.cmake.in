@@ -19,3 +19,9 @@ foreach(resource IN LISTS resources)
         endif()
     endif()
 endforeach()
+
+# Generate for the final executable path, excluding the package staging root.
+set(DAGENT_BACKEND_PATH "${CMAKE_INSTALL_PREFIX}/dagent-backend")
+file(MAKE_DIRECTORY "${destination}/libexec")
+configure_file("@CMAKE_SOURCE_DIR@/cmake/dagent.apparmor.in"
+    "${destination}/libexec/dagent.apparmor" @ONLY)

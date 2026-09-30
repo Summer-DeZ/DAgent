@@ -103,7 +103,8 @@ RunOutcome TurnRunner::run(Session& session, Run& run, const RunServices& servic
             session.committer().check_broken();
             sink(StepStarted{run.steps()});
             for (int attempt = 0; ; ++attempt) {
-                const Request request = session.build_request();
+                Request request = session.build_request();
+                if (run.grace()) request.tools.clear();
                 estimated = session.estimator().estimate(request);
                 sink(ContextUpdate{{}, estimated, context_limit});
                 try {
@@ -150,7 +151,7 @@ RunOutcome TurnRunner::run(Session& session, Run& run, const RunServices& servic
 
         if (reply.message.content.empty() && reply.message.tool_calls.empty()) {
             sink(Notice{Notice::Level::warn, "The model returned an empty reply"});
-            return finish(session, run, services, TurnStatus::done, "");
+            return finish(session, run, services, run.grace() ? TurnStatus::limit : TurnStatus::done, "");
         }
 
         session.committer().commit_assistant(reply);

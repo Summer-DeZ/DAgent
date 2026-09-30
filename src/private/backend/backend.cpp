@@ -115,7 +115,6 @@ nlohmann::json approval_payload(const agent::Approval& approval) {
         {"mode", approval.mode},
         {"requests", std::move(requests)},
         {"session_rule", approval.session_rule},
-        {"can_network", approval.can_network},
         {"partially_executed", approval.partially_executed},
     };
 }
@@ -321,7 +320,6 @@ void Backend::dispatch(const protocol::Request& request) {
                               : value == "deny_with_feedback" ? agent::Decision::Answer::deny_with_feedback
                                                               : agent::Decision::Answer::deny;
             decision.feedback = answer.value("feedback", "");
-            decision.network = answer.value("network", false);
             accepted = runtime_->answer(interaction_id, std::move(decision));
         }
         if (!accepted) {

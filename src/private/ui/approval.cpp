@@ -18,6 +18,18 @@ public:
         return visible ? tui::InputBox::cursor() : std::nullopt;
     }
 };
+
+std::string request_kind(std::string_view kind) {
+    const Strings& text = ui::text();
+    if (kind == "dynamic_command") return std::string(text.approve_req_command);
+    if (kind == "read_path") return std::string(text.approve_req_read);
+    if (kind == "write_path") return std::string(text.approve_req_write);
+    if (kind == "network") return std::string(text.approve_req_network);
+    if (kind == "sensitive_read") return std::string(text.approve_req_sensitive_read);
+    if (kind == "protected_write") return std::string(text.approve_req_protected_write);
+    if (kind == "host_access") return std::string(text.approve_req_host_access);
+    return std::string(kind);
+}
 } // namespace
 
 class ApprovalDialog::Panel final : public tui::Container {
@@ -103,7 +115,6 @@ void ApprovalDialog::open(const ApprovalRequest& approval,
     panel_->summary->set_text("  " + approval.reason);
     std::string keys = std::string(ui::text().approve_allow);
     if (!approval.session_rule.empty()) keys += std::string(ui::text().approve_session);
-    if (approval.can_network) keys += std::string(ui::text().approve_network);
     keys += std::string(ui::text().approve_deny);
     panel_->choices->set_text(keys);
     auto kind = tui::BlockKind::text;
@@ -112,13 +123,18 @@ void ApprovalDialog::open(const ApprovalRequest& approval,
     std::string scope = approval.summary;
     if (!approval.cwd.empty()) scope += "\ncwd: " + approval.cwd;
     if (!approval.mode.empty()) scope += "\nmode: " + approval.mode;
+    bool host_access = false;
     for (const auto& request : approval.requests) {
-        scope += "\n- " + request.reason;
+        host_access = host_access || request.kind == "host_access";
+        scope += "\n- " + request_kind(request.kind);
+        if (!request.reason.empty()) scope += " (" + request.reason + ")";
         if (!request.target.empty() && request.target != approval.preview_text)
             scope += ": " + request.target;
     }
-    if (approval.partially_executed) scope += "\nWarning: part of this call has already executed.";
-    if (!approval.session_rule.empty()) scope += "\n[a] " + approval.session_rule;
+    if (host_access) scope += "\n" + std::string(ui::text().approve_host_boundary);
+    if (approval.partially_executed) scope += "\n" + std::string(ui::text().approve_partial);
+    if (approval.session_rule.empty()) scope += "\n" + std::string(ui::text().approve_once_only);
+    else scope += "\n[a] " + approval.session_rule;
     panel_->preview->document().append_block(tui::BlockKind::text, std::move(scope));
     panel_->preview->document().append_block(kind, approval.preview_text);
     overlay_ = rt_.open_overlay(std::move(panel), tui::Placement::center, {}, this, panel_->feedback);
@@ -234,14 +250,13 @@ bool ApprovalDialog::on_event(const tui::Event& e) {
         if (e.key == tui::Key::escape) {
             panel_->feedback->visible = false; panel_->feedback->invalidate_layout();
         } else if (e.key == tui::Key::enter) {
-            answer({ApprovalAnswer::Decision::deny_with_feedback, panel_->feedback->text(), false});
+            answer({ApprovalAnswer::Decision::deny_with_feedback, panel_->feedback->text()});
         } else panel_->edit->on_event(e);
         return true;
     }
-    if (e.key == tui::Key::escape || e.text == "n") answer({ApprovalAnswer::Decision::deny, {}, false});
-    else if (e.text == "y") answer({ApprovalAnswer::Decision::allow, {}, false});
-    else if (e.text == "a" && !approval_.session_rule.empty()) answer({ApprovalAnswer::Decision::allow_session, {}, false});
-    else if (e.text == "w" && approval_.can_network) answer({ApprovalAnswer::Decision::allow, {}, true});
+    if (e.key == tui::Key::escape || e.text == "n") answer({ApprovalAnswer::Decision::deny, {}});
+    else if (e.text == "y") answer({ApprovalAnswer::Decision::allow, {}});
+    else if (e.text == "a" && !approval_.session_rule.empty()) answer({ApprovalAnswer::Decision::allow_session, {}});
     else if (e.text == "e") {
         panel_->feedback->visible = true; panel_->feedback->invalidate_layout();
     }

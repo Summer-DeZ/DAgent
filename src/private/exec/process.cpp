@@ -3,7 +3,6 @@
 #include "base/log.hpp"
 #include "base/text.hpp"
 #include "exec/detail.hpp"
-#include "exec/sandbox.hpp"
 
 #include <boost/asio/io_context.hpp>
 #include <boost/asio/post.hpp>
@@ -20,6 +19,7 @@
 #include <csignal>
 #include <cstring>
 #include <exception>
+#include <span>
 #include <string>
 #include <system_error>
 #include <utility>
@@ -57,12 +57,20 @@ struct EnvSetup {
 
 /// fork 之后、exec 之前执行的钩子，具体步骤见 detail::setup_child（只做 async-signal-safe 调用）。
 struct ExecSetup {
-    const Prepared* sandbox = nullptr;
     const char* cwd = nullptr;
+    std::span<const int> inherit_fds;
+
+    boost::system::error_code on_setup(bp::posix::default_launcher& launcher, const bp::filesystem::path&,
+                                       const char* const*) const {
+        launcher.fd_whitelist.insert(launcher.fd_whitelist.end(), inherit_fds.begin(), inherit_fds.end());
+        return {};
+    }
 
     boost::system::error_code on_exec_setup(bp::posix::default_launcher&, const bp::filesystem::path&,
                                           const char* const*) const {
-        const int err = detail::setup_child(sandbox, cwd);
+        for (const int fd : inherit_fds)
+            if (::fcntl(fd, F_SETFD, 0) == -1) return {errno, boost::system::system_category()};
+        const int err = detail::setup_child(cwd);
         if (err != 0) errno = err; // 失败时 launcher 把 errno（而不是返回的 ec）写回父进程
         return {err, boost::system::system_category()};
     }
@@ -229,7 +237,7 @@ private:
         };
 
         std::vector<std::string> args(cmd_.argv.begin() + 1, cmd_.argv.end());
-        ExecSetup setup{cmd_.sandbox, cmd_.cwd.empty() ? nullptr : cmd_.cwd.c_str()};
+        ExecSetup setup{cmd_.cwd.empty() ? nullptr : cmd_.cwd.c_str(), cmd_.inherit_fds};
 
         try {
             proc_ = bp::process(ctx_, program, args, env_setup, setup, stdio);

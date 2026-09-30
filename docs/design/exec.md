@@ -2,7 +2,7 @@
 
 执行外部命令的模块。头文件在 `src/public/exec/`，实现在 `src/private/exec/`，构建为静态库
 `dagent_exec`，命名空间 `dagent::exec`。依赖 base；内部使用 Boost.Process v2 + Asio（header-only）、
-libseccomp、tree-sitter + tree-sitter-bash。
+tree-sitter + tree-sitter-bash。
 
 ---
 
@@ -13,7 +13,8 @@ libseccomp、tree-sitter + tree-sitter-bash。
 | 一次性命令：超时、取消、流式输出、输出截断，结束时清理整个进程组 | `exec/process.hpp` | `run`、`which`、`shell_quote` |
 | 长期存活的子进程：按行读 stdout，线程安全地写 stdin（给 MCP stdio 用） | `exec/child.hpp` | `Child` |
 | bash 命令分析：语法状态、简单命令、影响证据和只读分类 | `exec/shell.hpp` | `analyze`、`is_known_readonly`、`is_dangerous` |
-| OS 隔离：Landlock 文件范围、seccomp 通信/进程控制、私有临时目录 | `exec/sandbox.hpp` | `prepare`、`probe` |
+| 受限执行的中立值：模式、路径/网络边界与能力快照 | `exec/sandbox.hpp` | `Policy`、`Support`、`sensitive_paths` |
+| SRT 后端：bridge 控制通道、运行中网络审批、只读搜索边界 | `exec/srt.hpp` | `run_srt`、`srt_config`、`ReadOnlySandbox` |
 
 `exec/detail.hpp` 放的是模块内部几个实现文件共用的代码，外部不要 include。
 
@@ -109,42 +110,41 @@ sh/bash。它只向 agent Policy 提供判定，不执行命令。
 
 ---
 
-## 5. OS 隔离：prepare / probe
+## 5. 受限执行：SRT 后端
 
 `Policy` 包含读/写允许范围、受保护读/写子路径、网络与本地 socket 开关和私有临时空间要求。
-`prepare` 在父进程中创建私有 `/tmp/dagent-command-*` 目录、Landlock 规则集和 seccomp BPF；bash 将
-`TMPDIR`/`TMP`/`TEMP` 指向该目录，`Prepared` 销毁时清理它。命令只拿到显式读取范围和必要系统工具链，
-不再继承全盘读取；`/tmp` 共享目录不在允许范围内。
-后端会在每个明确读取/写入根下递归找出 `.env*`、`*.pem`、`*.key`、私钥名、`.ssh` 和 `.gnupg`，
-以 `protect_sensitive_names=true` 的语义规则加入实际排除集合；该规则本身进入 tool_started/BashView 记录。
+受限命令由 SRT 后端执行：每个 Bash 执行实例启动一个 Node bridge，bridge 初始化
+`@anthropic-ai/sandbox-runtime`、生成 bubblewrap 包装命令并管理代理出口；命令的
+stdin/stdout/stderr 保持独立，网络判定经独立控制 FD 询问宿主（见 §7）。
 
-seccomp 默认拒绝 AF_INET/AF_INET6/AF_NETLINK、AF_UNIX、io_uring socket 绕过，以及 ptrace、process_vm、
-kcmp、pidfd_getfd。信号边界由 Landlock ABI 6 的 `LANDLOCK_SCOPE_SIGNAL` 承担：命令只能向同一 domain
-内的进程（自身与子孙）发信号，`timeout`、`kill %1` 等管理自身子进程的用法正常，宿主进程与 `kill -1`
-广播都收不到；内核低于 ABI 6 时退回 seccomp 整体拒绝 kill/tkill/tgkill/rt_sigqueueinfo/rt_tgsigqueueinfo/
-pidfd_send_signal，此时自身子进程也无法被信号管理，`Support::child_signals` 报告 false，system prompt
-据此提示模型改用 bash 的 `timeout_ms`（这不是缺失的安全边界，不进 `missing`）。规则在 exec 前应用并由全部子进程继承；
-准备或应用失败时命令不执行，不回退 full_access。普通程序 stderr 中的 `Permission denied` 不再被当作可信提权证据。
+`exec::srt_config` 把中立 `Policy` 编译为 SRT 配置：`denyRead` 从 `/` 开始，只显式重开系统路径、
+工作区、实例私有 HOME 与工具链目录；`denyWrite` 在可写树内以启动时快照拒绝工作区里已有的
+`.env*`、`*.pem`、`*.key`、私钥名、`.ssh` 和 `.gnupg`；`/tmp` 只重开实例私有目录。敏感路径扫描由
+`exec::sensitive_paths` 提供，该规则本身进入 tool_started/BashView 记录。受限命令的 `/proc`、`/dev`
+由 SRT 以新挂载处理，`/sys` 不被根 deny 隐藏——这些都是平台例外，文档如实列出。
 
-`Support` 报告后端名和文件读写、嵌套保护、临时空间、网络、本地 socket、进程控制、子进程信号管理能力，并提供
-`read_only_ready()` / `workspace_ready()`。权限层只在对应 profile 真实满足时启用；`unrestricted` 明确使用 host。
+`Support` 是启动时真实做一次最小隔离启动后的结果：`backend` 为 `srt` 或 `none`，并提供
+`read_only_ready()` / `workspace_ready()`。权限层只在对应 profile 真实满足时启用；能力不足时受限命令
+不启动，交互入口询问一次性 host access，非交互运行返回需要批准。`unrestricted` 明确使用 host 执行。
 
-### 当前后端决策
+### 启动与并发
 
-本机兼容路径是 `landlock-seccomp-v2`。它能承担显式只读范围、私有临时空间和通信/进程系统调用限制，
-但 Landlock 的父目录 allow 无法由子目录规则撤销，因此不能证明“workspace 可写但其中 `home/`、`.git`
-不可写”。`protected_subpaths` 据实报告 false，`workspace_ready()` 因此为 false，动态或写入型 bash 在
-ask/workspace 下 fail closed；用户只有显式切换 unrestricted 才会使用宿主全访问。
+- bridge 的 cwd 是每执行私有、位于所有可写根之外的控制目录，实际命令 cwd 是 workspace；
+  私有 cwd 落在可写根内时该 profile 直接拒绝，不静默继续。
+- bridge 启动握手报告协议版本、SRT 版本与准备环境身份；不匹配或超过 `startup_timeout_ms` 时受限
+  启动失败并给出阶段。
+- 工作区保护遵循启动快照语义：运行中新建的同名敏感文件不在保护承诺内。
 
-本机 bubblewrap 0.9.0 的最小 user namespace 启动在 uid map 阶段返回 EPERM。Anthropic
-`sandbox-runtime` Linux 后端的强/弱嵌套模式也都依赖 bubblewrap user namespace，不能绕过该限制。
-版本、第一方依据和部署前置见 [后端调研](../research/command-sandbox-backend.md)。若宿主日后提供允许 userns 的
-AppArmor profile，仍需接入并真实验收完整后端后才能把 `workspace_ready()` 改为 true。
+### 当前本机前置
+
+本机 bubblewrap 需要非特权 user namespace。默认启动受主机 AppArmor 限制；在管理员提供允许 userns
+的 profile（实验用 `aa-exec -p linux-sandbox`）下 SRT 0.0.77 可实际启动。没有该前置时
+`dagent sandbox status` 报告静态依赖与真实探测的分离结果，受限命令不启动。
 
 ---
 
 ## 6. 依赖与构建
 
 - Boost.Process v2 以 header-only 方式使用，需要定义 `BOOST_PROCESS_USE_STD_FS=1`（已在 `dagent_exec` 上设置）。
-- `cmake/deps.cmake` 里：tree-sitter v0.27.0 通过 FetchContent 构建；tree-sitter-bash v0.25.1 只拉取源码，直接编译发布包里自带的 `parser.c`/`scanner.c`，不需要 tree-sitter CLI；libseccomp 通过 pkg-config 查找（`apt install libseccomp-dev`）。
+- `cmake/deps.cmake` 里：tree-sitter v0.27.0 通过 FetchContent 构建；tree-sitter-bash v0.25.1 只拉取源码，直接编译发布包里自带的 `parser.c`/`scanner.c`，不需要 tree-sitter CLI。受限执行依赖运行时的 `internal/sandbox` 环境（Node + SRT + bwrap/socat）。
 - 根项目启用了 C 语言，用来编译 tree-sitter。

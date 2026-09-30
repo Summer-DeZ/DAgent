@@ -17,7 +17,7 @@ namespace dagent::app {
 struct PromptVars {
     std::string model;
     std::filesystem::path project_root;
-    bool sandbox = false;             ///< exec::probe() 结果：沙箱可用
+    bool sandbox = false;             ///< 受限执行探测结果：沙箱可用
     bool workspace_sandbox = false;
     std::string sandbox_backend;
     std::vector<std::string> sandbox_missing;

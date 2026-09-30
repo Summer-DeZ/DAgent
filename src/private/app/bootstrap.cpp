@@ -60,30 +60,29 @@ SessionAssembly::Options session_options(const Config& config, const runtime::Bo
     out.search = config.search;
     out.process = config.process;
     out.sandbox_options = config.sandbox;
-    // SRT 是首选后端：真实做一次隔离启动探测；不可用时退回现有 Landlock 后端（S09 再移除）。
+    // 唯一受限后端是 SRT：真实做一次隔离启动探测；失败时受限命令不启动，只保留显式 host 执行。
     if (auto runtime = sandbox_runtime(paths)) {
         const nlohmann::json probe = sandbox_probe(*runtime, paths.runtime / "sandbox");
         if (probe.value("ok", false)) {
             exec::Support support;
             support.backend = "srt";
-            support.filesystem_write = true;
-            support.filesystem_read = true;
-            support.protected_subpaths = true;
-            support.private_tmp = true;
-            support.network_block = true;
-            support.local_socket_block = true;
-            support.process_control_block = true;
             support.child_signals = true;
             out.sandbox = std::move(support);
             out.srt = std::move(runtime);
         } else {
-            out.sandbox = exec::probe();
-            base::logger("app")->warn("SRT sandbox is not ready ({}); falling back to the Landlock backend",
+            exec::Support support;
+            support.missing.push_back("SRT isolation probe failed: " +
+                                      probe.value("error", std::string{"unknown"}));
+            out.sandbox = std::move(support);
+            base::logger("app")->warn("SRT sandbox is not ready: {}",
                                       probe.value("error", std::string{"unknown"}));
         }
     } else {
-        out.sandbox = exec::probe();
+        exec::Support support;
+        support.missing.push_back("internal/sandbox runtime is not prepared; run `dagent runtime sync`");
+        out.sandbox = std::move(support);
     }
+    out.tools.sandbox = out.sandbox_options;
     if (out.srt) {
         out.tools.srt = out.srt;
         out.tools.sandbox_state_root = paths.runtime / "sandbox";
@@ -157,6 +156,33 @@ runtime::Assembled assemble_backend(const runtime::BootstrapOptions& options) {
     context.sandbox = session.search.sandbox;
     out.queries = std::make_shared<QueryGatewayImpl>(config.session, options.cwd, config.project_root,
                                                    session.search, skills, config.process, config.ui.completion_max_files);
+    // stdio MCP：用受信任 profile + 已解析 SRT 运行时构造受限启动参数；缺 profile 的 server 不启动。
+    if (session.srt) {
+        for (auto& server : config.mcp_servers) {
+            if (server.transport != mcp::Transport::stdio || !server.profile_present) continue;
+            mcp::StdioSandbox sandbox;
+            sandbox.runtime = *session.srt;
+            sandbox.state_root = paths.runtime / "sandbox";
+            sandbox.startup_timeout = config.sandbox.startup_timeout;
+            exec::Policy policy;
+            policy.mode = exec::Mode::workspace_write;
+            policy.readable = server.profile_read;
+            policy.writable = server.profile_write;
+            policy.network_targets = server.profile_network;
+            policy.protected_read = {paths.root / "config", paths.root / "data", paths.root / "logs",
+                                     paths.root / "run"};
+            policy.protected_write = policy.protected_read;
+            policy.protect_sensitive_names = true;
+            policy.private_tmp = true;
+            const auto environment = config.tools.environments.find(server.environment);
+            if (environment != config.tools.environments.end())
+                policy.readable.insert(policy.readable.end(), environment->second.readable.begin(),
+                                       environment->second.readable.end());
+            if (server.environment == "project") policy.readable.push_back(options.cwd);
+            sandbox.policy = std::move(policy);
+            server.sandbox = std::move(sandbox);
+        }
+    }
     session.hub = std::make_shared<tools::McpHub>(config.mcp_servers, config.mcp);
     session.environment = workspace::collect_environment(options.cwd, context);
     session.subagents = std::move(config.subagents);

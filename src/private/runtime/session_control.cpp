@@ -150,6 +150,21 @@ void Runtime::sync_control_snapshot() {
 
 void Runtime::publish(EventPayload payload, const std::string& session_id,
                                 std::uint64_t generation) {
+    // ToolStarted 之前可能刚写入会话授权；同步一次授权列表，界面无需等下一次整体刷新。
+    if (const auto* core = std::get_if<agent::Event>(&payload);
+        core != nullptr && std::holds_alternative<agent::ToolStarted>(*core)) {
+        std::shared_ptr<SessionInstance> instance;
+        {
+            const std::lock_guard lock(mutex_);
+            instance = current_;
+        }
+        if (instance != nullptr) {
+            std::vector<agent::Policy::SessionGrant> grants =
+                instance->session().policy().session_grants();
+            const std::lock_guard lock(publish_mutex_);
+            snapshot_.grants = std::move(grants);
+        }
+    }
     Event event;
     {
         const std::lock_guard lock(publish_mutex_);
@@ -324,11 +339,43 @@ std::expected<void, RuntimeError> Runtime::compact() {
 }
 
 std::expected<void, RuntimeError> Runtime::revoke_grant(std::string grant_id, GrantRevoked done) {
-    Command command;
-    command.kind = Command::Kind::revoke_grant;
-    command.value = std::move(grant_id);
-    command.grant_done = std::move(done);
-    return enqueue(std::move(command));
+    // 撤销走即时路径：不排在 turn 之后；核对并终止使用旧授权的活跃执行。
+    std::shared_ptr<SessionInstance> instance;
+    {
+        const std::lock_guard lock(mutex_);
+        if (closed_ || state_ == State::closing || state_ == State::closed || current_ == nullptr)
+            return std::unexpected(RuntimeError{RuntimeError::Kind::invalid_state, "the session is not available"});
+        if (state_ == State::replacing || command_pending_)
+            return std::unexpected(RuntimeError{RuntimeError::Kind::busy, "the session is busy"});
+        instance = current_;
+    }
+    agent::Session& session = instance->session();
+    const bool removed = session.policy().revoke(grant_id);
+    if (removed) {
+        session.committer().commit_permission_revoked(grant_id);
+        session.committer().sync();
+        const auto stopped = session.executions().reconcile(session.policy());
+        for (const auto& [call_id, reason] : stopped) {
+            log_runtime()->info("撤销 {} 终止执行 {}：{}", grant_id, call_id, reason);
+        }
+        // 撤销外部工具会话许可：作废该 server 的连接与旧 lease。
+        if (grant_id.starts_with("external-")) {
+            const std::string tool = grant_id.substr(9);
+            if (tool.starts_with("mcp__")) {
+                const std::size_t end = tool.find("__", 5);
+                if (end != std::string::npos) instance->revoke_mcp(tool.substr(5, end - 5));
+            }
+        }
+        // 只更新授权列表：完整快照会读执行线程正在写的对话/计划。
+        std::vector<agent::Policy::SessionGrant> grants = session.policy().session_grants();
+        {
+            const std::lock_guard lock(publish_mutex_);
+            snapshot_.grants = std::move(grants);
+        }
+        log_runtime()->info("撤销会话授权 {}", grant_id);
+    }
+    if (done) done(removed);
+    return {};
 }
 
 std::expected<void, RuntimeError> Runtime::cycle_permission() {
@@ -353,6 +400,7 @@ std::expected<void, RuntimeError> Runtime::cycle_permission() {
     case agent::PermissionMode::workspace: policy.set_mode(agent::PermissionMode::unrestricted); break;
     case agent::PermissionMode::unrestricted: policy.set_mode(agent::PermissionMode::ask); break;
     }
+    apply_permission_change(*instance);
     {
         const std::lock_guard lock(publish_mutex_);
         snapshot_.permission_mode = policy.mode();
@@ -381,6 +429,7 @@ std::expected<void, RuntimeError> Runtime::toggle_planning() {
     const bool planning = !session.policy().planning();
     session.policy().set_planning(planning);
     session.policy().set_read_only(planning || session.config().read_only);
+    apply_permission_change(*instance);
     {
         const std::lock_guard lock(publish_mutex_);
         snapshot_.planning = planning;
@@ -484,27 +533,19 @@ Runtime::PendingReplace Runtime::prepare_switch(const std::string& model_name) {
     return pending;
 }
 
-void Runtime::execute_command(const Command& command) {
-    if (command.kind == Command::Kind::revoke_grant) {
-        try {
-            std::shared_ptr<SessionInstance> instance;
-            {
-                const std::lock_guard lock(mutex_);
-                instance = current_;
-            }
-            agent::Session& session = instance->session();
-            const bool removed = session.policy().revoke(command.value);
-            if (removed) {
-                session.committer().commit_permission_revoked(command.value);
-                session.committer().sync();
-                refresh_snapshot(*instance);
-            }
-            command.grant_done(removed);
-        } catch (const std::exception& error) {
-            command.grant_done(std::unexpected(RuntimeError{RuntimeError::Kind::invalid_state, error.what()}));
-        }
-        return;
+void Runtime::apply_permission_change(SessionInstance& instance) {
+    agent::Policy& policy = instance.session().policy();
+    if (subagent_ != nullptr)
+        subagent_->apply_parent_permission(policy.mode(), policy.read_only(), policy.planning());
+    for (const auto& [call_id, reason] : instance.session().executions().reconcile(policy)) {
+        log_runtime()->info("权限变化终止执行 {}：{}", call_id, reason);
     }
+    // 生效权限进入只读/规划上限：外部工具被拒绝，已有连接与 lease 一并作废。
+    const agent::EffectivePermission live = policy.effective();
+    if (live.read_only || live.planning) instance.revoke_mcp({});
+}
+
+void Runtime::execute_command(const Command& command) {
     const auto operation_name = [&]() -> std::string {
         switch (command.kind) {
         case Command::Kind::new_session: return "new session";
@@ -512,7 +553,6 @@ void Runtime::execute_command(const Command& command) {
         case Command::Kind::select_model: return "switch model";
         case Command::Kind::add_model: return "add model";
         case Command::Kind::compact: return "compact";
-        case Command::Kind::revoke_grant: return "revoke grant";
         }
         return "operation";
     };

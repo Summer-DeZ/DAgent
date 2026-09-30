@@ -45,6 +45,8 @@ public:
     virtual std::vector<agent::McpServerState> mcp_states() const = 0;
     /// @brief 本会话持有的可写所有权；同会话切模型时转交候选，寿命与实例相同。
     virtual std::shared_ptr<agent::SessionLease> lease() const = 0;
+    /// @brief 作废 MCP 连接与旧 lease（空表示全部 server）；应由下一次主要求按现有 profile 重连。
+    virtual void revoke_mcp(std::string_view server) = 0;
 };
 
 /// @brief 会话控制事实：新会话/恢复/模型替换要保留或重置的状态。

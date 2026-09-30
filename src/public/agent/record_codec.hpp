@@ -68,7 +68,6 @@ struct ToolRecord {
 
 struct PermissionRecord {
     std::string call_id, answer, rule;
-    bool network = false;
 };
 
 struct PermissionRevokedRecord {

@@ -51,7 +51,7 @@ public:
         exec::Options process;
         exec::SandboxOptions sandbox_options;
         exec::Support sandbox; ///< 启动时探测一次
-        std::optional<exec::SrtRuntime> srt; ///< SRT 后端资源；为空表示用 Landlock 兼容后端
+        std::optional<exec::SrtRuntime> srt; ///< SRT 后端资源；为空表示受限执行不可用
         storage::Options storage;
         std::string user_instructions;
         std::string system_prompt, compact_prompt; ///< 主会话提示词模板

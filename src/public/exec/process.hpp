@@ -17,8 +17,6 @@
 
 namespace dagent::exec {
 
-struct Prepared;
-
 struct Environment {
     std::filesystem::path shell;
     std::vector<std::pair<std::string, std::string>> variables;
@@ -45,7 +43,7 @@ struct Command {
     std::optional<std::chrono::milliseconds> timeout;  ///< 为空时用 Options::default_timeout
     bool merge_stderr = false;              ///< true 时 stderr 写进 stdout 管道，保持交错顺序
     bool inherit_env = true;                ///< false 时只使用默认项与 env_set，适合受限命令
-    const Prepared* sandbox = nullptr;      ///< 不为空时在子进程里应用沙箱（exec/sandbox.hpp）
+    std::vector<int> inherit_fds;            ///< Explicitly retained across exec; owned by the caller.
 };
 
 enum class Stream { out, err };

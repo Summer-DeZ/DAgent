@@ -6,8 +6,10 @@
 
 #include <cerrno>
 #include <algorithm>
+#include <condition_variable>
 #include <cstdlib>
 #include <cstring>
+#include <format>
 #include <mutex>
 #include <set>
 #include <thread>
@@ -46,15 +48,58 @@ std::vector<std::string> existing_unique(std::vector<fs::path> paths) {
 }
 
 json build_config(const SrtRequest& request, const fs::path& private_home) {
-    const Policy& policy = request.policy;
+    return srt_config(request.runtime, request.policy, private_home, false);
+}
+
+struct ExecutionResources {
+    fs::path control_dir, private_home;
+    int control[2] = {-1, -1};
+    void close() {
+        for (int& fd : control) {
+            if (fd >= 0) { ::shutdown(fd, SHUT_RDWR); ::close(fd); fd = -1; }
+        }
+    }
+    ~ExecutionResources() {
+        close();
+        std::error_code error;
+        if (!control_dir.empty()) fs::remove_all(control_dir, error);
+        if (!private_home.empty()) fs::remove_all(private_home, error);
+    }
+};
+
+struct ControlState {
+    std::mutex mutex;
+    std::condition_variable_any started_cv;
+    bool started = false;
+    bool exited = false;
+    std::optional<int> exit_code;
+    std::optional<int> signal;
+    bool cancelled = false;
+    std::string bridge_error;
+    int network_requests = 0;
+};
+
+void append_decision(int fd, int request_id, bool allow, bool cancel) {
+    const json frame = {{"type", "network_decision"}, {"request_id", request_id}, {"allow", allow},
+                        {"cancel", cancel}};
+    const std::string line = frame.dump() + "\n";
+    const ssize_t written = ::send(fd, line.data(), line.size(), MSG_NOSIGNAL);
+    if (written < 0 && errno != EPIPE)
+        base::logger("exec")->warn("srt control write failed: {}", std::strerror(errno));
+}
+
+} // namespace
+
+json srt_config(const SrtRuntime& runtime, const Policy& policy, const fs::path& private_home,
+                bool strict_network) {
     std::vector<fs::path> readable = {
         "/bin", "/sbin", "/usr", "/lib", "/lib64", "/etc", "/dev", "/proc", "/sys",
     };
     readable.insert(readable.end(), policy.readable.begin(), policy.readable.end());
     readable.push_back(private_home);
-    readable.push_back(request.runtime.entry.parent_path().parent_path()); // SRT 包（apply-seccomp 等）
-    readable.push_back(request.runtime.shell.parent_path());
-    readable.push_back(request.runtime.rg.parent_path());
+    readable.push_back(runtime.entry.parent_path().parent_path()); // SRT 包（apply-seccomp 等）
+    readable.push_back(runtime.shell.parent_path());
+    readable.push_back(runtime.rg.parent_path());
 
     std::vector<fs::path> writable = policy.mode == Mode::read_only ? std::vector<fs::path>{} : policy.writable;
     writable.push_back(private_home);
@@ -80,53 +125,16 @@ json build_config(const SrtRequest& request, const fs::path& private_home) {
     std::erase_if(deny_read, [&](const auto& path) {
         return std::ranges::find(policy.read_exceptions, path) != policy.read_exceptions.end();
     });
-    // strictAllowlist=false：未命中目标交给 askCallback（bridge → 宿主判定）；宿主没有审批入口时同样拒绝。
+    // strictAllowlist=false：未命中目标交给 askCallback（bridge → 宿主判定）；长期服务用 true 直接拒绝。
     json network = {{"allowedDomains", policy.network_targets},
                     {"deniedDomains", json::array()},
-                    {"strictAllowlist", false}};
+                    {"strictAllowlist", strict_network}};
     json filesystem = {{"denyRead", existing_unique(deny_read)},
                        {"allowRead", existing_unique(readable)},
                        {"allowWrite", existing_unique(writable)},
                        {"denyWrite", existing_unique(protected_write)}};
     return {{"network", std::move(network)}, {"filesystem", std::move(filesystem)}};
 }
-
-struct ExecutionResources {
-    fs::path control_dir, private_home;
-    int control[2] = {-1, -1};
-    void close() {
-        for (int& fd : control) {
-            if (fd >= 0) { ::shutdown(fd, SHUT_RDWR); ::close(fd); fd = -1; }
-        }
-    }
-    ~ExecutionResources() {
-        close();
-        std::error_code error;
-        if (!control_dir.empty()) fs::remove_all(control_dir, error);
-        if (!private_home.empty()) fs::remove_all(private_home, error);
-    }
-};
-
-struct ControlState {
-    std::mutex mutex;
-    bool exited = false;
-    std::optional<int> exit_code;
-    std::optional<int> signal;
-    bool cancelled = false;
-    std::string bridge_error;
-    int network_requests = 0;
-};
-
-void append_decision(int fd, int request_id, bool allow, bool cancel) {
-    const json frame = {{"type", "network_decision"}, {"request_id", request_id}, {"allow", allow},
-                        {"cancel", cancel}};
-    const std::string line = frame.dump() + "\n";
-    const ssize_t written = ::send(fd, line.data(), line.size(), MSG_NOSIGNAL);
-    if (written < 0 && errno != EPIPE)
-        base::logger("exec")->warn("srt control write failed: {}", std::strerror(errno));
-}
-
-} // namespace
 
 Result run_srt(const SrtRequest& request, const Options& options,
                const std::function<void(Stream, std::string_view)>& on_output, std::stop_token stop) {
@@ -154,7 +162,7 @@ Result run_srt(const SrtRequest& request, const Options& options,
     fs::create_directories(private_home / "run", error);
 
     auto& control = resources.control;
-    if (::socketpair(AF_UNIX, SOCK_STREAM, 0, control) != 0)
+    if (::socketpair(AF_UNIX, SOCK_STREAM | SOCK_CLOEXEC, 0, control) != 0)
         throw ExecError{ExecError::Kind::sandbox, system_error("socketpair")};
     const auto cleanup_fds = [&] { resources.close(); };
     std::stop_source gates_stop;
@@ -164,10 +172,6 @@ Result run_srt(const SrtRequest& request, const Options& options,
     const int channel = control[0];
 
     try {
-        // 父端 CLOEXEC；子端保留给 bridge。
-        ::fcntl(control[0], F_SETFD, FD_CLOEXEC);
-        ::fcntl(control[1], F_SETFD, 0);
-
         ControlState state;
         json init = {{"type", "init"},
                      {"command", request.command},
@@ -220,12 +224,18 @@ Result run_srt(const SrtRequest& request, const Options& options,
                                                 action == NetworkGateResult::cancel);
                         });
                     } else if (type == "ready") {
-                        if (frame.value("protocol", 0) != 1 || frame.value("srt", "") != "0.0.77" ||
+                        if (frame.value("protocol", 0) != 1 || frame.value("srt", "") != kSrtVersion ||
                             frame.value("environment", "") != request.runtime.entry.string()) {
                             const std::lock_guard lock(state.mutex);
                             state.bridge_error = "SRT protocol, package version or environment identity mismatch";
+                            state.started_cv.notify_all();
                             ::shutdown(channel, SHUT_RDWR);
                         } else {
+                            {
+                                const std::lock_guard lock(state.mutex);
+                                state.started = true;
+                                state.started_cv.notify_all();
+                            }
                             const std::lock_guard lock(control_write);
                             const std::string start = "{\"type\":\"start\"}\n";
                             ::send(channel, start.data(), start.size(), MSG_NOSIGNAL);
@@ -239,15 +249,31 @@ Result run_srt(const SrtRequest& request, const Options& options,
                         state.cancelled = frame.value("cancelled", false);
                         if (!frame["exit_code"].is_null()) state.exit_code = frame["exit_code"].get<int>();
                         if (!frame["signal"].is_null()) state.signal = frame["signal"].get<int>();
+                        state.started_cv.notify_all();
                     } else if (type == "bridge_error") {
                         const std::lock_guard lock(state.mutex);
                         state.bridge_error = frame.value("error", "bridge failed");
+                        state.started_cv.notify_all();
                     }
                 }
             }
         });
 
+        // 启动握手有明确期限：bridge 卡在 initialize 时不能无限挂住受限命令。
+        std::jthread watchdog([&](std::stop_token watchdog_stop) {
+            std::unique_lock lock(state.mutex);
+            state.started_cv.wait_for(lock, watchdog_stop, request.startup_timeout,
+                                      [&] { return state.started || state.exited || !state.bridge_error.empty(); });
+            if (state.started || state.exited) return;
+            if (state.bridge_error.empty())
+                state.bridge_error = std::format("sandbox bridge did not become ready within {} ms",
+                                                 request.startup_timeout.count());
+            lock.unlock();
+            ::shutdown(channel, SHUT_RDWR);
+        });
+
         Command cmd;
+        cmd.inherit_fds = {control[1]};
         cmd.argv = {request.runtime.node.string(), request.runtime.bridge.string(), "--mode=run",
                     "--srt=" + request.runtime.entry.string(), "--bwrap=" + request.runtime.bwrap.string(),
                     "--socat=" + request.runtime.socat.string(), "--rg=" + request.runtime.rg.string(),

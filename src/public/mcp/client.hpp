@@ -8,6 +8,7 @@
 
 #include <chrono>
 #include <memory>
+#include <optional>
 #include <stdexcept>
 #include <stop_token>
 #include <string>
@@ -16,6 +17,7 @@
 #include <vector>
 
 #include "exec/process.hpp"
+#include "exec/srt.hpp"
 #include "lib/nlohmann/json.hpp"
 #include "net/http.hpp"
 
@@ -24,6 +26,15 @@ namespace dagent::mcp {
 enum class Transport {
     stdio, ///< 启动子进程，stdin/stdout 每行一条 JSON-RPC 消息
     http,  ///< Streamable HTTP：每个请求一个 POST，响应可能是 JSON，也可能是 SSE
+};
+
+/// @brief 本地 stdio server 在 SRT 内的受限启动参数；装配层用受信任配置 + 已解析运行时填入。
+/// 没有它就不能启动 stdio server：不允许"先运行、再在 tools/call 时请求批准"。
+struct StdioSandbox {
+    exec::SrtRuntime runtime;
+    exec::Policy policy; ///< readable/writable/network_targets 等执行边界
+    std::filesystem::path state_root;
+    std::chrono::milliseconds startup_timeout{15000};
 };
 
 /// @brief 一个 server 的连接参数。对应 config.json 中 mcp.servers 的一项，由 app 映射并展开
@@ -38,6 +49,14 @@ struct ServerConfig {
     std::string environment = "managed"; ///< managed, project, or mcp/<name>
     std::string url;      ///< http：MCP endpoint
     net::Headers headers; ///< http：附加请求头（如 Authorization）
+
+    // ---- 受信任 Home 配置里的显式权限 profile ----
+    bool profile_present = false; ///< false：缺少 profile，该 server 不启动
+    std::vector<std::filesystem::path> profile_read;    ///< 额外可读范围（相对路径已由配置层解析）
+    std::vector<std::filesystem::path> profile_write;   ///< 可写范围
+    std::vector<std::string> profile_network;           ///< 严格允许的目标 `host` 或 `host:port`
+    /// 装配层填写的 SRT 启动参数；stdio server 必须持有它才会启动。
+    std::optional<StdioSandbox> sandbox;
 };
 
 /// @brief 暴露给模型的工具。qualified_name 即 mcp__<server>__<name>，是工具名唯一合法的形式
@@ -108,6 +127,12 @@ public:
 
     /// @brief 连接时发现的工具，连接存续期间保持不变。
     const std::vector<Tool>& tools() const;
+
+    /// @brief 传输类型；用于记录/界面区分远程服务与本机受限进程。
+    Transport transport() const;
+
+    /// @brief 立即结束连接：挂起请求失败、后续请求拒绝（旧 lease 失效）。可重复调用。
+    void shutdown();
 
     /// @brief 调用工具。tool 传 tools() 里的 qualified_name；args 是参数对象。
     CallResult call(std::string_view tool, const nlohmann::json& args, std::chrono::milliseconds timeout,

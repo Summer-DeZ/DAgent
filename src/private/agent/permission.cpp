@@ -64,6 +64,12 @@ bool network_pattern_matches(std::string_view pattern, const NetworkTarget& targ
     return pattern == target.host;
 }
 
+int mode_rank(PermissionMode mode) { return static_cast<int>(mode); }
+
+PermissionMode stricter_mode(PermissionMode a, PermissionMode b) {
+    return mode_rank(a) <= mode_rank(b) ? a : b;
+}
+
 bool single_use_only(const Approval& approval) {
     return std::ranges::any_of(approval.requests, [](const Approval::Request& request) {
         return request.kind == Approval::Request::Kind::sensitive_read ||
@@ -211,12 +217,22 @@ ExecutionGrant Policy::grant_for_exec(SandboxProfile profile, GrantSource source
     return grant;
 }
 
+ExecutionGrant Policy::grant_for_external(const PreparedIntent& intent, GrantSource source) const {
+    ExecutionGrant grant;
+    grant.revision = revision();
+    grant.source = source;
+    grant.backend = intent.external_boundary.empty() ? "external" : intent.external_boundary;
+    return grant;
+}
+
 ExecutionGrant Policy::grant_for_files(const PreparedIntent& intent, GrantSource source) const {
     ExecutionGrant grant;
     grant.revision = revision();
     grant.source = source;
     grant.backend = "native";
-    grant.protect_sensitive_names = mode() != PermissionMode::unrestricted || read_only() || planning();
+    const EffectivePermission live = effective();
+    grant.protect_sensitive_names =
+        live.mode != PermissionMode::unrestricted || live.read_only || live.planning;
     for (const auto& path : intent.paths) {
         if (path.access == Access::write) grant.writable.push_back(path.path);
         else {
@@ -230,12 +246,13 @@ ExecutionGrant Policy::grant_for_files(const PreparedIntent& intent, GrantSource
 
 Verdict Policy::evaluate(const ToolCall& call, const PreparedIntent& intent) const {
     const std::lock_guard lock(rules_mutex_);
+    const EffectivePermission live = effective();
     Verdict verdict;
     verdict.approval.call_id = call.id;
     verdict.approval.tool = call.name;
     verdict.approval.intent = intent;
     verdict.approval.cwd = workspace_root_.string();
-    verdict.approval.mode = planning() ? "plan" : std::string(to_string(mode()));
+    verdict.approval.mode = live.planning ? "plan" : std::string(to_string(live.mode));
 
     const auto has = [&](PathClass cls) {
         return std::ranges::any_of(intent.paths, [&](const ResourceIntent& path) {
@@ -244,9 +261,13 @@ Verdict Policy::evaluate(const ToolCall& call, const PreparedIntent& intent) con
     };
     const auto answer = [&](Verdict::Kind kind) {
         verdict.kind = kind;
-        if (kind == Verdict::Kind::allow && (intent.kind == ToolKind::read || intent.kind == ToolKind::write))
-            verdict.grant = grant_for_files(intent, mode() == PermissionMode::unrestricted && !read_only() && !planning()
-                                                       ? GrantSource::unrestricted : GrantSource::mode);
+        const GrantSource source = live.mode == PermissionMode::unrestricted && !live.read_only && !live.planning
+                                       ? GrantSource::unrestricted : GrantSource::mode;
+        if (kind != Verdict::Kind::allow) return verdict;
+        if (intent.kind == ToolKind::read || intent.kind == ToolKind::write)
+            verdict.grant = grant_for_files(intent, source);
+        else if (intent.kind == ToolKind::external)
+            verdict.grant = grant_for_external(intent, source);
         return verdict;
     };
 
@@ -261,7 +282,7 @@ Verdict Policy::evaluate(const ToolCall& call, const PreparedIntent& intent) con
         return verdict;
     }
 
-    if (planning() || read_only()) {
+    if (live.planning || live.read_only) {
         if (intent.kind == ToolKind::exec && intent.command && intent.command->known_readonly) {
             if (!sandbox_.read_only_ready) {
                 verdict.kind = Verdict::Kind::deny;
@@ -273,14 +294,14 @@ Verdict Policy::evaluate(const ToolCall& call, const PreparedIntent& intent) con
         }
         if (intent.kind != ToolKind::read) {
             verdict.kind = Verdict::Kind::deny;
-            verdict.reason = planning()
+            verdict.reason = live.planning
                                  ? "Planning mode permits research only; state-changing and dynamic commands are disabled"
                                  : "read-only mode: writes, dynamic commands and external tools are disabled";
             return verdict;
         }
     }
 
-    if (mode() == PermissionMode::unrestricted && !read_only() && !planning()) {
+    if (live.mode == PermissionMode::unrestricted && !live.read_only && !live.planning) {
         if (intent.kind == ToolKind::exec)
             verdict.grant = grant_for_exec(SandboxProfile::full_access, GrantSource::unrestricted);
         return answer(Verdict::Kind::allow);
@@ -390,7 +411,7 @@ Verdict Policy::evaluate(const ToolCall& call, const PreparedIntent& intent) con
         return answer(Verdict::Kind::allow);
     }
 
-    if (mode() == PermissionMode::workspace) {
+    if (live.mode == PermissionMode::workspace) {
         if (intent.kind == ToolKind::write && !has(PathClass::guarded) &&
             !has(PathClass::sensitive) && !has(PathClass::outside))
             return answer(Verdict::Kind::allow);
@@ -406,6 +427,9 @@ ExecutionGrant Policy::grant_for(const Approval& approval, const Decision& decis
     if (approval.intent.kind == ToolKind::read || approval.intent.kind == ToolKind::write)
         return grant_for_files(approval.intent, decision.answer == Decision::Answer::allow_session
                                                ? GrantSource::session : GrantSource::once);
+    if (approval.intent.kind == ToolKind::external)
+        return grant_for_external(approval.intent, decision.answer == Decision::Answer::allow_session
+                                                     ? GrantSource::session : GrantSource::once);
     if (approval.intent.kind != ToolKind::exec) return {};
     if (std::ranges::any_of(approval.requests, [](const Approval::Request& request) {
             return request.kind == Approval::Request::Kind::host_access;
@@ -498,7 +522,7 @@ bool Policy::revoke(std::string_view id) {
     return true;
 }
 
-std::uint64_t Policy::revision() const { return revision_.load(); }
+std::uint64_t Policy::revision() const { return revision_.load() + cap_revision_.load(); }
 
 Policy::NetworkDecision Policy::check_network(const NetworkTarget& target) const {
     const std::lock_guard lock(rules_mutex_);
@@ -538,6 +562,33 @@ void Policy::set_read_only(bool value) { read_only_.store(value); revision_.fetc
 bool Policy::read_only() const { return read_only_.load(); }
 void Policy::set_planning(bool value) { planning_.store(value); revision_.fetch_add(1); }
 bool Policy::planning() const { return planning_.load(); }
+
+bool narrower(const EffectivePermission& a, const EffectivePermission& b) {
+    if (a.planning != b.planning) return a.planning;
+    if (a.read_only != b.read_only) return a.read_only;
+    return mode_rank(a.mode) < mode_rank(b.mode);
+}
+
+EffectivePermission Policy::effective() const {
+    EffectivePermission out;
+    out.mode = mode();
+    out.read_only = read_only();
+    out.planning = planning();
+    if (!cap_active_.load()) return out;
+    out.mode = stricter_mode(out.mode, cap_mode_.load());
+    out.read_only = out.read_only || cap_read_only_.load();
+    out.planning = out.planning || cap_planning_.load();
+    return out;
+}
+
+EffectivePermission Policy::set_parent_cap(PermissionMode mode, bool read_only, bool planning) {
+    cap_mode_.store(mode);
+    cap_read_only_.store(read_only);
+    cap_planning_.store(planning);
+    cap_active_.store(true);
+    cap_revision_.fetch_add(1);
+    return effective();
+}
 
 bool parallel(const Verdict& verdict, const PreparedIntent& intent) {
     if (verdict.kind != Verdict::Kind::allow) return false;

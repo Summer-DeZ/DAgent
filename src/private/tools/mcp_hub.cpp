@@ -9,6 +9,22 @@
 #include "agent/conversation.hpp"
 
 namespace dagent::tools {
+namespace {
+
+/// @brief 启动前检查受信任 profile：缺 profile、stdio 缺 SRT 运行时、HTTP endpoint 未授权时不启动。
+std::string startup_blocker(const mcp::ServerConfig& config) {
+    if (!config.profile_present) return "no permissions profile is configured; the server will not start";
+    if (config.transport == mcp::Transport::http) {
+        if (config.url.empty()) return "HTTP server is missing url";
+        if (config.profile_network.empty())
+            return "the HTTP endpoint is not authorized by the permissions profile";
+        return {};
+    }
+    if (!config.sandbox) return "no SRT runtime is available for this local server";
+    return {};
+}
+
+} // namespace
 
 struct McpHub::Server {
     mcp::ServerConfig config;
@@ -24,10 +40,22 @@ McpHub::McpHub(std::vector<mcp::ServerConfig> configs, mcp::Options options)
     for (auto& config : configs) {
         auto server = std::make_unique<Server>();
         server->state.name = config.name;
+        server->state.boundary = config.transport == mcp::Transport::http ? "remote" : "srt";
         server->config = std::move(config);
         servers_.push_back(std::move(server));
     }
-    for (auto& server : servers_) connect(*server);
+    for (auto& server : servers_) {
+        const std::string blocker = startup_blocker(server->config);
+        if (blocker.empty()) {
+            connect(*server);
+            continue;
+        }
+        server->state.status = agent::McpServerState::Status::failed;
+        server->state.tools = 0;
+        server->state.error = blocker;
+        notices_.push_back({agent::Notice::Level::warn,
+                            std::format("MCP {} was not started: {}", server->config.name, blocker)});
+    }
 }
 
 McpHub::~McpHub() {
@@ -44,11 +72,15 @@ void McpHub::connect(Server& server) {
             const auto count = client->tools().size();
             std::lock_guard lock(mutex_);
             server.incoming = std::move(client);
-            server.state = {server.config.name, agent::McpServerState::Status::ready, count, {}};
+            server.state.status = agent::McpServerState::Status::ready;
+            server.state.tools = count;
+            server.state.error.clear();
         } catch (const std::exception& error) { // 不只 McpError：线程里漏掉的异常会直接 terminate
             if (stop.stop_requested()) return;
             std::lock_guard lock(mutex_);
-            server.state = {server.config.name, agent::McpServerState::Status::failed, 0, error.what()};
+            server.state.status = agent::McpServerState::Status::failed;
+            server.state.tools = 0;
+            server.state.error = error.what();
             notices_.push_back({agent::Notice::Level::warn,
                                 std::format("MCP {} failed to connect: {}", server.config.name, error.what())});
         }
@@ -97,6 +129,31 @@ void McpHub::apply_pending(Registry& registry, const agent::Sink& sink, std::sto
     wait_connecting(sink, stop);
     merge(registry, stop);
     report_pending(sink);
+}
+
+void McpHub::revoke(std::string_view name) {
+    std::vector<std::shared_ptr<mcp::Client>> revoked;
+    {
+        const std::lock_guard lock(mutex_);
+        for (auto& pointer : servers_) {
+            Server& server = *pointer;
+            if (!name.empty() && server.config.name != name) continue;
+            if (server.client) revoked.push_back(server.client);
+            if (server.incoming) revoked.push_back(server.incoming);
+            server.client.reset();
+            server.incoming.reset();
+            if (server.state.status == agent::McpServerState::Status::ready) {
+                server.state.status = agent::McpServerState::Status::disconnected;
+                server.state.tools = 0;
+                server.state.error = "connection revoked by a permission change";
+                notices_.push_back({agent::Notice::Level::warn,
+                                    std::format("MCP {} connection revoked by a permission change",
+                                                server.config.name)});
+            }
+        }
+    }
+    // 旧 lease 立即失效：挂起请求失败，后续请求被拒绝。
+    for (const auto& client : revoked) client->shutdown();
 }
 
 void McpHub::snapshot(Registry& registry) {

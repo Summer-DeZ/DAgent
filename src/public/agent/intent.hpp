@@ -59,6 +59,8 @@ struct PreparedIntent {
     std::optional<CommandIntent> command; ///< exec 时有效
     std::string preview;                ///< 授权读取后生成的 write/edit unified diff
     std::string summary;                ///< 一行描述，如「编辑 src/a.cpp（+3 −1）」
+    /// 外部工具的隔离边界："srt"（本机受限进程）、"remote"（远端服务）；供记录/界面如实标注。
+    std::string external_boundary;
 };
 
 } // namespace dagent::agent

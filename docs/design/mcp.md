@@ -43,11 +43,15 @@ stdio server 冷启动时间包含在发现超时内，调用方需要按真实�
 显式 `project` 使用宿主工具及工作区 cwd。server 的 `env` 最后覆盖环境变量。
 工具准备、锁文件和版本生命周期见 [toolchain](toolchain.md)。
 
-子进程通过 `exec::Child` 启动，进程环境和结束宽限使用 `exec::Options`；`ServerConfig::env`
-显式注入的变量不受环境过滤。stderr 由进程层交付日志。
+stdio server 必须携带受信任配置里的显式权限 profile（`permissions.read/write/network`）；缺少 profile
+时不会启动，不允许"先运行、再在 tools/call 时请求批准"。启动方式是在 SRT 内运行：每连接一个长生命周期
+bridge，server 只拿到 profile 允许的读取/写入范围与严格网络 allowlist（`strictAllowlist=true`，没有运行中
+审批），私有 HOME/TMPDIR 由每次连接的私有目录提供。新旧连接与 lease 在权限降级或切换时被显式作废
+（`McpHub::revoke`），旧 `Client` 的后续请求直接返回 `disconnected`。
 
-调用线程登记请求 id 后发送消息，读取线程按响应 id 唤醒等待者。超时、取消与子进程退出都会清除等待项；
-迟到响应直接丢弃。客户端不处理 server 主动请求或通知。
+bridge 在 stderr 上以 `{"dagent_bridge":true,...}` 帧报告 ready/error/exited；server 自身的 stderr
+原样转发为日志。调用线程登记请求 id 后发送消息，读取线程按响应 id 唤醒等待者。超时、取消与子进程退出都会
+清除等待项；迟到响应直接丢弃。客户端不处理 server 主动请求或通知。
 
 ### Streamable HTTP
 
@@ -99,6 +103,11 @@ server 内清理后重名的工具被跳过。跨 server 的名字冲突由 app 
 `subscriptions/listen`。工具列表在连接时发现，重新连接时重新获取；没有服务端通知刷新
 和周期刷新。鉴权头通过 `ServerConfig::headers` 提供。
 
-app 负责解析 `config.json` 中的 `mcp.servers` 并展开 `${VAR}`。`mcp.connect_timeout_ms` 和
-`mcp.probe_timeout_ms` 控制发现和调用启动超时，进程与 HTTP 选项沿用对应配置段。
+app 负责解析 `home/config/mcp.json` 的 `mcpServers` 并展开 `${VAR}`，包括每个 server 的
+`permissions` profile。`mcp.connect_timeout_ms` 和 `mcp.probe_timeout_ms` 控制发现和调用启动超时，
+进程与 HTTP 选项沿用对应配置段；stdio 的 SRT 启动握手使用 `sandbox.startup_timeout_ms`。
 `clientInfo.version` 使用根 CMake 项目的 `DAGENT_VERSION` 编译宏。
+
+HTTP server 的连接目标只来自受信任配置的 `url`，且要求 profile 显式列出网络目标；客户端不跟随重定向
+（3xx 按协议错误处理），认证头不会转发到任何未批准端点。审计与界面把 HTTP server 标为 `remote`，
+不把本机 SRT 保证扩大到远端服务；本地 stdio server 标为 `srt`。

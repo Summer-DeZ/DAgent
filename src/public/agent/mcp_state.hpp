@@ -13,6 +13,8 @@ struct McpServerState {
     Status status = Status::connecting;
     std::size_t tools = 0;
     std::string error;
+    /// 隔离边界："srt"（本机受限进程）或 "remote"（远端服务）；远程不受本机沙盒保护。
+    std::string boundary;
 };
 
 } // namespace dagent::agent

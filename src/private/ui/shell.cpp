@@ -671,6 +671,10 @@ private:
         const auto ready = std::ranges::count_if(states, [](const McpStatus& state) {
             return state.status == "ready";
         });
+        const auto remote = std::ranges::count_if(states, [](const McpStatus& state) {
+            return state.status == "ready" && state.boundary == "remote";
+        });
+        if (remote > 0) return format_text(ui::text().status_mcp_remote, ready, states.size(), remote);
         return format_text(ui::text().status_mcp, ready, states.size());
     }
 
@@ -735,7 +739,7 @@ private:
         add_command("session.interrupt", std::string(ui::text().cmd_interrupt), std::string(ui::text().cmd_session), "escape", {}, [this] { interrupt(); });
         add_command("session.cancel", std::string(ui::text().cmd_cancel), std::string(ui::text().cmd_session), "ctrl+c", {}, [this] { cancel(); });
         add_command("permission.cycle", std::string(ui::text().cmd_permission), std::string(ui::text().cmd_permission_group), "shift+tab", {}, [this] { cycle_permission(); });
-        add_command("permission.list", "Session permissions", std::string(ui::text().cmd_permission_group), {}, "/permissions", [this] { permissions_panel(); }, [this] { return !busy_; });
+        add_command("permission.list", "Session permissions", std::string(ui::text().cmd_permission_group), {}, "/permissions", [this] { permissions_panel(); });
         add_command("mode.plan", "Toggle planning mode", std::string(ui::text().cmd_permission_group), "ctrl+g", "/plan", [this] { toggle_plan(); });
         add_command("tools.expand", std::string(ui::text().cmd_tools), std::string(ui::text().cmd_transcript), "ctrl+o", {}, [this] { active_transcript().toggle_tools(); });
         add_command("thoughts.toggle", std::string(ui::text().cmd_thoughts), std::string(ui::text().cmd_transcript), "ctrl+r", {}, [this] { active_transcript().toggle_thoughts(); });
@@ -884,6 +888,7 @@ private:
     /// 输入框尾行与消息尾行共用同一份「模式 · 模型」。
     std::string mode_label() const {
         if (planning_) return "plan";
+        if (read_only_) return std::string(ui::text().status_read_only);
         if (mode_ == "unrestricted") return "unrestricted";
         return std::string(mode_ == "workspace" ? ui::text().status_auto_edit : ui::text().status_ask);
     }
@@ -1094,15 +1099,16 @@ private:
                     params["grant_id"] = id;
                     request("session.revoke_grant", std::move(params), [this](const nlohmann::json& result) {
                         const bool removed = result.value("removed", false);
-                        toast(removed ? "Session permission revoked" : "Permission was already absent",
+                        toast(removed ? std::string(ui::text().toast_grant_revoked)
+                                      : std::string(ui::text().toast_grant_absent),
                               removed ? tui::Notice::Severity::info : tui::Notice::Severity::warn);
                     }, [this](const protocol::RpcError& error) {
                         toast(error.message, tui::Notice::Severity::warn);
                     });
                 }});
             }
-            if (rows.empty()) rows.push_back({"No active session permissions", {}, {}, false, {}});
-            panel_.open("Session permissions", std::move(rows), "enter revoke · esc close", false);
+            if (rows.empty()) rows.push_back({std::string(ui::text().panel_permissions_empty), {}, {}, false, {}});
+            panel_.open("Session permissions", std::move(rows), std::string(ui::text().panel_permissions_footer), false);
         });
     }
     tui::ThemeTokens theme_for(std::string_view choice) const {
@@ -1272,9 +1278,7 @@ private:
                                      : answer.decision == ApprovalAnswer::Decision::allow_session ? "allow_session"
                                      : answer.decision == ApprovalAnswer::Decision::deny_with_feedback ? "deny_with_feedback"
                                                                                                        : "deny";
-                answer_interaction(id, {{"decision", decision},
-                                        {"feedback", answer.feedback},
-                                        {"network", answer.network}});
+                answer_interaction(id, {{"decision", decision}, {"feedback", answer.feedback}});
             });
         } else {
             dialog_.open(decode_question(request.payload),

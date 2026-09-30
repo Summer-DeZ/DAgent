@@ -4,8 +4,8 @@
 #include <unistd.h>
 
 #include <chrono>
-#include <cstdio>
 #include <filesystem>
+#include <fstream>
 #include <optional>
 #include <string>
 #include <vector>
@@ -35,16 +35,9 @@ std::optional<fs::path> host_program(std::string_view name, std::string_view fal
 }
 
 std::string read_text_file(const fs::path& file) {
-    std::error_code error;
-    if (!fs::exists(file, error)) return {};
-    const auto size = fs::file_size(file, error);
-    if (error || size > 4096) return {};
-    std::string text(size, '\0');
-    FILE* handle = ::fopen(file.c_str(), "rb");
-    if (!handle) return {};
-    const std::size_t read = std::fread(text.data(), 1, size, handle);
-    std::fclose(handle);
-    text.resize(read);
+    std::ifstream input(file);
+    std::string text;
+    std::getline(input, text);
     return text;
 }
 
@@ -178,11 +171,12 @@ nlohmann::json sandbox_status(const HomePaths& paths) {
         (probe_error.find("namespace") != std::string::npos || probe_error.find("uid_map") != std::string::npos ||
          probe_error.find("uid map") != std::string::npos || probe_error.find("loopback") != std::string::npos)) {
         out["host_prerequisite"] =
-            "bubblewrap cannot create a user namespace; an administrator must deploy an AppArmor profile that "
-            "grants userns (or an equivalent host policy) for the sandbox stack";
+            "bubblewrap namespace setup failed; install and load the generated dagent.apparmor profile "
+            "for this dagent-backend path, then restart DAgent (see docs/guide/build.md)";
     }
     const std::string restrict = read_text_file("/proc/sys/kernel/apparmor_restrict_unprivileged_userns");
     if (!restrict.empty()) out["host"]["apparmor_restrict_unprivileged_userns"] = std::stoi(restrict);
+    out["host"]["apparmor_profile"] = read_text_file("/proc/self/attr/current");
     return out;
 }
 

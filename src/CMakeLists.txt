@@ -66,7 +66,7 @@ target_compile_features(dagent_net PUBLIC cxx_std_23)
 target_compile_options(dagent_net PRIVATE -Wall -Wextra)
 target_link_libraries(dagent_net PRIVATE CURL::libcurl)
 
-# 子进程与沙箱：一次性命令、长期子进程、bash 命令分析、Landlock + seccomp。
+# 子进程与沙箱：一次性命令、长期子进程、bash 命令分析、SRT 后端与敏感路径扫描。
 add_library(dagent_exec STATIC
     private/exec/detail.cpp
     private/exec/process.cpp
@@ -83,7 +83,7 @@ target_compile_options(dagent_exec PRIVATE -Wall -Wextra)
 target_compile_definitions(dagent_exec PRIVATE BOOST_PROCESS_USE_STD_FS=1)
 target_link_libraries(dagent_exec
     PUBLIC dagent_base
-    PRIVATE Boost::headers PkgConfig::SECCOMP tree-sitter tree-sitter-bash Threads::Threads
+    PRIVATE Boost::headers tree-sitter tree-sitter-bash Threads::Threads
 )
 
 # 工作区：文件原语、ripgrep 搜索、unified diff、项目上下文（git/AGENTS.md/模板）。
@@ -199,6 +199,7 @@ add_library(dagent_agent STATIC
     private/agent/conversation.cpp
     private/agent/events.cpp
     private/agent/permission.cpp
+    private/agent/execution_registry.cpp
 )
 
 target_include_directories(dagent_agent PUBLIC ${CMAKE_SOURCE_DIR}/src/public)

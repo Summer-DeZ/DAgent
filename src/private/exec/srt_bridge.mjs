@@ -5,8 +5,11 @@
 // 模式：
 //   --mode=probe  真实做一次最小隔离启动，把结果写成一行 JSON 到 stdout（sandbox status 用）。
 //   --mode=run    从控制 socket 读 init 帧，启动受限命令；网络目标经控制帧询问宿主。
+//   --mode=stdio  长生命周期 MCP server：init 从 --init-file 读，stdin/stdout 连接 server，
+//                 stderr 上以 {"dagent_bridge":true,...} 帧报告 ready/error/exited。
+//                 网络只按配置的 strict allowlist，不存在运行中审批。
 //
-// 控制通道是 C++ 传入的一个双向 socketpair fd；命令的 stdin/stdout/stderr 保持独立，
+// run 模式的控制通道是 C++ 传入的一个双向 socketpair fd；命令的 stdin/stdout/stderr 保持独立，
 // 本进程自身的诊断只写 stderr，绝不写 stdout（probe 模式除外）。
 
 import net from 'node:net';
@@ -325,6 +328,110 @@ async function run(args) {
   await control.close();
 }
 
+// ---------------------------------------------------------------------------
+// stdio：长生命周期 MCP server。init 从文件读；stdin/stdout 归 server，状态帧走 stderr。
+// ---------------------------------------------------------------------------
+async function stdio(args) {
+  const init_path = args['init-file'];
+  if (!init_path) fail('missing --init-file');
+  let init;
+  try {
+    init = JSON.parse(fs.readFileSync(init_path, 'utf8'));
+  } catch (error) {
+    fail(`cannot read init file: ${error?.message ?? error}`);
+  }
+  const report = (message) => {
+    try {
+      process.stderr.write(JSON.stringify({ dagent_bridge: true, ...message }) + '\n');
+    } catch {
+      /* 宿主已经关闭 */
+    }
+  };
+
+  let SandboxManager;
+  try {
+    ({ SandboxManager } = await load_srt(args.srt));
+  } catch (error) {
+    report({ type: 'error', stage: 'load', error: String(error?.message ?? error) });
+    process.exitCode = 3;
+    return;
+  }
+  const config = init.config ?? build_config(args);
+  if (args.bwrap && !config.bwrapPath) config.bwrapPath = args.bwrap;
+  if (args.socat && !config.socatPath) config.socatPath = args.socat;
+  if (args.rg && !config.ripgrep) config.ripgrep = { command: args.rg };
+
+  try {
+    await SandboxManager.initialize(config, () => Promise.resolve(false));
+  } catch (error) {
+    report({ type: 'error', stage: 'initialize', error: String(error?.message ?? error) });
+    await SandboxManager.reset().catch(() => {});
+    process.exitCode = 3;
+    return;
+  }
+  report({
+    type: 'ready',
+    protocol: PROTOCOL_VERSION,
+    environment: path.resolve(args.srt),
+    ...result_versions(SandboxManager, args.srt),
+  });
+
+  const shell = init.shell ?? args.shell ?? 'bash';
+  let child;
+  try {
+    const sockets = [SandboxManager.getLinuxHttpSocketPath?.(), SandboxManager.getLinuxSocksSocketPath?.()].filter(Boolean);
+    const custom = sockets.length
+      ? { filesystem: { allowRead: [...(config.filesystem?.allowRead ?? []), ...sockets] } }
+      : undefined;
+    const wrapped = await SandboxManager.wrapWithSandbox(init.command ?? '', shell, custom);
+    child = spawn(shell, ['-c', wrapped], { stdio: ['pipe', 'pipe', 'pipe'], detached: true });
+  } catch (error) {
+    report({ type: 'error', stage: 'wrap', error: String(error?.message ?? error) });
+    await SandboxManager.reset().catch(() => {});
+    process.exitCode = 3;
+    return;
+  }
+
+  const kill_tree = (signal) => {
+    try {
+      process.kill(-child.pid, signal);
+    } catch {
+      /* 已经退出 */
+    }
+  };
+  process.on('SIGTERM', () => kill_tree('SIGKILL'));
+  process.on('SIGINT', () => kill_tree('SIGKILL'));
+  process.stdin.on('error', () => {});
+  process.stdin.on('end', () => {
+    try {
+      child.stdin.end();
+    } catch {
+      /* server 已经退出 */
+    }
+  });
+  process.stdin.pipe(child.stdin);
+  child.stdout.pipe(process.stdout);
+  child.stderr.pipe(process.stderr);
+  const finished = new Promise((resolve) => {
+    child.on('error', (error) => resolve({ error }));
+    child.on('close', (code, signal) => resolve({ code, signal }));
+  });
+  const outcome = await finished;
+  kill_tree('SIGTERM');
+  report({
+    type: 'exited',
+    exit_code: outcome.code ?? null,
+    signal: outcome.signal ? (os.constants.signals[outcome.signal] ?? null) : null,
+    error: outcome.error ? String(outcome.error.message) : null,
+  });
+  try {
+    SandboxManager.cleanupAfterCommand();
+  } catch {
+    /* 清理失败由 reset/进程生命周期兜底 */
+  }
+  await SandboxManager.reset().catch(() => {});
+}
+
 async function main() {
   const args = parse_args(process.argv);
   const mode = args.mode ?? 'probe';
@@ -334,6 +441,8 @@ async function main() {
     if (!result.ok) process.exitCode = 1;
   } else if (mode === 'run') {
     await run(args);
+  } else if (mode === 'stdio') {
+    await stdio(args);
   } else {
     fail(`unknown mode: ${mode}`);
   }

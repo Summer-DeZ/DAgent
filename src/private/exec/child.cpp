@@ -2,7 +2,6 @@
 
 #include "base/log.hpp"
 #include "exec/detail.hpp"
-#include "exec/sandbox.hpp"
 
 #include <boost/asio/io_context.hpp>
 #include <boost/asio/post.hpp>
@@ -23,6 +22,7 @@
 #include <exception>
 #include <istream>
 #include <mutex>
+#include <span>
 #include <string>
 #include <system_error>
 #include <thread>
@@ -61,12 +61,20 @@ struct EnvSetup {
 
 /// fork 之后、exec 之前执行的钩子，和 process.cpp 共用 detail::setup_child。
 struct ExecSetup {
-    const Prepared* sandbox = nullptr;
     const char* cwd = nullptr;
+    std::span<const int> inherit_fds;
+
+    boost::system::error_code on_setup(bp::posix::default_launcher& launcher, const bp::filesystem::path&,
+                                       const char* const*) const {
+        launcher.fd_whitelist.insert(launcher.fd_whitelist.end(), inherit_fds.begin(), inherit_fds.end());
+        return {};
+    }
 
     boost::system::error_code on_exec_setup(bp::posix::default_launcher&, const bp::filesystem::path&,
                                           const char* const*) const {
-        const int err = detail::setup_child(sandbox, cwd);
+        for (const int fd : inherit_fds)
+            if (::fcntl(fd, F_SETFD, 0) == -1) return {errno, boost::system::system_category()};
+        const int err = detail::setup_child(cwd);
         if (err != 0) errno = err; // 失败时 launcher 把 errno（而不是返回的 ec）写回父进程
         return {err, boost::system::system_category()};
     }
@@ -90,6 +98,7 @@ struct Child::Impl {
     };
 
     static constexpr std::size_t kMaxPendingBytes = 8 << 20;
+    static constexpr std::size_t kMaxStderrBacklog = 256;
 
     Impl(const Command& cmd, const Options& opt)
         : opt_(opt),
@@ -122,6 +131,17 @@ struct Child::Impl {
     void set_on_line(LineCallback cb) {
         std::lock_guard lock(mutex_);
         on_line_ = std::move(cb);
+    }
+
+    void set_on_stderr(LineCallback cb) {
+        std::vector<std::string> backlog;
+        {
+            std::lock_guard lock(mutex_);
+            on_stderr_ = std::move(cb);
+            backlog.assign(stderr_backlog_.begin(), stderr_backlog_.end());
+            stderr_backlog_.clear();
+        }
+        for (const std::string& line : backlog) deliver_stderr(line);
     }
 
     void set_on_exit(ExitCallback cb) {
@@ -162,7 +182,7 @@ private:
         detail::make_pipe(err);
 
         std::vector<std::string> args(cmd.argv.begin() + 1, cmd.argv.end());
-        ExecSetup setup{cmd.sandbox, cmd.cwd.empty() ? nullptr : cmd.cwd.c_str()};
+        ExecSetup setup{cmd.cwd.empty() ? nullptr : cmd.cwd.c_str(), cmd.inherit_fds};
         bp::process_stdio stdio{
             .in = bp::detail::process_input_binding{in.read},
             .out = bp::detail::process_output_binding{out.write},
@@ -280,7 +300,39 @@ private:
 
     void log_line(std::string line) {
         if (!line.empty() && line.back() == '\r') line.pop_back();
-        base::logger("mcp")->info("{}", line);
+        bool buffered = false;
+        {
+            std::lock_guard lock(mutex_);
+            if (on_stderr_) {
+                // 有回调时在锁外派发，避免回调再进入 Child 时自锁。
+            } else {
+                if (stderr_backlog_.size() >= kMaxStderrBacklog) stderr_backlog_.pop_front();
+                stderr_backlog_.push_back(line);
+                buffered = true;
+            }
+        }
+        if (buffered) {
+            base::logger("mcp")->info("{}", line);
+            return;
+        }
+        deliver_stderr(line);
+    }
+
+    void deliver_stderr(const std::string& line) {
+        LineCallback cb;
+        {
+            std::lock_guard lock(mutex_);
+            cb = on_stderr_;
+        }
+        if (!cb) {
+            base::logger("mcp")->info("{}", line);
+            return;
+        }
+        try {
+            cb(line);
+        } catch (const std::exception& e) {
+            base::logger("exec")->error("child on_stderr callback threw: {}", e.what());
+        }
     }
 
     void on_process_exit(boost::system::error_code ec) {
@@ -386,6 +438,8 @@ private:
     std::mutex mutex_;
     std::mutex life_mutex_;
     LineCallback on_line_;
+    LineCallback on_stderr_;
+    std::deque<std::string> stderr_backlog_;
     ExitCallback on_exit_;
     std::deque<std::string> writes_;
     std::string write_buffer_;
@@ -418,6 +472,10 @@ std::unique_ptr<Child> Child::spawn(const Command& cmd, const Options& opt) {
 void Child::write(std::string_view data) { impl_->write(data); }
 
 void Child::on_line(std::function<void(std::string_view)> cb) { impl_->set_on_line(std::move(cb)); }
+
+void Child::on_stderr(std::function<void(std::string_view)> cb) {
+    impl_->set_on_stderr(std::move(cb));
+}
 
 void Child::on_exit(std::function<void(std::optional<int>, std::optional<int>)> cb) {
     impl_->set_on_exit(std::move(cb));

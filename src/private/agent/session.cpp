@@ -69,7 +69,11 @@ ToolResult Session::activate_skill(std::string_view name) {
     return result;
 }
 
-std::size_t Session::estimated_tokens() { return estimator_.estimate(build_request()); }
+std::size_t Session::estimated_tokens() {
+    const std::size_t value = estimator_.estimate(build_request());
+    estimated_tokens_.store(value);
+    return value;
+}
 
 void Session::begin_run(const RunServices& services, Run& run) {
     run_ = &run;
@@ -87,7 +91,7 @@ SessionSnapshot Session::snapshot() {
     snapshot.planning = policy_.planning();
     snapshot.plan = plan_.view();
     snapshot.grants = policy_.session_grants();
-    snapshot.used_tokens = estimated_tokens();
+    snapshot.used_tokens = estimated_tokens_.load();
     snapshot.token_limit = compactor_.budget().limit;
     return snapshot;
 }

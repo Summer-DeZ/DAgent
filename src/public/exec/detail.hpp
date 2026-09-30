@@ -29,9 +29,9 @@ std::filesystem::path resolve_program(std::string_view name, const std::filesyst
 void ignore_sigpipe();
 
 /// @brief fork 之后、exec 之前在子进程里执行，只做 async-signal-safe 的调用：
-/// setsid（新会话、无控制终端）、SIGPIPE 恢复默认（SIG_IGN 会跨 exec 继承）、chdir、应用沙箱。
+/// setsid（新会话、无控制终端）、SIGPIPE 恢复默认（SIG_IGN 会跨 exec 继承）、chdir。
 /// 返回 0 或 errno。
-int setup_child(const Prepared* sandbox, const char* cwd) noexcept;
+int setup_child(const char* cwd) noexcept;
 
 /// @brief 一对管道 fd 的 RAII；转移所有权时把对应成员置 -1。
 struct PipeFds {

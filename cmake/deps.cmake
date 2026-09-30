@@ -82,10 +82,6 @@ FetchContent_Declare(CLI11
 )
 FetchContent_MakeAvailable(CLI11)
 
-# 网络隔离用 libseccomp（Ubuntu: apt install libseccomp-dev）。
-find_package(PkgConfig REQUIRED)
-pkg_check_modules(SECCOMP REQUIRED IMPORTED_TARGET libseccomp)
-
 # Agent Skills YAML frontmatter. No dependency test or utility targets.
 set(YAML_CPP_BUILD_TESTS OFF CACHE BOOL "" FORCE)
 set(YAML_CPP_BUILD_TOOLS OFF CACHE BOOL "" FORCE)

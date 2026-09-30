@@ -7,7 +7,9 @@
 #include <cmath>
 #include <condition_variable>
 #include <cstdint>
+#include <filesystem>
 #include <format>
+#include <fstream>
 #include <map>
 #include <memory>
 #include <mutex>
@@ -21,6 +23,8 @@
 #include "base/log.hpp"
 #include "exec/child.hpp"
 #include "net/sse.hpp"
+
+#include <unistd.h>
 
 namespace dagent::mcp {
 namespace {
@@ -129,6 +133,8 @@ struct Client::Impl {
 
     // ---- 生命周期
     void start();
+    void start_sandboxed();
+    void on_bridge_line(std::string_view line);
     void shutdown();
     void handshake(std::stop_token stop);
     void fetch_tools(milliseconds timeout, std::stop_token stop);
@@ -153,6 +159,13 @@ struct Client::Impl {
     bool http_ = false;
 
     std::unique_ptr<exec::Child> child_;
+    std::filesystem::path state_dir_; ///< 受限 stdio 的每次连接私有目录
+
+    std::mutex bridge_mu_;
+    std::condition_variable_any bridge_cv_;
+    bool bridge_ready_ = false;
+    bool bridge_failed_ = false;
+    std::string bridge_error_;
 
     std::atomic<std::int64_t> next_id_{1};
     std::mutex mu_;
@@ -178,11 +191,66 @@ void Client::Impl::start() {
     }
     if (config_.command.empty())
         throw McpError{McpError::Kind::spawn, config_.name + ": stdio server is missing command"};
+    if (!config_.sandbox)
+        throw McpError{McpError::Kind::spawn,
+                       config_.name + ": no permission profile is configured; the server was not started"};
+    start_sandboxed();
+}
+
+void Client::Impl::start_sandboxed() {
+    const StdioSandbox& sandbox = *config_.sandbox;
+    std::error_code error;
+    std::filesystem::create_directories(sandbox.state_root, error);
+    std::string pattern = (sandbox.state_root / ("mcp-" + config_.name + "-XXXXXX")).string();
+    if (::mkdtemp(pattern.data()) == nullptr)
+        throw McpError{McpError::Kind::spawn, config_.name + ": cannot create the sandbox state directory"};
+    state_dir_ = pattern;
+    const std::filesystem::path private_home = state_dir_ / "home";
+    std::filesystem::create_directories(private_home / "config", error);
+    std::filesystem::create_directories(private_home / "cache", error);
+    std::filesystem::create_directories(private_home / "run", error);
+
+    std::string command;
+    for (const std::string& argument : config_.command) {
+        if (!command.empty()) command += ' ';
+        command += exec::shell_quote(argument);
+    }
+    nlohmann::json init;
+    init["command"] = command;
+    init["shell"] = sandbox.runtime.shell.string();
+    init["config"] = exec::srt_config(sandbox.runtime, sandbox.policy, private_home, true);
+    init["kill_grace_ms"] = opt_.process.kill_grace.count();
+    const std::filesystem::path init_file = state_dir_ / "init.json";
+    {
+        std::ofstream out(init_file, std::ios::binary | std::ios::trunc);
+        out << init.dump();
+        if (!out) throw McpError{McpError::Kind::spawn, config_.name + ": cannot write the sandbox init file"};
+    }
+
     exec::Command cmd;
-    cmd.argv = config_.command;
-    cmd.cwd = config_.cwd;
+    cmd.argv = {sandbox.runtime.node.string(), sandbox.runtime.bridge.string(), "--mode=stdio",
+                "--srt=" + sandbox.runtime.entry.string(),
+                "--bwrap=" + sandbox.runtime.bwrap.string(),
+                "--socat=" + sandbox.runtime.socat.string(),
+                "--rg=" + sandbox.runtime.rg.string(),
+                "--shell=" + sandbox.runtime.shell.string(),
+                "--init-file=" + init_file.string()};
+    cmd.cwd = state_dir_;
     cmd.inherit_env = config_.environment == "project";
     cmd.env_set = config_.env;
+    cmd.env_set.insert(cmd.env_set.end(),
+                       {{"HOME", private_home.string()},
+                        {"XDG_CONFIG_HOME", (private_home / "config").string()},
+                        {"XDG_CACHE_HOME", (private_home / "cache").string()},
+                        {"XDG_RUNTIME_DIR", (private_home / "run").string()},
+                        {"TMPDIR", private_home.string()},
+                        {"TMP", private_home.string()},
+                        {"TEMP", private_home.string()}});
+    cmd.env_unset = {"BASH_ENV", "ENV", "BASHOPTS", "SHELLOPTS", "CDPATH", "GLOBIGNORE",
+                     "PROMPT_COMMAND", "LD_PRELOAD", "LD_LIBRARY_PATH", "PYTHONPATH", "PERL5LIB",
+                     "RUBYOPT", "NODE_OPTIONS", "NODE_PATH", "NODE_EXTRA_CA_CERTS",
+                     "http_proxy", "https_proxy", "all_proxy", "ftp_proxy",
+                     "HTTP_PROXY", "HTTPS_PROXY", "ALL_PROXY", "FTP_PROXY"};
     try {
         auto process = opt_.process;
         if (config_.environment == "project") process.environment.clear();
@@ -192,6 +260,44 @@ void Client::Impl::start() {
     }
     child_->on_line([this](std::string_view line) { on_line(line); });
     child_->on_exit([this](std::optional<int> code, std::optional<int> signal) { on_exit(code, signal); });
+
+    std::unique_lock<std::mutex> lock(bridge_mu_);
+    child_->on_stderr([this](std::string_view line) { on_bridge_line(line); });
+    const bool settled = bridge_cv_.wait_for(lock, sandbox.startup_timeout,
+                                             [this] { return bridge_ready_ || bridge_failed_; });
+    if (!settled) throw McpError{McpError::Kind::handshake, config_.name + ": sandbox bridge did not become ready"};
+    if (bridge_failed_) throw McpError{McpError::Kind::handshake,
+                                       config_.name + ": sandbox bridge failed: " + bridge_error_};
+}
+
+void Client::Impl::on_bridge_line(std::string_view line) {
+    const nlohmann::json frame = nlohmann::json::parse(line, nullptr, false);
+    if (frame.is_discarded() || !frame.value("dagent_bridge", false)) {
+        log_mcp()->info("{}", line); // server 自身的 stderr
+        return;
+    }
+    const std::string type = frame.value("type", "");
+    {
+        const std::lock_guard lock(bridge_mu_);
+        if (type == "ready") {
+            const bool ok = frame.value("protocol", 0) == 1 &&
+                            frame.value("environment", "") == config_.sandbox->runtime.entry.string() &&
+                            frame.value("sandboxing_enabled", false) &&
+                            frame.value("srt", "") == exec::kSrtVersion;
+            if (ok) bridge_ready_ = true;
+            else {
+                bridge_failed_ = true;
+                bridge_error_ = "SRT protocol, package version or environment identity mismatch";
+            }
+        } else if (type == "error") {
+            bridge_failed_ = true;
+            bridge_error_ = frame.value("stage", std::string{"bridge"}) + ": " + frame.value("error", "sandbox bridge failed");
+        } else if (type == "exited" && !bridge_ready_) {
+            bridge_failed_ = true;
+            bridge_error_ = "sandbox bridge exited before ready";
+        }
+    }
+    bridge_cv_.notify_all();
 }
 
 void Client::Impl::shutdown() {
@@ -210,6 +316,11 @@ void Client::Impl::shutdown() {
     cv_.notify_all();
     if (child_) child_->terminate(); // 等读取线程退出，之后不会再回调
     child_.reset();
+    if (!state_dir_.empty()) {
+        std::error_code error;
+        std::filesystem::remove_all(state_dir_, error);
+        state_dir_.clear();
+    }
 }
 
 // ---- stdio 读写 ----
@@ -301,6 +412,12 @@ net::Headers Client::Impl::build_headers(std::string_view method, const json& pa
 
 Response Client::Impl::exchange(std::string_view method, json params, milliseconds timeout,
                                 std::stop_token stop) {
+    {
+        // 被显式撤销后，旧 lease 不能再发请求。
+        const std::lock_guard lock(mu_);
+        if (closing_ || disconnected_)
+            throw McpError{McpError::Kind::disconnected, config_.name + ": client is closed"};
+    }
     const std::int64_t id = next_id_.fetch_add(1);
     if (http_) return http_exchange(id, method, std::move(params), timeout, stop);
     return stdio_exchange(id, method, std::move(params), timeout, stop);
@@ -626,6 +743,10 @@ std::unique_ptr<Client> Client::connect(const ServerConfig& config, const Option
 }
 
 const std::vector<Tool>& Client::tools() const { return impl_->tools_; }
+
+Transport Client::transport() const { return impl_->http_ ? Transport::http : Transport::stdio; }
+
+void Client::shutdown() { impl_->shutdown(); }
 
 CallResult Client::call(std::string_view tool, const json& args, milliseconds timeout, std::stop_token stop) {
     std::string name;

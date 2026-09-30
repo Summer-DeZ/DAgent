@@ -137,11 +137,10 @@ Record permission(const Approval& approval, const Decision& decision) {
         }
         requests.push_back({{"kind", kind}, {"target", request.target}, {"reason", request.reason}});
     }
-    return {"permission", json{{"schema", 2},
+    return {"permission", json{{"schema", 3},
                                {"call_id", approval.call_id},
                                {"answer", answer_name(decision.answer)},
                                {"rule", approval.session_rule},
-                               {"network", decision.network},
                                {"cwd", approval.cwd},
                                {"mode", approval.mode},
                                {"partially_executed", approval.partially_executed},
@@ -292,7 +291,9 @@ DecodedRecord decode(std::string_view type, const nlohmann::json& payload) {
         return record;
     }
     if (type == "permission") {
-        if (integer_field(type, payload, "schema") != 2) corrupt(type, "unknown schema");
+        const int schema = integer_field(type, payload, "schema");
+        // schema 2 的 network 布尔已由显式请求范围取代；旧记录只读回放，忽略该字段。
+        if (schema != 2 && schema != 3) corrupt(type, "unknown schema");
         (void)string_field(type, payload, "cwd");
         (void)string_field(type, payload, "mode");
         (void)bool_field(type, payload, "partially_executed");
@@ -308,7 +309,6 @@ DecodedRecord decode(std::string_view type, const nlohmann::json& payload) {
         record.call_id = string_field(type, payload, "call_id");
         record.answer = string_field(type, payload, "answer");
         record.rule = string_field(type, payload, "rule");
-        record.network = bool_field(type, payload, "network");
         return record;
     }
     if (type == "permission_revoked") {

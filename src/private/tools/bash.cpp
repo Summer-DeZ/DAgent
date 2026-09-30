@@ -31,7 +31,8 @@ public:
              std::string environment_name, exec::Environment environment)
         : root_(ctx.root()), process_options_(ctx.process()),
           max_result_bytes_(ctx.options().max_result_bytes), collect_bytes_(ctx.options().bash_collect_bytes),
-          srt_(ctx.options().srt), sandbox_state_root_(ctx.options().sandbox_state_root), command_(std::move(command)),
+          srt_(ctx.options().srt), sandbox_state_root_(ctx.options().sandbox_state_root),
+          sandbox_options_(ctx.options().sandbox), command_(std::move(command)),
           environment_name_(std::move(environment_name)), environment_(std::move(environment)),
           analysis_(std::move(analysis)), timeout_(timeout) {
         intent_.kind = agent::ToolKind::exec;
@@ -81,15 +82,8 @@ private:
             policy.protected_write = grant.protected_write;
             policy.network_targets = grant.network_targets;
         }
-        const bool srt_backend = sandboxed && srt_.has_value() && grant.backend == "srt";
-        std::unique_ptr<exec::Prepared> prepared;
-        if (sandboxed && !srt_backend) {
-            try {
-                prepared = exec::prepare(policy);
-            } catch (const exec::ExecError& e) {
-                return error_result(std::format("sandbox setup failed; command not executed: {}", e.what()));
-            }
-        }
+        if (sandboxed && (!srt_.has_value() || grant.backend != "srt"))
+            return error_result("restricted execution is unavailable; run `dagent sandbox status` and fix the sandbox runtime");
 
         std::string collected;
         collected.reserve(std::min(collect_bytes_, process_options_.max_output_bytes));
@@ -104,7 +98,7 @@ private:
         bool interrupted = false, spawn_failed = false, run_failed = false;
         std::string failure;
         try {
-            if (srt_backend) {
+            if (sandboxed) {
                 exec::SrtRequest request;
                 request.runtime = *srt_;
                 request.workspace = root_;
@@ -113,6 +107,9 @@ private:
                 request.policy = policy;
                 request.environment = environment_.variables;
                 request.timeout = timeout_;
+                request.startup_timeout = sandbox_options_.startup_timeout;
+                request.approval_timeout = sandbox_options_.network_approval_timeout;
+                request.max_network_requests = sandbox_options_.max_network_requests_per_execution;
                 request.network_gate = [gate = grant.network_decider](std::string_view host, int port,
                                                                       std::string& reason, std::stop_token execution_stop) {
                     if (!gate) {
@@ -142,30 +139,13 @@ private:
                 cmd.cwd = root_;
                 cmd.merge_stderr = true;
                 cmd.timeout = timeout_;
-                cmd.inherit_env = environment_name_ == "project" && !sandboxed;
+                cmd.inherit_env = environment_name_ == "project";
                 cmd.env_set = environment_.variables;
                 if (environment_name_ == "project") {
                     process_options_.environment.clear();
                     if (const char* path = std::getenv("PATH")) cmd.env_set.emplace_back("PATH", path);
                 }
                 cmd.env_set.emplace_back("LC_ALL", "C.UTF-8");
-                if (prepared && !prepared->private_tmp().empty()) {
-                    const std::string private_home(prepared->private_tmp());
-                    cmd.env_unset.insert(cmd.env_unset.end(), {"BASH_ENV", "ENV", "BASHOPTS", "SHELLOPTS",
-                                                                "CDPATH", "GLOBIGNORE",
-                                                                "PROMPT_COMMAND", "LD_PRELOAD", "LD_LIBRARY_PATH",
-                                                                "PYTHONPATH", "PERL5LIB", "RUBYOPT"});
-                    if (environment_name_ == "project")
-                        cmd.env_set.emplace_back("PATH", "/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin");
-                    cmd.env_set.emplace_back("HOME", private_home);
-                    cmd.env_set.emplace_back("XDG_CONFIG_HOME", private_home + "/config");
-                    cmd.env_set.emplace_back("XDG_CACHE_HOME", private_home + "/cache");
-                    cmd.env_set.emplace_back("XDG_RUNTIME_DIR", private_home + "/run");
-                    cmd.env_set.emplace_back("TMPDIR", private_home);
-                    cmd.env_set.emplace_back("TMP", private_home);
-                    cmd.env_set.emplace_back("TEMP", private_home);
-                }
-                cmd.sandbox = prepared.get();
                 outcome = exec::run(cmd, process_options_, on_chunk, stop);
             }
         } catch (const exec::ExecError& e) {
@@ -256,6 +236,7 @@ private:
     std::size_t collect_bytes_ = 0;
     std::optional<exec::SrtRuntime> srt_;
     std::filesystem::path sandbox_state_root_;
+    exec::SandboxOptions sandbox_options_;
     std::string command_;
     std::string environment_name_;
     exec::Environment environment_;

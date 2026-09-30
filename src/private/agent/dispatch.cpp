@@ -56,6 +56,7 @@ std::string summary_of(const PreparedAction& action) {
 ActionDispatcher::Outcome ActionDispatcher::dispatch(const std::vector<ToolCall>& calls, int budget) {
     SessionCommitter& committer = session_.committer();
     Policy& policy = session_.policy();
+    ExecutionRegistry& executions = session_.executions();
     ControlActionExecutor& control = session_.control();
     ActionCatalog& catalog = session_.catalog();
     SessionResources* resources = services_.resources;
@@ -66,6 +67,7 @@ ActionDispatcher::Outcome ActionDispatcher::dispatch(const std::vector<ToolCall>
         std::string summary;
         std::optional<PreparedAction> action; ///< 已准备的动作（普通工具或控制请求）
         std::optional<ToolResult> result;     ///< 有值 = 可以提交
+        std::shared_ptr<ActiveExecution> execution; ///< 活跃执行登记（普通工具）
     };
     struct Pending {
         std::size_t slot;
@@ -129,6 +131,19 @@ ActionDispatcher::Outcome ActionDispatcher::dispatch(const std::vector<ToolCall>
         return [&sink, id = call.id](std::string_view chunk) { sink(ToolOutput{id, std::string(chunk)}); };
     };
 
+    // 权限变化终止执行后，用说明替换"被用户中断"，避免把系统降权误报成用户取消。
+    const auto finish_execution = [&](Slot& slot) {
+        if (slot.execution == nullptr) return;
+        const std::string reason = slot.execution->termination_reason();
+        if (!reason.empty() && slot.result) {
+            slot.result->model_text = std::format(texts::kPermissionTerminated, reason);
+            slot.result->is_error = true;
+            slot.result->interrupted = false;
+        }
+        executions.end(slot.execution);
+        slot.execution.reset();
+    };
+
     // 运行中网络判定：先查配置/会话规则；需要时走现有审批器；同一执行内同目标只问一次。
     // Dispatcher consumes requests from the execution mailbox and owns approval/journal calls.
     const auto make_network_decider = [&](std::size_t index) {
@@ -137,12 +152,16 @@ ActionDispatcher::Outcome ActionDispatcher::dispatch(const std::vector<ToolCall>
             const std::string key = target.host + ":" + std::to_string(target.port);
             if (const auto found = decided->find(key); found != decided->end() && found->second.first == policy.revision())
                 return found->second.second;
-            const auto remember = [&](NetworkAction action) {
+            const auto remember = [&](NetworkAction action, bool persisted = false) {
                 decided->insert_or_assign(key, std::pair{policy.revision(), action});
+                // persisted 表示批准来自配置/会话规则，撤销这类规则时要能终止使用它的执行。
+                if (persisted && slots[index].execution != nullptr)
+                    slots[index].execution->note_network(target, true);
                 return action;
             };
             const Policy::NetworkDecision verdict = policy.check_network(target);
-            if (verdict.kind == Policy::NetworkDecision::Kind::allow) return remember(NetworkAction::allow);
+            if (verdict.kind == Policy::NetworkDecision::Kind::allow)
+                return remember(NetworkAction::allow, true);
             if (verdict.kind == Policy::NetworkDecision::Kind::deny) {
                 reason = verdict.reason;
                 return remember(NetworkAction::deny);
@@ -178,7 +197,8 @@ ActionDispatcher::Outcome ActionDispatcher::dispatch(const std::vector<ToolCall>
                     return remember(NetworkAction::cancel);
                 }
                 if (decision.answer == Decision::Answer::allow_session) policy.remember_network(target);
-                return remember(NetworkAction::allow);
+                return remember(NetworkAction::allow,
+                                decision.answer == Decision::Answer::allow_session);
             }
             reason = decision.answer == Decision::Answer::deny_with_feedback ? decision.feedback
                                                                              : "the user denied network access";
@@ -209,12 +229,18 @@ ActionDispatcher::Outcome ActionDispatcher::dispatch(const std::vector<ToolCall>
         if (decision.answer == Decision::Answer::deny_with_feedback)
             return std::unexpected(make_result(std::format(texts::kDeniedWithFeedback, decision.feedback), true, false));
         if (policy.revision() != revision) {
-            auto current = policy.evaluate(call, intent);
-            if (current.kind == Verdict::Kind::allow) return current.grant;
-            return std::unexpected(make_result("Permission changed during approval; prepare the operation again.", true, false));
+            // 等待期间有效范围变化：只在当前策略仍允许时继续，且不把旧批准升级成更大的范围。
+            const Verdict current = policy.evaluate(call, intent);
+            if (current.kind != Verdict::Kind::allow)
+                return std::unexpected(
+                    make_result("Permission changed during approval; prepare the operation again.", true, false));
+            const ExecutionGrant approved = policy.grant_for(verdict.approval, decision);
+            return static_cast<int>(current.grant.sandbox) < static_cast<int>(approved.sandbox)
+                       ? current.grant
+                       : approved;
         }
         policy.remember(verdict.approval, decision);
-        return policy.grant_for(verdict.approval, decision);
+        return policy.grant_for(verdict.approval, decision); // remember 之后取 revision
     };
 
     const auto execute = [&](Slot& slot, const ExecutionGrant& grant) {
@@ -225,8 +251,10 @@ ActionDispatcher::Outcome ActionDispatcher::dispatch(const std::vector<ToolCall>
             return make_result("Permission changed before execution; prepare the operation again.", true, false);
         // Parallel read-only groups cannot request additional permissions.
         scoped.network_decider = {};
+        const std::stop_token execution_stop =
+            slot.execution != nullptr ? slot.execution->stop.get_token() : stop;
         return std::get<std::unique_ptr<PreparedTool>>(slot.action.value())
-            ->execute(scoped, make_on_output(*slot.call), stop);
+            ->execute(scoped, make_on_output(*slot.call), execution_stop);
     };
 
     // 串行执行：普通工具写 tool_started 审计；ask/exit_plan 只发实时开始、不写记录。
@@ -238,7 +266,11 @@ ActionDispatcher::Outcome ActionDispatcher::dispatch(const std::vector<ToolCall>
             slot.result = make_result("Permission changed before execution; prepare the operation again.", true, false);
             return;
         }
-        if (ordinary) committer.commit_tool_started(started);
+        if (ordinary) {
+            const auto& tool = *std::get<std::unique_ptr<PreparedTool>>(*slot.action);
+            slot.execution = executions.begin(*slot.call, tool.intent(), grant, stop);
+            committer.commit_tool_started(started);
+        }
         sink(started);
         if (!ordinary) {
             slot.result = execute(slot, grant);
@@ -270,9 +302,12 @@ ActionDispatcher::Outcome ActionDispatcher::dispatch(const std::vector<ToolCall>
                 return action;
             };
             auto decide = make_network_decider(i);
+            // 权限核对要能凭这次执行自己的取消入口终止进程，而不是只能等整个 turn 被中断。
+            const std::stop_token execution_stop =
+                slot.execution != nullptr ? slot.execution->stop.get_token() : stop;
             std::jthread worker([&] {
                 slot.result = std::get<std::unique_ptr<PreparedTool>>(*slot.action)
-                    ->execute(scoped, make_on_output(*slot.call), stop);
+                    ->execute(scoped, make_on_output(*slot.call), execution_stop);
                 {
                     const std::lock_guard lock(mailbox.mutex);
                     mailbox.done = true;
@@ -293,6 +328,7 @@ ActionDispatcher::Outcome ActionDispatcher::dispatch(const std::vector<ToolCall>
                 request->reply.set_value({action, std::move(reason)});
             }
         }
+        finish_execution(slot);
         if (!ordinary && slot.result->interrupted) outcome.stop = Outcome::Stop::interrupted;
     };
 
@@ -307,6 +343,10 @@ ActionDispatcher::Outcome ActionDispatcher::dispatch(const std::vector<ToolCall>
         for (const Pending& p : group) {
             Slot& slot = slots[p.slot];
             const ToolStarted started{slot.call->id, slot.call->name, slot.summary, p.grant};
+            if (std::holds_alternative<std::unique_ptr<PreparedTool>>(slot.action.value())) {
+                const auto& tool = *std::get<std::unique_ptr<PreparedTool>>(slot.action.value());
+                slot.execution = executions.begin(*slot.call, tool.intent(), p.grant, stop);
+            }
             committer.commit_tool_started(started);
             sink(started);
         }
@@ -322,6 +362,7 @@ ActionDispatcher::Outcome ActionDispatcher::dispatch(const std::vector<ToolCall>
                 });
             }
         } // jthread 析构时 join：这一块全部结束才开始下一块
+        for (const Pending& p : group) finish_execution(slots[p.slot]);
         group.clear();
     };
 

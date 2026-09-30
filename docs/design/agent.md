@@ -274,8 +274,8 @@ Policy 是纯逻辑，不弹窗、不读配置。它依据 `PreparedIntent` 的�
 这个 full_access 兼容路径不是自动降级：每个调用都必须由用户明确批准，不提供会话级复用；拒绝后不执行。
 真正的策略拒绝只保留给语法错误、高危硬拦、read-only / plan 限制等不可通过本次批准扩大的条件。
 
-沙箱能力由 `exec::Support` 分项报告；只读与 workspace profile 分别调用 `read_only_ready()`、
-`workspace_ready()`，不再用 Landlock/seccomp 两个布尔值冒充完整能力。workspace 不授予 bash 网络权限，
+沙箱能力由 `exec::Support` 按真实 SRT 启动结果报告；只读与 workspace profile 分别调用 `read_only_ready()`、
+`workspace_ready()`。workspace 不授予 bash 网络权限，
 能力缺失也不会自动降级 full_access；只有用户在上述明确风险说明后批准的单次调用使用 host。具体限制见 [exec](exec.md)。
 
 `read_only` 与三档正交：写入、非只读 bash 和 external 都走策略拒绝，已知只读 bash 强制 read_only 沙箱。
@@ -296,8 +296,8 @@ plan 在此基础上给出规划专用反馈，使模型改为调研和提案而
 | MCP | 完整的限定工具名 |
 
 敏感读取和受保护写入只提供单次授权。其它会话规则只在内存中，恢复或新建会话后清空；交互界面的
-`/permissions` 列出当前规则，Enter 撤销并对下一次执行生效。当前后端不能强制限定域名出口，因此审批不会把
-network 或未知目标扩大为全网访问。
+`/permissions` 列出当前规则，Enter 撤销走即时控制路径：权限修订号递增、等待中的旧审批失效，登记表里
+不再被当前策略允许或使用了已撤销网络目标的活跃执行被请求停止（包括已建立的连接），下一次执行按新规则判定。
 
 `Grant` 保存实际 profile、backend、来源（mode/once/session/unrestricted）、读写/保护范围、敏感名称规则、通信开关、
 私有临时空间和 analysis version。执行前先持久化版本化 `tool_started`，再发实时事件；`BashView` 在完成记录中保留同一执行事实。View 按当前完整字段读取，
@@ -320,6 +320,9 @@ Shift+Tab 或走过 `exit_plan`。
 收手，不新增禁用机制。unrestricted 不继承：用户给 unrestricted 是针对自己盯着的这个会话，不是对自主运行的
 子 Agent 的授权。会话授权双向不继承：子 Agent 新建 Policy、规则表为空；子 Agent 里点的「本会话允许」只记在子
 Policy，随子 Agent 销毁，一次 task 不会给父会话种规则。高危硬拦与用户显式拒绝在子 Agent 内同样生效。
+
+父权限上限实时传播：父 Policy 是子 Policy 的活上限（`set_parent_cap`），子只能取更严者；父降权后子不能
+再从旧上限消费授权，生效权限变窄的活跃子执行被取消，旧 MCP lease 由 Hub 作废。
 
 ### 控制动作：ask、exit_plan、todo、task
 

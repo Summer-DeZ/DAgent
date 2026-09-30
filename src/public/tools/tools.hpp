@@ -45,8 +45,9 @@ using PreparedTool = agent::PreparedTool; ///< 准备完成的普通工具（核
 /// @brief 工具选项，对应 config.json 的 "tools" 段。
 struct Options {
     std::map<std::string, exec::Environment> environments;
-    std::optional<exec::SrtRuntime> srt;             ///< SRT 后端资源；为空表示使用 Landlock 后端
+    std::optional<exec::SrtRuntime> srt;             ///< SRT 后端资源；为空表示受限执行不可用
     std::filesystem::path sandbox_state_root;        ///< 每执行私有目录的父目录（SRT）
+    exec::SandboxOptions sandbox;                    ///< 启动/审批超时与每执行网络请求预算
     std::size_t max_result_bytes = 0; ///< 每次调用交给模型的文本上限
     std::size_t bash_collect_bytes = 0; ///< 中断时保留的命令输出上限
     int read_default_lines = 0;

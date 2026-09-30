@@ -69,7 +69,7 @@ sequenceDiagram
 | `run.cancel` | 读线程 | cancel_requested 或 already_finished；不是运行终态 |
 | `interaction.answer` | 读线程 | accepted；已关闭返回 `interaction_closed` |
 | `session.cycle_permission` / `toggle_planning` / `grants` | 读线程 | 生效后的快照 / 授权列表 |
-| `session.revoke_grant` | 读线程校验并入会话执行队列 | 执行线程提交撤销与记录后返回 removed |
+| `session.revoke_grant` | 读线程校验后走即时控制路径 | 提交撤销记录、终止使用旧授权的活跃执行后返回 removed（运行中也可用） |
 | `model.list` | 读线程 | 公开模型、provider 种类、default_name、selected_name |
 | `session.new` / `resume` / `select_model`、`model.add`、`session.compact` | 命令线程 | 成功返回快照；`model.add` 返回 model/selected/selection_error；compact 返回 operation_id，完成走 `operation.finished` |
 | `session.list` / `children` / `history` / `history_close`、`workspace.info` / `complete` | 查询线程 | 会话列表、子会话、HistoryItem 页与游标、项目信息、文件候选 |

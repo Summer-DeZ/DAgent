@@ -17,8 +17,12 @@
 
 #include "exec/process.hpp"
 #include "exec/sandbox.hpp"
+#include "lib/nlohmann/json.hpp"
 
 namespace dagent::exec {
+
+/// 适配基线的 SRT 版本；握手与状态检查使用同一常量。
+inline constexpr std::string_view kSrtVersion = "0.0.77";
 
 /// 运行中网络目标的判定结果。
 enum class NetworkGateResult { allow, deny, cancel };
@@ -47,10 +51,16 @@ struct SrtRequest {
     /// 命令环境（PATH、LC_ALL 等）；HOME/TMPDIR 系列由本函数指向私有目录。
     std::vector<std::pair<std::string, std::string>> environment;
     std::optional<std::chrono::milliseconds> timeout;
+    std::chrono::milliseconds startup_timeout{15000};   ///< bridge 初始化与握手期限
     std::chrono::milliseconds approval_timeout{120000};
     int max_network_requests = 32;
     NetworkGate network_gate; ///< 运行中网络目标判定；为空时全部拒绝
 };
+
+/// @brief 把中立 Policy 编译为 SRT JSON 配置；Bash 与长生命周期 MCP 进程共用同一转换。
+/// strict_network=true 时未列入 allowedDomains 的目标直接拒绝，不给运行中审批留口。
+nlohmann::json srt_config(const SrtRuntime& runtime, const Policy& policy,
+                          const std::filesystem::path& private_home, bool strict_network);
 
 /// @brief 在 SRT 后端执行一条命令。语义与 run() 一致；bridge/后端失败抛 ExecError{sandbox}。
 Result run_srt(const SrtRequest& request, const Options& options = {},

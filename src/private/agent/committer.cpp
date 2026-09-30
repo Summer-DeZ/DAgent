@@ -15,26 +15,44 @@ std::shared_ptr<spdlog::logger> log_agent() { return base::logger("agent"); }
 } // namespace
 
 void SessionCommitter::append(const Record& record) {
+    const std::lock_guard lock(mutex_);
     if (broken_) return;
     try {
         journal_.append(record);
     } catch (const RecordError& error) {
-        fail(error.what());
+        fail_locked(error.what());
     }
 }
 
-void SessionCommitter::fail(const std::string& what) {
+void SessionCommitter::fail_locked(const std::string& what) {
     broken_ = true;
     error_ = what;
     log_agent()->error("failed to write session record: {}", what);
 }
 
+bool SessionCommitter::broken() const {
+    const std::lock_guard lock(mutex_);
+    return broken_;
+}
+
+std::string SessionCommitter::error() const {
+    const std::lock_guard lock(mutex_);
+    return error_;
+}
+
 void SessionCommitter::check_broken() {
-    if (!broken_ || notified_ || sink_ == nullptr) return;
-    notified_ = true;
-    (*sink_)(Notice{Notice::Level::error,
-                    std::format("Failed to write the session record; subsequent content will not be saved: {}",
-                                error_)});
+    const Sink* sink = nullptr;
+    std::string error;
+    {
+        const std::lock_guard lock(mutex_);
+        if (!broken_ || notified_ || sink_ == nullptr) return;
+        notified_ = true;
+        sink = sink_;
+        error = error_;
+    }
+    (*sink)(Notice{Notice::Level::error,
+                   std::format("Failed to write the session record; subsequent content will not be saved: {}",
+                               error)});
 }
 
 std::int64_t SessionCommitter::commit_user(std::string text, const std::vector<SkillView>& skills) {
@@ -155,11 +173,12 @@ void SessionCommitter::record_turn_end_crashed() {
 }
 
 void SessionCommitter::sync() {
+    const std::lock_guard lock(mutex_);
     if (broken_) return;
     try {
         journal_.sync();
     } catch (const RecordError& error) {
-        fail(error.what());
+        fail_locked(error.what());
     }
 }
 

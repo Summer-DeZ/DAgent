@@ -20,6 +20,9 @@ include(cmake/deps.cmake)
 
 add_subdirectory(src)
 
+set(DAGENT_BACKEND_PATH "${CMAKE_BINARY_DIR}/src/dagent-backend")
+configure_file(cmake/dagent.apparmor.in ${CMAKE_BINARY_DIR}/dagent.apparmor @ONLY)
+
 install(TARGETS dagent dagent-backend RUNTIME DESTINATION .)
 
 # 程序资源：SRT bridge 随二进制版本走，不经过“保留已有用户文件”的 Home 安装逻辑。
