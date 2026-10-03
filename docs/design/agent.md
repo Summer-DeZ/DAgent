@@ -97,7 +97,7 @@ Session 只在所属执行线程推进对话、工具目录、模型和记录。
 | `ReasoningDelta` / `reasoning` | `text`，思考增量 |
 | `StreamReset` / `stream_reset` | 无附加字段；本次模型尝试的可见内容作废 |
 | `ToolPending` / `tool_pending` | `id, name`；参数仍在传输，仅作提示 |
-| `ToolStarted` / `tool_started` | `id, name, summary` 加实际 backend/profile、grant source、analysis version、读写/保护范围、network/local sockets/private tmp；已通过权限，开始执行 |
+| `ToolStarted` / `tool_started` | `id, name, summary` 加实际 backend/profile、grant source、approval authority/identity、analysis version、读写/保护范围、network/local sockets/private tmp；已通过权限，开始执行 |
 | `ToolOutput` / `tool_output` | `id, chunk`；bash 原始输出块 |
 | `ToolFinished` / `tool_finished` | `id, name, summary, text, is_error, interrupted, view`；结果已提交 |
 | `SubEvent` / `sub_event` | `session, agent, parent_call` 加递归 `event`；子 Agent 事件信封，父前端按 `parent_call` 归位 |
@@ -106,7 +106,7 @@ Session 只在所属执行线程推进对话、工具目录、模型和记录。
 | `ModelChanged` / `model_changed` | `model`；恢复/切换时更新后续消息标签 |
 | `ModeChanged` / `mode_changed` | `mode, planning`；`exit_plan` 后同步前端状态 |
 | `ContextUpdate` / `context` | `prompt, completion, cached, used, limit` |
-| `Notice` / `notice` | `level` 为 info / warn / error，另有 `text` |
+| `Notice` / `notice` | `level` 为 info / warn / error，另有 `text`；可选 `persistent` 保留审批审计提示 |
 | `TurnEnded` / `turn_ended` | `status, error, steps, tool_calls, usage`；本轮结束 |
 
 正常一轮的主线如下，等待、重试和失败会使其中部分阶段省略：
@@ -204,7 +204,9 @@ TurnEnded
 运行限制必填于 `home/config/config.json` 的 `run` 段，程序没有业务默认值。随附配置为 `max_model_calls=24`、`max_tool_calls=35`、`max_model_retries=2`、`max_parallel_tasks=4`、`max_parallel_tools=8`。调用上限为 0 表示不限；并发数必须大于 0。未知工具、参数失败和策略拒绝
 也消耗已处理调用预算；因中断、同批拒绝或超额而跳过的调用不消耗执行预算。超额调用回填 T8，若还有模型步数，
 给予一次不提供工具定义的总结机会；总结回合仍以 `limit` 收尾，模型若继续返回工具调用也不再执行。
-这次总结计入主循环 steps 和 usage；上下文压缩的摘要请求不计入它们。
+这次总结、父审批、自动压缩摘要和每次实际模型重试均计入本轮 steps 与共享 token 预算；steps 是实际尝试次数，
+重试等待中取消不计下一次尝试。usage 累计服务端已报告用量，失败或取消前未报告的用量按输入和已收到输出估算，单独扣减预算。
+手动 `/compact` 使用独立 Run 的同样预算；当前操作记录仅保存压缩结果，不另存它的用量账单。
 
 取消发生在主模型流中时，只保存已有正文加中断说明，丢弃未完成的工具调用和思考；没有正文就不加 assistant。
 权限等待中的调用及剩余调用回填未执行说明，已运行的工具保留中断结果与部分输出。所有工具线程结束后才返回，
@@ -324,6 +326,12 @@ Policy，随子 Agent 销毁，一次 task 不会给父会话种规则。高危�
 
 父权限上限实时传播：父 Policy 是子 Policy 的活上限（`set_parent_cap`），子只能取更严者；父降权后子不能
 再从旧上限消费授权，生效权限变窄的活跃子执行被取消，旧 MCP lease 由 Hub 作废。
+
+`subagents.approval.mode=parent_when_unrestricted` 时，当前 unrestricted 且无只读/规划上限的活跃父会话可审阅子请求。
+父 Dispatcher 在等待 task 期间消费审批邮箱，用独立、无工具的父模型请求串行审阅，不在未闭合的 task 中插入普通会话轮次。
+模型答复仍须通过 Policy 的身份、资源范围、父/子 revision 与取消状态校验；不能覆盖硬拒绝或扩大子工具名单。
+批准只作用于一次调用或当前子会话，host access 仅可一次。父降权/退出撤销审批来源，取消依赖它的执行。
+审阅失败、超时、输出无效或预算耗尽均拒绝并反馈，不自动转人工。其它路由继续使用用户 Approver。
 
 ### 控制动作：ask、exit_plan、todo、task
 
@@ -449,9 +457,10 @@ compact 模板保留六段结构，标题为 `User requests`、`Decisions made`�
 | `system` | `schema: 1, text, model` |
 | `user` | `n, text`（首条决定列表标题） |
 | `assistant` | `n, content, reasoning, reasoning_signature, tool_calls, finish`，有 usage 时另存 `usage` |
-| `tool_started` | `schema: 2`、id/name/summary、实际 sandbox/backend/grant_source、analysis_version、revision、读写/保护范围、read_exceptions、通信开关 |
+| `tool_started` | `schema: 3`、id/name/summary/execution_id、实际 sandbox/backend/grant_source、authority/approval 身份、analysis_version、revision、读写/保护范围、read_exceptions、通信开关 |
 | `tool` | `n, call_id, name, summary, text, is_error, interrupted, view` |
-| `permission` | `schema: 3`、call_id、answer、rule、cwd、mode、partially_executed、requests；请求明确列出 kind/target/reason，不再写 network 布尔，也不恢复为授权 |
+| `permission` | `schema: 4`、call_id、answer、explicit_denial、rule、cwd、mode、partially_executed、requests、authority、identity、state、scope、approved_requests、reason、model、usage/usage_owner、estimated_budget_tokens、actual_grant；另有原始 arguments、委派任务与意图证据 |
+| `parent_review` | `schema: 4`、同 permission 的审阅证据；父会话独立审计，不插入 Conversation，actual_grant 为 null |
 | `permission_revoked` | `schema: 1, id` |
 | `prune` | `ordinals`；恢复时用工具摘要生成同样的占位 |
 | `compaction` | `keep_from, summary`；空 summary 表示丢弃前缀、保留既有摘要 |
@@ -460,6 +469,17 @@ compact 模板保留六段结构，标题为 `User requests`、`Decisions made`�
 usage 内字段是 `prompt, completion, cached`，避免被按 `token` 等敏感键名脱敏。不存在 plan/mode/interaction 等额外记录类型：
 计划的持久来源是 todo 的 tool.view，规划确认的来源是 exit_plan 的调用与结果。
 
+审批 `identity` 记录 request/父子 session/origin task call/tool call/execution ID 及父子权限 revision。
+`state` 为 approved/denied/cancelled/expired，`scope` 为 one_call/child_session/session/none。
+`actual_grant` 保存 Policy 签发的授权快照；它不证明工具已经执行，实际启动看当前 `execution_id` 对应的 `tool_started`，结果看 `tool`。
+复用会话授权时，`approval` 保留初次批准身份，顶层 `execution_id` 标识本次调用；旧 schema 3 记录缺少该字段时读为空。
+批准消费在 Policy 锁内完成 revision/范围校验、规则保存和 grant 签发，随后登记执行并再次核对 revision，防止降权落在校验与启动之间。
+父审阅的 usage 归属父 turn；子 permission 中的同份 usage 只作证据，不能重复累计。
+`run.max_total_tokens=0` 不限制 token 总量；正值限制同一父 turn 的普通调用、审阅、自动摘要及其所有实际重试。
+每次发送前重新检查剩余调用预算和输入估算，并按剩余 token 收窄本次 max_tokens。
+服务端未报告 usage 的尝试按输入和已收到输出估算，单独占用预算；审阅估算另记为 `estimated_budget_tokens`。
+`turn_end.usage` 保持实际已报告用量，包含摘要与失败尝试，不能仅用 assistant 和 parent_review 两类记录求和。
+
 ### 提交路线
 
 SessionCommitter 为每种变化固定一条路线（实现见 [committer.cpp](../../src/private/agent/committer.cpp)）：
@@ -467,6 +487,8 @@ user 出队时先加内存再写记录（L03）；完整回复写 assistant（L0
 结果按槽位写 tool 并发 ToolFinished（L08）；审批有回答时先写 permission（L09），回答前取消则不写（L10）；撤销授权写
 permission_revoked（L11）；todo 在同一提交内更新 WorkPlan 并写 tool（L13）；取消时只保存「正文 + 中断标记」（L15）；
 压缩按 prune → compaction 顺序（L16）；收尾补齐仍打开的调用、写 turn_end 并 sync（L17/L18）。
+父审阅终态（含 cancelled/expired）通过 commit_parent_review 留在父 Journal；子 Dispatcher 自行提交最终 permission，
+审阅 worker 不写子记录。两者只发审计 Notice，不修改正常消息 ordinal 或工具配对。
 每轮结束、手动压缩结束和会话销毁时同步，不对每条消息 fsync。
 
 第一次写入或同步失败后提交器进入 broken：停用后续写入、只发一次 error Notice，当前回合与内存状态继续（B23）。
@@ -483,13 +505,13 @@ UI 显示完成不代表记录可靠保存；broken 状态进入会话快照。
 不根据任何记录自动重做工具。第二次恢复不会重复补齐。FileTracker 和会话授权从空开始，MCP 使用当前连接。
 不认识的类型、缺失或非法的必需字段、不一致历史直接报 corrupt，不猜测修复。
 `system.model`、`reasoning_signature`、`protect_sensitive_names` 和当前 View 的字段必填。
-`tool_started` 接受 schema 1/2，`permission` 接受 schema 2/3；这是旧记录的解码兼容，
+`tool_started` 接受 schema 1/2/3，`permission` 接受 schema 2/3/4，`parent_review` 接受 schema 4；这是旧记录的解码兼容，
 不恢复历史授权，也不恢复旧执行后端。新写入统一使用上表版本。
 `assistant.usage` 仍为可选，因为当前模型响应可以没有 usage；View 仅以显式 `kind: null` 表示没有结构化展示。
 
 ### 历史投影
 
-`HistoryProjector` 把每条记录投影为 0 或 1 个 `HistoryItem`（user、assistant 含正文与思考、tool_started、tool、system 的模型标签、
+`HistoryProjector` 把每条记录投影为 0 或 1 个 `HistoryItem`（user、assistant 含正文与思考、tool_started、tool、permission/parent_review 审计、system 的模型标签、
 turn_end）；`HistoryCursor` 跨页只保存 ordinal、角色、开放调用与裁剪目标等元数据，校验 ordinal 连续、工具配对、
 prune 目标和 compaction 切点。投影不构造 Session、模型或 MCP，也不追加记录；压缩不删除可见历史，历史 turn_end 不触发当前队列 drain。
 

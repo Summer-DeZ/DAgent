@@ -199,7 +199,7 @@ async function run(args) {
     });
   });
 
-  const { SandboxManager } = await load_srt(args.srt);
+  let SandboxManager;
   const config = init.config ?? build_config(args);
   if (args.bwrap && !config.bwrapPath) config.bwrapPath = args.bwrap;
   if (args.socat && !config.socatPath) config.socatPath = args.socat;
@@ -248,7 +248,18 @@ async function run(args) {
       control.send({ type: 'network_request', request_id, host, port });
     });
 
-  await SandboxManager.initialize(config, ask);
+  let stage = 'load';
+  try {
+    ({ SandboxManager } = await load_srt(args.srt));
+    stage = 'initialize';
+    await SandboxManager.initialize(config, ask);
+  } catch (error) {
+    control.send({ type: 'bridge_error', stage, error: String(error?.message ?? error) });
+    if (SandboxManager) await SandboxManager.reset().catch(() => {});
+    await control.close();
+    process.exitCode = 3;
+    return;
+  }
   const start = new Promise((resolve, reject) => {
     control.on_message((message) => { if (message.type === 'start') resolve(); });
     control.on_close(() => reject(new Error('control closed during handshake')));

@@ -26,7 +26,8 @@ public:
     agent::Reply complete(const agent::Request& request,
                           const std::function<void(const agent::StreamEvent&)>& on_event,
                           const std::function<void(const agent::RetryInfo&)>& on_retry,
-                          std::stop_token stop) override;
+                          std::stop_token stop,
+                          const agent::ModelAttemptHooks& attempts = {}) override;
 
 private:
     struct AttemptOutcome {

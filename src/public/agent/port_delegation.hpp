@@ -28,6 +28,8 @@ struct DelegationContext {
     std::vector<std::string> parent_tools; ///< 父当前工具名单（派生默认子名单）
     const Sink* sink = nullptr;            ///< 父事件出口；子事件以 SubEvent 包装后送往这里
     const Approver* approver = nullptr;    ///< 父审批入口；空表示不可审批
+    const Policy* parent_policy = nullptr; ///< 活跃只读权限视图，寿命覆盖委派
+    const Approver* parent_reviewer = nullptr; ///< 父 Dispatcher 邮箱，不直接调用模型
     std::stop_token stop;
 };
 

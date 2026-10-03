@@ -85,6 +85,7 @@ struct Notice {
     enum class Level { info, warn, error };
     Level level = Level::info;
     std::string text;
+    bool persistent = false; ///< Keep audit information visible in the transcript.
 };
 
 struct TurnEnded {
@@ -133,12 +134,20 @@ struct Approval {
         std::string target, reason;
     };
     std::string call_id, tool;
+    std::string arguments; ///< 原始工具参数；只供审阅，不作为执行入口
+    ApprovalAuthority authority = ApprovalAuthority::user;
+    ApprovalIdentity identity;
+    std::stop_token authority_stop;
+    std::string delegated_task;
+    std::chrono::steady_clock::time_point created = std::chrono::steady_clock::now();
     PreparedIntent intent;    ///< 拷贝：交互界面要把它 post 到渲染线程
     std::string reason;       ///< 为什么要问，见 docs/design/agent.md §7
     std::string session_rule; ///< 选「本会话允许」会记住什么，给界面显示；为空表示不提供这个选项
     std::string agent;          ///< 来源子 Agent 名；主 Agent 自己的审批为空
     std::string origin_call_id; ///< 父会话里那次 task 调用的 id；主 Agent 为空
     std::string cwd, mode;
+    bool read_only = false, planning = false;
+    std::vector<std::string> existing_permissions;
     std::vector<Request> requests;
     bool partially_executed = false;
 };
@@ -146,10 +155,15 @@ struct Approval {
 struct Decision {
     enum class Answer { allow, allow_session, deny, deny_with_feedback };
     Answer answer = Answer::deny;
-    std::string feedback; ///< deny_with_feedback 时用户写的说明
+    std::string feedback; ///< 拒绝反馈或批准理由
+    std::string state; ///< approved / denied / cancelled / expired；空为旧用户答复
+    bool explicit_denial = false; ///< 确实作出拒绝决定；故障/预算/缺少审批出口不写永久 deny
+    std::string model; ///< 实际审阅模型配置名
+    Usage usage; ///< 只在父侧计费；子记录保留关联证据
+    std::size_t estimated_budget_tokens = 0; ///< Provider 未报告 usage 的审阅尝试，预算估算（不冒充实测用量）
 };
 
-using Approver = std::function<Decision(const Approval&, std::stop_token)>;
+using Approver = std::function<Decision(Approval&, std::stop_token)>;
 
 struct Question {
     struct Option { std::string label, description; };

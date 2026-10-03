@@ -49,7 +49,8 @@
     "max_model_retries": 2,
     "max_parallel_tasks": 4,
     "max_parallel_tools": 8,
-    "max_tool_calls": 35
+    "max_tool_calls": 35,
+    "max_total_tokens": 0
   },
   "sandbox": {
     "allowed_targets": [],
@@ -87,5 +88,13 @@
   "ui": {
     "completion_max_files": 5000,
     "theme_file": "themes/dagent.json"
+  },
+  "subagents": {
+    "approval": {
+      "mode": "parent_when_unrestricted",
+      "max_reviews_per_turn": 16,
+      "review_timeout_ms": 60000,
+      "failure": "deny_with_feedback"
+    }
   }
 }

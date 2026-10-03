@@ -76,12 +76,13 @@ struct SessionSnapshot {
 
 /// @brief 历史条目；一个持久记录产生 0/1 条。
 struct HistoryItem {
-    std::string kind; ///< user / assistant / tool / tool_started / system / turn_end
+    std::string kind; ///< user / assistant / tool / tool_started / permission / parent_review / system / turn_end
     std::int64_t seq = -1;
     std::string text, reasoning, finish, model;
     std::string call_id, name, summary;
     nlohmann::json result;  ///< tool：ToolResult JSON（model_text/is_error/interrupted/display）
     nlohmann::json started; ///< tool_started：事件 JSON
+    nlohmann::json audit; ///< permission / parent_review: complete read-only decision evidence
     std::string status, error;
     int steps = 0, tool_calls = 0;
     nlohmann::json usage;

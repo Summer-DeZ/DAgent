@@ -87,6 +87,16 @@ json to_json(const Event& event) {
                             {"sandbox", sandbox_name(e.grant.sandbox)},
                             {"backend", e.grant.backend},
                             {"grant_source", grant_source_name(e.grant.source)},
+                            {"authority", to_string(e.grant.authority)},
+                            {"execution_id", e.grant.execution_id},
+                            {"approval", {{"request_id", e.grant.approval.request_id},
+                                          {"parent_session_id", e.grant.approval.parent_session_id},
+                                          {"child_session_id", e.grant.approval.child_session_id},
+                                          {"origin_call_id", e.grant.approval.origin_call_id},
+                                          {"call_id", e.grant.approval.call_id},
+                                          {"execution_id", e.grant.approval.execution_id},
+                                          {"parent_revision", e.grant.approval.parent_revision},
+                                          {"child_revision", e.grant.approval.child_revision}}},
                             {"analysis_version", e.grant.analysis_version},
                             {"network", e.grant.allow_network},
                             {"local_sockets", e.grant.allow_local_sockets},
@@ -146,7 +156,8 @@ json to_json(const Event& event) {
                 return json{{"type", "mode_changed"}, {"mode", e.mode}, {"planning", e.planning}};
             },
             [](const Notice& e) {
-                return json{{"type", "notice"}, {"level", level_name(e.level)}, {"text", e.text}};
+                return json{{"type", "notice"}, {"level", level_name(e.level)}, {"text", e.text},
+                            {"persistent", e.persistent}};
             },
             [](const TurnEnded& e) {
                 return json{{"type", "turn_ended"},

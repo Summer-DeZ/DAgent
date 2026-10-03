@@ -69,9 +69,20 @@ public:
 
     Verdict evaluate(const ToolCall&, const PreparedIntent&) const;
 
-    /// @brief allow_session 时记下规则（本会话授权，只在内存里）。
-    void remember(const Approval&, const Decision&);
-    ExecutionGrant grant_for(const Approval&, const Decision&) const;
+    struct AuthorityView {
+        EffectivePermission permission;
+        std::uint64_t revision = 0;
+        std::stop_token stop;
+        bool can_review() const {
+            return permission.mode == PermissionMode::unrestricted &&
+                   !permission.read_only && !permission.planning && !stop.stop_requested();
+        }
+    };
+    AuthorityView authority_view() const;
+    bool valid_approval(const Approval&, const Decision&) const;
+
+    /// @brief 原子校验当前 revision、保存会话规则并消费批准；陈旧批准不产生授权。
+    std::optional<ExecutionGrant> consume_approval(const Approval&, const Decision&);
 
     /// @brief 权限修订号：模式、会话规则等任何有效范围变化都会递增。
     std::uint64_t revision() const;
@@ -83,10 +94,10 @@ public:
     };
     /// @brief 运行中网络目标的当前判定：配置拒绝优先，其次配置允许与会话规则，最后才需要审批。
     NetworkDecision check_network(const NetworkTarget&) const;
-    /// @brief 记录一条会话网络规则（按 host:port 精确匹配）。
-    void remember_network(const NetworkTarget&);
-    /// @brief 用户明确拒绝过的目标：本会话内不再弹窗，直接按配置拒绝处理。
-    void remember_denied_network(const NetworkTarget&);
+    /// @brief 原子消费运行中网络批准，allow_session 时保存 host:port 精确规则。
+    bool consume_network_approval(const NetworkTarget&, const Approval&, const Decision&);
+    /// @brief 审批者明确拒绝过的目标：本会话内不再弹窗，保留拒绝来源。
+    void remember_denied_network(const NetworkTarget&, ApprovalAuthority authority = ApprovalAuthority::user);
 
     void set_mode(PermissionMode mode);
     PermissionMode mode() const;
@@ -112,6 +123,10 @@ private:
     bool inside_dir(const std::filesystem::path&, const std::filesystem::path&) const;
     /// 命中会话授权时返回 allow_network（exec 之外恒为 false），未命中返回 nullopt。
     std::optional<bool> matches_session(const Approval&, const PreparedIntent&) const;
+    bool matches_parent_session(const Approval& saved, const Approval& requested) const;
+    void remember_locked(const Approval&, const Decision&);
+    void remember_network_locked(const NetworkTarget&, const Approval&);
+    ExecutionGrant grant_for(const Approval&, const Decision&) const;
     ExecutionGrant grant_for_exec(SandboxProfile, GrantSource) const;
     ExecutionGrant grant_for_files(const PreparedIntent&, GrantSource) const;
     ExecutionGrant grant_for_external(const PreparedIntent&, GrantSource) const;
@@ -124,13 +139,16 @@ private:
     std::atomic<bool> cap_read_only_{false};
     std::atomic<bool> cap_planning_{false};
     std::atomic<std::uint64_t> revision_{0};
-    std::atomic<std::uint64_t> cap_revision_{0};
     mutable std::mutex rules_mutex_; ///< 保护下面的规则容器；evaluate/remember/revoke/快照共用
     SandboxSupport sandbox_;
     SandboxConfig sandbox_options_;
     int analysis_version_;
     std::filesystem::path workspace_root_, project_root_, control_root_;
 
+    std::stop_source authority_stop_;
+    void change_permission(const std::function<void()>& change);
+    struct RememberedApproval { Approval approval; Decision decision; };
+    std::vector<RememberedApproval> parent_grants_;
     bool session_edits_ = false;
     struct ExecRule {
         std::string id, command, cwd;
@@ -138,8 +156,14 @@ private:
     struct NetworkRule {
         std::string id, host;
         int port = 0;
+        ApprovalAuthority authority = ApprovalAuthority::user;
     };
     std::vector<ExecRule> exec_rules_;
+    struct ParentNetworkRule {
+        NetworkTarget target;
+        Approval approval;
+    };
+    std::vector<ParentNetworkRule> parent_network_rules_;
     std::vector<NetworkRule> network_rules_;
     std::vector<NetworkRule> network_denied_;
     std::vector<std::string> external_rules_;

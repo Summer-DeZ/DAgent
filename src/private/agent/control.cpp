@@ -435,6 +435,8 @@ ToolResult ControlActionExecutor::run_delegation(const DelegationRequest& reques
         context.parent_planning = services_.policy->planning();
         context.parent_read_only = services_.policy->read_only();
     }
+    context.parent_policy = services_.policy;
+    context.parent_reviewer = parent_reviewer_;
     context.model = services_.model;
     context.parent_tools = services_.tool_names;
     context.sink = &services_.sink;

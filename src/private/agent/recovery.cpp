@@ -99,7 +99,7 @@ RecoveryResult SessionRecovery::restore(const std::vector<StoredRecord>& records
                 } else if constexpr (std::is_same_v<T, record_codec::TurnEndRecord>) {
                     open_turn = false;
                 }
-                // tool_started / permission / permission_revoked 只保留审计信息，不参与重建。
+                // tool_started / permission / parent_review / permission_revoked 只保留审计信息，不参与重建。
             },
             decoded);
     }

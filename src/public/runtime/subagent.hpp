@@ -1,8 +1,8 @@
 /// @file subagent.hpp
 /// @brief SubagentExecutor：一次 task 委派的完整执行与资源回收。
 ///
-/// 在 task 组线程创建子 Session/Run，父等待结果；子审批经父审批出口（InteractionBroker）
-/// 串行显示，子 Asker 恒空，子工具默认不含 task/ask/exit_plan 与未显式允许的 MCP。
+/// 在 task 组线程创建子 Session/Run，父等待结果并消费审批邮箱；unrestricted 父优先代审，
+/// 其他模式走用户审批。子 Asker 恒空，子工具默认不含 task/ask/exit_plan 与未显式允许的 MCP。
 /// 活跃子会话登记各自的权限上限与取消入口：父降权时即时收窄并终止越界子执行。
 #pragma once
 
@@ -29,8 +29,8 @@ public:
     void apply_parent_permission(agent::PermissionMode mode, bool read_only, bool planning);
 
     /// @brief 登记一个活跃子会话；返回其取消入口（子 Run 使用同一个 stop 来源）。
-    std::shared_ptr<std::stop_source> attach(agent::Policy& policy, agent::PermissionMode mode,
-                                             bool read_only, bool planning);
+    std::shared_ptr<std::stop_source> attach(agent::Policy& policy,
+                                            const agent::DelegationContext& context);
     void detach(agent::Policy& policy);
 
 private:
@@ -38,6 +38,9 @@ private:
         agent::Policy* policy = nullptr;
         std::shared_ptr<std::stop_source> stop;
         agent::EffectivePermission effective;
+        const agent::Policy* parent_policy = nullptr;
+        std::uint64_t parent_revision = 0;
+        bool parent_review = false;
     };
 
     SessionFactory& factory_;

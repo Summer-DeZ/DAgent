@@ -100,6 +100,10 @@ std::string_view to_string(PermissionMode mode) {
     return "workspace";
 }
 
+std::string_view to_string(ApprovalAuthority authority) {
+    return authority == ApprovalAuthority::parent_model ? "parent_model" : "user";
+}
+
 std::string_view to_string(SandboxProfile profile) {
     switch (profile) {
     case SandboxProfile::read_only: return "read_only";
@@ -159,9 +163,12 @@ std::optional<bool> Policy::matches_session(const Approval& approval, const Prep
             })) return false;
         return std::nullopt;
     case ToolKind::read:
-        for (const auto& path : intent.paths)
-            for (const auto& dir : read_dirs_)
-                if (is_relative_to(path.path, dir)) return false;
+        if (std::ranges::all_of(intent.paths, [&](const ResourceIntent& path) {
+                return classify(path) == PathClass::normal ||
+                       std::ranges::any_of(read_dirs_, [&](const fs::path& dir) {
+                           return is_relative_to(path.path, dir);
+                       });
+            })) return false;
         return std::nullopt;
     case ToolKind::external:
         return std::ranges::find(external_rules_, approval.tool) != external_rules_.end()
@@ -175,6 +182,29 @@ std::optional<bool> Policy::matches_session(const Approval& approval, const Prep
     }
     }
     return std::nullopt;
+}
+
+bool Policy::matches_parent_session(const Approval& saved, const Approval& requested) const {
+    if (saved.intent.kind != requested.intent.kind) return false;
+    switch (requested.intent.kind) {
+    case ToolKind::write:
+        return std::ranges::all_of(requested.intent.paths, [&](const ResourceIntent& path) {
+            return classify(path) == PathClass::normal;
+        });
+    case ToolKind::read:
+        return std::ranges::all_of(requested.intent.paths, [&](const ResourceIntent& path) {
+            return classify(path) == PathClass::normal ||
+                   std::ranges::any_of(saved.intent.paths, [&](const ResourceIntent& allowed) {
+                       return classify(allowed) == PathClass::outside && is_relative_to(path.path, allowed.path);
+                   });
+        });
+    case ToolKind::external:
+        return saved.tool == requested.tool;
+    case ToolKind::exec:
+        return saved.intent.command && requested.intent.command && saved.cwd == requested.cwd &&
+               saved.intent.command->command == requested.intent.command->command;
+    }
+    return false;
 }
 
 ExecutionGrant Policy::grant_for_exec(SandboxProfile profile, GrantSource source) const {
@@ -248,8 +278,10 @@ Verdict Policy::evaluate(const ToolCall& call, const PreparedIntent& intent) con
     const std::lock_guard lock(rules_mutex_);
     const EffectivePermission live = effective();
     Verdict verdict;
+    verdict.approval.identity.child_revision = revision();
     verdict.approval.call_id = call.id;
     verdict.approval.tool = call.name;
+    verdict.approval.arguments = call.arguments;
     verdict.approval.intent = intent;
     verdict.approval.cwd = workspace_root_.string();
     verdict.approval.mode = live.planning ? "plan" : std::string(to_string(live.mode));
@@ -405,10 +437,28 @@ Verdict Policy::evaluate(const ToolCall& call, const PreparedIntent& intent) con
     if (verdict.kind != Verdict::Kind::ask) return verdict;
     if (single_use_only(verdict.approval)) verdict.approval.session_rule.clear();
 
-    if (matches_session(verdict.approval, intent)) {
+    if (!single_use_only(verdict.approval) && !verdict.approval.session_rule.empty()) {
+        for (const auto& saved : parent_grants_) {
+            if (saved.approval.authority_stop.stop_requested() ||
+                !matches_parent_session(saved.approval, verdict.approval)) continue;
+            verdict.kind = Verdict::Kind::allow;
+            Approval current = verdict.approval;
+            current.authority = saved.approval.authority;
+            // Preserve the original approval identity; the Dispatcher identifies each consuming execution.
+            current.identity = saved.approval.identity;
+            current.authority_stop = saved.approval.authority_stop;
+            verdict.grant = grant_for(current, saved.decision);
+            return verdict;
+        }
+    }
+    if (!single_use_only(verdict.approval) && matches_session(verdict.approval, intent)) {
+        verdict.kind = Verdict::Kind::allow;
         if (intent.kind == ToolKind::exec)
             verdict.grant = grant_for_exec(SandboxProfile::workspace_write, GrantSource::session);
-        return answer(Verdict::Kind::allow);
+        else if (intent.kind == ToolKind::external)
+            verdict.grant = grant_for_external(intent, GrantSource::session);
+        else verdict.grant = grant_for_files(intent, GrantSource::session);
+        return verdict;
     }
 
     if (live.mode == PermissionMode::workspace) {
@@ -423,29 +473,62 @@ Verdict Policy::evaluate(const ToolCall& call, const PreparedIntent& intent) con
     return verdict;
 }
 
+bool Policy::valid_approval(const Approval& approval, const Decision& decision) const {
+    if (decision.answer != Decision::Answer::allow && decision.answer != Decision::Answer::allow_session)
+        return false;
+    if (decision.answer == Decision::Answer::allow_session &&
+        (approval.session_rule.empty() || single_use_only(approval))) return false;
+    if (approval.identity.child_revision != revision()) return false;
+    if (approval.authority != ApprovalAuthority::parent_model) return true;
+    const auto& id = approval.identity;
+    return !id.request_id.empty() && !id.parent_session_id.empty() && !id.child_session_id.empty() &&
+           !id.origin_call_id.empty() && id.call_id == approval.call_id &&
+           approval.authority_stop.stop_possible() &&
+           !approval.authority_stop.stop_requested();
+}
+
+std::optional<ExecutionGrant> Policy::consume_approval(const Approval& approval, const Decision& decision) {
+    const std::lock_guard lock(rules_mutex_);
+    if (!valid_approval(approval, decision)) return std::nullopt;
+    remember_locked(approval, decision);
+    return grant_for(approval, decision);
+}
+
+bool Policy::consume_network_approval(const NetworkTarget& target, const Approval& approval,
+                                     const Decision& decision) {
+    const std::lock_guard lock(rules_mutex_);
+    if (!valid_approval(approval, decision)) return false;
+    if (decision.answer == Decision::Answer::allow_session) remember_network_locked(target, approval);
+    return true;
+}
+
 ExecutionGrant Policy::grant_for(const Approval& approval, const Decision& decision) const {
+    const auto source = decision.answer == Decision::Answer::allow_session ? GrantSource::session : GrantSource::once;
+    ExecutionGrant grant;
     if (approval.intent.kind == ToolKind::read || approval.intent.kind == ToolKind::write)
-        return grant_for_files(approval.intent, decision.answer == Decision::Answer::allow_session
-                                               ? GrantSource::session : GrantSource::once);
-    if (approval.intent.kind == ToolKind::external)
-        return grant_for_external(approval.intent, decision.answer == Decision::Answer::allow_session
-                                                     ? GrantSource::session : GrantSource::once);
-    if (approval.intent.kind != ToolKind::exec) return {};
-    if (std::ranges::any_of(approval.requests, [](const Approval::Request& request) {
+        grant = grant_for_files(approval.intent, source);
+    else if (approval.intent.kind == ToolKind::external)
+        grant = grant_for_external(approval.intent, source);
+    else if (approval.intent.kind == ToolKind::exec) {
+        const bool host = std::ranges::any_of(approval.requests, [](const Approval::Request& request) {
             return request.kind == Approval::Request::Kind::host_access;
-        }))
-        return grant_for_exec(SandboxProfile::full_access, GrantSource::once);
-    ExecutionGrant grant = grant_for_exec(SandboxProfile::workspace_write,
-                                          decision.answer == Decision::Answer::allow_session
-                                              ? GrantSource::session : GrantSource::once);
-    grant.allow_network = false;
+        });
+        grant = grant_for_exec(host ? SandboxProfile::full_access : SandboxProfile::workspace_write,
+                               host ? GrantSource::once : source);
+    }
+    grant.authority = approval.authority;
+    grant.approval = approval.identity;
+    grant.authority_stop = approval.authority_stop;
     return grant;
 }
 
-void Policy::remember(const Approval& approval, const Decision& decision) {
+void Policy::remember_locked(const Approval& approval, const Decision& decision) {
     if (decision.answer != Decision::Answer::allow_session || single_use_only(approval)) return;
-    const std::lock_guard lock(rules_mutex_);
     revision_.fetch_add(1);
+    if (approval.authority == ApprovalAuthority::parent_model) {
+        parent_grants_.push_back({approval, decision});
+        return;
+    }
     switch (approval.intent.kind) {
     case ToolKind::write: session_edits_ = true; return;
     case ToolKind::read:
@@ -466,6 +549,12 @@ void Policy::remember(const Approval& approval, const Decision& decision) {
 std::vector<Policy::SessionGrant> Policy::session_grants() const {
     const std::lock_guard lock(rules_mutex_);
     std::vector<SessionGrant> grants;
+    for (const auto& saved : parent_grants_)
+        if (!saved.approval.authority_stop.stop_requested())
+            grants.push_back({saved.approval.identity.request_id, "Parent model: " + saved.approval.session_rule});
+    for (const auto& rule : parent_network_rules_)
+        if (!rule.approval.authority_stop.stop_requested())
+            grants.push_back({rule.approval.identity.request_id, "Parent model: " + rule.approval.session_rule});
     if (session_edits_) grants.push_back({"workspace-edits", "Workspace file edits"});
     for (const auto& path : read_dirs_)
         grants.push_back({read_rule_id(path), "Read under " + path.string()});
@@ -483,46 +572,55 @@ std::vector<Policy::SessionGrant> Policy::session_grants() const {
 }
 
 bool Policy::revoke(std::string_view id) {
-    const std::lock_guard lock(rules_mutex_);
+    std::unique_lock lock(rules_mutex_);
+    const auto changed = [&] {
+        revision_.fetch_add(1);
+        auto previous = std::move(authority_stop_);
+        authority_stop_ = std::stop_source{};
+        lock.unlock();
+        previous.request_stop();
+        return true;
+    };
+    if (std::erase_if(parent_grants_, [&](const RememberedApproval& saved) {
+            return saved.approval.identity.request_id == id;
+        }) != 0) { return changed(); }
+    if (std::erase_if(parent_network_rules_, [&](const ParentNetworkRule& rule) {
+            return rule.approval.identity.request_id == id;
+        }) != 0) return changed();
     if (id.starts_with("netdeny-")) {
         const auto it = std::ranges::find_if(network_denied_, [&](const NetworkRule& rule) { return rule.id == id; });
         if (it == network_denied_.end()) return false;
         network_denied_.erase(it);
-        revision_.fetch_add(1);
-        return true;
+        return changed();
     }
     if (id.starts_with("net-")) {
         const auto it = std::ranges::find_if(network_rules_, [&](const NetworkRule& rule) { return rule.id == id; });
         if (it == network_rules_.end()) return false;
         network_rules_.erase(it);
-        revision_.fetch_add(1);
-        return true;
+        return changed();
     }
-    if (id == "workspace-edits" && session_edits_) { session_edits_ = false; revision_.fetch_add(1); return true; }
+    if (id == "workspace-edits" && session_edits_) { session_edits_ = false; return changed(); }
     if (id.starts_with("read-")) {
         const auto it = std::ranges::find_if(read_dirs_, [&](const fs::path& path) {
             return read_rule_id(path) == id;
         });
         if (it == read_dirs_.end()) return false;
         read_dirs_.erase(it);
-        revision_.fetch_add(1);
-        return true;
+        return changed();
     }
     if (id.starts_with("external-")) {
         const auto it = std::ranges::find(external_rules_, id.substr(9));
         if (it == external_rules_.end()) return false;
         external_rules_.erase(it);
-        revision_.fetch_add(1);
-        return true;
+        return changed();
     }
     const auto it = std::ranges::find_if(exec_rules_, [&](const ExecRule& rule) { return rule.id == id; });
     if (it == exec_rules_.end()) return false;
     exec_rules_.erase(it);
-    revision_.fetch_add(1);
-    return true;
+    return changed();
 }
 
-std::uint64_t Policy::revision() const { return revision_.load() + cap_revision_.load(); }
+std::uint64_t Policy::revision() const { return revision_.load(); }
 
 Policy::NetworkDecision Policy::check_network(const NetworkTarget& target) const {
     const std::lock_guard lock(rules_mutex_);
@@ -531,7 +629,13 @@ Policy::NetworkDecision Policy::check_network(const NetworkTarget& target) const
             return {NetworkDecision::Kind::deny, "network target is on the configured deny list"};
     for (const auto& rule : network_denied_)
         if (rule.host == target.host && rule.port == target.port)
-            return {NetworkDecision::Kind::deny, "the user denied this network target earlier in the session"};
+            return {NetworkDecision::Kind::deny,
+                    rule.authority == ApprovalAuthority::parent_model
+                        ? "the parent agent denied this network target earlier in the session"
+                        : "the user denied this network target earlier in the session"};
+    for (const auto& rule : parent_network_rules_)
+        if (!rule.approval.authority_stop.stop_requested() && rule.target.host == target.host && rule.target.port == target.port)
+            return {NetworkDecision::Kind::allow, {}};
     for (const auto& rule : network_rules_)
         if (rule.host == target.host && rule.port == target.port) return {NetworkDecision::Kind::allow, {}};
     for (const auto& pattern : sandbox_options_.network_allowed)
@@ -540,27 +644,49 @@ Policy::NetworkDecision Policy::check_network(const NetworkTarget& target) const
             std::format("connect to {}:{} from a sandboxed command", target.host, target.port)};
 }
 
-void Policy::remember_network(const NetworkTarget& target) {
-    const std::lock_guard lock(rules_mutex_);
+void Policy::remember_network_locked(const NetworkTarget& target, const Approval& approval) {
+    if (approval.authority == ApprovalAuthority::parent_model) {
+        parent_network_rules_.push_back({target, approval});
+        revision_.fetch_add(1);
+        return;
+    }
     const std::string id = network_rule_id(target.host, target.port);
     if (std::ranges::none_of(network_rules_, [&](const NetworkRule& rule) { return rule.id == id; }))
         network_rules_.push_back({id, target.host, target.port});
     revision_.fetch_add(1);
 }
 
-void Policy::remember_denied_network(const NetworkTarget& target) {
+void Policy::remember_denied_network(const NetworkTarget& target, ApprovalAuthority authority) {
     const std::lock_guard lock(rules_mutex_);
     const std::string id = network_deny_id(target.host, target.port);
     if (std::ranges::none_of(network_denied_, [&](const NetworkRule& rule) { return rule.id == id; }))
-        network_denied_.push_back({id, target.host, target.port});
+        network_denied_.push_back({id, target.host, target.port, authority});
     revision_.fetch_add(1);
 }
 
-void Policy::set_mode(PermissionMode mode) { mode_.store(mode); revision_.fetch_add(1); }
+Policy::AuthorityView Policy::authority_view() const {
+    const std::lock_guard lock(rules_mutex_);
+    return {effective(), revision(), authority_stop_.get_token()};
+}
+
+void Policy::change_permission(const std::function<void()>& change) {
+    std::stop_source previous;
+    {
+        const std::lock_guard lock(rules_mutex_);
+        change();
+        revision_.fetch_add(1);
+        previous = std::move(authority_stop_);
+        authority_stop_ = std::stop_source{};
+    }
+    // Cancellation callbacks may join executors; never call them while holding the Policy lock.
+    previous.request_stop();
+}
+
+void Policy::set_mode(PermissionMode mode) { change_permission([&] { mode_.store(mode); }); }
 PermissionMode Policy::mode() const { return mode_.load(); }
-void Policy::set_read_only(bool value) { read_only_.store(value); revision_.fetch_add(1); }
+void Policy::set_read_only(bool value) { change_permission([&] { read_only_.store(value); }); }
 bool Policy::read_only() const { return read_only_.load(); }
-void Policy::set_planning(bool value) { planning_.store(value); revision_.fetch_add(1); }
+void Policy::set_planning(bool value) { change_permission([&] { planning_.store(value); }); }
 bool Policy::planning() const { return planning_.load(); }
 
 bool narrower(const EffectivePermission& a, const EffectivePermission& b) {
@@ -582,11 +708,12 @@ EffectivePermission Policy::effective() const {
 }
 
 EffectivePermission Policy::set_parent_cap(PermissionMode mode, bool read_only, bool planning) {
-    cap_mode_.store(mode);
-    cap_read_only_.store(read_only);
-    cap_planning_.store(planning);
-    cap_active_.store(true);
-    cap_revision_.fetch_add(1);
+    change_permission([&] {
+        cap_mode_.store(mode);
+        cap_read_only_.store(read_only);
+        cap_planning_.store(planning);
+        cap_active_.store(true);
+    });
     return effective();
 }
 

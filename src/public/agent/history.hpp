@@ -20,7 +20,7 @@ namespace dagent::agent {
 
 /// @brief 一条历史展示条目；一个记录可以产生 0 或 1 条（记录与条目不是一一计数关系）。
 struct HistoryItem {
-    enum class Kind { user, assistant, tool, tool_started, system, turn_end };
+    enum class Kind { user, assistant, tool, tool_started, permission, parent_review, system, turn_end };
 
     Kind kind = Kind::user;
     std::int64_t seq = -1;
@@ -32,6 +32,7 @@ struct HistoryItem {
     ToolStarted started;   ///< tool_started
     std::string call_id, name, summary; ///< tool
     ToolResult result;     ///< tool
+    nlohmann::json audit;  ///< permission / parent_review: read-only evidence, never a live grant
 
     std::string model;     ///< system：历史模型标签
 

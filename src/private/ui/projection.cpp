@@ -168,6 +168,7 @@ std::optional<EventPayload> decode_payload(std::string_view kind, const json& da
                   : level == "error" ? NoticeLevel::error
                                      : NoticeLevel::info;
         out.text = data.value("text", "");
+        out.persistent = data.value("persistent", false);
         return out;
     }
     if (kind == "model_changed") return ModelChanged{data.value("model", "")};
@@ -203,6 +204,8 @@ std::vector<Event> decode_history(const protocol::HistoryItem& item) {
         events.push_back(Event{ToolStarted{item.started.value("id", ""),
                                           item.started.value("name", ""),
                                           item.started.value("summary", "")}});
+    } else if (item.kind == "permission" || item.kind == "parent_review") {
+        events.push_back(Event{Notice{NoticeLevel::info, item.text, true}});
     } else if (item.kind == "tool") {
         ToolFinished out;
         out.id = item.call_id;

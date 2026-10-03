@@ -19,6 +19,7 @@ struct ContextOptions {
 struct Limits {
     int max_model_calls = 0;
     int max_tool_calls = 0;
+    std::size_t max_total_tokens = 0; ///< 本 turn 模型输入+输出总预算，0 不限
     int max_model_retries = 0;
     int max_parallel_tasks = 0; ///< 并发子 Agent 上限
     int max_parallel_tools = 0; ///< 并发只读工具上限
@@ -29,10 +30,17 @@ struct ProgressOptions {
     std::chrono::milliseconds interval{0}; ///< run 模式心跳、界面计时刷新
 };
 
+struct ParentApprovalOptions {
+    bool parent_when_unrestricted = true;
+    int max_reviews_per_turn = 16;
+    std::chrono::milliseconds review_timeout{60000};
+};
+
 struct Options {
     ContextOptions context;
     Limits run;
     ProgressOptions progress;
+    ParentApprovalOptions approval;
 };
 
 } // namespace dagent::agent

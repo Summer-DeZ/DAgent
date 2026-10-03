@@ -145,7 +145,7 @@ void to_json(nlohmann::json& json, const HistoryItem& item) {
                           {"finish", item.finish},    {"model", item.model},
                           {"call_id", item.call_id},  {"name", item.name},
                           {"summary", item.summary},  {"result", item.result},
-                          {"started", item.started},  {"status", item.status},
+                          {"started", item.started},  {"audit", item.audit}, {"status", item.status},
                           {"error", item.error},      {"steps", item.steps},
                           {"tool_calls", item.tool_calls}, {"usage", item.usage}};
 }
@@ -162,6 +162,7 @@ void from_json(const nlohmann::json& json, HistoryItem& item) {
     item.summary = json.value("summary", "");
     item.result = json.value("result", nlohmann::json(nullptr));
     item.started = json.value("started", nlohmann::json(nullptr));
+    item.audit = json.value("audit", nlohmann::json(nullptr));
     item.status = json.value("status", "done");
     item.error = json.value("error", "");
     item.steps = json.value("steps", 0);

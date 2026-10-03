@@ -28,7 +28,10 @@ Record user(std::int64_t n, std::string_view text, const std::vector<SkillView>&
 Record assistant(std::int64_t n, const Reply& reply);
 Record tool_started(const ToolStarted& event);
 Record tool(std::int64_t n, const ToolCall& call, std::string_view summary, const ToolResult& result);
-Record permission(const Approval& approval, const Decision& decision);
+Record permission(const Approval& approval, const Decision& decision,
+                  const ExecutionGrant* grant = nullptr);
+Record parent_review(const Approval& approval, const Decision& decision);
+std::string permission_summary(const Approval& approval, const Decision& decision);
 Record permission_revoked(std::string_view id);
 Record prune(const std::vector<std::int64_t>& ordinals);
 Record compaction(std::int64_t keep_from, std::string_view summary);
@@ -68,7 +71,15 @@ struct ToolRecord {
 
 struct PermissionRecord {
     std::string call_id, answer, rule;
+    ApprovalAuthority authority = ApprovalAuthority::user;
+    ApprovalIdentity identity;
+    std::string state, scope, reason, model, tool;
+    Usage usage;
+    nlohmann::json audit;
+    std::string summary;
 };
+
+struct ParentReviewRecord { PermissionRecord review; };
 
 struct PermissionRevokedRecord {
     std::string id;
@@ -92,7 +103,8 @@ struct TurnEndRecord {
 
 using DecodedRecord =
     std::variant<SystemRecord, UserRecord, AssistantRecord, ToolStartedRecord, ToolRecord,
-                 PermissionRecord, PermissionRevokedRecord, PruneRecord, CompactionRecord, TurnEndRecord>;
+                 PermissionRecord, ParentReviewRecord, PermissionRevokedRecord, PruneRecord,
+                 CompactionRecord, TurnEndRecord>;
 
 /// @brief 解码一条记录；未知类型或非法必须字段抛 RecordError(corrupt)。
 DecodedRecord decode(std::string_view type, const nlohmann::json& payload);

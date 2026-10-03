@@ -90,6 +90,7 @@ public:
 
     /// @brief 绑定本轮能力并清零本轮问答计数。
     void begin_turn(Services services);
+    void set_parent_reviewer(const Approver* reviewer) { parent_reviewer_ = reviewer; }
 
     /// @brief 执行一个控制请求（ask/exit_plan 可能阻塞等待问答）；返回工具结果。
     /// todo 只返回计划替换事实，WorkPlan 由 SessionCommitter 在原序提交点更新。
@@ -105,6 +106,7 @@ private:
     PlanDecision plan_decision(const Answer&) const;
 
     Services services_;
+    const Approver* parent_reviewer_ = nullptr;
     int questions_this_turn_ = 0;
 };
 

@@ -127,7 +127,7 @@ agent::Decision InteractionBroker::request_approval(agent::Approval approval, st
                                                     std::uint64_t generation, std::stop_token stop) {
     const std::shared_ptr<Pending> pending =
         request(Kind::approval, std::move(approval), {}, std::move(session_id), generation, stop);
-    if (pending->cancelled) return agent::Decision{agent::Decision::Answer::deny, {}};
+    if (pending->cancelled) return agent::Decision{};
     return pending->decision;
 }
 

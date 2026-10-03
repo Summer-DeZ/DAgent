@@ -4,7 +4,9 @@
 /// Run 只在本后端实例内有效，不落库（状态机 §3）。
 #pragma once
 
+#include <algorithm>
 #include <string>
+#include "agent/options.hpp"
 #include <utility>
 
 #include "agent/events.hpp"
@@ -31,9 +33,25 @@ public:
     const RunSkills& skills() const { return skills_; }
 
     void count_step() { ++steps_; }
+    void count_review() { ++reviews_; }
+    int reviews() const { return reviews_; }
+    bool model_budget_exhausted(const Limits& limits) const {
+        return (limits.max_model_calls > 0 && steps_ >= limits.max_model_calls) ||
+               (limits.max_total_tokens > 0 && tokens() >= limits.max_total_tokens);
+    }
+    bool fit_request(Request& request, std::size_t estimated, const Limits& limits) const {
+        if (limits.max_total_tokens == 0) return true;
+        if (tokens() + estimated >= limits.max_total_tokens) return false;
+        const auto remaining = limits.max_total_tokens - tokens() - estimated;
+        request.max_tokens = request.max_tokens == 0 ? remaining : std::min(request.max_tokens, remaining);
+        return true;
+    }
     int steps() const { return steps_; }
     void count_calls(int calls) { tool_calls_ += calls; }
     int tool_calls() const { return tool_calls_; }
+    std::size_t accounted_tokens() const { return tokens(); }
+    std::size_t estimated_budget_tokens() const { return unreported_tokens_; }
+    void charge_unreported_tokens(std::size_t tokens) { unreported_tokens_ += tokens; }
     void add_usage(const Usage& usage) {
         total_.prompt += usage.prompt;
         total_.completion += usage.completion;
@@ -60,7 +78,9 @@ public:
 
 private:
     RunSkills skills_;
-    int steps_ = 0, tool_calls_ = 0;
+    std::size_t tokens() const { return static_cast<std::size_t>(total_.prompt) + total_.completion + unreported_tokens_; }
+    std::size_t unreported_tokens_ = 0;
+    int steps_ = 0, tool_calls_ = 0, reviews_ = 0;
     Usage total_;
     bool grace_ = false;
     bool finished_ = false;

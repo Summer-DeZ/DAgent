@@ -87,7 +87,8 @@ constexpr Strings kEnglish{
     .card_limit = "◌ tool call limit reached",
     .card_collapse = "collapse · ctrl+o",
     .card_folded = "{0} lines folded · ctrl+o",
-    .banner_hint = "/help for keys and commands   @ to reference files   ctrl+p for palette",
+    .banner_hint = "/help for keys and commands   @ to reference files   ctrl+p for palette\n"
+                   "Unrestricted mode may delegate permission reviews to the parent model.",
     .banner_resumed = "resumed {0} · {1} messages · {2}",
     .approve_title = " Approval needed ── ",
     .approve_cancel = " ctrl+c interrupt turn ",

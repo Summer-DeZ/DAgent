@@ -1,9 +1,12 @@
 # unrestricted 父 Agent 审批子 Agent
 
-日期：2026-09-29。状态：独立设计计划，尚未实现。
+设计日期：2026-09-29。实现更新：2026-10-03。
 
-2026-09-30 状态核对：SRT 部署、子权限上限传播、父取消级联及人工审批转发已经落地；
-这些不是父模型自动审批。本计划仍未实现。当前权限行为见 [权限指南](../docs/guide/permissions.md)。
+当前状态：实现、构建及真实父子任务验收已完成；全面排查后的修复与剩余验证边界见第 8.2 节。
+真实运行覆盖 headless 父审批、一次/子会话授权、并发隔离、拒绝、硬上限、人工路由、取消/降权、预算及回放。
+完整原始记录与验收说明位于 `temp/parent-agent-approval/VERIFY.md`。
+最后集成后的正向运行保存在 `temp/parent-agent-approval/records/final-headless.jsonl`，父子均完成，实际子读取为父模型单次授权。
+当前权限行为见 [权限指南](../docs/guide/permissions.md)。
 
 ## 1. 目标
 
@@ -14,7 +17,9 @@
 
 父模型负责判断请求是否服务于用户任务；确定性 Policy 负责检查授权是否合法，实际执行后端负责隔离。父审批不能补足当前后端缺少的 OS 能力。
 
-## 2. 当前源码与需要改变的行为
+## 2. 设计基线与改造目标
+
+下表记录设计时的行为与改造目标；当前实现状态见第 7 节。
 
 | 位置 | 当前行为 | 改造目标 |
 | --- | --- | --- |
@@ -119,6 +124,17 @@ UI 用英文说明 unrestricted 可委托父审批，并以 `Reviewing subagent 
 
 这些项不依赖 SRT 的 S00–S10。两份计划都涉及审批请求身份、权限修订号和执行事件队列：先实施的一方提供公共契约，另一方复用，不能重复创建控制通道或修改同一文件产生冲突。
 
+### 7.1 实现状态（2026-10-03）
+
+| ID | 状态 | 落地内容 |
+| --- | --- | --- |
+| PA01 | 已实现 | 中立 authority、请求身份、父权限 revision/取消租约及受信任 Home 配置；保留子定义硬上限 |
+| PA02 | 已实现 | 复用 Dispatcher 等待邮箱接收子申请，单次终态，父模型审阅串行，等待期间响应取消与降权 |
+| PA03 | 已实现 | 无工具的结构化父模型请求，完整请求范围校验，复用父模型调用与令牌预算，审阅次数和超时上限 |
+| PA04 | 已实现 | unrestricted 的父模型路由独立于人工 Approver；ask/workspace、显式 user 配置保留人工路由 |
+| PA05 | 已实现 | 一次/子会话授权、权限撤销取消、父子审计与 usage 归属、英文进度及只读历史回放 |
+| PA06 | 已完成本轮验收 | 构建及真实 Qwen 父子任务通过；各场景证据与未验证边界见第 8.1 节 |
+
 ## 8. 真实运行验收
 
 | 场景 | 预期 |
@@ -134,7 +150,64 @@ UI 用英文说明 unrestricted 可委托父审批，并以 `Reviewing subagent 
 | headless unrestricted 父 | 无前端 Approver 仍可代审，使用真实模型完成子任务 |
 | 恢复记录、模型切换 | 能区分用户与父批准；恢复不重授临时权限，usage 归属正确 |
 
-只进行构建和真实模型、真实父子任务运行；检测材料放 `temp/`。不添加测试代码、模拟模型、模拟服务或测试目标。审批通道的验收使用现有真实命令；SRT 域名级授权属于另一计划的后续联合验收。
+只进行构建和真实模型、真实父子任务运行；检测材料放 `temp/`。不添加测试代码、模拟模型、模拟服务或测试目标。审批通道的验收使用现有真实命令；SRT 域名级授权的联合验收记录见第 8.2 节，不代替 SRT 独立计划的全部验收。
+
+### 8.1 真实验收结果（2026-10-03）
+
+模型为用户明确授权启动的本地 `Qwen3.6-35B-A3B`，使用生产 CLI/backend 与隔离 Home。
+下表路径均相对于 `temp/parent-agent-approval/`，CLI 结果另附 SQLite 审计导出；
+不以父 turn 的 `done` 代替子工具实际成功。
+
+| 场景 | 结果 | 证据 |
+| --- | --- | --- |
+| headless unrestricted 父审批 | 外部 read 的实际 grant 为 parent_model/native/once，父子均完成，无用户弹窗 | `records/headless-local.jsonl`、`.audit.json` |
+| 一次与子会话授权 | ask 子两次 write 仅审阅一次，真实文件内容正确；授权未进入父持久规则 | `records/ask-session.jsonl`、`.audit.json` |
+| 多子任务并发 | 两个并行子分别请求不同文件，父审阅串行、请求身份分离，父子全部完成且无工具错误 | `records/concurrent-once.jsonl`、`.audit.json` |
+| 一次宿主批准 | 真实 host 命令写出文件；同子后续外部 read 再次审批且 mode 仍为 workspace | `records/host-command.jsonl`、`.audit.json` |
+| 父拒绝 | 顶层禁止读取的文件被父 reviewer 拒绝，子收到原因，没有实际 read 执行 | `records/denial.jsonl`、`.audit.json` |
+| readonly 硬上限 | 子实际尝试 write，Policy 直接拒绝，没有父审阅、文件未创建 | `records/hard-deny.jsonl`、`.audit.json` |
+| 人工及无交互路由 | ask/workspace 与显式 mode=user 均产生 user 交互并成功处理；headless 无人工通道返回 approval unavailable | `rpc-user-*.result.json`、`records/user-route-*.jsonl` |
+| 审阅中取消/降权 | 原请求 cancelled，无工具执行、无 grant，不转人工；取消约 0.052 秒完成父 turn 收尾 | `rpc-cancel-final.result.json`、`rpc-downgrade-final.result.json` |
+| 活跃父授权撤销 | 宿主命令实际运行后父降权，子约 86ms interrupted；原进程退出，22 秒后计划写入仍未发生 | `rpc-active-grant-final.result.json` |
+| 预算/超时/无效输出 | 审阅次数、共享父调用及 token 预算均拒绝；真实超时与无效 JSON 安全失败并反馈 | `FAILURE-PATHS.md`、`records/failure-paths-summary.json` |
+| usage、恢复与模型切换 | 父普通 usage 加审阅 usage 与 turn_end 相等；回放保留来源，恢复及空闲切模型后无临时 grant | `records/headless-local.usage.json`、`rpc-replay-switch-final.result.json` |
+
+并发零错误场景使用显式 `review_timeout_ms=180000`。默认 60000ms 的早期并发运行出现过
+排队超时，另一轮出现过真实模型 Markdown fence/无效 JSON；对应请求均被拒绝，记录保留，未将其当成成功执行。
+一次宿主场景使用复制到临时路径的真实二进制，其 SRT probe 因实际宿主 namespace 前置不足失败；
+不修改系统 AppArmor/sysctl、不模拟能力结果。
+
+明确边界：
+
+- reviewer 开始后真实 HTTP/provider 故障未单独触发；最初配置的 401/503 发生在父普通模型调用，不能算审阅故障验收。
+- 模型切换验证了空闲边界安装、历史回放及不恢复临时权限，未在切换后继续推理；生产 API 不单独恢复历史子会话。
+- provider 未报告的取消前 token 不能当作实际 usage；单独记录估算用于预算扣减。
+- 首版未验证初始受限父在任务中升级后再审阅，以及 SRT 联合网络路径；后续真实运行及修复已补齐，见第 8.2 节。
+
+### 8.2 全面排查与修复（2026-10-03）
+
+本轮按审批路由、Policy 范围与并发消费、父子生命周期、模型预算、SRT、审计/协议及 UI 展示检查。
+详细证据见 [排查记录](../temp/parent-approval-audit/VERIFY.md)。已发现并修复：
+
+- 普通目录的用户会话授权会绕过 `.env` 敏感读取审批；真实修前读取成功，修后要求独立审批，拒绝后不读取。
+- 父会话授权错误按工具名/显示文案匹配，不能覆盖 write→edit 或目录→普通子文件；现按意图和范围匹配。
+- 批准校验与消费分离存在权限变化窗口；现由 Policy 原子校验和签发，执行登记后再核对 revision。
+- 模型重试、失败请求及摘要的预算统计不统一；实际尝试现在统一计入父 turn 的次数与 token 预算，未报告 usage 单独估算。
+- 深层 Home 使 SRT 的 Unix socket 超长，真实执行失败却被报告为 bridge timeout；临时 HOME 使用短路径，初始化异常按协议报告。
+- `run.cancel` 的 null 字段可使后端 SIGABRT；现返回 -32602，后续快照请求正常。
+- 审阅异常可能漏解等待项、网络审批失败可能误存会话拒绝、实际执行 ID 和网络展示不完整；已修正对应交接与审计。
+- 网络审批预算拒绝曾被工具报告为“用户中断”且 is_error=false；现记录真正终止原因并保留已产生输出。
+
+真实补验：SRT 父审批访问 example.com:443 得到 HTTP 200；动态目标和 once 来源正确；
+SRT 执行中父降权约 52ms 中断，预定写入未发生；初始 workspace 父在运行中升级 unrestricted，
+成功审阅后再降权，子约 51ms 中断、无迟到写入、无人工弹窗。
+同子两次网络请求在审阅额度为 0 时各自走父审批拒绝，没有误复用“用户拒绝”缓存。
+真实超时场景确认 max_model_calls=1/2 分别最多发送 1/2 次；token=5000 在首次失败扣减后阻止下一次请求。
+
+仍需区分实现与证据：原子消费的竞态窗口已从代码消除，未通过概率运行复现旧窗口；
+reviewer 开始后的独立 provider 故障、模型切换后的继续推理、摘要耗尽预算的独立运行尚无专项证据。
+手动 compact 使用独立 Run 预算，现有操作记录不单独持久化其用量。
+这些边界不等同于已确认故障，也不能据此宣称全项目绝无隐藏问题；SRT 独立计划的其余验收仍按原计划跟踪。
 
 ## 9. 不包含的工作
 

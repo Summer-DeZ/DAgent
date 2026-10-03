@@ -24,13 +24,14 @@ public:
         bool hit_limit = false; ///< 有调用因超过工具预算而收到调用上限提示
     };
 
-    ActionDispatcher(Session& session, const RunServices& services)
-        : session_(session), services_(services) {}
+    ActionDispatcher(Session& session, Run& run, const RunServices& services)
+        : session_(session), run_(run), services_(services) {}
 
     Outcome dispatch(const std::vector<ToolCall>& calls, int budget);
 
 private:
     Session& session_;
+    Run& run_;
     const RunServices& services_;
 };
 

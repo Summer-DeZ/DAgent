@@ -107,6 +107,15 @@ nlohmann::json approval_payload(const agent::Approval& approval) {
     return nlohmann::json{
         {"tool", approval.tool},
         {"agent", approval.agent},
+        {"authority", agent::to_string(approval.authority)},
+        {"identity", {{"request_id", approval.identity.request_id},
+                       {"parent_session_id", approval.identity.parent_session_id},
+                       {"child_session_id", approval.identity.child_session_id},
+                       {"origin_call_id", approval.identity.origin_call_id},
+                       {"call_id", approval.identity.call_id},
+                       {"execution_id", approval.identity.execution_id},
+                       {"parent_revision", approval.identity.parent_revision},
+                       {"child_revision", approval.identity.child_revision}}},
         {"reason", approval.reason},
         {"summary", approval.intent.summary},
         {"preview_kind", preview_kind},
@@ -183,7 +192,11 @@ int Backend::run() {
         if (!line) break;
         protocol::Message message = protocol::parse_message(*line);
         if (message.kind == protocol::Message::Kind::request) {
-            dispatch(message.request);
+            try {
+                dispatch(message.request);
+            } catch (const nlohmann::json::exception& error) {
+                fail(message.request.id, invalid_params(error.what()));
+            }
         } else if (message.kind == protocol::Message::Kind::notification) {
             continue; // 前端不发送业务通知
         } else if (message.kind == protocol::Message::Kind::invalid) {
@@ -320,6 +333,7 @@ void Backend::dispatch(const protocol::Request& request) {
                               : value == "deny_with_feedback" ? agent::Decision::Answer::deny_with_feedback
                                                               : agent::Decision::Answer::deny;
             decision.feedback = answer.value("feedback", "");
+            decision.explicit_denial = value == "deny" || value == "deny_with_feedback";
             accepted = runtime_->answer(interaction_id, std::move(decision));
         }
         if (!accepted) {
@@ -496,6 +510,8 @@ void Backend::handle_command(Job job) {
         } else if (job.method == "session.compact") {
             compact(job.id, job.params);
         }
+    } catch (const nlohmann::json::exception& error) {
+        fail(job.id, invalid_params(error.what()));
     } catch (const std::exception& error) {
         log_backend()->error("command {} failed: {}", job.method, error.what());
         protocol::RpcError rpc;
@@ -732,6 +748,8 @@ void Backend::handle_query(Job job) {
         } else if (job.method == "workspace.complete") {
             workspace_complete(job.id, job.params);
         }
+    } catch (const nlohmann::json::exception& error) {
+        fail(job.id, invalid_params(error.what()));
     } catch (const runtime::QueryError& error) {
         fail(job.id, query_error(error));
     } catch (const std::exception& error) {

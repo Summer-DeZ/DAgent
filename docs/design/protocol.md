@@ -75,9 +75,15 @@ sequenceDiagram
 | `session.list` / `children` / `history` / `history_close`、`workspace.info` / `complete` | 查询线程 | 会话列表、子会话、HistoryItem 页与游标、项目信息、文件候选 |
 
 读线程只做校验与即时操作，不会被模型调用阻塞；耗时命令与只读查询各有一个工作线程，查询失败不影响执行中的 Run。
+请求字段类型不匹配返回 `invalid_params`（-32602），不会终止后端连接。
 
 `session.history` 首次调用捕获高水位，返回不透明游标；每页最多扫描 100 条记录，读完、`history_close` 或连接关闭时释放，
 每页分配连接内唯一、单次消费且绑定 session_id 的游标。跨会话、已消费或已释放游标返回 `invalid_state`。历史查询不取写锁、不恢复会话、不构造模型或 MCP（记录路线 L22）。
+
+历史条目新增 `kind=permission/parent_review`：`text` 为审批来源、终态、范围和理由，`audit` 保留完整审批记录。
+`permission` 属于实际请求的子会话（或直接操作的主会话），`parent_review` 属于作出审阅的父会话；只有父记录的顶层
+`usage` 计入审阅归属，子记录中的审阅 usage 仅作关联证据。旧条目没有 `audit` 时按 null 读取。
+`audit.estimated_budget_tokens` 记录服务端未报告用量时的审阅预算估算；它影响运行中的共享 token 上限，但不加入实测 `usage`。
 
 ## 4. 事件与快照
 
@@ -99,6 +105,18 @@ context 显式携带 used/limit/window/trigger_percent；删除空的 phase、ch
 
 `tool_output` 的原始字节可能截断 UTF-8 字符：backend 按调用 id 暂存不完整的尾部字节，在 JSON 编码前与下一块拼接，
 `tool_finished` 前补发剩余部分。
+
+`tool_started.data` 增加当前调用的 `execution_id`、`authority=user/parent_model` 与 `approval` 身份对象。审批身份包括 `request_id`、父/子
+`session_id`、`origin_call_id`、`call_id`、`execution_id` 及父/子权限 revision；实际 backend、sandbox 与授权范围仍由
+同一事件报告。审批交互载荷使用相同字段，身份对象名称为 `identity`。这些字段供关联审计，不构成可恢复的授权。
+会话授权复用时 `approval` 保留原始批准来源，当前工具由顶层 `id/execution_id` 标识；旧记录缺少 execution_id 时读为空。
+`audit.explicit_denial` 区分明确拒绝与审阅失败；仅明确网络拒绝可保存为会话拒绝规则。
+SRT 运行后才批准的域名会补入最终 bash 结果的 `view.network_targets`，具体批准来源见对应 permission 的 actual_grant。
+
+父审阅通过 `notice` 显示 `Reviewing subagent permission`，不创建 `interaction.requested` 模态交互。
+审批结果 Notice 增加可选 `persistent=true`，前端把它保留在正文；缺省为 false。历史审批条目投影为同类持久提示，
+不会重新提交审批或恢复授权。unrestricted 的说明是“may delegate permission reviews to the parent model”，实际路由还受
+Home 中 `subagents.approval.mode` 和当前父权限约束。
 
 ## 5. 背压与发送
 

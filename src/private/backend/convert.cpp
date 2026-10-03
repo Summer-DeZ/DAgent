@@ -97,6 +97,8 @@ protocol::HistoryItem to_protocol(const agent::HistoryItem& item) {
     case agent::HistoryItem::Kind::assistant: out.kind = "assistant"; break;
     case agent::HistoryItem::Kind::tool: out.kind = "tool"; break;
     case agent::HistoryItem::Kind::tool_started: out.kind = "tool_started"; break;
+    case agent::HistoryItem::Kind::permission: out.kind = "permission"; break;
+    case agent::HistoryItem::Kind::parent_review: out.kind = "parent_review"; break;
     case agent::HistoryItem::Kind::system: out.kind = "system"; break;
     case agent::HistoryItem::Kind::turn_end: out.kind = "turn_end"; break;
     }
@@ -108,6 +110,7 @@ protocol::HistoryItem to_protocol(const agent::HistoryItem& item) {
     out.call_id = item.call_id;
     out.name = item.name;
     out.summary = item.summary;
+    out.audit = item.audit;
     if (item.kind == agent::HistoryItem::Kind::tool) {
         out.result = nlohmann::json::object();
         out.result["text"] = item.result.model_text;

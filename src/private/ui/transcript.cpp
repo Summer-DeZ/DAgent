@@ -474,7 +474,10 @@ void Transcript::apply(const Event& event) {
             text(format_text(ui::text().card_compacted, e.before, e.after), "system.compact");
         },
         [&](const ModelChanged& e) { model_ = e.model; },
-        [&](const Notice& e) { if (e.level == NoticeLevel::error) text("✗ " + e.text, "system.error"); },
+        [&](const Notice& e) {
+            if (e.level == NoticeLevel::error) text("✗ " + e.text, "system.error");
+            else if (e.persistent) text(e.text, "system.status");
+        },
         [](const auto&) {}
     }, event.payload);
 }

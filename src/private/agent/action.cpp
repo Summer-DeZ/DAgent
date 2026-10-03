@@ -8,6 +8,12 @@
 namespace dagent::agent {
 
 std::optional<ToolResult> PreparedTool::prepare_preview(const ExecutionGrant& grant) {
+    if (grant.authority_stop.stop_requested()) {
+        ToolResult result;
+        result.is_error = true;
+        result.model_text = "Parent permission authority was revoked before preview; prepare again.";
+        return result;
+    }
     try { return do_prepare_preview(grant); }
     catch (const std::exception& e) {
         ToolResult result;
@@ -22,6 +28,12 @@ std::optional<ToolResult> PreparedTool::prepare_preview(const ExecutionGrant& gr
 ToolResult PreparedTool::execute(const ExecutionGrant& grant,
                                  const std::function<void(std::string_view)>& on_output,
                                  std::stop_token stop) {
+    if (stop.stop_requested() || grant.authority_stop.stop_requested()) {
+        ToolResult result;
+        result.interrupted = true;
+        result.model_text = "Execution cancelled before consuming its permission grant.";
+        return result;
+    }
     try {
         return do_execute(grant, on_output, std::move(stop));
     } catch (const std::exception& e) {

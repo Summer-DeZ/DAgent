@@ -44,7 +44,10 @@ public:
 
     // ---- execution_audit ----
     void commit_tool_started(const ToolStarted& event);
-    void commit_permission(const Approval& approval, const Decision& decision);
+    void commit_permission(const Approval& approval, const Decision& decision,
+                           const ExecutionGrant* grant = nullptr);
+    /// Parent audit and usage evidence only; never inserts conversation messages.
+    void commit_parent_review(const Approval& approval, const Decision& decision);
     void commit_permission_revoked(std::string_view id);
 
     // ---- compact_commit ----

@@ -38,9 +38,42 @@ void ActiveExecution::note_network(const NetworkTarget& target, bool persisted) 
     networks_.push_back({target, persisted});
 }
 
+std::vector<NetworkTarget> ActiveExecution::network_targets() const {
+    const std::lock_guard lock(mutex_);
+    std::vector<NetworkTarget> targets;
+    targets.reserve(networks_.size());
+    for (const auto& [target, persisted] : networks_) targets.push_back(target);
+    return targets;
+}
+
+void ActiveExecution::note_authority(std::stop_token authority_stop) {
+    if (!authority_stop.stop_possible()) return;
+    auto callback = std::make_unique<std::stop_callback<std::function<void()>>>(
+        authority_stop, std::function<void()>([weak = weak_from_this()] {
+            if (const auto execution = weak.lock()) {
+                {
+                    const std::lock_guard lock(execution->mutex_);
+                    if (execution->termination_reason_.empty())
+                        execution->termination_reason_ = "parent permission authority was revoked";
+                }
+                execution->stop.request_stop();
+            }
+        }));
+    {
+        const std::lock_guard lock(mutex_);
+        authority_relay_.swap(callback);
+    }
+    // 旧 callback 析构可能等待正在执行的回调，不能持有该回调也要获取的 mutex_。
+}
+
 std::string ActiveExecution::termination_reason() const {
     const std::lock_guard lock(mutex_);
     return termination_reason_;
+}
+
+void ActiveExecution::note_termination(std::string reason) {
+    const std::lock_guard lock(mutex_);
+    if (termination_reason_.empty()) termination_reason_ = std::move(reason);
 }
 
 std::shared_ptr<ActiveExecution> ExecutionRegistry::begin(const ToolCall& call,
@@ -58,6 +91,7 @@ std::shared_ptr<ActiveExecution> ExecutionRegistry::begin(const ToolCall& call,
                 if (const auto locked = weak.lock()) locked->stop.request_stop();
             }));
     }
+    execution->note_authority(grant.authority_stop);
     const std::lock_guard lock(mutex_);
     active_.push_back(execution);
     return execution;
@@ -70,6 +104,11 @@ void ExecutionRegistry::end(const std::shared_ptr<ActiveExecution>& execution) {
         std::erase(active_, execution);
     }
     execution->relay_.reset();
+    std::unique_ptr<std::stop_callback<std::function<void()>>> authority;
+    {
+        const std::lock_guard lock(execution->mutex_);
+        authority = std::move(execution->authority_relay_);
+    }
 }
 
 std::vector<std::pair<std::string, std::string>> ExecutionRegistry::reconcile(const Policy& policy) {

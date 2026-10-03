@@ -75,6 +75,7 @@ public:
         context_too_long, ///< 编解码分类判定上下文超长
         rejected,         ///< 不可重试：401/403/400/404、TLS、响应过大、网关不返回 SSE
         exhausted,        ///< 可重试的错误用完了重试次数，或 Retry-After 太长
+        budget_exhausted, ///< 本轮共享调用或 token 预算不足，未发送下一次尝试
     };
 
     ModelError(Kind kind, Reply partial, const std::string& what)

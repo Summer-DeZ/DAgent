@@ -19,6 +19,15 @@ enum class SandboxProfile { read_only, workspace_write, full_access };
 /// 授权来源。
 enum class GrantSource { mode, once, session, unrestricted };
 
+enum class ApprovalAuthority { user, parent_model };
+std::string_view to_string(ApprovalAuthority);
+
+/// 审批与执行的关联身份；只读回放，不能从记录恢复权限。
+struct ApprovalIdentity {
+    std::string request_id, parent_session_id, child_session_id, origin_call_id, call_id, execution_id;
+    std::uint64_t parent_revision = 0, child_revision = 0;
+};
+
 /// 运行中网络目标（规范化 host + 端口）。
 struct NetworkTarget {
     std::string host;
@@ -43,6 +52,11 @@ struct ExecutionGrant {
     bool private_tmp = true;
     bool protect_sensitive_names = false;
     GrantSource source = GrantSource::mode;
+    ApprovalAuthority authority = ApprovalAuthority::user;
+    ApprovalIdentity approval; ///< 原授权来源；会话规则复用时保留首次请求身份
+    std::string execution_id; ///< 此次实际消费授权的执行，独立于原审批的 execution_id
+    std::stop_token authority_stop; ///< 父权限变化/退出后不可再消费，不持久化
+
     std::string backend;
     int analysis_version = 0;
     std::vector<std::filesystem::path> readable;

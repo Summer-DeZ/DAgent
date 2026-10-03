@@ -191,16 +191,15 @@ std::optional<CompactionChange> Compactor::compact(Mode mode, const Conversation
                 // 第一级尚未提交的裁剪也保留原文供摘要读取；更早已经裁剪的内容不会恢复。
                 Request request = summary_request(conversation, cut, shape.params, prompt_,
                                                    estimator, budget_.limit);
-                estimator.estimate(request);
                 const Reply reply = model.complete(request, [](const StreamEvent&) {},
                                                     [](const RetryInfo&) {}, stop);
-                if (reply.usage) estimator.observe_prompt_tokens(reply.usage->prompt);
                 check_stop(stop);
                 summary = reply.message.content;
                 if (summary.empty()) throw ModelError(ModelError::Kind::rejected, {}, "summary is empty");
                 keep_from = pending.entries()[cut].ordinal;
                 pending.replace_prefix(cut, texts::summary_message(summary));
             } catch (const ModelError& error) {
+                if (error.kind() == ModelError::Kind::budget_exhausted) throw;
                 // 摘要的 partial 不能作为主对话的 assistant 保存。
                 if (error.kind() == ModelError::Kind::cancelled) {
                     throw ModelError(ModelError::Kind::cancelled, {}, "compaction cancelled");

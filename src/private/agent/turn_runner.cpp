@@ -6,6 +6,7 @@
 #include "agent/compaction.hpp"
 #include "agent/committer.hpp"
 #include "agent/dispatch.hpp"
+#include "agent/model_budget.hpp"
 #include "base/log.hpp"
 #include "base/text.hpp"
 
@@ -72,22 +73,20 @@ RunOutcome TurnRunner::run(Session& session, Run& run, const RunServices& servic
         sink(Notice{Notice::Level::info, "Loaded skill: " + name});
     }
 
-    const int max_model_calls = session.config().options.run.max_model_calls;
     const int max_tool_calls = session.config().options.run.max_tool_calls;
     const std::size_t context_limit = session.compactor().budget().limit;
 
-    ActionDispatcher dispatcher(session, services);
+    ActionDispatcher dispatcher(session, run, services);
+    BudgetedModel model(session.model(), run, session.config().options.run, session.estimator());
 
     const auto on_stream = [&](const StreamEvent& event) { report_stream(event, sink); };
     const auto on_retry = [&](const RetryInfo& info) { report_retry(info, sink); };
 
     for (;;) {
-        if (max_model_calls > 0 && run.steps() >= max_model_calls) {
+        if (run.model_budget_exhausted(session.config().options.run)) {
             return finish(session, run, services, TurnStatus::limit,
-                          "model call limit reached for this turn");
+                          "model call or token budget reached for this turn");
         }
-        run.count_step();
-
         std::size_t estimated = 0;
         Reply reply;
         try {
@@ -96,26 +95,26 @@ RunOutcome TurnRunner::run(Session& session, Run& run, const RunServices& servic
                 services.resources->begin_step(sink, stop);
             // 自动压缩在 StepStarted 之前（docs/design/agent.md §2）：界面在一步开始后作废的内容不含压缩提示。
             if (auto change = session.compactor().maybe_compact(session.conversation(), session.request_shape(),
-                                                                session.model(), session.estimator(), sink,
+                                                                model, session.estimator(), sink,
                                                                 stop)) {
                 session.committer().commit_compaction(std::move(*change));
             }
             session.committer().check_broken();
-            sink(StepStarted{run.steps()});
+            sink(StepStarted{run.steps() + 1});
             for (int attempt = 0; ; ++attempt) {
                 Request request = session.build_request();
                 if (run.grace()) request.tools.clear();
                 estimated = session.estimator().estimate(request);
                 sink(ContextUpdate{{}, estimated, context_limit});
                 try {
-                    reply = session.model().complete(request, on_stream, on_retry, stop);
+                    reply = model.complete(request, on_stream, on_retry, stop);
                     break;
                 } catch (const ModelError& error) {
                     if (error.kind() != ModelError::Kind::context_too_long || attempt != 0) throw;
                     log_agent()->warn("服务端报上下文超长（估算 {} tokens），强制压缩后重发：{}", estimated,
                                       error.what());
                     if (auto change = session.compactor().force(session.conversation(),
-                                                                session.request_shape(), session.model(),
+                                                                session.request_shape(), model,
                                                                 session.estimator(), sink, stop)) {
                         session.committer().commit_compaction(std::move(*change));
                     }
@@ -130,6 +129,8 @@ RunOutcome TurnRunner::run(Session& session, Run& run, const RunServices& servic
             case ModelError::Kind::context_too_long:
                 return finish(session, run, services, TurnStatus::failed,
                               "Context exceeds the model window - start a new session with /new");
+            case ModelError::Kind::budget_exhausted:
+                return finish(session, run, services, TurnStatus::limit, error.what());
             case ModelError::Kind::rejected:
             case ModelError::Kind::exhausted:
                 return finish(session, run, services, TurnStatus::failed, error.what());
@@ -140,21 +141,21 @@ RunOutcome TurnRunner::run(Session& session, Run& run, const RunServices& servic
                           cancelled ? std::string{} : std::string(error.what()));
         }
 
-        if (reply.usage) {
-            session.estimator().observe_prompt_tokens(reply.usage->prompt);
-            run.add_usage(*reply.usage);
-        }
         const std::size_t used =
             reply.usage ? static_cast<std::size_t>(reply.usage->prompt + reply.usage->completion)
                         : estimated;
         sink(ContextUpdate{reply.usage.value_or(Usage{}), used, context_limit});
 
-        if (reply.message.content.empty() && reply.message.tool_calls.empty()) {
+        const bool empty_reply = reply.message.content.empty() && reply.message.tool_calls.empty();
+        if (!empty_reply) session.committer().commit_assistant(reply);
+        const auto token_budget = session.config().options.run.max_total_tokens;
+        if (token_budget > 0 && run.accounted_tokens() > token_budget)
+            return finish(session, run, services, TurnStatus::limit, "model token budget reached for this turn");
+
+        if (empty_reply) {
             sink(Notice{Notice::Level::warn, "The model returned an empty reply"});
             return finish(session, run, services, run.grace() ? TurnStatus::limit : TurnStatus::done, "");
         }
-
-        session.committer().commit_assistant(reply);
 
         if (reply.message.tool_calls.empty()) {
             if (run.grace()) return finish(session, run, services, TurnStatus::limit, "");
@@ -187,17 +188,25 @@ RunOutcome TurnRunner::run(Session& session, Run& run, const RunServices& servic
 RunOutcome TurnRunner::compact(Session& session, Run& run, const RunServices& services) {
     const Sink& sink = services.sink;
     const std::stop_token stop = services.stop;
+    BudgetedModel model(session.model(), run, session.config().options.run, session.estimator());
 
     TurnStatus status = TurnStatus::done;
     try {
         if (auto change = session.compactor().summarize(session.conversation(), session.request_shape(),
-                                                        session.model(), session.estimator(), sink, stop)) {
+                                                        model, session.estimator(), sink, stop)) {
             session.committer().commit_compaction(std::move(*change));
+        }
+        const auto token_budget = session.config().options.run.max_total_tokens;
+        if (token_budget > 0 && run.accounted_tokens() > token_budget) {
+            status = TurnStatus::limit;
+            sink(Notice{Notice::Level::error, "model token budget reached for this operation"});
         }
         sink(ContextUpdate{{}, session.estimated_tokens(), session.compactor().budget().limit});
     } catch (const ModelError& error) {
-        status = error.kind() == ModelError::Kind::cancelled ? TurnStatus::interrupted : TurnStatus::failed;
-        if (status == TurnStatus::failed) sink(Notice{Notice::Level::error, error.what()});
+        status = error.kind() == ModelError::Kind::cancelled ? TurnStatus::interrupted
+               : error.kind() == ModelError::Kind::budget_exhausted ? TurnStatus::limit : TurnStatus::failed;
+        if (status == TurnStatus::failed || status == TurnStatus::limit)
+            sink(Notice{Notice::Level::error, error.what()});
     }
     session.committer().sync();
     session.committer().check_broken();

@@ -143,6 +143,7 @@ Model::AttemptOutcome Model::attempt(const Request& request,
         out.message = std::move(message);
         out.had_output = state.had_output;
         out.reply = std::move(state.reply);
+        if (state.has_usage) out.reply.usage = state.usage;
         return out;
     };
 
@@ -206,10 +207,15 @@ Model::AttemptOutcome Model::attempt(const Request& request,
 
 agent::Reply Model::complete(const agent::Request& request,
                              const std::function<void(const agent::StreamEvent&)>& on_event,
-                      const std::function<void(const RetryInfo&)>& on_retry, std::stop_token stop) {
+                      const std::function<void(const RetryInfo&)>& on_retry, std::stop_token stop,
+                      const agent::ModelAttemptHooks& attempts) {
     for (int retries = 0;; ++retries) {
+        if (stop.stop_requested()) throw ModelError(ModelError::Kind::cancelled, {}, "interrupted");
+        Request current = request;
+        if (attempts.before) attempts.before(current);
         const auto started = std::chrono::steady_clock::now();
-        AttemptOutcome out = attempt(request, on_event, stop);
+        AttemptOutcome out = attempt(current, on_event, stop);
+        if (attempts.after) attempts.after(out.reply);
         switch (out.kind) {
         case AttemptOutcome::Kind::success: {
             const auto elapsed = std::chrono::duration_cast<std::chrono::milliseconds>(

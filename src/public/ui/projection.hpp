@@ -141,6 +141,7 @@ struct ContextUpdate {
 struct Notice {
     NoticeLevel level = NoticeLevel::info;
     std::string text;
+    bool persistent = false;
 };
 struct ModelChanged {
     std::string model;

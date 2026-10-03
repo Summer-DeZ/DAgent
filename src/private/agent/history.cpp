@@ -53,6 +53,23 @@ std::vector<HistoryItem> HistoryProjector::project(const StoredRecord& record,
                 item.summary = value.summary;
                 item.result = value.result;
                 items.push_back(std::move(item));
+            } else if constexpr (std::is_same_v<T, record_codec::PermissionRecord> ||
+                                 std::is_same_v<T, record_codec::ParentReviewRecord>) {
+                const auto& decision = [&]() -> const record_codec::PermissionRecord& {
+                    if constexpr (std::is_same_v<T, record_codec::ParentReviewRecord>) return value.review;
+                    else return value;
+                }();
+                HistoryItem item;
+                item.kind = std::is_same_v<T, record_codec::ParentReviewRecord>
+                                ? HistoryItem::Kind::parent_review : HistoryItem::Kind::permission;
+                item.seq = record.seq;
+                item.call_id = decision.call_id;
+                item.text = decision.summary;
+                item.model = decision.model;
+                item.audit = decision.audit;
+                if constexpr (std::is_same_v<T, record_codec::ParentReviewRecord>)
+                    item.usage = decision.usage;
+                items.push_back(std::move(item));
             } else if constexpr (std::is_same_v<T, record_codec::TurnEndRecord>) {
                 HistoryItem item;
                 item.kind = HistoryItem::Kind::turn_end;
@@ -64,7 +81,7 @@ std::vector<HistoryItem> HistoryProjector::project(const StoredRecord& record,
                 item.usage = value.usage;
                 items.push_back(std::move(item));
             }
-            // permission / permission_revoked / prune / compaction：不产生显示条目。
+            // permission_revoked / prune / compaction：不产生显示条目。
         },
         decoded);
     return items;
@@ -108,7 +125,8 @@ void HistoryCursor::observe(const record_codec::DecodedRecord& record) {
                 ++next_ordinal_;
             } else if constexpr (std::is_same_v<T, record_codec::ToolStartedRecord>) {
                 // 审计记录，不参与配对。
-            } else if constexpr (std::is_same_v<T, record_codec::PermissionRecord>) {
+            } else if constexpr (std::is_same_v<T, record_codec::PermissionRecord> ||
+                                 std::is_same_v<T, record_codec::ParentReviewRecord>) {
                 // 审计记录，不恢复授权。
             } else if constexpr (std::is_same_v<T, record_codec::PermissionRevokedRecord>) {
                 // 审计记录。

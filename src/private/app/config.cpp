@@ -246,7 +246,9 @@ const std::set<std::string>& known_keys() {
         "search.rg_path", "process.default_timeout_ms", "process.max_output_bytes",
         "process.kill_grace_ms", "process.drain_after_exit_ms", "process.env_deny",
         "run.max_model_calls", "run.max_tool_calls", "run.max_model_retries",
-        "run.max_parallel_tasks", "run.max_parallel_tools",
+        "run.max_parallel_tasks", "run.max_parallel_tools", "run.max_total_tokens",
+        "subagents.approval.mode", "subagents.approval.max_reviews_per_turn",
+        "subagents.approval.review_timeout_ms", "subagents.approval.failure",
         "session.redact_fields", "session.history_scan_limit", "log.max_file_bytes",
         "log.max_files", "log.level", "log.also_stderr", "progress.interval_ms",
         "permissions", "ui.theme_file", "ui.completion_max_files", "sandbox.version", "sandbox.backend",
@@ -454,6 +456,7 @@ agent::ContextOptions map_context(const Node& n) {
 agent::Limits map_run(const Node& n) {
     agent::Limits o;
     o.max_model_calls = count_option(n, "max_model_calls");
+    o.max_total_tokens = n.child("max_total_tokens").usize(0);
     o.max_tool_calls = count_option(n, "max_tool_calls");
     o.max_model_retries = count_option(n, "max_model_retries");
     o.max_parallel_tasks = count_option(n, "max_parallel_tasks", 1);
@@ -753,6 +756,17 @@ Config load_config(const LoadOptions& options) {
     config.tools = map_tools(node.required("tools"));
     config.agent.context = map_context(node.required("context"));
     config.agent.run = map_run(node.required("run"));
+    const auto approval = node.child("subagents").child("approval");
+    const auto approval_mode = approval.child("mode").str("parent_when_unrestricted");
+    if (approval_mode != "parent_when_unrestricted" && approval_mode != "user")
+        fail(ConfigError::Kind::invalid, "/subagents/approval/mode: expected parent_when_unrestricted or user");
+    config.agent.approval.parent_when_unrestricted = approval_mode == "parent_when_unrestricted";
+    if (approval.child("max_reviews_per_turn").has())
+        config.agent.approval.max_reviews_per_turn = count_option(approval, "max_reviews_per_turn");
+    if (approval.child("review_timeout_ms").has())
+        config.agent.approval.review_timeout = std::chrono::milliseconds(count_option(approval, "review_timeout_ms", 1));
+    if (approval.child("failure").str("deny_with_feedback") != "deny_with_feedback")
+        fail(ConfigError::Kind::invalid, "/subagents/approval/failure: only deny_with_feedback is supported");
     config.agent.progress.interval = std::chrono::milliseconds(
         count_option(node.required("progress"), "interval_ms"));
     if (auto v = node.child("permissions"); v.has()) {

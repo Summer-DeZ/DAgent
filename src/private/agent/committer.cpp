@@ -101,9 +101,19 @@ void SessionCommitter::commit_tool_started(const ToolStarted& event) {
     check_broken();
 }
 
-void SessionCommitter::commit_permission(const Approval& approval, const Decision& decision) {
-    append(record_codec::permission(approval, decision));
+void SessionCommitter::commit_permission(const Approval& approval, const Decision& decision,
+                                          const ExecutionGrant* grant) {
+    append(record_codec::permission(approval, decision, grant));
     check_broken();
+    if (sink_ != nullptr)
+        (*sink_)(Notice{Notice::Level::info, record_codec::permission_summary(approval, decision), true});
+}
+
+void SessionCommitter::commit_parent_review(const Approval& approval, const Decision& decision) {
+    append(record_codec::parent_review(approval, decision));
+    check_broken();
+    if (sink_ != nullptr)
+        (*sink_)(Notice{Notice::Level::info, record_codec::permission_summary(approval, decision), true});
 }
 
 void SessionCommitter::commit_permission_revoked(std::string_view id) {

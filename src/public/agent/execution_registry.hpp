@@ -22,13 +22,19 @@ namespace dagent::agent {
 class Policy;
 
 /// @brief 一条正在运行的普通工具执行。stop 请求会终止对应进程/连接。
-class ActiveExecution {
+class ActiveExecution : public std::enable_shared_from_this<ActiveExecution> {
 public:
     ActiveExecution(const ActiveExecution&) = delete;
     ActiveExecution& operator=(const ActiveExecution&) = delete;
 
     /// @brief 记录一次已放行的运行中网络目标；persisted 表示批准来自配置或会话规则。
     void note_network(const NetworkTarget& target, bool persisted);
+    /// @brief 返回本次执行实际已放行的网络目标快照。
+    std::vector<NetworkTarget> network_targets() const;
+    /// @brief 保留父授权撤销入口；支持命令运行后才获批的网络授权。
+    void note_authority(std::stop_token authority_stop);
+    /// @brief 记录运行中审批导致的终止原因；实际停止由执行器完成。
+    void note_termination(std::string reason);
     /// @brief 权限核对写入的终止原因；空表示未被权限变化终止。
     std::string termination_reason() const;
 
@@ -46,6 +52,7 @@ private:
     std::vector<std::pair<NetworkTarget, bool>> networks_;
     std::string termination_reason_;
     std::unique_ptr<std::stop_callback<std::function<void()>>> relay_;
+    std::unique_ptr<std::stop_callback<std::function<void()>>> authority_relay_;
 };
 
 /// @brief 一个会话的活跃执行集合；线程安全。

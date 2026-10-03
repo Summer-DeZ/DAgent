@@ -12,6 +12,12 @@
 
 namespace dagent::agent {
 
+/// 每个实际模型尝试的边界；重试等待不属于下一次尝试。
+struct ModelAttemptHooks {
+    std::function<void(Request&)> before; ///< 可收窄请求或在发送前拒绝。
+    std::function<void(const Reply&)> after; ///< 成功或失败尝试的已收到内容及 usage。
+};
+
 class ModelSession {
 public:
     virtual ~ModelSession() = default;
@@ -21,7 +27,8 @@ public:
     virtual Reply complete(const Request& request,
                            const std::function<void(const StreamEvent&)>& on_event,
                            const std::function<void(const RetryInfo&)>& on_retry,
-                           std::stop_token stop) = 0;
+                           std::stop_token stop,
+                           const ModelAttemptHooks& attempts = {}) = 0;
 };
 
 } // namespace dagent::agent
