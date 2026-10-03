@@ -2,11 +2,15 @@
 
 日期：2026-09-29。状态：独立设计计划，尚未实现。
 
+2026-09-30 状态核对：SRT 部署、子权限上限传播、父取消级联及人工审批转发已经落地；
+这些不是父模型自动审批。本计划仍未实现。当前权限行为见 [权限指南](../docs/guide/permissions.md)。
+
 ## 1. 目标
 
 用户选择 unrestricted 持续工作时，由父 Agent 审阅子 Agent 的扩权请求，避免每次子任务授权都打断用户。子 Agent 继续使用 workspace 或更窄的权限模式，按需获得明确范围的授权，不直接继承 unrestricted。
 
-本计划独立于 [SRT 适配计划](srt-permissions-plan.md)。先接入现有 `Approval → Decision → ExecutionGrant` 链路即可实施，不要求先安装 SRT 或修复主机 user namespace。后续 SRT 产生的运行时网络审批复用同一个审批路由。
+本计划独立于 [SRT 适配计划](srt-permissions-plan.md)，接入现有 `Approval → Decision → ExecutionGrant` 链路。
+实现父模型决策不应改写 SRT 的能力结论；联合验收使用现有 SRT 执行和运行时网络审批路径。
 
 父模型负责判断请求是否服务于用户任务；确定性 Policy 负责检查授权是否合法，实际执行后端负责隔离。父审批不能补足当前后端缺少的 OS 能力。
 

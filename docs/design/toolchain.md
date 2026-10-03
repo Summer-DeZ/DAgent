@@ -16,7 +16,8 @@ runtime/
 ├── rg/<version-generation>/
 ├── envs/
 │   ├── skills/<name>/<generation>/
-│   └── mcp/<name>/<generation>/
+│   ├── mcp/<name>/<generation>/
+│   └── internal/sandbox/<generation>/
 ├── homes/<profile>/
 └── installed.json
 ```
@@ -30,6 +31,11 @@ runtime/
 `dagent runtime list` 返回期望配置、安装记录和 `current`（平台、配置及依赖文件是否匹配）。
 它不是磁盘完整性扫描；正常启动还检查程序是否可执行、依赖环境是否就绪。
 修改配置或锁文件后必须重新 sync；执行命令和 MCP 启动都不隐式安装。
+
+内部环境 `internal/sandbox` 固定 SRT 0.0.77，声明与锁文件位于 `config/sandbox/`。
+它供执行层使用，不是模型可选的 Bash 环境。Node/SRT 由 runtime 管理，bubblewrap 和 socat 是宿主程序。
+bridge 位于后端二进制旁的 `libexec/`，跟随程序版本而不是 Home 的依赖快照更新。
+`runtime list` 不验证 namespace；使用 `dagent sandbox status` 获取真实启动结果。
 
 ## 工具包配置
 
@@ -79,17 +85,24 @@ Bash、Git 默认从准备机器导入快照，Git helper 路径采用 Ubuntu �
 {"command":"python /absolute/path/to/skills/report/scripts/report.py","environment":"skills/report"}
 ```
 
-MCP 在 `config/mcp.json` 的 `mcpServers` 条目选择环境：
+MCP 在 `config/mcp.json` 的 `mcpServers` 条目选择环境，并声明启动权限；下面是单个条目的示例：
 
 ```json
 {
+  "type": "stdio",
   "command": "mcp-server-filesystem",
   "args": ["/absolute/workspace"],
-  "environment": "mcp/filesystem"
+  "environment": "mcp/filesystem",
+  "permissions": {
+    "read": ["/absolute/workspace"],
+    "write": [],
+    "network": []
+  }
 }
 ```
 
-这里只负责准备和启动程序；server 仍必须支持 DAgent 当前 [MCP 协议](mcp.md)。安装成功不代表协议兼容。
+依赖准备成功不代表允许启动，也不代表协议兼容；server 还须具备显式 profile、所需沙箱能力，
+并支持 DAgent 当前 [MCP 协议](mcp.md)。
 
 ## 执行环境与边界
 

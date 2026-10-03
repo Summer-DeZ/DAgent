@@ -203,7 +203,8 @@ TurnEnded
 
 运行限制必填于 `home/config/config.json` 的 `run` 段，程序没有业务默认值。随附配置为 `max_model_calls=24`、`max_tool_calls=35`、`max_model_retries=2`、`max_parallel_tasks=4`、`max_parallel_tools=8`。调用上限为 0 表示不限；并发数必须大于 0。未知工具、参数失败和策略拒绝
 也消耗已处理调用预算；因中断、同批拒绝或超额而跳过的调用不消耗执行预算。超额调用回填 T8，若还有模型步数，
-给予一次总结机会；普通总结或继续要工具都以 `limit` 收尾，后者不再执行工具。摘要不计入主循环的 steps 或总 usage。
+给予一次不提供工具定义的总结机会；总结回合仍以 `limit` 收尾，模型若继续返回工具调用也不再执行。
+这次总结计入主循环 steps 和 usage；上下文压缩的摘要请求不计入它们。
 
 取消发生在主模型流中时，只保存已有正文加中断说明，丢弃未完成的工具调用和思考；没有正文就不加 assistant。
 权限等待中的调用及剩余调用回填未执行说明，已运行的工具保留中断结果与部分输出。所有工具线程结束后才返回，
@@ -256,10 +257,10 @@ Policy 是纯逻辑，不弹窗、不读配置。它依据 `PreparedIntent` 的�
 | `workspace` | 工作区内普通文件工具放行；动态/写入型 bash 在完整 workspace profile 下自动执行，否则询问一次性 full_access |
 | `unrestricted` | 路径、网络和外部工具均直接放行，bash 使用 full_access；只保留高危命令硬拦 |
 
-路径分类包括：含 `.git` 路径段，以及控制根中的 `models.json`、`dagent.db`、`logs/` 的受保护路径；`.env`、`.env.*`、
+路径分类包括：含 `.git` 路径段，以及控制根中的 `config/`、`data/`、`logs/`、`run/` 等控制数据路径；`.env`、`.env.*`、
 `*.pem`、`*.key`、`id_rsa*`、`id_ed25519*` 及含 `.ssh` / `.gnupg` 段的敏感路径；其余按工作区内外区分。
-开发目录把 `home/` 同时用作控制根时，受版本控制的普通配置、提示词和主题仍按工作区源码处理，不会把整个
-`home/` 树隐藏起来。
+开发目录把 `home/` 同时用作控制根时，不会把整个 Home 树隐藏起来；提示词、主题等普通资源仍按工作区路径处理，
+但受版本控制不意味着可以绕过 config 等控制路径保护。
 分类是依次匹配，受保护和敏感分类优先于工作区外，不能把这些检查理解成彼此独立的文件系统隔离层。
 
 | 操作 | 默认决定 |
@@ -271,7 +272,7 @@ Policy 是纯逻辑，不弹窗、不读配置。它依据 `PreparedIntent` 的�
 | 写入型 bash 的 workspace profile 不可用 | 交互入口询问一次性 full_access，明确提示可访问网络、受保护数据和 `.git`；非交互运行返回“需要批准”且不执行 |
 | MCP 工具 | ask / workspace 询问；unrestricted 放行；plan 拒绝 |
 
-这个 full_access 兼容路径不是自动降级：每个调用都必须由用户明确批准，不提供会话级复用；拒绝后不执行。
+显式 host access 不属于旧沙箱兼容后端：每个调用都必须由用户明确批准，不提供会话级复用；拒绝后不执行。
 真正的策略拒绝只保留给语法错误、高危硬拦、read-only / plan 限制等不可通过本次批准扩大的条件。
 
 沙箱能力由 `exec::Support` 按真实 SRT 启动结果报告；只读与 workspace profile 分别调用 `read_only_ready()`、
@@ -448,9 +449,9 @@ compact 模板保留六段结构，标题为 `User requests`、`Decisions made`�
 | `system` | `schema: 1, text, model` |
 | `user` | `n, text`（首条决定列表标题） |
 | `assistant` | `n, content, reasoning, reasoning_signature, tool_calls, finish`，有 usage 时另存 `usage` |
-| `tool_started` | `schema: 1`、id/name/summary、实际 sandbox/backend/grant_source、analysis_version、读写/保护范围、通信开关 |
+| `tool_started` | `schema: 2`、id/name/summary、实际 sandbox/backend/grant_source、analysis_version、revision、读写/保护范围、read_exceptions、通信开关 |
 | `tool` | `n, call_id, name, summary, text, is_error, interrupted, view` |
-| `permission` | `schema: 2`、call_id、answer、rule、cwd、mode、network、partially_executed、requests；只记录用户回答，不恢复为授权 |
+| `permission` | `schema: 3`、call_id、answer、rule、cwd、mode、partially_executed、requests；请求明确列出 kind/target/reason，不再写 network 布尔，也不恢复为授权 |
 | `permission_revoked` | `schema: 1, id` |
 | `prune` | `ordinals`；恢复时用工具摘要生成同样的占位 |
 | `compaction` | `keep_from, summary`；空 summary 表示丢弃前缀、保留既有摘要 |
@@ -461,7 +462,7 @@ usage 内字段是 `prompt, completion, cached`，避免被按 `token` 等敏感
 
 ### 提交路线
 
-SessionCommitter 为每种变化固定一条路线（完整清单见 [记录路线 L01–L23](../next-to-do/record-routes.md#4-逐入口路线表)）：
+SessionCommitter 为每种变化固定一条路线（实现见 [committer.cpp](../../src/private/agent/committer.cpp)）：
 user 出队时先加内存再写记录（L03）；完整回复写 assistant（L05）；普通动作执行前写 tool_started 再发 ToolStarted（L06/L07）；
 结果按槽位写 tool 并发 ToolFinished（L08）；审批有回答时先写 permission（L09），回答前取消则不写（L10）；撤销授权写
 permission_revoked（L11）；todo 在同一提交内更新 WorkPlan 并写 tool（L13）；取消时只保存「正文 + 中断标记」（L15）；
@@ -480,8 +481,10 @@ UI 显示完成不代表记录可靠保存；broken 状态进入会话快照。
 显式恢复（L20）在取得写租约后打开续写器：为没结果的调用补 T9 结果、追加 `turn_end{crashed}` 并同步，再按当前环境
 重新渲染 system 并写新的 system 记录。T9 表示结果未知，不能声称没有执行，因为修改可能已完成但结果尚未落盘；
 不根据任何记录自动重做工具。第二次恢复不会重复补齐。FileTracker 和会话授权从空开始，MCP 使用当前连接。
-不认识的类型、缺失或非法的必需字段、不一致历史直接报 corrupt，不猜测修复，不读取旧版本字段形状。
-`system.model`、`reasoning_signature`、`protect_sensitive_names` 和当前 View 的字段必填；`permission` 只接受 schema 2 及其完整字段。
+不认识的类型、缺失或非法的必需字段、不一致历史直接报 corrupt，不猜测修复。
+`system.model`、`reasoning_signature`、`protect_sensitive_names` 和当前 View 的字段必填。
+`tool_started` 接受 schema 1/2，`permission` 接受 schema 2/3；这是旧记录的解码兼容，
+不恢复历史授权，也不恢复旧执行后端。新写入统一使用上表版本。
 `assistant.usage` 仍为可选，因为当前模型响应可以没有 usage；View 仅以显式 `kind: null` 表示没有结构化展示。
 
 ### 历史投影
@@ -518,8 +521,9 @@ stateDiagram-v2
 有 connecting / reconnecting 时发等待 Notice 并可取消地等待，至多 `mcp.connect_timeout_ms`；然后合并已完成连接。
 Hub 不接收服务端工具变更通知，也不周期刷新工具列表。连接线程只交接 Client、状态和警告；警告在边界或轮末交付一次。
 
-每个主/子会话创建时调用一次 `snapshot`：把当前 ready 服务的工具合并进该会话的新注册表，不等待、不重连、不发通知。工具项持有 Client 的
-`shared_ptr`，因此重连替换目录不会让仍被子快照引用的连接悬空。子 Agent 的默认工具集不含 `mcp__*`，定义里显式写出才有。
+没有 read_only/planning 上限的会话在创建时调用 `snapshot`：把当前 ready 服务的工具合并进新注册表，
+不等待、不重连、不发通知。工具项持有 Client 的 `shared_ptr`，连接内存不会因目录替换而悬空；
+撤销时仍会显式关闭旧 Client，不能凭共享引用继续使用失效权限。子 Agent 默认不含 `mcp__*`，定义里显式写出才有。
 
 ## 12. 子 Agent 与 task
 
@@ -535,7 +539,9 @@ app 校验名字唯一、`permission` 取值、`model` 引用和上限，未知�
 - 子会话记录带 `parent_id` / `agent_name`，不进 `sessions` 列表与 `/resume`，按父会话列出供界面浏览。
 
 中断与错误：父的取消传到全部子 Run，各自以 interrupted 收尾，父标记 interrupted；子等待审批时被中断会立即结束等待；
-子会话创建失败、模型打不通或未产出结论都转成 `is_error` 的结果；子触到自己的调用上限属正常收尾。
+子会话创建失败、模型打不通或未产出结论都转成 `is_error` 的结果；
+子触到自己的调用上限时以 `limit` 收尾，父 task 收到 `is_error=true`、明确状态与标为 Partial output 的正文。
+denied、failed、interrupted 同样回传非成功状态，TaskView 与模型收到的文字一致。
 子会话需要询问时，`Approval` 带上 `agent` 与 `origin_call_id`，经同一交互代理串行显示；等待审批的子会话阻塞，其余继续。
 
 ## 13. 当前范围
@@ -547,6 +553,8 @@ todo/ask/exit_plan/task 控制动作、MCP tools、并发子 Agent、终端与�
 子 Agent 之间不直接通信、不向父追问、不跨轮存活、不参与 MCP 重连与通知投递，也不支持多级嵌套与单独的凭据配置。
 构建与真实功能验证约定见 [文档索引](../README.md)。
 
-## Turn-scoped skills
+## 14. 按轮激活的技能
 
-The `skill` control action activates guidance in the current `RunSkills`; explicit `$name` references take the same path before the first model request. `RequestShape.turn_context` is projected onto a request copy and included in compaction estimates. It is never stored as conversation text. Skill activation is serial and respects the subagent tool whitelist. See [skills](skills.md) for lifetime and history semantics.
+`skill` 控制动作把指令激活到当前 `RunSkills`；显式 `$name` 在第一次模型请求前走相同路径。
+`RequestShape.turn_context` 投影到请求副本并计入压缩估算，不作为普通对话正文持久化。
+技能激活串行执行，并遵守子 Agent 工具白名单。生命周期与历史展示见 [skills](skills.md)。

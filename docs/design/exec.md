@@ -41,6 +41,7 @@ exec::Result r = exec::run(cmd, options,
 | --- | --- |
 | 会话 | 子进程先 `setsid()`：成为新进程组的组长，**并且没有控制终端**。`sudo`、`ssh` 这类要打开 `/dev/tty` 的程序会直接失败，不会跟 TUI 抢键盘 |
 | stdin | 没有 `stdin_data` 时接 `/dev/null`，不继承 agent 的 stdin |
+| 额外描述符 | `Command::inherit_fds` 显式列出需要跨 exec 保留的 FD，所有权仍属于调用方；启动器登记白名单，仅在目标子进程中清除这些 FD 的 CLOEXEC |
 | 环境变量 | `Command::inherit_env=true` 时继承 agent 环境并按 `env_deny` 过滤；false 时从空环境开始。两者随后注入非交互默认项、`Options::environment`，再应用 `env_unset` 和 `env_set`。托管命令使用 false 和托管 PATH；受限 bash 还把 HOME/XDG/TMP 指向私有目录，宿主凭据及 BASH_ENV/加载器/语言注入变量不会进入命令 |
 | 查找程序 | argv[0] 带 `/` 时直接使用，相对路径**相对 `Command::cwd`**；否则按**子进程将看到的 PATH**（也就是叠加 `env_set` 之后的值）查找 |
 | 信号 | SIGPIPE 在子进程里恢复为默认行为，所以 `yes \| head` 这类管道能正常结束；信号屏蔽清空（父进程为 sigwait 屏蔽的 SIGINT/SIGTERM 不会带进子进程，`timeout` 与 SIGTERM 清理照常生效） |
@@ -71,7 +72,7 @@ child->terminate();                                // 析构时也会自动调�
 ```
 
 - 内部有一个读取线程，`on_line` 和 `on_exit` 都在这个线程上触发。
-- stderr 的每一行写到 `base::logger("mcp")`。
+- stderr 未注册处理器时写到 `base::logger("mcp")`；`on_stderr` 可接管逐行处理并接收此前的有限缓存，供 MCP bridge 启动握手使用。
 - `write` 积压超过 8 MiB，或者进程已经退出时，数据会被丢弃，并记一条日志。
 - `terminate`：先对进程组发 SIGTERM，等 `kill_grace` 后发 SIGKILL，然后等读取线程结束。
 - `on_exit`：正常情况下 code 和 signal 恰好有一个有值；等待子进程失败（极少见，会记日志）时两者都为空。
@@ -115,7 +116,7 @@ sh/bash。它只向 agent Policy 提供判定，不执行命令。
 `Policy` 包含读/写允许范围、受保护读/写子路径、网络与本地 socket 开关和私有临时空间要求。
 受限命令由 SRT 后端执行：每个 Bash 执行实例启动一个 Node bridge，bridge 初始化
 `@anthropic-ai/sandbox-runtime`、生成 bubblewrap 包装命令并管理代理出口；命令的
-stdin/stdout/stderr 保持独立，网络判定经独立控制 FD 询问宿主（见 §7）。
+stdin/stdout/stderr 保持独立，网络判定经独立控制 FD 交回核心权限层（见 [agent 权限契约](agent.md#7-权限与沙箱)）。
 
 `exec::srt_config` 把中立 `Policy` 编译为 SRT 配置：`denyRead` 从 `/` 开始，只显式重开系统路径、
 工作区、实例私有 HOME 与工具链目录；`denyWrite` 在可写树内以启动时快照拒绝工作区里已有的
@@ -125,7 +126,8 @@ stdin/stdout/stderr 保持独立，网络判定经独立控制 FD 询问宿主�
 
 `Support` 是启动时真实做一次最小隔离启动后的结果：`backend` 为 `srt` 或 `none`，并提供
 `read_only_ready()` / `workspace_ready()`。权限层只在对应 profile 真实满足时启用；能力不足时受限命令
-不启动，交互入口询问一次性 host access，非交互运行返回需要批准。`unrestricted` 明确使用 host 执行。
+不启动。符合策略的 Bash 请求可以在交互入口询问一次性 host access，非交互运行返回需要批准；
+只读/规划上限不能借此突破，glob/grep 不提供宿主回退。`unrestricted` 明确使用 host 执行。
 
 ### 启动与并发
 
@@ -133,13 +135,17 @@ stdin/stdout/stderr 保持独立，网络判定经独立控制 FD 询问宿主�
   私有 cwd 落在可写根内时该 profile 直接拒绝，不静默继续。
 - bridge 启动握手报告协议版本、SRT 版本与准备环境身份；不匹配或超过 `startup_timeout_ms` 时受限
   启动失败并给出阶段。
+- 控制 socketpair 使用 `SOCK_CLOEXEC`，bridge 端通过 `Command::inherit_fds` 显式保留；
+  不在父进程清除 CLOEXEC，避免并发启动时将通道泄漏给其他进程，也不依赖启动器偶然保留描述符。
 - 工作区保护遵循启动快照语义：运行中新建的同名敏感文件不在保护承诺内。
 
-### 当前本机前置
+### 宿主前置
 
-本机 bubblewrap 需要非特权 user namespace。默认启动受主机 AppArmor 限制；在管理员提供允许 userns
-的 profile（实验用 `aa-exec -p linux-sandbox`）下 SRT 0.0.77 可实际启动。没有该前置时
-`dagent sandbox status` 报告静态依赖与真实探测的分离结果，受限命令不启动。
+bubblewrap 需要宿主允许相应 namespace。对开启 AppArmor 非特权 userns 限制的主机，
+CMake 为实际后端路径生成专用 `dagent.apparmor`，由管理员安装和加载，详见 [构建与安装](../guide/build.md)。
+正常启动按后端可执行路径自动匹配，不依赖通用 `aa-exec -p linux-sandbox` 包装器。
+`dagent sandbox status` 分开报告静态依赖、AppArmor 标签和真实启动结果；有依赖不等于可隔离执行。
+2026-09-30 开发主机的默认启动结果见 [验收记录](../archive/2026-09-30-srt-permissions.md)，不代替其他主机的探测。
 
 ---
 

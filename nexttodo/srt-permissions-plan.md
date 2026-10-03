@@ -1,9 +1,9 @@
 # SRT 适配与完整权限链路实施计划
 
 日期：2026-09-29；更新：2026-09-30。S06–S09 的原验收记录见
-[temp/s06-s10-driver/VERIFY.md](../temp/s06-s10-driver/VERIFY.md)。2026-09-30 已部署匹配当前开发后端路径的
+[历史验收摘要](../docs/archive/2026-09-30-srt-permissions.md#2026-09-29)。2026-09-30 已部署匹配当前开发后端路径的
 专用 AppArmor profile，默认启动通过 SRT 探测，无需 `aa-exec`；同时修复子任务结束状态、取消传播和
-并发控制 fd 继承。新证据见 [默认启动与子 Agent 验收](../temp/srt-default-start-20260930/VERIFY.md)。
+并发控制 fd 继承。新证据见 [默认启动与子 Agent 验收](../docs/archive/2026-09-30-srt-permissions.md#2026-09-30)。
 下面 §10.1 保留 2026-09-29 的历史状态，不代表当前主机仍被阻塞；未覆盖的完整并发对抗矩阵仍不宣称通过。
 
 ## 1. 目标与完成条件
@@ -204,16 +204,28 @@ S01 与 S02 可独立开展；S04 与 S05 在 S03 后可分工。其余按依赖
 | S02 | runtime/bridge/status 已接通；安装根由 `dagent sandbox status` 真实探测验收。 |
 | S03 | SRT 为唯一受限后端（S09 移除 Landlock）；资源 RAII、只读写范围、握手校验（含启动超时看门狗）与结构化退出。 |
 | S04 | Dispatcher 执行邮箱、运行中网络审批、headless 拒绝路径已真实验证。 |
-| S05 | 授权后预览、文件 grant 消费与目录/对象锚定、批准后的外部搜索、配置范围、只读搜索/上下文边界与补全过滤（见 [S05 修复验收](../temp/s05-repair/VERIFY.md)）。 |
-| S06 | 已交付：即时撤销/降权经登记表终止运行中执行（含网络目标回收）、审批等待期间修订号重判且旧批准只降不升、父上限实时传播到活跃子会话并终止越界子执行。证据见 [S06–S10 验收](../temp/s06-s10-driver/VERIFY.md) 场景 02/03/04/08。 |
+| S05 | 授权后预览、文件 grant 消费与目录/对象锚定、批准后的外部搜索、配置范围、只读搜索/上下文边界与补全过滤；原始本地材料为 `temp/s05-repair/VERIFY.md`。 |
+| S06 | 已交付：即时撤销/降权经登记表终止运行中执行（含网络目标回收）、审批等待期间修订号重判且旧批准只降不升、父上限实时传播到活跃子会话并终止越界子执行。原始 S06–S10 材料的场景 02/03/04/08。 |
 | S07 | 已交付：stdio MCP 必须携带显式 profile 并在 SRT 内以严格 allowlist 启动（缺 profile 不启动）、逐工具审批、撤销作废旧连接与 lease 后按 profile 重连、HTTP endpoint 显式授权/不跟随重定向/审计标为 remote。证据同上场景 05/06。 |
 | S08 | 已交付：审批/记录/协议用显式请求范围替换 `can_network` 布尔（permission schema 3，旧记录只读兼容）、对话框呈现请求类型/host 边界/once-only/部分执行/来源、`/permissions` 运行中撤销、授权列表随执行刷新、MCP 状态 boundary、read-only 状态标签。证据同上场景 07/09。 |
 | S09 | 已交付：Landlock/seccomp 后端、`Prepared`/`probe`/`Command::sandbox` 与 libseccomp 依赖移除；`sandbox.version=2`（backend=srt、host_access=ask_once、启动/审批超时与每执行请求预算）；能力只来自真实 SRT 探测，不可用时受限命令不启动、仅保留显式 host 语义。 |
-| S10 | 真实功能验收完成并记录 fixed/partial/blocked：见 [S06–S10 验收](../temp/s06-s10-driver/VERIFY.md)。默认主机 S00 未通过，整体完成仍以宿主前置为准。 |
+| S10 | 当日真实功能验收记录 fixed/partial/blocked；当时默认主机 S00 未通过。后续默认启动修复见 §10.2。 |
 
-真实记录：[S05 修复验收](../temp/s05-repair/VERIFY.md)、[S06–S10 验收](../temp/s06-s10-driver/VERIFY.md)。
+仓库内的持久摘要见 [验收记录](../docs/archive/2026-09-30-srt-permissions.md)。
+原始本地材料：`temp/s05-repair/VERIFY.md`、`temp/s06-s10-driver/VERIFY.md`，不随仓库分发。
 旧 `temp/s05-live/VERIFY.md` 描述修复前状态，不能再作为 S05 已完成的依据。
 当前路径保护仍遵循 §4.1 的启动快照语义；本轮未声称通过完整并发对抗矩阵或最终安装验收。
+
+### 10.2 2026-09-30 默认启动与子执行修复
+
+实现已提交于 `2a06679`。专用 AppArmor profile 自动匹配实际后端路径，开发主机正常启动的 SRT 探测通过；
+不关闭全局 userns 限制，不使用通用 aa-exec 包装器，也不恢复旧后端。
+子任务非 done 状态完整回传；父取消级联、read_only/planning 参数顺序与权限传播时的 Policy 生命周期已修正。
+SRT 控制通道改为显式 fd 白名单和 SOCK_CLOEXEC，真实三子 Agent 共 21 次工具调用无错误。
+额度耗尽、父取消与父降权也已实际验证，详情见 [9 月 30 日记录](../docs/archive/2026-09-30-srt-permissions.md#2026-09-30)。
+
+仍待完成：完整并发对抗矩阵、所有 MCP 场景在最终版本上的复验、完整发行安装/升级/卸载验收。
+新主机必须独立完成 runtime 准备与 sandbox status 探测，不能沿用本机通过结论。
 
 ## 11. 真实运行验收矩阵
 

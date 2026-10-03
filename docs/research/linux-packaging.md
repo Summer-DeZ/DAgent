@@ -2,6 +2,10 @@
 
 日期：2026-09-28。状态：设计建议，尚未实现或验证安装包。本次仅阅读源码、现有 ELF 和官方资料，没有修改程序、构建或运行模型。
 
+版本边界（2026-09-30）：下文的 ELF 依赖和行号是 9 月 28 日快照。当前版本已移除 DAgent 的
+libseccomp 构建依赖，新增随程序分发的 SRT bridge 与按后端路径生成的 AppArmor profile。
+现行目录安装见 [构建指南](../guide/build.md)；本文提出的系统 bin/libexec 分离、CPack 和 `.deb` 尚未落地。
+
 建议先支持 Ubuntu 24.04 的 amd64、arm64，使用 CMake install + CPack 产出 `.deb` 和有明确系统依赖的 `.tar.gz`。先分离程序安装位置和用户 Home，再扩展 RPM。发行版与架构组合只有经过真实运行后才能列为已支持。
 
 ## 已核实的项目现状
@@ -14,7 +18,7 @@
 | 安装脚本仅复制缺失资源，跳过真实 models/mcp 配置 | 适合个人目录初始化，不应同时承担包内资源更新和用户配置保护 | [install_home.cmake.in:4–19](../../cmake/install_home.cmake.in#L4) |
 | dev preset 编入源码 Home 路径 | 必须全新 Release 构建，不能分发 dev 二进制 | [CMakePresets.json:5–10](../../CMakePresets.json#L5) |
 | Git helper/template 来源为固定系统路径 | 当前 runtime 配置不能直接宣布跨发行版通用 | [runtime.json:15–26](../../home/config/runtime.json#L15) |
-| runtime manifest 存实际绝对路径，Python 环境不能直接搬家 | 不打包开发机已准备的 runtime，安装后由用户重新 sync | [toolchain.cpp:226–232](../../src/private/app/toolchain.cpp#L226)、[toolchain 文档:109–113](../design/toolchain.md#L109) |
+| runtime manifest 存实际绝对路径，Python 环境不能直接搬家 | 不打包开发机已准备的 runtime，安装后由用户重新 sync | [toolchain.cpp:226–232](../../src/private/app/toolchain.cpp#L226)、[执行环境与边界](../design/toolchain.md#执行环境与边界) |
 
 当前机器为 Ubuntu 24.04/aarch64。现有 `build/dev/src/dagent-backend` 的直接动态依赖包含 libseccomp、libcurl、libcrypto、libstdc++、libm、libgcc_s、libc；版本需求最高为 `GLIBC_2.38` 和 `GLIBCXX_3.4.32`。这些是已有产物的观测，不能代表未来 Release 的兼容承诺。已有 release 后端未列出当前源码使用的 libcrypto，也不能直接拿来发布。
 

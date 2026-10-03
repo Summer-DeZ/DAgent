@@ -10,7 +10,8 @@ home/
 │   ├── config.json       行为、权限、工具、UI、日志策略
 │   ├── models.json       模型与认证，0600
 │   ├── mcp.json          MCP 连接与显式环境变量，0600
-│   └── runtime.json      工具版本、下载校验、独立依赖环境
+│   ├── runtime.json      工具版本、下载校验、独立依赖环境
+│   └── sandbox/          SRT package.json 与锁文件
 ├── AGENTS.md             可选的全局用户指令
 ├── prompts/
 │   ├── system.md         主提示词模板
@@ -37,7 +38,9 @@ home/
 
 ## 首次安装与升级
 
-安装仅补充缺失资源，不覆盖已有配置、提示词、主题、Skill 或子 Agent 定义。
+安装仅补充缺失的用户资源，不覆盖已有配置、提示词、主题、Skill 或子 Agent 定义。
+二进制旁的 `libexec/srt_bridge.mjs` 随程序更新，`libexec/dagent.apparmor` 按最终安装路径重新生成；
+两者不是 Home 下的可编辑用户资源。更换后端路径后需重新部署对应 profile。
 源码的 `models.example.json`、`mcp.example.json` 安装为对应配置文件；本机真实认证文件不参与打包。
 模型、MCP 配置必须为 0600。数据库在第一次写入会话时创建，包括其父目录。
 
@@ -46,11 +49,13 @@ home/
 ```sh
 dagent runtime sync
 dagent runtime list
+dagent sandbox status
 dagent
 ```
 
 首次准备需要下载。普通启动不安装工具、不执行包安装脚本；缺少已准备环境时给出 `runtime sync` 提示。
 工具与依赖配置详见 [toolchain](toolchain.md)。
+受限执行还需要宿主 bubblewrap/socat 与 namespace 能力，AppArmor 部署见 [构建与安装](../guide/build.md)。
 
 ## 唯一配置布局
 
@@ -78,7 +83,8 @@ MCP 连接只使用 `config/mcp.json` 中的 `mcpServers`，不转换旧 `server
 
 stdio server 在 SRT 内按该范围启动（网络是严格 allowlist）；HTTP server 的 `network` 必须显式列出
 endpoint 目标。
-现有个人模型配置和凭据保存在 `config/models.json`；新会话从空数据库开始，由首次写入自动创建。
+个人模型配置和凭据保存在 `config/models.json`。新安装没有数据库时由首次写入自动创建；
+之后的新会话追加到已有数据库，升级和重启不清空历史。
 
 runtime sync 使用 `run/runtime.lock`，模型写入和会话写入分别使用
 `run/models.lock` 和 `run/session-locks/<id>.lock`。锁只协调各自负责的数据。

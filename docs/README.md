@@ -3,17 +3,35 @@
 DAgent 是用 C++23 编写的终端 Agent，仅支持 Linux。前端 `dagent` 提供命令行与交互界面，并独占启动后端
 `dagent-backend`，由后端负责配置、模型、工具与会话记录。
 
-## 使用
+## 文档入口
+
+| 目的 | 文档 |
+| --- | --- |
+| 构建、安装、准备运行环境 | [构建与安装](guide/build.md) |
+| 配置模型、运行与恢复会话 | [使用指南](guide/usage.md) |
+| 权限模式、审批、沙箱故障 | [权限与沙箱](guide/permissions.md) |
+| 理解当前架构和模块契约 | [设计索引](design/README.md) |
+| 查看待办与尚未实现的设计 | [实施计划索引](../nexttodo/README.md) |
+| 查看选型背景和未落地建议 | [调研索引](research/README.md) |
+| 查看有日期和范围的验收结论 | [历史记录](archive/README.md) |
+
+`guide/` 说明当前使用方法，`design/` 描述当前实现。调研、计划与历史验收不自动代表现有功能或当前运行状态。
+本地 `temp/` 保存原始检测材料，不随仓库分发；关键结论在 `archive/` 保留摘要。
+
+## 常用命令
 
 ```bash
-dagent runtime sync        # 首次配置模型后准备工具环境
+dagent runtime sync        # 显式准备工具环境，不启动模型服务
+dagent runtime list        # 配置与已准备环境是否匹配
+dagent sandbox status      # 实际启动一次 SRT 隔离探测
 dagent                     # 交互界面
 dagent run "提示词"         # 非交互一轮；--output text|json|jsonl
 dagent sessions            # 当前目录最近的会话
 dagent --list-models
 ```
 
-配置、提示词与主题位于安装根（默认为可执行文件所在目录，`DAGENT_HOME` 可覆盖），首次配置见 [home](design/home.md)。
+配置、提示词与主题位于 Home：dev 构建默认源码树 `home/`，其他构建默认可执行文件所在目录，
+`DAGENT_HOME` 可覆盖。模型服务需要独立提供；配置地址不代表服务已启动。布局见 [home](design/home.md)。
 
 ## 构建
 
@@ -22,7 +40,10 @@ dagent --list-models
 - Linux
 - CMake ≥ 3.25、Ninja、支持 C++23 的编译器
 - Boost ≥ 1.83、libcurl、OpenSSL Crypto
-- libseccomp：`apt install libseccomp-dev`
+- 受限执行的宿主依赖：bubblewrap、socat，以及允许相应 namespace 的系统策略
 - 首次配置需要联网，CMake 会拉取其余第三方库
 
 构建与安装步骤见 [构建与安装](guide/build.md)。
+
+当前受限后端为 SRT 0.0.77；DAgent 的旧 Landlock/seccomp 后端及 libseccomp 构建依赖已移除。
+`runtime sync` 安装依赖与 `sandbox status` 验证宿主能力是不同步骤。

@@ -1,8 +1,13 @@
 # 命令沙箱后端调研：sandbox-runtime、bubblewrap 与 Landlock
 
 日期：2026-09-20  
-范围：`nexttodo/command-permissions-plan.md` 的 P01 有界调研；只评估 Linux 后端，不代表 P04 已实现。  
+范围：当时权限计划的 P01 有界调研；原计划路径已退出当前文档结构。这里只保留 Linux 后端选型依据。
 来源约束：仅使用 Anthropic、bubblewrap 项目、Linux 内核及 Ubuntu 的官方/第一方资料。  
+
+历史说明（2026-09-30）：下文“当前”“尚未安装”“不可运行”均指调研时点。
+项目后来固定采用 SRT 0.0.77，移除旧 Landlock 后端，并部署专用 AppArmor profile 通过默认启动。
+本页不再作为部署步骤或现有能力判断；请参阅 [执行设计](../design/exec.md)、
+[构建指南](../guide/build.md) 和 [验收摘要](../archive/2026-09-30-srt-permissions.md)。
 
 ## 结论
 
@@ -220,4 +225,3 @@ socket fd 也不属于路径规则可重新收回的能力；内核把 pipe/sock
 | runtime 内部绕过 uid_map EPERM | 否；强/弱模式均依赖外层 `--unshare-user` |
 | Landlock 替代完整能力 | 否；父允许/子拒绝、域名网络、pathname Unix socket、继承 fd 均有缺口 |
 | P04/P05 放宽自动执行的前置 | 未满足 |
-

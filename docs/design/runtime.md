@@ -30,7 +30,8 @@ classDiagram
 runtime 只看到核心类型；`tools::Context`、`Registry`、`SqliteJournal` 等具体对象留在 app 装配内部。
 
 公开状态与事件位于 `runtime/state.hpp`；`runtime.cpp` 负责组装与交互出口，`session_control.cpp` 实现 Runtime 的会话调度，两个文件共同实现一个控制类。
-运行 ID 与取消源仅由 Runtime 的当前操作持有，`RunServices.stop` 直接传至核心和子执行，核心 Run 不再转发取消或复制运行身份。
+主运行 ID 与取消源由 Runtime 的当前操作持有；主 `RunServices.stop` 直接传至核心。
+子执行持独立取消源，并用 stop_callback 接收父取消，核心 Run 不转发取消或复制运行身份。
 
 ### 装配端口（`runtime/factory.hpp`）
 
@@ -65,7 +66,7 @@ stateDiagram-v2
 - **取回**：`recall_last` 原子移除最后一条仍排队的输入，空输入框按 ↑ 时使用（B04）。
 - **命令**：new/resume/select_model/add_model/compact 只在空闲时接受；命令从接受到结束占用空闲入口，普通输入不能越过它。`revoke_grant` 走即时路径，运行中也可用。
   busy 时返回 `RuntimeError::busy`（B07）。
-- **即时操作**：`cycle_permission`（运行中也可，对之后的决策生效）、`toggle_planning`（要求空闲）、`cancel`
+- **即时操作**：`cycle_permission`（运行中也可，重新核对活跃执行并影响之后的决策）、`toggle_planning`（要求空闲）、`cancel`
   不进命令队列（B08）。`cancel(run_id)` 只取消身份仍匹配的当前 Run，旧 id 返回 false。取消句柄只由 `CurrentRun` 保存；cancel/shutdown 在锁内取得局部共享引用，在锁外触发停止。
 - **drain**：Run 收尾时先把状态置回 ready 再发布 `TurnEnded`；无论 status 为何都继续出队下一条。手动压缩完成发
   `operation_finished` 后同样继续（B06）。
@@ -119,9 +120,15 @@ runtime 不维护重复计数。事件载荷是核心 `agent::Event` 或 runtime
 
 1. 从 `DelegationContext`（父 session/run/call、执行时权限快照、父工具名单、模型名、父 Sink/Approver、stop）和子定义派生权限，
    `SessionFactory::create_child` 创建子实例；子会话自己取得写租约，Meta 带 `parent_id` / `agent_name`。
-2. 子 Run 用父的 stop；`may_ask` 时把父 Approver 包装为带 `agent` / `origin_call_id` 的审批出口，子 Asker 恒空。
+2. 登记子 Policy 和独立 stop_source；父取消通过 stop_callback 级联到子 Run，父权限收窄可以只终止子执行。
+   `may_ask` 时把父 Approver 包装为带 `agent` / `origin_call_id` 的审批出口，子 Asker 恒空。
 3. 子事件包成 `SubEvent` 交给父 Sink，只实时展示，不写进父历史。
-4. 跑完一轮后收集最终文本与逐条工具摘要为 `TaskView`，子实例在函数返回前销毁；不留可再运行的句柄或 detached 线程。
+4. 使用 `RunOutcome` 的真实结束状态构造结果。非 done 状态设置 `is_error=true`，文字包含状态与调用计数，
+   已有正文标为 Partial output；`TaskView.result` 与模型收到的文本一致。没有结论同样返回错误。
+5. 子实例在函数返回前解除登记并销毁；不留可再运行的句柄或 detached 线程。
+
+`apply_parent_permission` 在登记锁内更新子 Policy 上限，与 detach 互斥；锁外对需要取消的共享 stop_source 请求停止，
+不在解锁后继续使用可能已经销毁的子 Policy 指针。父会话授权不复制到子会话。
 
 子工具默认不含 task/ask/exit_plan 和未显式允许的 `mcp__*`；子只用创建时的 MCP 快照（B18–B20）。
 
@@ -133,6 +140,6 @@ runtime 不维护重复计数。事件载荷是核心 `agent::Event` 或 runtime
 | 核心工具/task 组线程 | 由 ActionDispatcher 在一轮内创建并 join（见 [agent](agent.md#6-工具调度)） |
 | 调用方线程（backend 读线程/命令线程） | submit/recall/取消/回答/权限切换等即时操作；只持短锁 |
 
-`shutdown` 的顺序：停止接受输入并清空队列 → 取消当前 Run（父子共享 stop）→ `InteractionBroker::cancel_all` 唤醒等待 →
+`shutdown` 的顺序：停止接受输入并清空队列 → 取消当前 Run（级联到子取消源）→ `InteractionBroker::cancel_all` 唤醒等待 →
 join 执行线程 → 释放当前实例。实例析构顺序为同步记录 → 销毁会话与工具/MCP 引用 → 释放 SessionWriteLease。
 runtime 不根据 PID 杀进程，也不在关闭后继续后台执行。

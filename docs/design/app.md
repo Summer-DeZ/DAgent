@@ -26,6 +26,7 @@
 <root>/
 ├── dagent
 ├── dagent-backend     前端从同目录启动
+├── libexec/           SRT bridge 与按安装路径生成的 AppArmor profile
 ├── config/            config.json、models.json、mcp.json、runtime.json
 ├── prompts/           system.md、compact.md
 ├── AGENTS.md          可选的全局用户指令
@@ -43,7 +44,8 @@
 前端解析安装根后在 `app.initialize` 里交给后端；后端不自行决定安装根。
 
 源码树中这些可管理文件统一放在 `home/`；dev 可执行文件无需设置环境变量就会读取这个目录。显式
-`DAGENT_HOME` 仍然具有最高优先级。安装只补充缺失资源，不覆盖已有文件。目录职责与首次配置见 [home](home.md)，工具环境见 [toolchain](toolchain.md)。
+`DAGENT_HOME` 仍然具有最高优先级。安装只补充缺失的用户资源；二进制、bridge 与生成的 profile 随版本更新。
+`libexec/` 始终相对后端二进制定位，不随 `DAGENT_HOME` 迁移。目录职责与首次配置见 [home](home.md)，工具环境见 [toolchain](toolchain.md)。
 
 ## 2. 配置与提示词
 
@@ -81,14 +83,16 @@
 
 `config/mcp.json` 独立保存 `mcpServers`、`connect_timeout_ms` 和 `probe_timeout_ms`，要求 0600。
 stdio 项支持 `command`、`args`、`env`、`environment`，HTTP 项支持 `url`、`headers`；`${VAR}` 从进程环境展开。
+两者都必须携带显式 `permissions` profile；stdio 在 SRT 内按范围启动，HTTP 要求 endpoint 网络目标获准。
 `config/config.json` 不再允许重复声明 `mcp`。stdio 默认使用托管环境，可指定 `mcp/<name>` 或显式 `project`。
 
 配置中的相对路径统一相对于安装根；`--set key=value` 中的相对路径相对于 cwd。未知键记 warning，类型和值错误
 抛 `ConfigError`。`--set` 是一次性覆写，不写回配置；`--model` 命中名字时选择条目，否则临时覆写当前模型 ID。
 
-`sandbox` 是独立版本化对象，当前只接受 version 1；`extra_readable` / `extra_writable` 是宿主维护的持久范围，
-相对路径按 workspace cwd 解析。它们只扩大兼容后端的显式范围，不改变 profile 能力结论，也不会覆盖控制数据、
-敏感读取或 `.git` 保护。
+`sandbox` 是独立版本化对象，当前只接受 `version: 2`、`backend: srt`、`host_access: ask_once`；
+旧版配置被拒绝，不切换到旧后端。`extra_readable` / `extra_writable` 是宿主维护的持久范围，
+相对路径按 workspace cwd 解析，不改变实际沙箱能力，也不覆盖控制数据、敏感读取或 `.git` 保护。
+`allowed_targets/denied_targets` 表达网络目标；启动/网络审批超时与每执行网络请求预算由 sandbox 段配置。
 
 运行策略的数值由 `home/config/config.json` 显式提供，缺少必填项时报配置错误，不从程序默认值补齐。
 
@@ -126,6 +130,7 @@ dagent sessions
 dagent --list-models
 dagent runtime sync
 dagent runtime list
+dagent sandbox status
 
 通用：-C/--cwd  -m/--model  --set  -r/--resume  --continue  --log-level
       --permissions <ask|workspace|unrestricted>  --read-only  --plan
@@ -145,7 +150,7 @@ run： --output <text|json|jsonl>
 前端解析 CLI 与安装根后启动后端，发送 `app.initialize{root, cwd, mode, ordered_overrides, permissions, read_only, plan,
 resume_id, continue_last, log_level}`。后端的 `app::assemble_backend` 依次：
 
-1. 维护命令执行 runtime sync/list，不创建会话。普通启动读取 config/ 下配置及 runtime 快照，按 argv 顺序应用 `--set` 与 `--model`；无效时返回 `config_error`，前端以 2 退出。
+1. 维护命令执行 runtime sync/list 或 sandbox status，不创建会话。普通启动读取 config/ 下配置及 runtime 快照，按 argv 顺序应用 `--set` 与 `--model`；无效时返回 `config_error`，前端以 2 退出。
 2. 初始化日志：`<root>/logs/dagent-<pid>.log`；交互模式关闭 stderr sink，run 与查询模式沿用配置。
 3. 查询模式只构造配置网关与只读查询；interactive/run 模式另外收集一次工作区环境（git、AGENTS.md）、探测沙箱、
    读取子 Agent 定义与提示词，直接创建共享 `McpHub`；环境事实和子定义存入 `SessionAssembly::Options`。
@@ -191,6 +196,7 @@ stdout 被关闭时 jsonl 请求取消本轮并返回 1，text / json 最终写�
 | 参数或配置错误（包括后端返回 `config_error`） | 2 |
 | run 被信号中断，或交互因进程中断信号退出 | 130 |
 
-## Global skills
+## 7. 全局技能
 
-The backend discovers `<root>/skills/*/SKILL.md` once at startup and shares an immutable catalog with sessions and the query gateway. See [skills](skills.md) for format, diagnostics, and restart behavior.
+后端在启动时发现 `<root>/skills/*/SKILL.md`，把不可变目录共享给会话与查询网关。
+格式、诊断和重启生效规则见 [skills](skills.md)。
