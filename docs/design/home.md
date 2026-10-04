@@ -28,7 +28,8 @@ home/
 
 `config` 表达用户配置，`prompts/skills/agents/themes` 保存可编辑资源，`data` 保存不可丢弃的会话，
 `run` 保存协调状态，`runtime` 保存实际执行环境。缓存不是会话或配置的来源。
-配置中的相对路径仍相对于 home；命令行 `--set` 中的相对路径仍相对于工作目录。
+提示词、主题等配置路径相对于 home，命令行 `--set` 中的对应路径相对于工作目录；
+`sandbox.extra_readable/extra_writable` 始终相对于工作目录，详见 [配置契约](app.md#2-配置与提示词)。
 
 ## 用户指令
 

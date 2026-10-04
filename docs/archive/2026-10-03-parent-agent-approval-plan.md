@@ -1,18 +1,23 @@
 # unrestricted 父 Agent 审批子 Agent
 
+归档日期：2026-10-04。原位置：`nexttodo/parent-agent-approval-plan.md`。保留原设计、实现状态和
+2026-10-03 验收摘要；代码基线为 `8043063`。设计目标不自动等同于当前接口，当前行为见
+[权限指南](../guide/permissions.md)，剩余证据边界见 [后续工作](../../nexttodo/README.md)。
+原始 `temp/` 材料未随仓库分发，本次归档未重新运行历史场景。
+
 设计日期：2026-09-29。实现更新：2026-10-03。
 
 当前状态：实现、构建及真实父子任务验收已完成；全面排查后的修复与剩余验证边界见第 8.2 节。
 真实运行覆盖 headless 父审批、一次/子会话授权、并发隔离、拒绝、硬上限、人工路由、取消/降权、预算及回放。
 完整原始记录与验收说明位于 `temp/parent-agent-approval/VERIFY.md`。
 最后集成后的正向运行保存在 `temp/parent-agent-approval/records/final-headless.jsonl`，父子均完成，实际子读取为父模型单次授权。
-当前权限行为见 [权限指南](../docs/guide/permissions.md)。
+当前权限行为见 [权限指南](../guide/permissions.md)。
 
 ## 1. 目标
 
 用户选择 unrestricted 持续工作时，由父 Agent 审阅子 Agent 的扩权请求，避免每次子任务授权都打断用户。子 Agent 继续使用 workspace 或更窄的权限模式，按需获得明确范围的授权，不直接继承 unrestricted。
 
-本计划独立于 [SRT 适配计划](srt-permissions-plan.md)，接入现有 `Approval → Decision → ExecutionGrant` 链路。
+本计划独立于 [SRT 适配计划](2026-09-30-srt-permissions-plan.md)，接入现有 `Approval → Decision → ExecutionGrant` 链路。
 实现父模型决策不应改写 SRT 的能力结论；联合验收使用现有 SRT 执行和运行时网络审批路径。
 
 父模型负责判断请求是否服务于用户任务；确定性 Policy 负责检查授权是否合法，实际执行后端负责隔离。父审批不能补足当前后端缺少的 OS 能力。
@@ -187,7 +192,7 @@ UI 用英文说明 unrestricted 可委托父审批，并以 `Reviewing subagent 
 ### 8.2 全面排查与修复（2026-10-03）
 
 本轮按审批路由、Policy 范围与并发消费、父子生命周期、模型预算、SRT、审计/协议及 UI 展示检查。
-详细证据见 [排查记录](../temp/parent-approval-audit/VERIFY.md)。已发现并修复：
+详细证据见 本地排查记录 `temp/parent-approval-audit/VERIFY.md`（未随仓库分发）。已发现并修复：
 
 - 普通目录的用户会话授权会绕过 `.env` 敏感读取审批；真实修前读取成功，修后要求独立审批，拒绝后不读取。
 - 父会话授权错误按工具名/显示文案匹配，不能覆盖 write→edit 或目录→普通子文件；现按意图和范围匹配。

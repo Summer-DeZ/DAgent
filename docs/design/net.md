@@ -22,7 +22,7 @@ net::SseParser sse;
 net::HttpResponse resp = http.stream(
     {"POST", base_url + "/chat/completions", {{"Content-Type", "application/json"}}, body},
     [&](std::string_view chunk) {
-        sse.feed(chunk, [&](const net::SseEvent& e) { /* 解析 e.data，再用 Runtime::post 推给界面 */ });
+        sse.feed(chunk, [&](const net::SseEvent& e) { /* 调用方解析 e.data 并交付业务事件 */ });
     },
     stop_token);                          // UI 线程按 Esc 时调用 stop_source.request_stop()
 if (resp.status != 200) { /* resp.body 是错误体 */ }
@@ -87,8 +87,8 @@ if (resp.status != 200) { /* resp.body 是错误体 */ }
 
 ### 取消
 
-`stop_token` 被触发时，客户端会立即唤醒内部的 `curl_multi_poll`，不需要等轮询周期，实测 0.6ms 以内就会
-抛出 `cancelled`。取消请求要从其他线程对对应的 `stop_source` 调用 `request_stop()`。
+`stop_token` 被触发时，客户端通过 `curl_multi_wakeup` 唤醒内部等待，随后抛出 `cancelled`；
+不承诺固定毫秒数。取消请求从其他线程对对应的 `stop_source` 调用 `request_stop()`。
 
 ### 线程与连接复用
 
@@ -109,7 +109,7 @@ net::SseParser parser;                                 // 一次响应用一个�
 parser.feed(chunk, [](const net::SseEvent& e) { … });  // 每解析出一个完整事件调用一次
 ```
 
-- 数据**任意切分都能处理**，包括在多字节字符中间、在 `\r\n` 两个字节之间切开的情况。实测用真实的 SSE 数据逐字节喂入，结果和整段喂入完全一致。
+- 数据可以跨网络块切分，包括在多字节字符中间、在 `\r\n` 两个字节之间切开的情况。
 - 行尾可以是 LF、CRLF 或单独的 CR；流开头的 BOM 会被去掉。
 - 以 `:` 开头的注释行（比如 `: keep-alive`）直接跳过。
 - 遇到空行时派发一个事件；多行 `data:` 用 `\n` 连起来。只有 `event:`、没有 `data:` 的事件不会派发。
@@ -121,4 +121,4 @@ parser.feed(chunk, [](const net::SseEvent& e) { … });  // 每解析出一个�
 
 ## 4. 依赖与构建
 
-- libcurl：`find_package(CURL)`，私有链接 `CURL::libcurl`。本机的版本是 8.5.0，`curl_multi_wakeup` 需要 7.68 及以上。
+- libcurl：`find_package(CURL)`，私有链接 `CURL::libcurl`。使用的 `curl_multi_wakeup` 要求 libcurl ≥ 7.68；实际版本取决于构建和运行主机。

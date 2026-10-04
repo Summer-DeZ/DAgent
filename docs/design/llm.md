@@ -84,8 +84,8 @@ stop 且出现工具调用归 tool_calls，length 归 length，load/unload 等�
 
 ## 4. 已实现但未验收：Anthropic
 
-`anthropic` kind 可配置并构建，默认端点为 `https://api.anthropic.com/v1`，但当前没有可用密钥，
-**不作为已验证能力发布或合并**。
+`anthropic` kind 已在代码中提供，默认端点为 `https://api.anthropic.com/v1`；仓库尚无真实服务验收记录，
+不能将“可配置、可构建”写成“已通过真实验收”。
 
 实现 POST `/messages`、x-api-key 与 anthropic-version 头，强制非零 max_tokens。
 system 单独放顶层；assistant 工具调用翻译为 tool_use，连续工具结果合并为同一 user 消息的 tool_result。
@@ -124,10 +124,16 @@ HttpClient 在同一执行线程上复用。工具调用按 index 归集参数�
 | HTTP 分类为上下文超长 | `context_too_long`，交给核心压缩 |
 | TLS 问题、不可重试 HTTP 错误、2xx 却没有流事件 | `rejected` |
 | 重试次数耗尽或 Retry-After 太长 | `exhausted` |
+| 本轮共享调用次数或 token 预算不足 | `budget_exhausted`，下一次尝试不发送，核心以 `limit` 收尾 |
 
 默认最多重试 2 次，即最多 3 次尝试。退避从 1 秒开始指数增长，以 30 秒为基础上限，增加 0.8–1.2 倍随机抖动；
 服务端的 Retry-After 更长时采用它，超过 300 秒则直接失败。等待可取消；已输出过内容的失败尝试发 StreamReset 让前端清除，
 不写入历史，重试期间取消不会保存已作废尝试的半截内容。
 
-装配把模型 HTTP 的总超时设为 0；配置的 idle timeout 为 0 时补成 120 秒。连接超时和 TLS 选项沿用配置。
+装配直接使用 `http.timeout_seconds`、`http.idle_timeout_seconds`、连接超时与 TLS 配置，不强制改写。
+随附总超时为 300 秒、空闲超时为 120 秒；0 的语义见 [HTTP 选项](net.md#选项httpoptions)。
 idle timeout 看收到的字节，包括 SSE 注释；大上下文预填充期间没有字节时仍可能超时，需按实际模型调整配置。
+
+`ModelAttemptHooks` 在每次实际尝试前后调用，包括重试。核心的 `BudgetedModel` 在发送前检查共享预算，
+收窄 `max_tokens` 并计数，结束后累计已报告 usage 或估算未报告消耗；重试等待本身不计下一次尝试。
+父模型审阅另受包含排队时间的 `subagents.approval.review_timeout_ms` 约束。

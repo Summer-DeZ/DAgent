@@ -25,7 +25,7 @@ public:
 
 | 能力 | 头文件 | 主要接口 |
 | --- | --- | --- |
-| 文件原语：路径解析、文本读写、原子写入、stale 检测 | `workspace/files.hpp` | `resolve`、`probe`、`read_text`、`write_text`、`stamp_of` |
+| 文件原语：路径解析、固定目录/对象、文本读写、原子写入、stale 检测 | `workspace/files.hpp` | `resolve`、`FileReference`、`probe`、`read_text`、`write_text`、`stamp_of` |
 | 代码搜索：grep、列举文件、模糊匹配 | `workspace/search.hpp` | `grep`、`files`、`fuzzy_rank` |
 | diff：unified diff 与增删统计 | `workspace/diff.hpp` | `unified_diff` |
 | 项目上下文：git 信息、AGENTS.md、模板渲染 | `workspace/context.hpp` | `collect_environment`、`to_json`、`render` |
@@ -45,7 +45,21 @@ public:
 
 在工作区外时放不放行，由核心根据 `Resolved::inside_workspace` 决定。
 
-### 读取：probe / read_text
+### 工具执行：FileReference
+
+模型的 read/edit/write 使用 `FileReference`，不直接以路径调用通用读写函数。构造只获取元数据，
+以 `O_PATH` 固定已存在的祖先目录和目标对象；`openat2` 禁止穿过新符号链接或 magic link。
+工具层先消费 Policy 的读/写 grant，再调用以下操作；本模块自身不决定权限。
+
+- `validate()` 重开路径核对 device/inode；父目录、目标被替换或原本不存在的目标已出现时返回 stale，要求重新准备。
+- `read()` 只读已固定的普通文件，保留文本读取、上限、换行与 UTF-8 语义；目录读取通过 `directory_path()` 取得固定目录。
+- `write()` 在获准目录句柄下逐级创建缺失父目录，写同目录临时文件，核对对象和 `expect` 后用 `renameat2` 提交并同步目录。
+  新建文件使用 `RENAME_NOREPLACE`，避免覆盖准备后出现的同名文件。
+- `Stamp` 包含 mtime、size、device、inode；预览和写入都核对，FileTracker 不能代替访问授权。
+
+下文 `probe/read_text/write_text` 是装配等受信任调用使用的通用原语，不具备上述审批对象固定契约。
+
+### 通用读取：probe / read_text
 
 - `probe`：看前 8 KiB 里有没有 `\0` 字节；文件不存在（`ENOENT`/`ENOTDIR`）返回 `missing`，不抛异常。用
   `O_NONBLOCK` 打开，避免在 FIFO 上卡住；`EAGAIN` 时按 `text` 处理（FIFO 暂时没数据，不代表是二进制）。
@@ -54,9 +68,9 @@ public:
 - **换行风格**：`detect_eol` 统计 `\r\n`/`\n`/单独的 `\r`，三类都出现过的判 `mixed`。内部统一转成 LF
   （`to_lf`），BOM（`EF BB BF`）单独摘出来，`bom=true`。
 - **编码**：转 LF 后校验 UTF-8；非法字节用 `base::to_valid_utf8` 替换成 U+FFFD，`lossy=true`。
-- `Stamp`（`mtime` + `size`）来自 `fstat`，`mtime` 精度到纳秒。
+- `Stamp`（`mtime`、`size`、`device`、`inode`）来自 `fstat`，`mtime` 精度到纳秒。
 
-### 写入：write_text
+### 通用写入：write_text
 
 1. 目标是符号链接时，`through_symlink` 落到它指向的真实文件（相对链接相对链接所在目录解析）；找不到
    目标时保持原样，让后续步骤给出真实的 I/O 错误。
@@ -79,7 +93,7 @@ public:
 
 - rg 路径：`SearchOptions::rg_path` 非空时使用它（不含 `/` 时当命令名用 `exec::which` 在 PATH 里找，并检查可执行位），否则用 `exec::which("rg")` 查 PATH
   并用静态局部变量缓存。都找不到时抛 `tool_missing`，信息里带 `apt install ripgrep`。
-- `grep` 固定加 `--json --no-messages --color=never --max-columns 500 --max-columns-preview`；
+- `grep` 固定加 `--no-config --json --no-messages --color=never --max-columns 500 --max-columns-preview`；
   `case_insensitive` 不设时用 `--smart-case`；模式串前面加 `--`，不会被解析成选项。
 - `GrepQuery::root` 是普通文件时只搜这一个文件：rg 的 cwd 换成它所在的目录，文件名作为路径参数传入
   （显式给出的路径 rg 不做忽略规则过滤），`Match::path` 相对这个目录。
@@ -89,17 +103,20 @@ public:
   （`text` 或 `bytes` 二选一，后者用 `base::base64_decode` + `to_valid_utf8` 解码），`context` 行不计入
   `max_matches`、不产生 `spans`。
 - **提前停止**：命中数达到 `max_matches` 时，通过内部 `stop_source`（外部 `stop_token` 通过
-  `stop_callback` 转发到同一个 `stop_source`）取消 `exec::run`，不等 rg 自然结束；`ExecError::cancelled`
+  `stop_callback` 转发到同一个 `stop_source`）取消只读 SRT 执行，不等 rg 自然结束；`ExecError::cancelled`
   在「自己主动停」时按正常结果处理，只有外部 `stop_token` 触发的取消才继续抛成
   `WorkspaceError::cancelled`。
-- `files` 用 `--files --null`；不按 mtime 排序时可以在凑够 `max_files` 后立即停 rg；要按 mtime 排序时
+- `files` 用 `--no-config --files --null`；不按 mtime 排序时可以在凑够 `max_files` 后立即停 rg；要按 mtime 排序时
   必须拿到全量结果再自己 `stat` 排序——`rg --sort` 会让 rg 退化成单线程，所以不用它。
+
+搜索通过 `SearchOptions::sandbox` 的 `ReadOnlySandbox::run` 启动，缺少 SRT 时失败，不提供宿主回退。
+app 默认注入托管 rg 的绝对路径；工具层按 grant 设置可读范围并过滤结果，补全查询也过滤控制面与敏感路径。
 
 ### fuzzy_rank：移植的 fzy
 
 逐行移植 fzy 的打分算法（`bonus_for` 的加分表：路径分隔符后 0.9、`-`/`_`/空格后 0.8、`.` 后 0.6、
-camelCase 边界 0.7；连续匹配奖励 1.0；两端与内部的 gap 惩罚分别是 -0.005/-0.005/-0.01），用 300 组随机
-用例验证过打分与上游 fzy 完全一致。先用 `is_subsequence` 过滤掉不可能命中的候选，再对剩下的调
+camelCase 边界 0.7；连续匹配奖励 1.0；两端与内部的 gap 惩罚分别是 -0.005/-0.005/-0.01）。
+先用 `is_subsequence` 过滤掉不可能命中的候选，再对剩下的调
 `fzy_score`，`std::stable_sort` 按分数从高到低排。
 
 分数很接近的候选之间的相对顺序完全由算法决定，不做任何路径偏好之类的人工调整——这是忠实移植换来的
@@ -137,6 +154,9 @@ camelCase 边界 0.7；连续匹配奖励 1.0；两端与内部的 gap 惩罚分
 异常并返回「未成功」，只在 debug 日志里记一行；`root` 或 `status` 没成功时整个 `GitInfo` 为空
 （`log` 单独失败不影响，只是拿不到最近提交列表）。
 
+当前上下文采集调用 `/usr/bin/git`，通过 `ContextOptions::sandbox` 进入只读 SRT；禁用 fsmonitor、hooks、
+pager 和全局/系统 Git 配置。这里尚未切换到托管 Git，宿主无该路径或 SRT 不可用时 Git 信息为空。
+
 `status --porcelain=v2` 的输出里，`1 `/`2 ` 开头的行计入「已修改」，`u ` 计入「冲突」，`? ` 计入
 「未跟踪」；`branch.head` 是 `(detached)` 时用 `branch.oid` 的前 7 位当分支名。
 
@@ -164,7 +184,7 @@ inja 抛 `InjaError` 时，转成 `bad_template`，如果错误带了行号就�
   引入，`FIND_PACKAGE_ARGS 3.5`（系统有就用系统的）。它本身依赖 nlohmann/json，`deps.cmake` 里把已经
   vendor 在 `src/public/lib/nlohmann/` 的那份包成 `nlohmann_json::nlohmann_json` interface target 给
   inja 用，避免同一个翻译单元里出现两份 nlohmann（会撞 include guard 和 ODR）。
-- **ripgrep ≥ 13**、**git**：运行时依赖，通过 exec 调用（只传 argv，不经过 shell），不是编译期依赖。
+- **ripgrep ≥ 13**、**git**：运行时依赖，调用方提供 argv，`ReadOnlySandbox` 逐参数引用后交给 SRT 执行，不拼接未经引用的用户参数；不是编译期依赖。
   找不到 `rg` 时 `search.rg_path`（`home/config/config.json`）可以覆盖自动探测的路径。
-- `dagent_workspace` 对外公开链接 `dagent_base`，`dagent_exec` 和 `inja` 只是私有依赖（不出现在
-  workspace 的公开头文件里）。
+- `dagent_workspace` 对外公开链接 `dagent_base`，`dagent_exec` 和 `inja` 在 target 中声明为私有链接依赖；
+  `search.hpp`、`context.hpp` 的公开类型仍引用 exec 的只读 SRT 配置。

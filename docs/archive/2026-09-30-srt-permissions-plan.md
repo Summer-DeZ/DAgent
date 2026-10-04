@@ -1,9 +1,13 @@
 # SRT 适配与完整权限链路实施计划
 
+归档日期：2026-10-04。原位置：`nexttodo/srt-permissions-plan.md`。保留设计与阶段进度，
+正文中的“当前”“待实现”按各节日期理解，不作为当前操作契约。当前实现见 [执行设计](../design/exec.md)，
+尚未覆盖的验收见 [后续工作](../../nexttodo/README.md)。归档不表示全部验收完成。
+
 日期：2026-09-29；更新：2026-09-30。S06–S09 的原验收记录见
-[历史验收摘要](../docs/archive/2026-09-30-srt-permissions.md#2026-09-29)。2026-09-30 已部署匹配当前开发后端路径的
+[历史验收摘要](2026-09-30-srt-permissions.md#2026-09-29)。2026-09-30 已部署匹配当前开发后端路径的
 专用 AppArmor profile，默认启动通过 SRT 探测，无需 `aa-exec`；同时修复子任务结束状态、取消传播和
-并发控制 fd 继承。新证据见 [默认启动与子 Agent 验收](../docs/archive/2026-09-30-srt-permissions.md#2026-09-30)。
+并发控制 fd 继承。新证据见 [默认启动与子 Agent 验收](2026-09-30-srt-permissions.md#2026-09-30)。
 下面 §10.1 保留 2026-09-29 的历史状态，不代表当前主机仍被阻塞；未覆盖的完整并发对抗矩阵仍不宣称通过。
 
 ## 1. 目标与完成条件
@@ -29,7 +33,7 @@
 
 设计阶段实测：bwrap 0.9.0 和 `unshare -Ur` 在 UID 映射阶段失败；AppArmor 非特权 user namespace 限制开启。只读 Bash 的 `pwd` 可启动，联网 `curl` 在 headless 下因需要宿主审批未执行。记录见 `temp/sandbox-diagnosis-20260929/`。未获得系统审计日志，不能把 AppArmor 写成已证明的唯一原因。
 
-父 Agent 审批子 Agent 属于独立功能，另见 [父 Agent 审批计划](parent-agent-approval-plan.md)，不作为本计划的交付依赖。
+父 Agent 审批子 Agent 属于独立功能，另见 [父 Agent 审批计划](2026-10-03-parent-agent-approval-plan.md)，不作为本计划的交付依赖。
 
 ## 3. 用户场景
 
@@ -211,7 +215,7 @@ S01 与 S02 可独立开展；S04 与 S05 在 S03 后可分工。其余按依赖
 | S09 | 已交付：Landlock/seccomp 后端、`Prepared`/`probe`/`Command::sandbox` 与 libseccomp 依赖移除；`sandbox.version=2`（backend=srt、host_access=ask_once、启动/审批超时与每执行请求预算）；能力只来自真实 SRT 探测，不可用时受限命令不启动、仅保留显式 host 语义。 |
 | S10 | 当日真实功能验收记录 fixed/partial/blocked；当时默认主机 S00 未通过。后续默认启动修复见 §10.2。 |
 
-仓库内的持久摘要见 [验收记录](../docs/archive/2026-09-30-srt-permissions.md)。
+仓库内的持久摘要见 [验收记录](2026-09-30-srt-permissions.md)。
 原始本地材料：`temp/s05-repair/VERIFY.md`、`temp/s06-s10-driver/VERIFY.md`，不随仓库分发。
 旧 `temp/s05-live/VERIFY.md` 描述修复前状态，不能再作为 S05 已完成的依据。
 当前路径保护仍遵循 §4.1 的启动快照语义；本轮未声称通过完整并发对抗矩阵或最终安装验收。
@@ -222,7 +226,7 @@ S01 与 S02 可独立开展；S04 与 S05 在 S03 后可分工。其余按依赖
 不关闭全局 userns 限制，不使用通用 aa-exec 包装器，也不恢复旧后端。
 子任务非 done 状态完整回传；父取消级联、read_only/planning 参数顺序与权限传播时的 Policy 生命周期已修正。
 SRT 控制通道改为显式 fd 白名单和 SOCK_CLOEXEC，真实三子 Agent 共 21 次工具调用无错误。
-额度耗尽、父取消与父降权也已实际验证，详情见 [9 月 30 日记录](../docs/archive/2026-09-30-srt-permissions.md#2026-09-30)。
+额度耗尽、父取消与父降权也已实际验证，详情见 [9 月 30 日记录](2026-09-30-srt-permissions.md#2026-09-30)。
 
 仍待完成：完整并发对抗矩阵、所有 MCP 场景在最终版本上的复验、完整发行安装/升级/卸载验收。
 新主机必须独立完成 runtime 准备与 sandbox status 探测，不能沿用本机通过结论。
@@ -263,4 +267,4 @@ SRT 控制通道改为显式 fd 白名单和 SOCK_CLOEXEC，真实三子 Agent �
 - [SRT v0.0.77 README：Linux 前置与 filesystem/network 限制](https://github.com/anthropics/sandbox-runtime/blob/v0.0.77/README.md)
 - [SRT CLI 信号与退出处理](https://github.com/anthropics/sandbox-runtime/blob/v0.0.77/src/cli.ts)
 - [Ubuntu 非特权 user namespace 限制](https://documentation.ubuntu.com/release-notes/24.04/)
-- [本项目后端调研](../docs/research/command-sandbox-backend.md)、[方案比较](../docs/research/sandbox-repair-options.md)
+- [本项目后端调研](../research/command-sandbox-backend.md)、[方案比较](../research/sandbox-repair-options.md)

@@ -4,7 +4,8 @@
 
 下文源码行号与策略描述属于核查时点。后续权限链路已改为 SRT、显式请求范围及即时撤销，
 当前契约见 [agent](../design/agent.md#7-权限与沙箱)。Jev 仍未集成；
-父模型审批的独立实现计划见 [父 Agent 审批](../../nexttodo/parent-agent-approval-plan.md)。
+父模型审批已独立实现，见 [权限指南](../guide/permissions.md) 与 [父 Agent 审批计划及验收归档](../archive/2026-10-03-parent-agent-approval-plan.md)。
+该实现不使用 Jev，审阅失败时拒绝并反馈，不采用下文建议的人工回退。
 
 ## 结论
 

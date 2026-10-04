@@ -4,7 +4,7 @@
 
 用户随后选定 SRT；2026-09-30 的实现已移除 Landlock 后端，专用 AppArmor profile 已使开发主机普通启动通过。
 本页保留当时的方案比较，未采用的备选不代表仍受支持。当前行为见 [执行设计](../design/exec.md)，
-部署见 [构建指南](../guide/build.md)，剩余工作见 [SRT 计划](../../nexttodo/srt-permissions-plan.md)。
+部署见 [构建指南](../guide/build.md)，原路线见 [SRT 计划归档](../archive/2026-09-30-srt-permissions-plan.md)，剩余验收见 [后续工作](../../nexttodo/README.md)。
 
 ## 已核实的起点
 

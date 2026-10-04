@@ -11,11 +11,12 @@ DAgent 是用 C++23 编写的终端 Agent，仅支持 Linux。前端 `dagent` �
 | 配置模型、运行与恢复会话 | [使用指南](guide/usage.md) |
 | 权限模式、审批、沙箱故障 | [权限与沙箱](guide/permissions.md) |
 | 理解当前架构和模块契约 | [设计索引](design/README.md) |
-| 查看待办与尚未实现的设计 | [实施计划索引](../nexttodo/README.md) |
+| 查看剩余工作与验收边界 | [后续工作](../nexttodo/README.md) |
 | 查看选型背景和未落地建议 | [调研索引](research/README.md) |
-| 查看有日期和范围的验收结论 | [历史记录](archive/README.md) |
+| 查看已归档计划及有日期和范围的验收结论 | [历史记录](archive/README.md) |
 
-`guide/` 说明当前使用方法，`design/` 描述当前实现。调研、计划与历史验收不自动代表现有功能或当前运行状态。
+`guide/` 说明当前使用方法，`design/` 描述当前实现，`nexttodo/` 跟踪剩余工作，`archive/` 保留历史计划与验收。
+调研建议和历史快照不自动代表现有功能或当前运行状态。
 本地 `temp/` 保存原始检测材料，不随仓库分发；关键结论在 `archive/` 保留摘要。
 
 ## 常用命令
@@ -39,7 +40,7 @@ dagent --list-models
 
 - Linux
 - CMake ≥ 3.25、Ninja、支持 C++23 的编译器
-- Boost ≥ 1.83、libcurl、OpenSSL Crypto
+- Boost ≥ 1.83、libcurl ≥ 7.68、OpenSSL Crypto
 - 受限执行的宿主依赖：bubblewrap、socat，以及允许相应 namespace 的系统策略
 - 首次配置需要联网，CMake 会拉取其余第三方库
 
@@ -47,3 +48,6 @@ dagent --list-models
 
 当前受限后端为 SRT 0.0.77；DAgent 的旧 Landlock/seccomp 后端及 libseccomp 构建依赖已移除。
 `runtime sync` 安装依赖与 `sandbox status` 验证宿主能力是不同步骤。
+
+开发与验证约束见仓库 [AGENTS.md](../AGENTS.md)：仅通过构建和真实功能运行确认程序修改，
+临时检测材料放 `temp/`，不新增测试代码、模拟模型、演示入口或测试构建目标。

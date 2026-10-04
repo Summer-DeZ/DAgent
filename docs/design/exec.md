@@ -126,7 +126,7 @@ stdin/stdout/stderr 保持独立，网络判定经独立控制 FD 交回核心�
 
 `Support` 是启动时真实做一次最小隔离启动后的结果：`backend` 为 `srt` 或 `none`，并提供
 `read_only_ready()` / `workspace_ready()`。权限层只在对应 profile 真实满足时启用；能力不足时受限命令
-不启动。符合策略的 Bash 请求可以在交互入口询问一次性 host access，非交互运行返回需要批准；
+不启动。符合策略的 Bash 请求可询问一次性 host access，由人工或符合条件的父模型审批；没有可用审批路由时不执行。
 只读/规划上限不能借此突破，glob/grep 不提供宿主回退。`unrestricted` 明确使用 host 执行。
 
 ### 启动与并发
@@ -138,6 +138,7 @@ stdin/stdout/stderr 保持独立，网络判定经独立控制 FD 交回核心�
 - 控制 socketpair 使用 `SOCK_CLOEXEC`，bridge 端通过 `Command::inherit_fds` 显式保留；
   不在父进程清除 CLOEXEC，避免并发启动时将通道泄漏给其他进程，也不依赖启动器偶然保留描述符。
 - 工作区保护遵循启动快照语义：运行中新建的同名敏感文件不在保护承诺内。
+- 受限命令的私有 HOME 使用短临时路径，避免深层 Home 导致 SRT Unix socket 路径过长；bridge 初始化异常按结构化错误报告。
 
 ### 宿主前置
 

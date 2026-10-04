@@ -258,7 +258,7 @@ kitty 键盘协议、字素宽度模式、背景色。
 | `open_overlay` / `close_overlay` | 打开、关闭浮层；打开时可接管键盘与光标，关闭时恢复 |
 | `bind_mouse` / `unbind_mouse` | 为控件绑定鼠标处理器 |
 | `after` / `every` / `cancel` | 定时器；动画用 `every`，回调返回 false 即停止 |
-| `on_caps(fn)` | 终端能力确定后回调一次，通常在这里选主题 |
+| `on_caps(fn)` | 初次终端能力确定时回调；随后收到 OSC 11 背景通知时也回调，应用据此更新跟随主题 |
 | `set_clipboard(text)` | 写系统剪贴板 |
 
 **能力握手。** `run()` 启动时向终端发一组查询：是否支持同步输出、字素宽度模式、kitty 键盘协议，

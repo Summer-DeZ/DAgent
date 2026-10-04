@@ -38,11 +38,13 @@ flowchart TD
 | `TurnRunner` | `turn_runner.hpp` | 阻塞循环算法与唯一收尾；无跨会话状态，只经 Session/Run/RunServices 工作 |
 | `ActionCatalog` | `catalog.hpp` | 稳定的动作顺序与准备入口：普通工具、控制动作、动态 MCP |
 | `ActionDispatcher` | `dispatch.hpp` | 一批调用的准备、权限、分组执行与有序提交 |
-| `ControlActionExecutor` | `control.hpp` | ask / exit_plan / todo / task 的类型化规则 |
+| `ExecutionMailbox` / `ParentReviewer` | `execution_mailbox.hpp` / `parent_review.hpp` | worker 向所属 Dispatcher 交接事件；父等待 task 时串行审阅子权限请求 |
+| `BudgetedModel` | `model_budget.hpp` | 普通模型请求、父审阅、摘要与实际重试的共享预算 |
+| `ControlActionExecutor` | `control.hpp` | ask / exit_plan / todo / task / skill 的类型化规则 |
 | `Policy` | `permission.hpp` | 权限规则、会话授权与模式快照（短锁，跨线程可切换；撤销及其审计记录由执行线程串行提交） |
 | `Compactor` | `compaction.hpp` | 预算、裁剪、摘要与失败退化，只产出候选变化 |
 | `SessionCommitter` | `committer.hpp` | 内存状态、记录与通知的唯一提交入口；唯一持有 broken |
-| `RecordCodec` | `record_codec.hpp` | 10 种记录的编码与类型化解码 |
+| `RecordCodec` | `record_codec.hpp` | 11 种记录的编码与类型化解码，含父审阅审计 |
 | `SessionRecovery` / `HistoryProjector` | `recovery.hpp` / `history.hpp` | 从记录重建可执行状态 / 生成只读历史条目 |
 
 `RunServices`（`run_services.hpp`）是一轮所需的全部外部能力：Sink、Approver、Asker、DelegationChannel、SessionResources、
@@ -62,13 +64,13 @@ Session 只在所属执行线程推进对话、工具目录、模型和记录。
 由 runtime 的交互代理实现；持有 Policy 锁时不调用它们。
 
 一轮直接使用 RunServices.stop（runtime 当前操作的 token），贯穿模型、重试等待、权限等待、工具、摘要和 MCP 连接等待；
-子 Run 共享父的取消。MCP 后台连接使用自身线程的 token，一轮取消不关闭后台连接。
+子 Run 持独立取消源，父取消通过回调级联，父权限收窄也可只取消子执行。MCP 后台连接使用自身线程的 token，一轮取消不关闭后台连接。
 
 ## 2. 执行入口与事件
 
 | 入口 | 行为 |
 | --- | --- |
-| `TurnRunner::run(Session&, Run&, RunServices, input)` | 阻塞完成一轮，返回 `RunOutcome{kind, TurnStatus, error, steps, tool_calls, usage}` |
+| `TurnRunner::run(Session&, Run&, RunServices, input)` | 阻塞完成一轮，返回 `RunOutcome{status, error, steps, tool_calls, usage}` |
 | `TurnRunner::compact(...)` | 手动摘要；不追加 user 或 turn_end，使用同一收尾约束 |
 | `Session::begin_run` / `end_run` | 绑定本轮 Sink 与控制动作能力、重置本轮提问计数 / 解除绑定 |
 | `Session::snapshot` | 执行线程上的即时快照（模型、模式、计划、授权、用量），由 runtime 发布给其他线程 |
@@ -81,13 +83,13 @@ Session 只在所属执行线程推进对话、工具目录、模型和记录。
 | `done` | 模型给出没有工具调用的回复；空回复会警告并结束 |
 | `interrupted` | 本轮被取消 |
 | `denied` | 用户拒绝且没有附加说明，等待新指示 |
-| `limit` | 达到模型或工具调用上限 |
+| `limit` | 达到模型/工具调用上限，或本轮共享 token 预算不足 |
 | `failed` | 模型不可用、上下文仍超长等；原因在 `TurnEnded::error` |
 
 ### Event
 
 `agent/events.hpp` 定义值类型的 `Event`；`to_json(Event)` 给出原实时 JSON 形状，backend 用它作为协议事件的 data，
-`run --output jsonl` 由前端还原同一形状。这份实时事件流与第 10 节的持久记录是两种格式。
+`run --output jsonl` 输出完整协议信封，子事件由 backend 展平身份。这份实时事件流与第 10 节的持久记录是两种格式。
 
 | 事件 / JSON type | 主要字段与用途 |
 | --- | --- |
@@ -129,23 +131,16 @@ TurnEnded
 
 进入历史的一批工具调用按原序得到 `ToolFinished`，包括参数错误、拒绝和未执行的调用；没有执行的调用不发
 `ToolStarted`。并行调用的 `ToolOutput` 可交错，同一调用内部保持顺序。`ToolPending` 可能随重试或中断作废，
-不能据此认为调用已经执行。
-
-每轮只有一个 `TurnStarted` 和最后一个 `TurnEnded`。`Notice` 可穿插；记录写入失败时也可能在 `TurnStarted` 前提示。
-`StreamReset` 只在 `Retrying` 之后、且失败尝试已有可见事件时发出。自动压缩发生在 `StepStarted` 之前，
-不会随这一步的流式重试被前端清除。服务端报超长后的强制压缩与重发留在同一步内。
-
-进入历史的一批工具调用按原序得到 `ToolFinished`，包括参数错误、拒绝和未执行的调用；没有执行的调用不发
-`ToolStarted`。并行调用的 `ToolOutput` 可交错，同一调用内部保持顺序。`ToolPending` 可能随重试或中断作废，
 不能据此认为调用已经执行。手动压缩不发轮开始/结束事件，由 runtime 的 `operation_finished` 结束忙碌状态。
 历史显示不重放实时事件，而是由 `HistoryProjector` 生成 `HistoryItem`（第 10 节）。
 
 ## 3. 模型端口
 
 `ModelSession::complete` 接收中立 `Request`、流事件接收器与 stop，返回 `Reply{message, finish, usage}` 或抛
-`ModelError{cancelled, context_too_long, rejected, exhausted}`。流式累积、重试退避与 Retry-After 由 llm 实现，见
+`ModelError{cancelled, context_too_long, rejected, exhausted, budget_exhausted}`。每次实际尝试经 `ModelAttemptHooks` 接入核心共享预算。
+流式累积、重试退避与 Retry-After 由 llm 实现，见
 [llm §6](llm.md#6-model一次完整调用与重试)。核心只决定：`context_too_long` 触发同一步的强制压缩与一次重发，
-`cancelled` 按取消收尾并按 L15 保存部分正文，其余错误以 failed 结束本轮。
+`cancelled` 按取消收尾并按 L15 保存部分正文，`budget_exhausted` 以 limit 收尾，其余错误以 failed 结束本轮。
 
 ## 4. 消息历史与协议不变式
 
@@ -186,8 +181,9 @@ TurnEnded
 
 ## 5. 一轮循环、上限与收尾
 
-一轮（turn）对应一次用户输入；一步（step）是一次主模型请求，不包含摘要；一批（batch）是一条 assistant
-消息中的全部工具调用。网络重试、上下文超长后的唯一一次重发仍属于同一步。
+一轮（turn）对应一次用户输入；主请求的流式显示由 `StepStarted` 划分，一批（batch）是一条 assistant
+消息中的全部工具调用。网络重试、上下文超长后的唯一一次重发沿用当前显示步骤；
+`Run.steps` / `turn_end.steps` 则统计所有实际模型尝试，包含重试、父审阅和摘要，不等于 `StepStarted` 事件数。
 
 1. 用户输入修复为合法 UTF-8，追加进历史并记录，发 `TurnStarted`。
 2. 检查模型调用上限；在下一步主请求前处理 MCP 连接、工具合并与重连，再按整请求预算自动压缩。
@@ -201,7 +197,7 @@ TurnEnded
 执行工具看 `tool_calls` 是否为空，不依赖服务端的 finish reason。正文因 `length` 或 `content_filter` 截断时提示后
 结束，不自动续写；空正文且没有调用（包括仅有思考）不加入历史，警告后结束。
 
-运行限制必填于 `home/config/config.json` 的 `run` 段，程序没有业务默认值。随附配置为 `max_model_calls=24`、`max_tool_calls=35`、`max_model_retries=2`、`max_parallel_tasks=4`、`max_parallel_tools=8`。调用上限为 0 表示不限；并发数必须大于 0。未知工具、参数失败和策略拒绝
+运行限制来自 `home/config/config.json` 的 `run` 段。随附必填配置为 `max_model_calls=24`、`max_tool_calls=35`、`max_model_retries=2`、`max_parallel_tasks=4`、`max_parallel_tools=8`；可选 `max_total_tokens` 缺省及随附值均为 0。调用和 token 上限为 0 表示不限；并发数必须大于 0。未知工具、参数失败和策略拒绝
 也消耗已处理调用预算；因中断、同批拒绝或超额而跳过的调用不消耗执行预算。超额调用回填 T8，若还有模型步数，
 给予一次不提供工具定义的总结机会；总结回合仍以 `limit` 收尾，模型若继续返回工具调用也不再执行。
 这次总结、父审批、自动压缩摘要和每次实际模型重试均计入本轮 steps 与共享 token 预算；steps 是实际尝试次数，
@@ -225,6 +221,9 @@ tool_calls → ActionCatalog.prepare → 普通 PreparedTool ── PreparedInte
 结果按原调用顺序 → SessionCommitter（Conversation + 记录 + ToolFinished）
 ```
 
+edit/write 如需读取原文件，先通过 `preview_request` 声明读意图，由 Policy 授权后执行 `prepare_preview`，
+再用完整 diff 判定写授权；参数准备不提前读取待审批内容。读取与写入均消费对应 grant。
+
 可并行的是 Policy 直接放行的 read 意图，以及获准使用 `read_only` 沙箱的 bash；写入、编辑、MCP 和经过询问的调用
 串行执行。连续的可并行调用构成一组，分块创建线程，每块最多 `run.max_parallel_tools` 个。
 
@@ -244,6 +243,7 @@ tool_calls → ActionCatalog.prepare → 普通 PreparedTool ── PreparedInte
 task 在权限判定里直接放行（真正的检查发生在子会话自己的 Policy），并单独成组：连续 task 调用不与只读组混跑，类别切换
 会先执行挂起组。组宽度取 `run.max_parallel_tasks`（默认 4），超出的调用分块排队，块内 join 完才开下一块，不退化为串行。
 组内每个线程构造一次 `DelegationContext` 并调用 `DelegationChannel::delegate`，结果按父调用 id 组装成 `TaskView`。
+等待期间父 Dispatcher 排空 `ExecutionMailbox`，串行执行 `ParentReviewer`；不持队列锁调用模型，子请求各有独立答复。
 子 Agent 的事件用 `SubEvent` 信封实时转发给父 Sink，但**不写进父历史**；父只收到最终文本与逐条工具摘要。
 
 ## 7. 权限与沙箱
@@ -257,7 +257,7 @@ Policy 是纯逻辑，不弹窗、不读配置。它依据 `PreparedIntent` 的�
 | --- | --- |
 | `ask` | 工作区内写入和非只读 bash 询问；已知只读 bash 在完整只读 profile 下自动执行 |
 | `workspace` | 工作区内普通文件工具放行；动态/写入型 bash 在完整 workspace profile 下自动执行，否则询问一次性 full_access |
-| `unrestricted` | 路径、网络和外部工具均直接放行，bash 使用 full_access；只保留高危命令硬拦 |
+| `unrestricted` | 普通请求直接放行，bash 使用 full_access；语法、高危命令、read_only/planning 硬限制仍优先，MCP 启动/连接仍需显式配置 profile |
 
 路径分类包括：含 `.git` 路径段，以及控制根中的 `config/`、`data/`、`logs/`、`run/` 等控制数据路径；`.env`、`.env.*`、
 `*.pem`、`*.key`、`id_rsa*`、`id_ed25519*` 及含 `.ssh` / `.gnupg` 段的敏感路径；其余按工作区内外区分。
@@ -271,15 +271,15 @@ Policy 是纯逻辑，不弹窗、不读配置。它依据 `PreparedIntent` 的�
 | edit / write | ask 下询问；workspace 放行工作区内普通路径；unrestricted 全部放行 |
 | 已知只读 bash，沙箱可用 | 自动允许，但仍放进 `read_only` 沙箱；前置 `cd` 到 workspace 内不改变只读结论 |
 | 其他 bash，完整 workspace profile 可用 | ask 询问、workspace 自动；均使用明确范围且默认不联网 |
-| 写入型 bash 的 workspace profile 不可用 | 交互入口询问一次性 full_access，明确提示可访问网络、受保护数据和 `.git`；非交互运行返回“需要批准”且不执行 |
+| 写入型 bash 的 workspace profile 不可用 | 请求一次性 full_access，明确提示可访问网络、受保护数据和 `.git`；没有人工或合格父审批路由时不执行 |
 | MCP 工具 | ask / workspace 询问；unrestricted 放行；plan 拒绝 |
 
-显式 host access 不属于旧沙箱兼容后端：每个调用都必须由用户明确批准，不提供会话级复用；拒绝后不执行。
-真正的策略拒绝只保留给语法错误、高危硬拦、read-only / plan 限制等不可通过本次批准扩大的条件。
+显式 host access 不属于旧沙箱兼容后端：每次请求须由用户或符合条件的父模型明确批准，不提供会话级复用；拒绝后不执行。
+控制面写入、显式网络 deny、语法错误、高危硬拦和 read-only / plan 限制等属于不能通过普通批准扩大的条件。
 
 沙箱能力由 `exec::Support` 按真实 SRT 启动结果报告；只读与 workspace profile 分别调用 `read_only_ready()`、
 `workspace_ready()`。workspace 不授予 bash 网络权限，
-能力缺失也不会自动降级 full_access；只有用户在上述明确风险说明后批准的单次调用使用 host。具体限制见 [exec](exec.md)。
+能力缺失也不会自动降级 full_access；只有明确获批的 host-access 单次调用使用 host。具体限制见 [exec](exec.md)。
 
 `read_only` 与三档正交：写入、非只读 bash 和 external 都走策略拒绝，已知只读 bash 强制 read_only 沙箱。
 plan 在此基础上给出规划专用反馈，使模型改为调研和提案而不结束本轮。`mkfs*`、裸写块设备、大范围 `rm -rf`、
@@ -289,13 +289,13 @@ plan 在此基础上给出规划专用反馈，使模型改为调研和提案而
 
 `Approval` 携带 call id、完整 PreparedIntent、实际 cwd、当前模式、增量权限请求、原因、部分执行状态和有效期选项。
 `Decision` 支持单次允许、会话允许、拒绝、拒绝附说明；执行前记录用户回答。Approver 应在 stop 后立即结束等待，
-核心按取消处理而非普通拒绝。run 模式传空 Approver；需要询问的操作得到策略拒绝结果并让本轮继续。
+核心按取消处理而非普通拒绝。run 模式没有人工 Approver；主会话缺人工批准时返回工具错误，符合条件的子请求仍可路由到父模型。
 
 | 授权 | 记住什么 |
 | --- | --- |
 | 普通文件写入 | 本会话工作区普通文件免询问 |
-| 工作区外读取 | 路径所在目录；敏感读取不提供此选项 |
-| bash | 完整原命令 + 规范化 workspace cwd；动态命令不再按前两个词复用 |
+| 工作区外读取 | 请求的规范化路径；文件授权不扩到父目录，目录授权仅覆盖普通子路径；敏感读取不提供此选项 |
+| bash | 完整原命令 + 规范化 workspace cwd + environment；不按前两个词复用 |
 | MCP | 完整的限定工具名 |
 
 敏感读取和受保护写入只提供单次授权。其它会话规则只在内存中，恢复或新建会话后清空；交互界面的
@@ -358,7 +358,7 @@ trigger = limit × compaction_trigger_percent / 100
 target  = limit × compaction_target_percent / 100
 ```
 
-有效窗口优先取模型公开描述 `PublicModel::context_window`，0 时回落全局。ContextOptions 默认窗口 262144、安全余量 8192、触发 80%、目标 60%。若 max_tokens 为 4096，则 limit 为 249856。
+有效窗口优先取模型公开描述 `PublicModel::context_window`，0 时回落全局。随附配置的窗口为 262144、安全余量 8192、触发 80%、目标 60%。若 max_tokens 为 4096，则 limit 为 249856。
 预留量用尽窗口时预算为零，非空历史不能继续请求。估算包含 system、工具定义和历史；不能只统计消息正文。
 
 `TokenEstimator` 用真实 prompt usage 校正上一次请求估算。摘要单独 estimate / observe；主请求在压缩后重新 build
@@ -417,9 +417,9 @@ target  = limit × compaction_target_percent / 100
 ## 9. 提示词与环境快照
 
 [system.md](../../home/prompts/system.md) 和 [compact.md](../../home/prompts/compact.md) 位于 Home 的 prompts/，由 app 装配在创建或恢复会话前
-读取并渲染（`app/prompt`）。`config.json` 的 `prompts.system` 与 `prompts.compact` 可以改名或指向其它文件，相对路径规则见
-[app](app.md)。提示词不再编入二进制，修改后下一次会话立即生效。模板都经 workspace 的 inja 渲染，模板错误
-或文件读取失败会使启动失败。
+在后端启动装配时读取并缓存。`config.json` 的 `prompts.system` 与 `prompts.compact` 可以改名或指向其它文件，相对路径规则见
+[app](app.md)。system 在创建或恢复会话时由 `app/prompt` 经 inja 渲染；compact 按读取的文本直接使用。
+提示词不编入二进制，修改后须重启后端以更新快照；仅 `/new` 不重新读取文件。读取或 system 模板错误会使相应装配失败。
 
 system 在创建或恢复时渲染一次，之后不随日期、git 状态或权限切换改写，保持前缀稳定。变量包括：
 
@@ -553,8 +553,9 @@ Hub 不接收服务端工具变更通知，也不周期刷新工具列表。连�
 逐条工具摘要。定义来自安装根 `agents/*.md` 的 frontmatter 与正文（正文是子 Agent 的 system prompt）；
 app 校验名字唯一、`permission` 取值、`model` 引用和上限，未知键只 warn。
 
-- `DelegationContext` 是执行时构造的不可变值：父 session/run/call、父当前权限快照、子定义、允许工具、模型名、
-  父 Sink/Approver 与 stop；不含可写父 Session。子会话生命周期严格在一次 `delegate` 内，父等待整组结束，按原顺序回填。
+- `DelegationContext` 是执行时构造的父侧上下文：父 session/call、权限快照、父工具名单、模型名、
+  父 Sink/人工 Approver、只读父 Policy、父审阅邮箱出口与 stop；子定义由委派请求查找，不含可写父 Session。
+  权限视图在创建和审批时重新取样。子会话生命周期严格在一次 `delegate` 内，父等待整组结束，按原顺序回填。
 - 禁止二级子 Agent：子会话的动作目录不含 task；子会话也不能使用 ask / exit_plan（没有 Asker，也不参与规划确认）。
 - `allowed_tools` 取定义里的 `tools`，缺省继承父工具名再剔除 `task` / `ask` / `exit_plan` 与 MCP 工具。显式空列表或过滤后为空均表示不提供工具，只有主会话的未限制状态才使用 nullopt。
 - 定义未指定模型时继承父当前模型；显式指定时按配置名解析。
@@ -564,12 +565,13 @@ app 校验名字唯一、`permission` 取值、`model` 引用和上限，未知�
 子会话创建失败、模型打不通或未产出结论都转成 `is_error` 的结果；
 子触到自己的调用上限时以 `limit` 收尾，父 task 收到 `is_error=true`、明确状态与标为 Partial output 的正文。
 denied、failed、interrupted 同样回传非成功状态，TaskView 与模型收到的文字一致。
-子会话需要询问时，`Approval` 带上 `agent` 与 `origin_call_id`，经同一交互代理串行显示；等待审批的子会话阻塞，其余继续。
+子会话需要询问时，`Approval` 带上 `agent`、`origin_call_id` 与父子身份，按第 7 节选择父模型或人工路由；
+人工审批经同一交互代理串行显示，父模型审阅经父邮箱串行执行。等待审批的子会话阻塞，其余继续。
 
 ## 13. 当前范围
 
 当前提供单会话、每轮单模型的文本编码 Agent（空闲时可在同一会话切换模型），支持 read/write/edit/bash/grep/glob、
-todo/ask/exit_plan/task 控制动作、MCP tools、并发子 Agent、终端与非交互前端、记录恢复和上下文压缩。
+todo/ask/exit_plan/task/skill 控制动作、MCP tools、并发子 Agent、父模型审批、终端与非交互前端、记录恢复和上下文压缩。
 尚未实现多模型路由、图片输入、web_fetch、hooks、插件或会话全文搜索。
 
 子 Agent 之间不直接通信、不向父追问、不跨轮存活、不参与 MCP 重连与通知投递，也不支持多级嵌套与单独的凭据配置。

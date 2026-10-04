@@ -111,17 +111,18 @@ runtime 不维护重复计数。事件载荷是核心 `agent::Event` 或 runtime
 3. stop 触发时 pending 立即以取消结束（审批返回 deny、问答返回 cancelled），核心按取消处理而不是普通拒绝，并通知前端关闭对话框。
 4. 等待期间不持有控制器锁、Policy 锁或队列锁。
 
-非交互装配（`run`）向核心传空 Approver/Asker：需要审批的调用得到 T7「no interactive approver」，ask/exit_plan 返回原有非交互文本，
-不生成永远等不到的对话框（B09）。
+非交互装配（`run`）不提供人工 Approver/Asker：主会话需要人工审批的调用得到「no interactive approver」，ask/exit_plan 返回原有非交互文本，
+不生成永远等不到的对话框（B09）。子执行仍装配审批路由，符合条件时经父 Dispatcher 审阅，不依赖人工 Broker。
 
 ## 5. 子执行
 
 `SubagentExecutor::delegate` 在 task 组线程上执行一次委派：
 
-1. 从 `DelegationContext`（父 session/run/call、执行时权限快照、父工具名单、模型名、父 Sink/Approver、stop）和子定义派生权限，
+1. 从 `DelegationContext`（父 session/call、权限快照、父工具名单、模型名、父 Sink/Approver、只读父 Policy、parent_reviewer、stop）和子定义派生权限，
    `SessionFactory::create_child` 创建子实例；子会话自己取得写租约，Meta 带 `parent_id` / `agent_name`。
 2. 登记子 Policy 和独立 stop_source；父取消通过 stop_callback 级联到子 Run，父权限收窄可以只终止子执行。
-   `may_ask` 时把父 Approver 包装为带 `agent` / `origin_call_id` 的审批出口，子 Asker 恒空。
+   `may_ask` 时装配带来源身份的审批路由：父当前 unrestricted 且无只读/规划上限、启用父审阅时，经 `parent_reviewer`
+   把请求投递到父 Dispatcher 邮箱；否则使用父人工 Approver。两条路由都不可用时返回 approval unavailable；子 Asker 恒空。
 3. 子事件包成 `SubEvent` 交给父 Sink，只实时展示，不写进父历史。
 4. 使用 `RunOutcome` 的真实结束状态构造结果。非 done 状态设置 `is_error=true`，文字包含状态与调用计数，
    已有正文标为 Partial output；`TaskView.result` 与模型收到的文本一致。没有结论同样返回错误。
@@ -129,6 +130,11 @@ runtime 不维护重复计数。事件载荷是核心 `agent::Event` 或 runtime
 
 `apply_parent_permission` 在登记锁内更新子 Policy 上限，与 detach 互斥；锁外对需要取消的共享 stop_source 请求停止，
 不在解锁后继续使用可能已经销毁的子 Policy 指针。父会话授权不复制到子会话。
+
+父 Dispatcher 等待 task 时串行处理审阅，子线程只等待自己的决定；超时包括排队时间。
+父审阅失败、取消或降权不把同一个请求转成人工审批。父授权取消句柄在首次审阅后持续关联子执行，
+因此创建时父为 workspace、运行中升级后获批的子任务，也会在父再次降权时中断。
+父审阅共享父 turn 的调用与 token 预算；一次/子会话授权和审计见 [agent](agent.md#子-agent-的权限派生)。
 
 子工具默认不含 task/ask/exit_plan 和未显式允许的 `mcp__*`；子只用创建时的 MCP 快照（B18–B20）。
 

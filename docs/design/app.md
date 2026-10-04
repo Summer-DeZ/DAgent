@@ -52,7 +52,7 @@
 `config/config.json` 由用户维护，包含权限、UI、HTTP、上下文、工具、进程和日志策略；`config/models.json` 保存模型
 条目和默认模型。加载不做分层合并，不读项目配置、`.mcp.json`、`.env` 或 XDG 路径，也没有信任子系统。
 `prompts.system` 和 `prompts.compact` 分别指定主提示词与上下文压缩提示词；相对路径以安装根为准，默认是
-`prompts/system.md` 与 `prompts/compact.md`。两份提示词都由后端在启动会话时从文件读取，不编入二进制，因此修改后无需重新构建。
+`prompts/system.md` 与 `prompts/compact.md`。两份提示词都由后端启动装配时读取并保存在快照中，不编入二进制；修改后重启后端生效，无需重新构建。
 只有后端读取 config.json、models.json、提示词与凭据；前端只读取初始化结果给出的 UI 主题文件。
 
 `models.json`：
@@ -86,7 +86,7 @@ stdio 项支持 `command`、`args`、`env`、`environment`，HTTP 项支持 `url
 两者都必须携带显式 `permissions` profile；stdio 在 SRT 内按范围启动，HTTP 要求 endpoint 网络目标获准。
 `config/config.json` 不再允许重复声明 `mcp`。stdio 默认使用托管环境，可指定 `mcp/<name>` 或显式 `project`。
 
-配置中的相对路径统一相对于安装根；`--set key=value` 中的相对路径相对于 cwd。未知键记 warning，类型和值错误
+提示词、主题等配置路径相对于安装根；`--set key=value` 中的对应路径相对于 cwd。沙箱额外路径始终按下文的工作目录规则解析。未知键记 warning，类型和值错误
 抛 `ConfigError`。`--set` 是一次性覆写，不写回配置；`--model` 命中名字时选择条目，否则临时覆写当前模型 ID。
 
 `sandbox` 是独立版本化对象，当前只接受 `version: 2`、`backend: srt`、`host_access: ask_once`；
@@ -94,15 +94,21 @@ stdio 项支持 `command`、`args`、`env`、`environment`，HTTP 项支持 `url
 相对路径按 workspace cwd 解析，不改变实际沙箱能力，也不覆盖控制数据、敏感读取或 `.git` 保护。
 `allowed_targets/denied_targets` 表达网络目标；启动/网络审批超时与每执行网络请求预算由 sandbox 段配置。
 
-运行策略的数值由 `home/config/config.json` 显式提供，缺少必填项时报配置错误，不从程序默认值补齐。
+主要运行策略由 `home/config/config.json` 显式提供，缺少必填项时报配置错误。
+新增的 `run.max_total_tokens` 缺省为 0；`subagents.approval` 缺省采用下表值，兼容未添加这些字段的配置。
 
 | 配置位置 | 用途 | 随附值 |
 |---|---|---|
 | `run.max_model_calls` | 每轮模型调用上限，0 不限 | 24 |
 | `run.max_tool_calls` | 每轮工具调用上限，0 不限 | 35 |
+| `run.max_total_tokens` | 本轮模型输入与输出总预算，0 不限；普通请求、父审阅、自动摘要及重试共享 | 0 |
 | `run.max_model_retries` | 模型请求重试次数 | 2 |
 | `run.max_parallel_tasks` | 子 Agent 并发数，必须为正整数 | 4 |
 | `run.max_parallel_tools` | 只读工具并发数，必须为正整数 | 8 |
+| `subagents.approval.mode` | `parent_when_unrestricted` 或 `user`，决定子请求是否可交父模型审阅 | parent_when_unrestricted |
+| `subagents.approval.max_reviews_per_turn` | 每父 turn 审阅次数上限，0 表示不允许审阅 | 16 |
+| `subagents.approval.review_timeout_ms` | 从请求创建起计时，包含排队、模型调用和重试；必须为正 | 60000 |
+| `subagents.approval.failure` | 仅支持拒绝并反馈，不自动转人工 | deny_with_feedback |
 | `tools.bash_collect_bytes` | 中断时命令输出收集上限 | 4194304 |
 | `ui.completion_max_files` | 每次文件补全扫描上限；每次查询读取当前目录 | 5000 |
 | `session.history_scan_limit` | 每页历史最多扫描的记录数 | 100 |
@@ -180,8 +186,9 @@ parent_session_id, model_call_id, agent`。子事件身份保留在同一信封�
 各格式共用主会话结果累积，在新步和流重试时重置正文缓冲，并从主会话 `turn_ended` 取得状态与用量。
 子 Agent 事件不修改主会话结果，也不结束本次 run；JSONL 同样按最终状态返回退出码。
 
-stdout 被关闭时 jsonl 请求取消本轮并返回 1，text / json 最终写出失败不改变运行状态。run 模式没有交互审批器：
-需要批准的调用返回「no interactive approver」工具错误，ask / exit_plan 返回原非交互文本。
+stdout 被关闭时 jsonl 请求取消本轮并返回 1，text / json 最终写出失败不改变运行状态。run 模式没有人工审批器：
+主会话需要人工批准的调用返回「no interactive approver」工具错误，ask / exit_plan 返回原非交互文本。
+符合 `subagents.approval` 与父权限条件的子请求仍可由父模型审批；没有可用路由时返回 approval unavailable，详见 [权限指南](../guide/permissions.md)。
 
 ### 信号与退出码
 

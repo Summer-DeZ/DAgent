@@ -114,7 +114,8 @@ MCP managed stdio 使用同一环境规则和 home cwd，server 的显式 `env` 
 
 `project` 用于主动使用项目/宿主工具；非受限 bash 继承经已有 deny 过滤的宿主环境，
 受限 bash 仍按沙箱清理环境。MCP project cwd 为工作目录。选择环境会进入命令意图，审批不跨环境复用。
-工作区 Git 上下文和默认文件搜索使用托管 Git/rg；显式 `search.rg_path` 仍可覆盖搜索程序。
+默认文件搜索使用托管 rg，显式 `search.rg_path` 可覆盖搜索程序。Bash 环境提供托管 Git；
+工作区上下文采集当前仍使用 `/usr/bin/git`，在只读 SRT 内运行并禁用 fsmonitor/hooks/pager 和全局/系统配置。
 
 托管目录进入沙箱可读范围并禁止工具写入；config、data、logs、run 保持控制数据保护。
 环境管理不等于安全沙箱，命令仍遵守原权限与 OS 隔离规则。

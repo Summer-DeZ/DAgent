@@ -3,7 +3,7 @@
 DAgent 外围模块的最底层。头文件在 `src/public/base/`，实现在 `src/private/base/`，构建为静态库
 `dagent_base`（公开链接 `spdlog::spdlog`）。命名空间 `dagent::base`。
 
-除入口层 app 以外的每个外围模块都可以依赖它；它自己只依赖标准库、spdlog 和 nlohmann/json。
+核心、app 和外围模块都可以依赖它；它自己只依赖标准库、spdlog 和 nlohmann/json。
 放进 base 的标准：至少两个模块需要，并且和业务无关。
 
 ---
@@ -21,7 +21,7 @@ DAgent 外围模块的最底层。头文件在 `src/public/base/`，实现在 `s
 约定：
 
 - `truncate_middle` 直接返回截断后的字符串；截断标记保留省略字节数。`exec::Result.out/err` 同样直接保存字符串。
-- **日志只写文件。** 交互模式下终端归 TUI 所有，写到 stdout/stderr 的内容会把界面弄花。
+- **交互模式日志只写文件。** 非交互模式可通过 `also_stderr` 同时输出到 stderr。
 
 ---
 
@@ -32,7 +32,7 @@ DAgent 外围模块的最底层。头文件在 `src/public/base/`，实现在 `s
 入口在启动时调用一次 `init_log`，退出前调用 `shutdown_log`；各模块在**用到的地方**调用 `logger("模块名")`：
 
 ```cpp
-base::init_log({.file = {}, .level = "info"});          // 程序启动时
+base::init_log({.file = log_file, .level = "info"});    // log_file 为非空日志路径
 base::logger("net")->debug("POST {} → {}", url, status); // 模块内部
 base::shutdown_log();                                    // 程序退出前
 ```
@@ -40,7 +40,7 @@ base::shutdown_log();                                    // 程序退出前
 - 所有 logger 共用同一组 sink：一个按大小滚动的文件，另外在 `also_stderr` 打开时加一个 stderr sink（只在非交互模式下使用）。
 - 调用 `init_log` 之前，`logger()` 返回一个什么都不输出的 logger，所以各模块在 temp 检测程序里单独运行时不会崩溃。
 - **不要在静态初始化阶段缓存 logger**。在 `init_log` 之前拿到的是 null logger，之后也不会自动更新；重新 `init_log` 以后，之前缓存的 logger 仍然挂在旧的 sink 上。
-- spdlog 的默认接口（`spdlog::info` 等）也被接到同一组 sink 上，不会写到终端；`shutdown_log` 之后，默认 logger 会换成什么都不输出的 logger。
+- spdlog 的默认接口（`spdlog::info` 等）也接到同一组 sink，遵守相同的 stderr 配置；`shutdown_log` 之后，默认 logger 会换成什么都不输出的 logger。
 
 ### 选项与行为
 
@@ -94,4 +94,4 @@ DAGENT_LOG=net=debug,warn         # net 模块 debug，其余模块 warn
 ## 5. 依赖与构建
 
 - spdlog v1.17.0，在 `cmake/deps.cmake` 里通过 FetchContent 从源码构建，并开启 `SPDLOG_USE_STD_FORMAT`（使用 std::format，不依赖 fmt）。不使用系统的 spdlog 包，因为它是基于 fmt 构建的，与这个选项不兼容。
-- 在 CMake 之外链接 spdlog 的程序，需要加上 `-DSPDLOG_COMPILED_LIB -DSPDLOG_USE_STD_FORMAT`（完整的链接写法见 [docs/README.md](../README.md) 的「临时检测程序」）。
+- 使用项目 CMake target 时，spdlog 的编译定义随依赖传播。构建与真实功能验证约定见 [构建指南](../guide/build.md) 和仓库 [AGENTS.md](../../AGENTS.md)。

@@ -10,4 +10,4 @@
 | [Jev 权限审批研究](jev-permission-review.md) | 可选模型辅助审批建议；未集成 Jev，与确定性权限隔离分开 |
 | [Linux 打包设计](linux-packaging.md) | 系统目录/发行包设计建议，未实现；现行目录安装见构建指南 |
 
-验收结论见 [历史记录](../archive/README.md)，尚未实现的工作见 [计划索引](../../nexttodo/README.md)。
+已归档计划与验收结论见 [历史记录](../archive/README.md)，剩余验收见 [后续工作](../../nexttodo/README.md)。

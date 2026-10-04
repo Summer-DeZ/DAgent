@@ -51,6 +51,8 @@ DAgent 的权限策略决定操作是否允许，SRT 负责受限进程的文件
 
 将 mode 设为 `user` 可保留人工审批。父审阅使用父当前模型，计入同一 turn 的模型调用与 token 用量；超时、无效输出、
 模型错误或预算耗尽均拒绝并向子任务反馈，不自动转人工弹窗。恢复历史只展示审批证据，不重授临时权限。
+`review_timeout_ms` 从请求创建起计时，包含多个子任务排队和模型重试；`max_reviews_per_turn=0` 禁止父模型审阅，
+不表示不限次数。当前审阅只能完整批准原请求或拒绝，不能返回缩小后的资源子集。
 只有明确的网络拒绝才形成会话拒绝规则；审阅错误、超时、取消或预算不足不会永久否决后续同域请求。
 
 `run.max_total_tokens=0` 表示不设 turn token 上限；配置为正数后，普通父模型请求、审阅、自动摘要及其重试共享剩余额度。
@@ -74,7 +76,7 @@ dagent sandbox status
 | 静态依赖通过但 `probe.ok=false` | 查看 probe 的阶段和错误；检查宿主 bubblewrap/socat 与 namespace 策略 |
 | `loopback`、`uid_map` 或 namespace 拒绝 | 按构建指南部署匹配实际后端路径的 AppArmor profile，重新启动后端再探测 |
 | `read-only SRT execution unavailable` | 先恢复 SRT 能力；glob/grep 也依赖只读 SRT，增加子 Agent 额度不能修复它 |
-| `no interactive approver` | 当前请求走人工路由而入口没有人工审批器；改用交互入口或明确配置。父审批仅接手符合上述条件的子请求 |
+| `no interactive approver` / `Permission approval unavailable` | 当前请求没有可用审批路由；改用交互入口或明确配置。父审批仅接手符合上述条件的子请求 |
 | 模型连接失败 | 检查所选模型地址与服务状态，和 SRT 探测分开处理 |
 
 SRT 是唯一受限执行后端，不保留旧 Landlock 回退。沙箱不可用时受限命令不启动；

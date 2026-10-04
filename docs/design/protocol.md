@@ -32,7 +32,7 @@ sequenceDiagram
     B-->>F: closed=true，随后关闭连接
 ```
 
-- `spawn_backend` 在前端安装根同目录找 `dagent-backend`，先关闭父端再 `dup2` 到 fd 3 并清除 CLOEXEC，其余 FD 用 `close_range` 关闭；
+- `spawn_backend` 在前端真实可执行文件同目录找 `dagent-backend`，不随 `DAGENT_HOME` 改变；先关闭父端再 `dup2` 到 fd 3 并清除 CLOEXEC，其余 FD 用 `close_range` 关闭；
   不经 shell，argv 不带密钥或提示词。后端启动后把 IPC FD 设回 CLOEXEC，工具和 MCP 子进程不会继承它。
 - 后端新建独立进程组，终端 SIGINT 只由前端转成取消请求，不广播到其他后端。
 - 一行一个完整 JSON 对象（UTF-8 JSON Lines），读取处理半帧/多帧，写入处理短写；不支持 batch。
@@ -77,7 +77,7 @@ sequenceDiagram
 读线程只做校验与即时操作，不会被模型调用阻塞；耗时命令与只读查询各有一个工作线程，查询失败不影响执行中的 Run。
 请求字段类型不匹配返回 `invalid_params`（-32602），不会终止后端连接。
 
-`session.history` 首次调用捕获高水位，返回不透明游标；每页最多扫描 100 条记录，读完、`history_close` 或连接关闭时释放，
+`session.history` 首次调用捕获高水位，返回不透明游标；每页最多扫描 `session.history_scan_limit` 条记录（随附值 100），读完、`history_close` 或连接关闭时释放，
 每页分配连接内唯一、单次消费且绑定 session_id 的游标。跨会话、已消费或已释放游标返回 `invalid_state`。历史查询不取写锁、不恢复会话、不构造模型或 MCP（记录路线 L22）。
 
 历史条目新增 `kind=permission/parent_review`：`text` 为审批来源、终态、范围和理由，`audit` 保留完整审批记录。
@@ -136,9 +136,9 @@ version_mismatch、closing；前端只按 kind 分支，不解析文案。模型
 
 - **交互**：`app::BackendSession` 启动后端并完成握手，`ui::run_interactive` 只持 `client::Client`、初始化快照与页面状态，
   业务命令都发 RPC（见 [ui](ui.md)）。`FrontendBridge` 把读线程上的事件/交互 post 到渲染线程。
-- **run**：`app::run_backend` 以 mode=run 初始化，按原格式输出首条 session 数据后 `input.submit` 提示词，消费事件直到本 Run 的
-  `turn_ended`（忽略带 parent_session_id 的子 Agent 结束事件），再 shutdown。`LegacyOutputCodec` 把协议事件还原成原
-  text/json/jsonl 输出，子事件恢复原 `sub_event` 包装；协议新增的会话/操作/交互通知不进入公开输出（见 [app](app.md#6-run-输出)）。
+- **run**：`app::run_backend` 以 mode=run 初始化，通过 `input.submit` 提交提示词，消费事件直到本 Run 的
+  `turn_ended`（子 Agent 的结束事件不结束父 run），再 shutdown。`RunOutput` 累积主会话的 text/json 结果；
+  jsonl 直接输出协议事件信封，保留展平的子身份及会话/操作通知，不另发首条 session 行，也不还原 `sub_event` 包装（见 [app](app.md#6-run-输出)）。
 - **sessions / --list-models**：以查询模式初始化（不创建会话、不启动 MCP、不收集 git 环境），调用 `session.list` / `model.list` 后退出。
 
 ## Skill queries

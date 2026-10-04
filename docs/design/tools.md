@@ -14,7 +14,7 @@ base、exec、workspace、mcp。核心不依赖 tools：后端装配把 `tools::
 - 权限决策。工具只**陈述**自己打算做什么（`PreparedIntent`），允许、询问还是拒绝由核心决定。
 - 调度。哪些调用并行、调用上限、失败后是否继续，由核心决定。
 - 消息历史。结果怎样放进 `agent::Message`、要不要压缩，由核心决定。
-- 控制动作。todo / ask / exit_plan / task 的名字、Schema 与说明保持原样，但解析与执行在核心 `agent/control.*`（见 [agent §7](agent.md#控制动作askexit_plantodotask)）。
+- 控制动作。todo / ask / exit_plan / task / skill 的解析与执行在核心（见 [agent §7](agent.md#控制动作askexit_plantodotask) 和 [skills](skills.md)）。
 
 这些职责的实际接入见 [agent：运行时](agent.md)，展示数据的显示见 [ui](ui.md#5-对话投影)。
 
@@ -30,29 +30,24 @@ base、exec、workspace、mcp。核心不依赖 tools：后端装配把 `tools::
   │
   ▼ ActionCatalog：控制动作由核心解析；普通工具交给 ToolSession
   ▼ registry.find(name)            找不到 → 核心自己构造未知工具结果
-  ▼ tool.prepare(arguments, ctx)  解析、校验、预演；参数有问题 → 直接得到 is_error 的 ToolResult
-  │                                成功 → PreparedTool，带只读的 PreparedIntent（资源、命令意图、diff 预览、摘要）
-  ▼ 核心：按 PreparedIntent 做权限决策     拒绝 → 核心构造拒绝结果
+  ▼ tool.prepare(arguments, ctx)  解析参数、路径元数据与命令；失败 → is_error 的 ToolResult
+  │                                成功 → PreparedTool（固定参数与资源意图）
+  ▼ preview_request()             需要原文件内容时声明读意图
+  ▼ 核心批准读取 → prepare_preview(read_grant) → diff 与写入意图
+  ▼ 核心：按完整 PreparedIntent 做权限决策     拒绝 → 核心构造拒绝结果
   ▼ prepared->execute(grant, on_output, stop)
   ▼ ToolResult{model_text → 模型, display → 界面/记录, signals → 执行信号}
 ```
 
-**两阶段**：权限对话框需要在执行前看到「要改什么」（edit 的 diff、bash 的命令和只读分析），而且注定失败的
-调用（找不到 `old_string`、参数缺字段、超过写入上限、路径不存在）不应该先弹一次确认。`prepare` 没有副作用，
-可以读文件，但不写任何东西。调用身份由 Dispatcher 的槽位持有；PreparedTool 只拥有执行所需参数与只读意图。
+**准备、授权后预览、执行**：`prepare` 只解析参数、检查路径元数据并固定文件引用，不读取待审批内容。
+edit 和覆盖已有文件的 write 通过 `preview_request()` 声明读取需求；Dispatcher 先取得读授权，再调用
+`prepare_preview(read_grant)` 读取原文、匹配替换并生成 diff，最后判定写授权并执行。
+因此敏感/外部文件可能先审批读取、再审批写入；不能为了提前生成预览跳过读授权。
+新建文件的预览不读取旧内容。调用身份由 Dispatcher 槽位持有，工具执行时仍检查 grant 和文件引用。
 
-```cpp
-tools::Registry registry;
-tools::add_builtin(registry);                        // read/write/edit/bash/grep/glob
-tools::add_mcp(registry, client);                    // shared_ptr<mcp::Client>，每个 MCP server 一次
-tools::Context ctx(root, config.tools, config.files, config.search, config.process);
-tools::ToolSession session(registry, ctx);           // 实现 agent::ToolSession，交给核心 Session
-
-auto prepared = session.prepare(call.name, call.arguments);
-if (!prepared) return prepared.error();              // is_error 的 ToolResult
-const agent::PreparedIntent& intent = (*prepared)->intent(); // 权限决策的输入
-agent::ToolResult result = (*prepared)->execute(grant, on_output, stop);
-```
+后端为每个会话装配 `Context(root, control_root, tools, files, search, process)`、`Registry` 和
+`ToolSession`。普通工具用 `add_builtin` 注册，MCP 用 `add_mcp` 注册；真实调度入口见
+[Dispatcher](../../src/private/agent/dispatch.cpp)，不应直接绕过预览授权调用 execute。
 
 | 类型 | 作用 |
 | --- | --- |
@@ -119,18 +114,17 @@ dangerous / known_readonly 仍由 exec 的原分析函数计算，核心不重�
 参数：`path`，`old_string`，`new_string`，`replace_all`（默认 false）。
 
 - **必须先 read**：FileTracker 里没有这个文件 → `is_error`「请先用 read 读这个文件再编辑」。
-- **stale**：`prepare` 时当前 Stamp 和 FileTracker 里的不一致 → `is_error`，提示文件在上次读取后被修改过
-  （可能是 bash 或用户改的），请重新 read。`execute` 写入时再用 `write_text(expect=…)` 兜底，覆盖 prepare 到
-  execute 之间用户确认的那段时间。
+- **stale**：准备时的 Stamp 与 FileTracker 不一致即失败；授权后的预览和 `FileReference::write(expect=…)`
+  再核对指纹与固定对象，审批期间父目录或目标被替换时要求重新准备。
 - 匹配在 LF 内容上做，`old_string`/`new_string` 先统一成 LF；写回时保留原文件的 eol 和 BOM。
 - **只做精确匹配，并且必须唯一**：0 处 → `is_error`；多处且没开 `replace_all` → `is_error`，列出各处的行号
   （至多 20 个）。`old_string` 为空、`old_string == new_string`、替换后内容不变 → `is_error`。
 - 失败提示要让模型能自己修好：`old_string` 每行都以「数字 + Tab」开头时，提示不要带 read 输出的行号前缀；
   忽略行首缩进后能唯一匹配时，指出行号并提示缩进不一致——只提示，不自动应用。
 - **拒绝编辑**：二进制文件；`lossy` 的文件（替换过 U+FFFD 的内容写回去会破坏原字节）；超过 `max_read_bytes`
-  被截断读取的文件（写回会丢掉后面的内容）；编辑后超过 `files.max_write_bytes` 的文件。这些都在 `prepare` 里
-  拦下，不会等用户确认之后才失败。
-- `prepare` 里算好新内容和 `unified_diff`，放进意图的 diff 预览；`execute` 只负责写。
+  被截断读取的文件（写回会丢掉后面的内容）；编辑后超过 `files.max_write_bytes` 的文件。这些在授权后的
+  `prepare_preview` 中拦下，不会进入写入审批或执行。
+- `prepare_preview` 算好新内容和 `unified_diff`，放进意图的 diff 预览；`execute` 消费写授权并完成原子替换。
 - 成功后给模型：`已编辑 path（+a −b）`，加上每处改动前后各 4 行（带行号），多处时总量按预算截断并说明
   另有几处未展示。
 - display：`FileChangeView`（`created = false`）。
@@ -139,22 +133,25 @@ dangerous / known_readonly 仍由 exec 的原分析函数计算，核心不重�
 
 参数：`path`，`content`。
 
-- 文件已存在：同 edit，必须先 read、做 stale 检查，保留原文件的 eol 和 BOM；二进制文件拒绝覆盖。
+- 文件已存在：同 edit，必须先 read、做 stale 检查，授权读取预览后保留原文件的 eol 和 BOM；二进制、截断或损坏文本拒绝覆盖。
   文件不存在：直接创建（父目录自动建），LF、无 BOM。`content` 先统一成 LF。
+- 新建文件以 `RENAME_NOREPLACE` 提交，拒绝覆盖准备后抢先创建的同名文件。
 - 超过 `files.max_write_bytes` → `is_error`（在 prepare 里判断）。
-- 给模型：`已创建 path（N 行）` / `已覆盖 path（+a −b）`，不回显内容。
+- 给模型：`Created path.` / `Overwrote path.`，不回显内容；增删统计保存在 View。
 - display：`FileChangeView`。
 
 ### bash
 
-参数：`command`，`timeout_ms`（可选，上限 `bash_max_timeout`，不给时用 `process.default_timeout`）。
+参数：`command`，`timeout_ms`（可选，上限 `bash_max_timeout`，不给时用 `process.default_timeout`），
+`environment`（默认 `managed`，可选已准备的依赖环境或 `project`，不暴露 `internal/*`）。
 
 - 执行 `bash -c <command>`，cwd 是 `ctx.root()`，stderr 合并进 stdout，stdin 接 `/dev/null`，
   `LC_ALL=C.UTF-8`（报错文本不随系统 locale 变化，同时 `ls` 不会把中文文件名转义成八进制）。
 - **每次调用都是新进程**：`cd`、`export` 不保留。说明里告诉模型需要换目录就写 `cd dir && …`；后台常驻进程
   （`server &`）会在主进程退出后被清理，说明里写明不支持。
-- **沙箱**：Grant 的 profile 不是 `full_access` 时把其明确读写范围、受保护路径、通信开关与私有临时空间要求
-  原样交给 `exec::prepare`；准备失败时命令不执行，返回 `is_error`，没有 full_access 回退。
+- **沙箱**：受限 grant 的读写范围、受保护路径、网络目标和私有临时空间交给 `exec::run_srt`；
+  full_access 明确使用宿主 `exec::run`。受限启动失败返回 `is_error`，没有隐式宿主回退。
+  运行中的网络请求通过 grant 的权限通道回到 Dispatcher，获批后原命令继续；最终 `BashView.network_targets` 保存实际获准目标。
 - **意图**：prepare 只调用一次 `exec::analyze`，完整 `Analysis` 留在 PreparedTool 内供执行复用，向核心公开
   `CommandIntent` 摘要（含 known_readonly / dangerous）；策略与审批只看摘要。语法错误在 prepare 返回带字节位置的未执行错误。
 - **给模型的文本**：`strip_ansi` → `to_valid_utf8` → `truncate_middle`，正文预算是 `max_result_bytes` 减去
@@ -173,6 +170,7 @@ dangerous / known_readonly 仍由 exec 的原分析函数计算，核心不重�
 `files_only`。
 
 - 调 `workspace::grep`，`max_matches = grep_max_matches`；`path` 不存在时在 prepare 里报错。
+- 执行前消费读授权并将其范围交给只读 SRT；返回内容按可读范围过滤。批准目录不等于批准其中的敏感文件。
 - 输出沿用 rg 默认格式，模型最熟悉：匹配行 `path:line:text`，上下文行 `path-line-text`，不连续的组之间用
   `--` 分隔；`files_only` 时每行一个路径。路径都**相对工作区根**，模型可以直接拿去 read。没有匹配时输出
   `（无匹配）`；截断时补一行 `[结果已截断，请缩小范围]`。
@@ -184,6 +182,7 @@ dangerous / known_readonly 仍由 exec 的原分析函数计算，核心不重�
 参数：`pattern`，`path`（目录，默认工作区根）。
 
 - 调 `workspace::files`，`sort_by_mtime = true`，`max_files = glob_max_files`；每行一个路径，相对工作区根。
+- 使用获准的只读 SRT 范围，并过滤受保护路径；SRT 不可用时返回错误，不回退宿主搜索。
 - rg 的 `--glob` 是 **gitignore 语义**，不是 shell glob：`*.cpp` 匹配任意深度。说明里写清楚了，并给出
   `src/**/*.hpp` 这样的例子。被 `.gitignore` 忽略的文件和隐藏文件不列出。
 - `path` 不存在或不是目录时在 prepare 里报错（文件请用 read）。
@@ -191,7 +190,7 @@ dangerous / known_readonly 仍由 exec 的原分析函数计算，核心不重�
 
 ### todo / ask / exit_plan / task
 
-这四个名字仍出现在模型的工具列表里（顺序 read、write、edit、bash、grep、glob、todo、ask、exit_plan，主会话再加 task），
+这四个名字仍出现在模型的工具列表里（顺序 read、write、edit、bash、grep、glob、todo、ask、exit_plan，主会话再按配置加 task；有技能时再加 skill），
 但它们是核心控制动作，不在工具层注册。Schema、说明、给模型的文本与 View（TodoView / AskView / TaskView）保持原样；
 解析与执行规则见 [agent §7](agent.md#控制动作askexit_plantodotask) 与 [agent §12](agent.md#12-子-agent-与-task)。
 
@@ -235,12 +234,14 @@ dangerous / known_readonly 仍由 exec 的原分析函数计算，核心不重�
 | `McpView` | `server`、`tool`、`content`、`structured`、`disconnected` |
 | `TodoView` | `items` 整份列表；`TodoItem` 含 `text` 与四态 `state` |
 | `TaskView` | `agent`、`task`、`session_id`（父到子的跳转锚点）、`result`、`steps`（`TaskStep`：`summary`、`is_error`）、`model_calls`、`tool_calls`、`seconds`、`interrupted` |
+| `AskView` | 问题、选项、选择和自由文本，供人工问答回放 |
+| `SkillView` | `name`、`path`，记录本轮技能激活，不保存技能正文 |
 
-- `View = std::variant<std::monostate, ReadView, FileChangeView, BashView, GrepView, GlobView, McpView, TodoView, AskView, TaskView>`；
+- `View = std::variant<std::monostate, ReadView, FileChangeView, BashView, GrepView, GlobView, McpView, TodoView, AskView, TaskView, SkillView>`；
   `monostate` 表示 prepare 阶段就失败的调用（参数错误等），界面只显示文本。前端不链接核心，
   由 `ui/projection` 把协议里的 View JSON 解码成自己的投影类型，未知 kind 按文本回退。
 - `agent::to_json(view)` 输出 `{"kind": ..., 各字段}`，写进 tool 记录的 `view`，协议也原样传给前端；`kind` 为 `read`、`change`、
-  `bash`、`grep`、`glob`、`mcp`、`todo`、`ask`、`task`，`monostate` 使用显式 `kind: null`。
+  `bash`、`grep`、`glob`、`mcp`、`todo`、`ask`、`task`、`skill`，`monostate` 使用显式 `kind: null`。
 - `view_from_json` 严格读取当前完整字段；未知 `kind`、缺失字段、非法字段类型或损坏条目均报错。
   不为旧会话补默认字段，也不把损坏展示数据转换成 `monostate`。
 
@@ -264,7 +265,6 @@ dangerous / known_readonly 仍由 exec 的原分析函数计算，核心不重�
 - 没有多处编辑（`edits` 数组）、后台 shell、web_fetch、图片读取（编解码器还只支持文本）。
 - edit 只做精确匹配，失败时给提示，不做模糊回退。
 - bash 每次都是新进程，不保留 cwd。以后如果要保留，要先考虑和并行执行的冲突。
-- write 新建文件时不检查 prepare 之后是否有别人抢先创建了同名文件。
 
 ---
 
@@ -274,5 +274,5 @@ dangerous / known_readonly 仍由 exec 的原分析函数计算，核心不重�
   `read_default_lines`（2000）、`read_max_line_bytes`（2000）、`grep_max_matches`（200）、`glob_max_files`（200）、
   `bash_max_timeout_ms`（600000）、`mcp_call_timeout_ms`（120000），由 app 映射。文件读写上限沿用 `files` 段：
   `max_read_bytes` 是 read 能翻页的最大文件（8 MiB），`max_write_bytes` 是写入上限（1 MiB）。
-- 需要模型的真实功能检测使用当前开发配置的本地 Qwen3.8-Flash-Next，支持工具调用；接入方式见
-  [文档索引](../README.md)。临时检测材料只放在 `temp/`。
+- 需要模型的真实功能检测应确认所选服务可访问且支持工具调用；历史使用过的模型不代表当前服务已启动。
+  接入方式见 [使用指南](../guide/usage.md)，已有验收见 [历史记录](../archive/README.md)。临时检测材料只放在 `temp/`。

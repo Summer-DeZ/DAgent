@@ -23,7 +23,7 @@
 | `Transcript` | 协议事件与历史条目到 Document 块的投影：`apply_live` 处理实时事件，`append_history` 回放历史且不触发当前 Run 收尾 |
 | `PromptBox`、`PromptInput` | 自动折行、按行数增高的多行输入；左侧竖条与框内尾行；发送、排队和取回 |
 | `StatusLine` | 底部一行：项目路径、上下文用量与命令面板提示 |
-| `Completion` | `/` 命令和 `@` 文件的贴输入框补全浮层 |
+| `Completion` | `/` 命令、`@` 文件和 `$` 技能的贴输入框补全浮层 |
 | `Panel` | 命令、会话、主题和帮助共用的居中列表浮层 |
 | `ToastStack` | 右上角最多三条、五秒到期的瞬时通知 |
 | `SidePanel` | 右侧常驻信息栏：会话标题、上下文用量、MCP、最近一份 `TodoView`、项目与版本 |
@@ -38,7 +38,7 @@ LayerStack
    │  │  ├─ Center(Scrollback)          flex 1，内容栏最大 88 列
    │  │  ├─ Center(Activity)            content，空闲高度 0
    │  │  ├─ Center(QueueLabel)          content，最多 3 行
-   │  │  └─ Center(PromptBox)           content，1–8 行正文 + 1 行尾行
+   │  │  └─ Center(PromptBox)           content，1–8 行正文 + 3 行留白与尾行
    │  └─ SidePanel                      content，26/30 列或宽 0
    └─ StatusLine                        fixed 1，铺满终端
 浮层：Completion、Panel、ApprovalDialog、ToastStack
@@ -59,7 +59,7 @@ LayerStack
 `dark` 和 `light`。默认文件为 `home/themes/dagent.json`，启动时加载，不扫描同目录的其他文件。
 
 Shell 的所有主题变更都经过 `apply_theme()`：复制令牌、递增 `epoch`，再依次刷新 Scrollback、Activity、
-排队行、PromptBox、HintLine、StatusLine、TodoPanel、ToastStack、Panel、ApprovalDialog 和 Completion。
+排队行、PromptBox、StatusLine、SidePanel、ToastStack、Panel、模型表单、ApprovalDialog 和 Completion。
 `/theme` 面板只提供 `dark`、`light`、`follow terminal`：均使用当前配置文件的明暗配色，无文件时才使用
 应用层后备色。启动默认跟随终端；打开时选中已确认模式，不触发预览。移动选择使用已加载令牌即时预览，
 Enter 保留，Esc / Ctrl+C 恢复已确认模式。预览期间暂停终端背景驱动的切换；退出预览后，跟随模式仍会
@@ -71,7 +71,7 @@ panel 背景，不在底纹上打孔；底部状态栏沿用主背景。切换�
 进行中与自动编辑 `accent`，工具完成/失败分别用 `success`/`error`，上下文阈值和重试用 `warning`。
 用户消息、输入框和选中行用 `background_element`；侧栏和浮层用 `background_panel`。
 
-默认配色依据本机 OpenCode 1.18.31 当前使用的 `orng` 主题，采用中性黑灰/暖白底色和橙色强调。
+默认配色依据 2026-09-20 调研时 OpenCode 1.18.31 的 `orng` 主题，采用中性黑灰/暖白底色和橙色强调。
 来源、语义映射和适配取舍见 [OpenCode 主题分析](opencode-theme.md)。256 色终端按 xterm 实际色阶比较
 色立方与灰阶的距离，保留深色背景层次，并正确处理纯黑、纯白；真彩终端直接输出 RGB。
 
@@ -138,6 +138,9 @@ PromptBox 左侧是一根竖条（忙碌时换成 `primary`），底纹用 `back
 | `/compact` | Compact context（手动压缩，可取消） |
 | `/sessions` | Switch session（异步列出并恢复当前 cwd 的会话） |
 | `/agents` | Switch agent view（列出主会话与全部 task；恢复出来的子会话在选中时才回放） |
+| `/model` | 选择或添加模型；仅空闲时可用 |
+| `/permissions` | 查看当前会话授权，Enter 撤销；运行中也可用 |
+| `/skills` | 浏览技能和发现诊断，选择后插入 `$name` |
 | `/plan` | 进入或退出只读规划模式；新会话不继承 plan |
 | `/theme` | Switch theme（即时预览并切换） |
 | `/help` | Keys and commands（打开只读帮助） |
@@ -159,7 +162,7 @@ PromptBox 左侧是一根竖条（忙碌时换成 `primary`），底纹用 `back
 | `ToolOutput` | 追加到对应开放主体，并行调用不会串卡 |
 | `ToolFinished` | 用结构化 View 定稿名称、参数、右对齐统计和主体 |
 | `Compacted` | 永久的压缩前后 token 系统块 |
-| `Notice(error)` | 永久 error 块；info/warn 只进 toast |
+| `Notice` | error 留永久块；`persistent=true` 的审批审计留正文；其它 info/warn 进 toast |
 | 带 parent_session_id 的事件 | 按 model_call_id 归位：在对应 task 块正文追加子 Agent 的工具行，同时把事件喂给该子会话的 Pane |
 | `TurnEnded` | interrupted/denied/limit/failed 留系统块；done 追加 `▣ 模式 · 模型 · 耗时` 尾行 |
 
@@ -198,7 +201,7 @@ Panel 由标题、可选内存过滤、三列列表和底部提示组成，最�
 Enter 执行，Esc 关闭。会话列表和文件候选的 I/O 不发生在渲染线程。
 
 ToastStack 是单一右上角 overlay，内部维护最多三条通知，新通知在上；info/warn/error 分别使用 `·`/`⚠`/`✗`。
-错误 Event 已永久进入 Transcript，因此不重复弹 error toast。权限对话框保留 y/a/w/n/e/Esc/Ctrl+C 语义，
+错误 Event 已永久进入 Transcript，因此不重复弹 error toast。权限对话框使用 y/a/n/e/Esc/Ctrl+C，
 使用 active 圆角边框、`Approval needed` 标题、英文 reason 与 session rule、可滚动预览和横排选项。
 长意图和 session rule 放在可折行的预览区，预览与输入不占用边框列。
 审批预览同时显示实际 cwd、模式和每项增量权限原因；敏感/受保护请求不显示 session 选项。
@@ -209,6 +212,10 @@ host access 附完整宿主边界说明，一次性请求说明不能会话允�
 权限与问题浮层互斥。子 Agent 发起的审批在标题里追加 `· via task · <agent>`，与主 Agent 自己的请求区分。
 unrestricted 的输入/消息尾行使用 error 色，plan 使用 accent 色。长计划条目与通知按显示列宽截断。
 `/permissions` 复用 Panel 显示当前内存授权，Enter 撤销所选规则；空列表只显示不可选提示。
+
+符合条件的子权限请求由父模型审阅，显示 `Reviewing subagent permission`，不打开人工模态框。
+决定以持久 Notice 保留来源、范围与理由；历史 `permission/parent_review` 投影为相同的审计提示。
+路由条件、失败和降权行为见 [权限指南](../guide/permissions.md)。
 
 ## 7. 退出与错误
 
