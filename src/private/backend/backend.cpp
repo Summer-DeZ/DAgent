@@ -88,6 +88,7 @@ nlohmann::json approval_payload(const agent::Approval& approval) {
     case agent::ToolKind::read:
         for (const auto& path : approval.intent.paths) preview += path.path.string() + '\n';
         break;
+    case agent::ToolKind::network: preview = approval.intent.summary; break;
     case agent::ToolKind::external: preview_kind = "code"; break;
     }
     nlohmann::json requests = nlohmann::json::array();

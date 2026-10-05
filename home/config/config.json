@@ -96,5 +96,16 @@
       "review_timeout_ms": 60000,
       "failure": "deny_with_feedback"
     }
+  },
+  "web": {
+    "timeout_ms": 120000,
+    "startup_timeout_ms": 30000,
+    "max_body_bytes": 2097152,
+    "cache_bytes": 16777216,
+    "engines": [
+      "yahoo",
+      "brave",
+      "duckduckgo"
+    ]
   }
 }

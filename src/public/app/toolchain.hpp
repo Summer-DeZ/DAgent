@@ -16,6 +16,7 @@ public:
     nlohmann::json sync();
     nlohmann::json status() const;
     std::map<std::string, exec::Environment> environments() const;
+    std::filesystem::path environment_root(std::string_view name) const;
     std::filesystem::path program(std::string_view name) const;
 
 private:

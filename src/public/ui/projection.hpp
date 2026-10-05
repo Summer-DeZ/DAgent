@@ -64,6 +64,14 @@ struct GlobView {
     std::vector<std::string> files;
 };
 
+struct WebView {
+    std::string operation, query, url, title, output;
+    int status = 0;
+    std::size_t offset = 0, next_offset = 0, total_bytes = 0;
+    bool cached = false, truncated = false;
+    std::int64_t elapsed_ms = 0;
+};
+
 struct McpView {
     std::string server, tool;
     std::vector<nlohmann::json> content;
@@ -97,7 +105,7 @@ struct SkillView { std::string name, path; };
 
 using TodoList = std::vector<TodoItem>;
 using ToolView = std::variant<std::monostate, ReadView, FileChangeView, BashView, GrepView, GlobView,
-                              McpView, TodoList, AskView, TaskView, SkillView>;
+                              McpView, WebView, TodoList, AskView, TaskView, SkillView>;
 
 struct ToolFinished {
     std::string id, name, summary, text;

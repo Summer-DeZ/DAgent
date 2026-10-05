@@ -4,7 +4,7 @@
 把结果整理成两份——**给模型的文本**和**给界面与会话的结构化数据（View）**。头文件在 `src/public/tools/`，
 实现在 `src/private/tools/`，构建为静态库 `tools`（不带 `dagent_` 前缀），命名空间 `dagent::tools`。
 依赖 agent（只用中立契约：`ToolSpec`、`PreparedTool`、`PreparedIntent`、`ExecutionGrant`、`ToolResult`、`ToolSession`）、
-base、exec、workspace、mcp。核心不依赖 tools：后端装配把 `tools::ToolSession` 作为核心端口的实现交给 Session。
+base、exec、workspace、mcp、web。核心不依赖 tools：后端装配把 `tools::ToolSession` 作为核心端口的实现交给 Session。
 
 分工的判断标准和外围相反：这里放「面向模型的语义」。read 要不要带行号、edit 怎样匹配、bash 的输出怎样
 呈现给模型，都在这一层；「执行一条命令、截断输出」仍然在 exec。
@@ -53,10 +53,10 @@ edit 和覆盖已有文件的 write 通过 `preview_request()` 声明读取需�
 | --- | --- |
 | `Options` | `config.json` 的 `tools` 段：给模型的文本上限、read 默认行数与单行上限、grep/glob 数量上限、bash 最长超时、MCP 调用超时 |
 | `Spec` = `agent::ToolSpec` | 名字、说明、参数 JSON Schema；工具层与核心共用同一个类型，不再往返复制 |
-| `agent::PreparedIntent` | 工具打算做什么：`ToolKind`（read / write / exec / external）、`ResourceIntent`（规范化路径、读写方向、工作区内外）、bash 的 `CommandIntent`（原命令、分析版本、语法状态、dynamic、known_readonly、dangerous、路径/网络影响）、diff 预览和摘要 |
+| `agent::PreparedIntent` | 工具打算做什么：`ToolKind`（read / write / exec / external / network）、`ResourceIntent`（规范化路径、读写方向、工作区内外）、bash 的 `CommandIntent`（原命令、分析版本、语法状态、dynamic、known_readonly、dangerous、路径/网络影响）、diff 预览和摘要 |
 | `Grant` = `agent::ExecutionGrant` | 核心的决定：沙箱 profile、backend、来源、读写/保护范围、通信开关与私有临时空间 |
 | `Result` = `agent::ToolResult` | `model_text` 给模型、`is_error`、`interrupted`、`display`（View）、`signals`（如 `McpDisconnected`） |
-| `Context` | 会话级状态，每个会话一个，所有调用共用，线程安全；持有工作区根、各模块的 Options 和 FileTracker |
+| `Context` | 会话级状态，每个会话一个，所有调用共用，线程安全；持有工作区根、各模块的 Options、FileTracker 和按字节预算淘汰的网页缓存 |
 | `Registry` | 名字 → 工具；`specs()` 按注册顺序返回，`retain(names)` 收窄（子 Agent 工具集），`remove_prefix` 移除失效的 MCP 工具 |
 | `ToolSession` | 核心 `agent::ToolSession` 端口的实现：Registry + Context |
 
@@ -188,6 +188,25 @@ dangerous / known_readonly 仍由 exec 的原分析函数计算，核心不重�
 - `path` 不存在或不是目录时在 prepare 里报错（文件请用 read）。
 - display：`GlobView`。
 
+### web_search / web_fetch
+
+两个工具使用 `ToolKind::network`，只允许串行执行。Policy 先确认只读 SRT 可用，实际连接（包括每一跳重定向）
+通过 Dispatcher 的运行中网络闸门授权。bash 和 web 共同调用 `tools::detail::sandbox_request`，只有这一处 Grant→SRT 映射。
+即使 unrestricted 也不把网页请求改成宿主 curl；SRT 不可用时策略拒绝两个工具。
+
+| 工具 | 参数 | 结果 |
+| --- | --- | --- |
+| `web_search` | 必填 `query`；`limit` 默认 8，范围 1–20 | 标题、URL、摘要；单独报告失败的搜索引擎 |
+| `web_fetch` | 必填 http/https `url`；`offset` 默认 0；`limit` 默认 16000，范围 4–1000000 | HTML 转 Markdown、文本/JSON 解码到 UTF-8；最终 URL、HTTP 状态、分页与截断信息 |
+
+分页使用 UTF-8 **字节**偏移，下一页传结果中的 `next_offset`。`Context` 按规范化原 URL 缓存转换后的页面，
+命中不联网；缺失缓存的非零 offset 要求重新获取第一页。输出仍受 `tools.max_result_bytes` 限制。
+缓存仅在当前会话内有效，按 `web.cache_bytes` 的预算淘汰最久未使用的页面。
+搜索协议、字符集与 HTML 处理在 [dagent_web](web.md)，模型文案、不可信内容约定和分页在 tools。
+
+结果使用 `WebView`，保存搜索词/URL、标题、状态、偏移、缓存命中、截断、实际网络目标和耗时。
+视图经过记录编码、历史回放和 UI 投影，搜索/抓取卡片可展开查看内容。
+
 ### todo / ask / exit_plan / task
 
 这四个名字仍出现在模型的工具列表里（顺序 read、write、edit、bash、grep、glob、todo、ask、exit_plan，主会话再按配置加 task；有技能时再加 skill），
@@ -226,6 +245,7 @@ dangerous / known_readonly 仍由 exec 的原分析函数计算，核心不重�
 
 | View | 字段 |
 | --- | --- |
+| `WebView` | 搜索/抓取类型、query/url/title、正文、状态、offset/next_offset/total_bytes、缓存/截断、实际网络目标和耗时 |
 | `ReadView` | `path`、`start_line`、`end_line`、`total_lines`、`truncated`、`directory` |
 | `FileChangeView` | `path`、`diff`（unified diff 文本）、`added`、`removed`、`created`；edit 和 write 共用 |
 | `BashView` | `command`、`output`、退出状态、实际 backend/profile、grant source、analysis version、读写/保护范围、敏感名称规则、network/local sockets/private tmp、`elapsed_ms` |

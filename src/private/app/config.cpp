@@ -257,7 +257,8 @@ const std::set<std::string>& known_keys() {
         "mcp.connect_timeout_ms", "mcp.probe_timeout_ms",
         "tools.max_result_bytes", "tools.bash_collect_bytes", "tools.read_default_lines", "tools.read_max_line_bytes",
         "tools.grep_max_matches", "tools.glob_max_files", "tools.bash_max_timeout_ms",
-        "tools.mcp_call_timeout_ms"};
+        "tools.mcp_call_timeout_ms", "web.timeout_ms", "web.startup_timeout_ms",
+        "web.max_body_bytes", "web.cache_bytes", "web.engines"};
     return keys;
 }
 
@@ -266,7 +267,7 @@ bool known_key(std::string_view key) {
     constexpr std::string_view prefixes[] = {"session.redact_fields", "process.env_deny",
                                               "sandbox.extra_readable", "sandbox.extra_writable",
                                               "sandbox.allowed_targets", "sandbox.denied_targets",
-                                              "mcp.mcpServers"};
+                                              "mcp.mcpServers", "web.engines"};
     return std::ranges::any_of(prefixes, [&](std::string_view prefix) {
         return key == prefix || (key.starts_with(prefix) && key.size() > prefix.size() &&
                                  key[prefix.size()] == '.');
@@ -482,6 +483,22 @@ tools::Options map_tools(const Node& n) {
     o.bash_max_timeout = std::chrono::milliseconds(count_option(n, "bash_max_timeout_ms", 1));
     o.mcp_call_timeout = std::chrono::milliseconds(count_option(n, "mcp_call_timeout_ms", 1));
     return o;
+}
+
+web::Options map_web(const Node& n) {
+    web::Options out;
+    out.timeout = std::chrono::milliseconds(n.child("timeout_ms").integer(120000));
+    out.startup_timeout = std::chrono::milliseconds(n.child("startup_timeout_ms").integer(30000));
+    out.max_body_bytes = n.child("max_body_bytes").usize(2 << 20);
+    out.cache_bytes = n.child("cache_bytes").usize(16 << 20);
+    if (n.child("engines").has()) out.engines = n.child("engines").strings();
+    if (out.timeout.count() <= 0 || out.startup_timeout.count() <= 0 || !out.max_body_bytes ||
+        out.max_body_bytes > (64 << 20) || out.cache_bytes < out.max_body_bytes || out.engines.empty())
+        fail(ConfigError::Kind::invalid, "web requires positive timeouts, max_body_bytes <= 64 MiB, cache_bytes >= max_body_bytes and nonempty engines");
+    const auto curl = exec::which("curl");
+    if (!curl) fail(ConfigError::Kind::invalid, "web tools require the host curl executable");
+    out.curl = *curl;
+    return out;
 }
 
 bool blank(std::string_view text) {
@@ -754,6 +771,7 @@ Config load_config(const LoadOptions& options) {
     config.mcp.http = config.http;
     config.mcp.process = config.process;
     config.tools = map_tools(node.required("tools"));
+    config.tools.web = map_web(node.child("web"));
     config.agent.context = map_context(node.required("context"));
     config.agent.run = map_run(node.required("run"));
     const auto approval = node.child("subagents").child("approval");
@@ -779,6 +797,7 @@ Config load_config(const LoadOptions& options) {
     config.mcp_servers = parse_mcp_servers(node.required("mcp").raw());
     Toolchain toolchain(paths);
     config.tools.environments = toolchain.environments();
+    config.searxng_environment = toolchain.environment_root("internal/searxng");
     // internal/* 是执行后端自用的环境（如 internal/sandbox），不作为模型可选的 Bash/MCP 环境。
     std::erase_if(config.tools.environments, [](const auto& item) { return item.first.starts_with("internal/"); });
     config.process.environment = config.tools.environments.at("managed").variables;

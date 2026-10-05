@@ -62,12 +62,19 @@ std::vector<std::size_t> find_all(std::string_view content, std::string_view nee
 /// @brief position 前的换行数 + 1：1 开始的行号。
 std::size_t line_at(std::string_view content, std::size_t position);
 
+/// Single authorization-to-SRT mapping for bash and web tools.
+exec::SrtRequest sandbox_request(const Grant&, const exec::SrtRuntime&,
+    const std::filesystem::path& workspace, const std::filesystem::path& state_root,
+    const exec::SandboxOptions&);
+
 // ---------------------------------------------------------------- 各工具的工厂（registry.cpp 用）
 
 std::unique_ptr<Tool> make_read_tool();
 std::unique_ptr<Tool> make_write_tool();
 std::unique_ptr<Tool> make_edit_tool();
 std::unique_ptr<Tool> make_bash_tool();
+std::unique_ptr<Tool> make_web_search_tool();
+std::unique_ptr<Tool> make_web_fetch_tool();
 std::unique_ptr<Tool> make_grep_tool();
 std::unique_ptr<Tool> make_glob_tool();
 std::unique_ptr<Tool> make_mcp_tool(std::shared_ptr<mcp::Client> client, const mcp::Tool& tool);

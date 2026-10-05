@@ -339,6 +339,14 @@ void Transcript::finished(const ToolFinished& event) {
             for (const auto& file : v.files) body += file + '\n';
             rows = 5;
         },
+        [&](const WebView& v) {
+            name = v.operation == "search" ? "Web search" : "Web fetch";
+            param = clean_field(v.operation == "search" ? v.query : v.url);
+            stat = std::format("HTTP {} · {:.1f}s{}{}", v.status, v.elapsed_ms / 1000.0,
+                v.cached ? " · cached" : "", v.truncated ? " · truncated" : "");
+            if (v.operation == "fetch") stat += std::format(" · {}–{}/{} bytes", v.offset, v.next_offset, v.total_bytes);
+            body = v.output; rows = 8;
+        },
         [&](const McpView& v) {
             name = v.server + "." + v.tool; param.clear();
             for (const auto& content : v.content) {

@@ -53,6 +53,8 @@ void add_builtin(Registry& registry) {
     registry.add(detail::make_bash_tool());
     registry.add(detail::make_grep_tool());
     registry.add(detail::make_glob_tool());
+    registry.add(detail::make_web_search_tool());
+    registry.add(detail::make_web_fetch_tool());
 }
 
 ToolSession::ToolSession(const Registry& registry, Context& context)

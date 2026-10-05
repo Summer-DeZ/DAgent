@@ -186,6 +186,12 @@ ActionDispatcher::Outcome ActionDispatcher::dispatch(const std::vector<ToolCall>
                 }
             }
         }
+        if (slot.result) {
+            if (auto* web = std::get_if<WebView>(&slot.result->display)) {
+                for (const auto& target : slot.execution->network_targets())
+                    web->network_targets.push_back(target.host + ":" + std::to_string(target.port));
+            }
+        }
         std::string reason = slot.execution->termination_reason();
         if (reason.empty() && slot.execution->grant.authority_stop.stop_requested())
             reason = "parent permission authority was revoked";
@@ -199,6 +205,7 @@ ActionDispatcher::Outcome ActionDispatcher::dispatch(const std::vector<ToolCall>
             slot.result->is_error = true;
             slot.result->interrupted = false;
             if (auto* bash = std::get_if<BashView>(&slot.result->display)) bash->interrupted = false;
+            if (auto* web = std::get_if<WebView>(&slot.result->display)) web->output = text;
         }
         executions.end(slot.execution);
         slot.execution.reset();
@@ -250,7 +257,7 @@ ActionDispatcher::Outcome ActionDispatcher::dispatch(const std::vector<ToolCall>
             approval.partially_executed = true;
             approval.call_id = slot.call->id;
             approval.tool = slot.call->name;
-            approval.reason = std::format("A sandboxed command wants to connect to {}", key);
+            approval.reason = std::format("{} wants to connect to {}", slot.call->name, key);
             approval.session_rule = std::format("Allow connections to {} for this session", key);
             approval.cwd = session_.config().cwd.string();
             approval.mode = policy.planning() ? "plan" : std::string(to_string(policy.mode()));

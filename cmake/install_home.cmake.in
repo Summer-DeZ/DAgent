@@ -2,7 +2,7 @@
 set(source "@CMAKE_SOURCE_DIR@/home")
 set(destination "$ENV{DESTDIR}${CMAKE_INSTALL_PREFIX}")
 file(GLOB_RECURSE resources RELATIVE "${source}"
-    "${source}/config/*.json" "${source}/prompts/*" "${source}/agents/*"
+    "${source}/config/*.json" "${source}/config/*.lock" "${source}/prompts/*" "${source}/agents/*"
     "${source}/skills/*" "${source}/themes/*")
 foreach(resource IN LISTS resources)
     if(resource STREQUAL "config/models.json" OR resource STREQUAL "config/mcp.json")

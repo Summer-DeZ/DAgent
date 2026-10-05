@@ -23,5 +23,6 @@
 | [storage](storage.md) | SQLite 会话存储 |
 | [workspace](workspace.md) | 文件原语、搜索、diff、项目上下文 |
 | [exec](exec.md) | 子进程与沙箱 |
+| [web](web.md) | 受管网页抓取、解码和托管搜索 |
 | [net](net.md) | HTTP 客户端与 SSE 解析 |
 | [base](base.md) | 日志与公共工具 |

@@ -85,6 +85,22 @@ ToolView decode_tool_view(const json& view) {
         out.files = view.value("files", std::vector<std::string>{});
         return out;
     }
+    if (kind == "web") {
+        WebView out;
+        out.operation = view.at("operation").get<std::string>();
+        out.query = view.at("query").get<std::string>();
+        out.url = view.at("url").get<std::string>();
+        out.title = view.at("title").get<std::string>();
+        out.output = view.at("output").get<std::string>();
+        out.status = view.at("status").get<int>();
+        out.offset = view.at("offset").get<std::size_t>();
+        out.next_offset = view.at("next_offset").get<std::size_t>();
+        out.total_bytes = view.at("total_bytes").get<std::size_t>();
+        out.cached = view.at("cached").get<bool>();
+        out.truncated = view.at("truncated").get<bool>();
+        out.elapsed_ms = view.at("elapsed_ms").get<std::int64_t>();
+        return out;
+    }
     if (kind == "mcp") {
         McpView out;
         out.server = text_field(view, "server");

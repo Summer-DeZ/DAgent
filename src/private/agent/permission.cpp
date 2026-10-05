@@ -157,6 +157,7 @@ Policy::PathClass Policy::classify(const ResourceIntent& intent) const {
 
 std::optional<bool> Policy::matches_session(const Approval& approval, const PreparedIntent& intent) const {
     switch (intent.kind) {
+    case ToolKind::network: return std::nullopt;
     case ToolKind::write:
         if (session_edits_ && std::ranges::all_of(intent.paths, [&](const ResourceIntent& path) {
                 return classify(path) == PathClass::normal;
@@ -187,6 +188,7 @@ std::optional<bool> Policy::matches_session(const Approval& approval, const Prep
 bool Policy::matches_parent_session(const Approval& saved, const Approval& requested) const {
     if (saved.intent.kind != requested.intent.kind) return false;
     switch (requested.intent.kind) {
+    case ToolKind::network: return false;
     case ToolKind::write:
         return std::ranges::all_of(requested.intent.paths, [&](const ResourceIntent& path) {
             return classify(path) == PathClass::normal;
@@ -314,6 +316,19 @@ Verdict Policy::evaluate(const ToolCall& call, const PreparedIntent& intent) con
         return verdict;
     }
 
+    // Network tools always enter read-only SRT, including unrestricted mode.
+    // Destination authorization remains in the shared runtime network gate.
+    if (intent.kind == ToolKind::network) {
+        if (!sandbox_.read_only_ready) {
+            verdict.reason = "required read-only SRT capabilities are unavailable; run dagent sandbox status";
+            return verdict;
+        }
+        verdict.grant = grant_for_exec(SandboxProfile::read_only,
+            live.mode == PermissionMode::unrestricted && !live.read_only && !live.planning
+                ? GrantSource::unrestricted : GrantSource::mode);
+        return answer(Verdict::Kind::allow);
+    }
+
     if (live.planning || live.read_only) {
         if (intent.kind == ToolKind::exec && intent.command && intent.command->known_readonly) {
             if (!sandbox_.read_only_ready) {
@@ -340,6 +355,7 @@ Verdict Policy::evaluate(const ToolCall& call, const PreparedIntent& intent) con
     }
 
     switch (intent.kind) {
+    case ToolKind::network: break; // handled above
     case ToolKind::read:
         if (has(PathClass::sensitive) || has(PathClass::guarded)) {
             verdict.approval.reason = "Read protected agent data or a file that may contain secrets";
@@ -530,6 +546,7 @@ void Policy::remember_locked(const Approval& approval, const Decision& decision)
         return;
     }
     switch (approval.intent.kind) {
+    case ToolKind::network: return;
     case ToolKind::write: session_edits_ = true; return;
     case ToolKind::read:
         for (const auto& path : approval.intent.paths)
@@ -633,6 +650,9 @@ Policy::NetworkDecision Policy::check_network(const NetworkTarget& target) const
                     rule.authority == ApprovalAuthority::parent_model
                         ? "the parent agent denied this network target earlier in the session"
                         : "the user denied this network target earlier in the session"};
+    const auto live = effective();
+    if (target.infrastructure || (live.mode == PermissionMode::unrestricted && !live.read_only && !live.planning))
+        return {NetworkDecision::Kind::allow, {}};
     for (const auto& rule : parent_network_rules_)
         if (!rule.approval.authority_stop.stop_requested() && rule.target.host == target.host && rule.target.port == target.port)
             return {NetworkDecision::Kind::allow, {}};

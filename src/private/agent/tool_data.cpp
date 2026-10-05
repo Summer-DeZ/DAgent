@@ -29,6 +29,8 @@ constexpr std::string_view kTask = "task";
 } // namespace
 
 // 序列化函数放在 dagent::agent 名字空间供 ADL 查找；所有展示字段按当前格式读取。
+NLOHMANN_DEFINE_TYPE_NON_INTRUSIVE(WebView, operation, query, url, title, content_type, output, status,
+    offset, next_offset, total_bytes, cached, truncated, network_targets, elapsed_ms)
 NLOHMANN_DEFINE_TYPE_NON_INTRUSIVE(SkillView, name, path)
 NLOHMANN_DEFINE_TYPE_NON_INTRUSIVE(ReadView, path, start_line, end_line, total_lines,
                                                 truncated, directory)
@@ -121,6 +123,7 @@ json to_json(const View& view) {
                    [&](const BashView& v) { out = json{{"kind", kBash}}; out.update(json(v)); },
                    [&](const GrepView& v) { out = json{{"kind", kGrep}}; out.update(json(v)); },
                    [&](const GlobView& v) { out = json{{"kind", kGlob}}; out.update(json(v)); },
+                   [&](const WebView& v) { out = json{{"kind", "web"}}; out.update(json(v)); },
                    [&](const McpView& v) { out = json{{"kind", kMcp}}; out.update(json(v)); },
                    [&](const TodoView& v) { out = json{{"kind", kTodo}}; out.update(json(v)); },
                    [&](const AskView& v) { out = json{{"kind", kAsk}}; out.update(json(v)); },
@@ -137,6 +140,7 @@ View view_from_json(const json& data) {
         if (kind.is_null()) return {};
         const std::string name = kind.get<std::string>();
         if (name == "skill") return data.get<SkillView>();
+        if (name == "web") return data.get<WebView>();
         if (name == kRead) return data.get<ReadView>();
         if (name == kChange) return data.get<FileChangeView>();
         if (name == kBash) return data.get<BashView>();

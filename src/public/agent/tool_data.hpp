@@ -62,6 +62,16 @@ struct GlobView {
     bool truncated = false;
 };
 
+struct WebView {
+    std::string operation, query, url, title, content_type;
+    std::string output;
+    int status = 0;
+    std::size_t offset = 0, next_offset = 0, total_bytes = 0;
+    bool cached = false, truncated = false;
+    std::vector<std::string> network_targets;
+    std::int64_t elapsed_ms = 0;
+};
+
 struct McpView {
     std::string server, tool;
     std::vector<nlohmann::json> content; ///< 内容块原样保留，界面自己决定怎样显示
@@ -124,7 +134,7 @@ struct SkillView {
 
 /// monostate：prepare 阶段就失败的调用（参数错误等），界面只显示文本。
 using View = std::variant<std::monostate, ReadView, FileChangeView, BashView, GrepView, GlobView,
-                          McpView, TodoView, AskView, TaskView, SkillView>;
+                          McpView, WebView, TodoView, AskView, TaskView, SkillView>;
 
 /// @brief 执行信号：不是展示事实，而是执行层需要核心处理的事件。
 struct McpDisconnected {

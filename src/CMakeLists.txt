@@ -86,6 +86,12 @@ target_link_libraries(dagent_exec
     PRIVATE Boost::headers tree-sitter tree-sitter-bash Threads::Threads
 )
 
+# Web transport and document decoding; authorization is supplied by tools.
+add_library(dagent_web STATIC private/web/http.cpp private/web/document.cpp)
+target_include_directories(dagent_web PUBLIC ${CMAKE_SOURCE_DIR}/src/public)
+target_compile_options(dagent_web PRIVATE -Wall -Wextra)
+target_link_libraries(dagent_web PUBLIC dagent_exec PRIVATE lexbor_static)
+
 # 工作区：文件原语、ripgrep 搜索、unified diff、项目上下文（git/AGENTS.md/模板）。
 add_library(dagent_workspace STATIC
     private/workspace/files.cpp
@@ -145,6 +151,8 @@ add_library(tools STATIC
     private/tools/write.cpp
     private/tools/edit.cpp
     private/tools/bash.cpp
+    private/tools/sandbox.cpp
+    private/tools/web.cpp
     private/tools/grep.cpp
     private/tools/glob.cpp
     private/tools/mcp.cpp
@@ -155,7 +163,7 @@ target_include_directories(tools PUBLIC ${CMAKE_SOURCE_DIR}/src/public)
 target_compile_features(tools PUBLIC cxx_std_23)
 target_compile_options(tools PRIVATE -Wall -Wextra)
 target_link_libraries(tools
-    PUBLIC dagent_agent dagent_base dagent_exec dagent_workspace dagent_mcp
+    PUBLIC dagent_agent dagent_base dagent_exec dagent_workspace dagent_mcp dagent_web
 )
 
 # 前端入口层：命令行解析、安装根、前端启动与输出适配。其他模块都不依赖它。
@@ -274,6 +282,7 @@ target_link_libraries(dagent_runtime PUBLIC dagent_agent)
 add_library(dagent_app_config STATIC
     private/app/skills.cpp
     private/app/toolchain.cpp
+    private/app/searxng.cpp
     private/app/sandbox_status.cpp
     private/app/config.cpp
     private/app/bootstrap.cpp
@@ -335,3 +344,11 @@ add_custom_command(OUTPUT ${CMAKE_CURRENT_BINARY_DIR}/libexec/srt_bridge.mjs
     COMMENT "Copying SRT bridge to libexec")
 add_custom_target(dagent_bridge ALL DEPENDS ${CMAKE_CURRENT_BINARY_DIR}/libexec/srt_bridge.mjs)
 add_dependencies(dagent dagent_bridge)
+
+set(DAGENT_SEARXNG_ENTRY ${CMAKE_CURRENT_SOURCE_DIR}/private/app/searxng_server.py)
+add_custom_command(OUTPUT ${CMAKE_CURRENT_BINARY_DIR}/libexec/searxng_server.py
+    COMMAND ${CMAKE_COMMAND} -E make_directory ${CMAKE_CURRENT_BINARY_DIR}/libexec
+    COMMAND ${CMAKE_COMMAND} -E copy_if_different ${DAGENT_SEARXNG_ENTRY} ${CMAKE_CURRENT_BINARY_DIR}/libexec/searxng_server.py
+    DEPENDS ${DAGENT_SEARXNG_ENTRY})
+add_custom_target(dagent_searxng_entry ALL DEPENDS ${CMAKE_CURRENT_BINARY_DIR}/libexec/searxng_server.py)
+add_dependencies(dagent-backend dagent_bridge dagent_searxng_entry)

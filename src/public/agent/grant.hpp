@@ -32,6 +32,7 @@ struct ApprovalIdentity {
 struct NetworkTarget {
     std::string host;
     int port = 0;
+    bool infrastructure = false; ///< Exact per-backend endpoint, scoped by web_search only.
 };
 
 /// 运行中网络请求的判定结果。

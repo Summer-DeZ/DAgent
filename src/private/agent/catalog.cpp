@@ -10,7 +10,7 @@ namespace dagent::agent {
 namespace {
 
 /// 内置普通工具的固定顺序；其余普通工具（MCP 等动态追加）保持注册顺序排在控制动作之后。
-constexpr std::string_view kOrderedBuiltins[] = {"read", "write", "edit", "bash", "grep", "glob"};
+constexpr std::string_view kOrderedBuiltins[] = {"read", "write", "edit", "bash", "grep", "glob", "web_search", "web_fetch"};
 
 std::string join_names(const std::vector<ToolSpec>& specs) {
     std::string names;

@@ -17,7 +17,8 @@ runtime/
 ├── envs/
 │   ├── skills/<name>/<generation>/
 │   ├── mcp/<name>/<generation>/
-│   └── internal/sandbox/<generation>/
+│   ├── internal/sandbox/<generation>/
+│   └── internal/searxng/<generation>/
 ├── homes/<profile>/
 └── installed.json
 ```
@@ -128,3 +129,16 @@ MCP managed stdio 使用同一环境规则和 home cwd，server 的显式 `env` 
 
 上游行为依据：[uv managed Python](https://docs.astral.sh/uv/guides/install-python/)、
 [uv 环境变量](https://docs.astral.sh/uv/reference/environment/)、[Node 官方发行包](https://nodejs.org/en/download)。
+
+## 托管搜索基础设施
+
+`internal/searxng` 与 sandbox 同级，不暴露为 bash/MCP 可选环境。它使用 managed Python，依赖通过
+`config/searxng/requirements.lock` 的精确版本和 SHA-256 安装，只接受预编译 wheel。
+环境声明可包含 `source`，其中的 HTTPS `url`、`sha256` 和固定 `commit` 进入环境代际标识；源码验证后解压到环境的 `source/`。
+当前 SearXNG commit 是 `d48c4b555421e824342c51d68482dd0898e54d0f`，依赖锁从该提交的 requirements 解析。
+
+`runtime sync` 只准备文件。`app::Searxng` 在第一次搜索时启动实际服务，随机密钥和 JSON/YAML settings 写到
+`run/searxng-*/`，监听 `127.0.0.1` 的系统分配端口，以 `/healthz` 确认就绪；当前 Home 配置只选引擎，不写端口。
+各后端互不共享实例。Child 管理进程组，退出时终止服务并清理 run 目录；进程死亡后下次搜索重建。
+Python 入口监听由后端持有写端的 stdin 管道，EOF 时结束进程组，后端异常退出也结束服务。
+服务在宿主运行，网络地位与模型 API 类似；真正的工具连接仍是 SRT 内 curl → 当前托管端点。

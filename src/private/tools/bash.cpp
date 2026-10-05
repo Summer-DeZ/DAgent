@@ -69,19 +69,6 @@ private:
                                 : grant.sandbox == agent::SandboxProfile::full_access ? exec::Mode::full_access
                                                                                       : exec::Mode::workspace_write;
         const bool sandboxed = mode != exec::Mode::full_access;
-        exec::Policy policy;
-        if (sandboxed) {
-            policy.mode = mode;
-            policy.allow_network = grant.allow_network;
-            policy.allow_local_sockets = grant.allow_local_sockets;
-            policy.private_tmp = grant.private_tmp;
-            policy.protect_sensitive_names = grant.protect_sensitive_names;
-            policy.readable = grant.readable;
-            policy.writable = grant.writable;
-            policy.protected_read = grant.protected_read;
-            policy.protected_write = grant.protected_write;
-            policy.network_targets = grant.network_targets;
-        }
         if (sandboxed && (!srt_.has_value() || grant.backend != "srt"))
             return error_result("restricted execution is unavailable; run `dagent sandbox status` and fix the sandbox runtime");
 
@@ -99,30 +86,10 @@ private:
         std::string failure;
         try {
             if (sandboxed) {
-                exec::SrtRequest request;
-                request.runtime = *srt_;
-                request.workspace = root_;
-                request.state_root = sandbox_state_root_;
+                auto request = detail::sandbox_request(grant, *srt_, root_, sandbox_state_root_, sandbox_options_);
                 request.command = command_;
-                request.policy = policy;
                 request.environment = environment_.variables;
                 request.timeout = timeout_;
-                request.startup_timeout = sandbox_options_.startup_timeout;
-                request.approval_timeout = sandbox_options_.network_approval_timeout;
-                request.max_network_requests = sandbox_options_.max_network_requests_per_execution;
-                request.network_gate = [gate = grant.network_decider](std::string_view host, int port,
-                                                                      std::string& reason, std::stop_token execution_stop) {
-                    if (!gate) {
-                        reason = "runtime network approval is unavailable in this run";
-                        return exec::NetworkGateResult::deny;
-                    }
-                    switch (gate(agent::NetworkTarget{std::string(host), port}, reason, execution_stop)) {
-                    case agent::NetworkAction::allow: return exec::NetworkGateResult::allow;
-                    case agent::NetworkAction::cancel: return exec::NetworkGateResult::cancel;
-                    case agent::NetworkAction::deny: break;
-                    }
-                    return exec::NetworkGateResult::deny;
-                };
                 if (environment_name_ == "project") {
                     const char* path = std::getenv("PATH");
                     request.environment.emplace_back(

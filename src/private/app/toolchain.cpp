@@ -126,6 +126,21 @@ private:
     int fd_;
 };
 
+void unpack_archive(const json& asset, const HomePaths& paths, const fs::path& directory) {
+                const auto hash = asset.at("sha256").get<std::string>();
+                if (hash.size() != 64 || hash.find_first_not_of("0123456789abcdef") != std::string::npos)
+                    throw std::runtime_error("archive requires a lowercase SHA-256 digest");
+                const fs::path archive = paths.cache / (hash + ".archive");
+                if (!fs::exists(archive)) {
+                    const fs::path partial = archive.string() + ".part";
+                    download(asset.at("url").get<std::string>(), partial);
+                    if (digest(read(partial)) != hash) throw std::runtime_error("runtime archive checksum mismatch");
+                    fs::rename(partial, archive);
+                }
+                if (digest(read(archive)) != hash) throw std::runtime_error("cached runtime archive checksum mismatch");
+                execute({"/usr/bin/tar", "-xf", archive.string(), "--strip-components=1", "-C", directory.string()}, paths.root);
+}
+
 void replace_root(std::string& value, const fs::path& root) {
     if (value.starts_with("{root}")) value.replace(0, 6, root.string());
 }
@@ -204,6 +219,11 @@ std::map<std::string, exec::Environment> Toolchain::environments() const {
     return out;
 }
 
+fs::path Toolchain::environment_root(std::string_view name) const {
+    if (!installed_.is_object() || !installed_.at("environments").contains(std::string(name))) return {};
+    return installed_.at("environments").at(std::string(name)).at("directory").get<std::string>();
+}
+
 fs::path Toolchain::program(std::string_view name) const {
     return installed_.at("programs").at(std::string(name)).get<std::string>();
 }
@@ -232,19 +252,8 @@ json Toolchain::sync() {
             entry = {{"version", version}, {"directory", directory.string()}, {"env", json::object()}};
             if (kind == "archive") {
                 const auto& asset = package.at("assets").at(platform());
-                const auto hash = asset.at("sha256").get<std::string>();
-                if (hash.size() != 64 || hash.find_first_not_of("0123456789abcdef") != std::string::npos)
-                    throw std::runtime_error("archive requires a lowercase SHA-256 digest");
-                const fs::path archive = paths_.cache / (hash + ".archive");
-                if (!fs::exists(archive)) {
-                    const fs::path partial = archive.string() + ".part";
-                    download(asset.at("url").get<std::string>(), partial);
-                    if (digest(read(partial)) != hash) throw std::runtime_error("runtime archive checksum mismatch");
-                    fs::rename(partial, archive);
-                }
-                if (digest(read(archive)) != hash) throw std::runtime_error("cached runtime archive checksum mismatch");
-                execute({"/usr/bin/tar", "-xf", archive.string(), "--strip-components=1", "-C", directory.string()}, paths_.root);
-                entry["sha256"] = hash;
+                unpack_archive(asset, paths_, directory);
+                entry["sha256"] = asset.at("sha256");
             } else if (kind == "files") {
                 for (const auto& [relative, source] : package.at("files").items()) {
                     const auto target = within(directory, relative);
@@ -323,6 +332,10 @@ json Toolchain::sync() {
                 execute({next["programs"]["npm"].get<std::string>(), "ci", "--no-audit", "--no-fund",
                          spec.value("install_scripts", false) ? "--ignore-scripts=false" : "--ignore-scripts"}, directory, env);
             } else throw std::runtime_error("environment kind must be python or node");
+            if (spec.contains("source")) {
+                fs::create_directories(directory / "source");
+                unpack_archive(spec.at("source"), paths_, directory / "source");
+            }
             write_json(directory / ".ready.json", {{"kind", kind}});
         }
         next["environments"][name] = {{"kind", kind}, {"directory", directory.string()}};

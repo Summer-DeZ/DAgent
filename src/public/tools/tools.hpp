@@ -34,6 +34,7 @@
 #include "mcp/client.hpp"
 #include "workspace/files.hpp"
 #include "workspace/search.hpp"
+#include "web/web.hpp"
 
 namespace dagent::tools {
 
@@ -44,6 +45,8 @@ using PreparedTool = agent::PreparedTool; ///< 准备完成的普通工具（核
 
 /// @brief 工具选项，对应 config.json 的 "tools" 段。
 struct Options {
+    web::Options web;
+    std::function<std::string(std::stop_token)> search_endpoint;
     std::map<std::string, exec::Environment> environments;
     std::optional<exec::SrtRuntime> srt;             ///< SRT 后端资源；为空表示受限执行不可用
     std::filesystem::path sandbox_state_root;        ///< 每执行私有目录的父目录（SRT）
@@ -78,6 +81,9 @@ public:
     const workspace::FileOptions& files() const;
     const workspace::SearchOptions& search() const;
     const exec::Options& process() const;
+
+    std::shared_ptr<const web::Page> cached_page(std::string_view url);
+    void cache_page(std::string url, std::shared_ptr<const web::Page> page);
 
     /// FileTracker 按 resolve 之后的路径做键（./a、a、指向同一文件的符号链接算同一个文件）。
     std::optional<workspace::Stamp> tracked_stamp(const workspace::Resolved&) const;

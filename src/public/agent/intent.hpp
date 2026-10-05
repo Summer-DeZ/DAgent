@@ -13,7 +13,7 @@
 namespace dagent::agent {
 
 /// 权限与调度使用的工具调用类别。ask/exit_plan/todo/task 是控制动作，不在此枚举。
-enum class ToolKind { read, write, exec, external };
+enum class ToolKind { read, write, exec, external, network };
 
 /// 资源访问方向。
 enum class Access { read, write };

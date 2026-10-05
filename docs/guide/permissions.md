@@ -63,6 +63,20 @@ DAgent 的权限策略决定操作是否允许，SRT 负责受限进程的文件
 子任务预算耗尽时返回 `status=limit`、`is_error=true`，已有输出标为 `Partial output`。
 取消、拒绝和失败也会明确回传，不将过程文字当作成功结论。
 
+## 网页搜索与抓取
+
+`web_search` 和 `web_fetch` 在 ask、workspace、unrestricted、read_only 和 plan 下都可调用，但始终要求只读 SRT。
+ask/workspace/read_only/plan 中，新目标走已有网络审批；headless 无审批路由时明确失败。
+unrestricted 对新目标自动放行，配置 `sandbox.denied_targets` 和会话拒绝仍优先。收窄权限会终止失去授权的活跃连接。
+
+网页里批准 `docs.python.org:443` 的本会话访问后，bash 再连接它无需重复**网络**审批；ask 下命令本身仍可能需要审批。
+重定向每跳单独判定，用户拒绝后当前调用结束，同目标在本会话内直接拒绝。`/permissions` 可撤销允许或拒绝规则。
+
+搜索服务由每个后端懒启动，使用独立的动态 loopback 端口，不配置固定端口。
+这个基础设施端点仅在 web_search 当前调用内预授权，仍受配置拒绝约束。SearXNG 的上游请求在宿主运行，
+属于 harness 基础设施；外部搜索引擎不逐个进入工具沙箱审批。
+抓取和搜索结果都是不可信资料。详细配置及缓存、字符集限制见 [web](../design/web.md)。
+
 ## 排查顺序
 
 ```bash

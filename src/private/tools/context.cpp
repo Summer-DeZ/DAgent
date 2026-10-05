@@ -1,6 +1,7 @@
 #include "tools/tools.hpp"
 
 #include <map>
+#include <list>
 #include <algorithm>
 #include <mutex>
 
@@ -19,6 +20,8 @@ struct Context::Impl {
 
     // FileTracker：resolve 之后的路径 → 模型读到/写到时的 Stamp。只读调用可能被核心并行执行，加锁。
     std::mutex tracker_mutex;
+    std::list<std::pair<std::string, std::shared_ptr<const web::Page>>> pages;
+    std::size_t page_bytes = 0;
     std::map<std::string, workspace::Stamp> tracked;
 };
 
@@ -64,6 +67,29 @@ const Options& Context::options() const { return impl_->options; }
 const workspace::FileOptions& Context::files() const { return impl_->files; }
 const workspace::SearchOptions& Context::search() const { return impl_->search; }
 const exec::Options& Context::process() const { return impl_->process; }
+
+std::shared_ptr<const web::Page> Context::cached_page(std::string_view url) {
+    const std::lock_guard lock(impl_->tracker_mutex);
+    const auto it = std::ranges::find_if(impl_->pages, [&](const auto& page) { return page.first == url; });
+    if (it == impl_->pages.end()) return {};
+    impl_->pages.splice(impl_->pages.begin(), impl_->pages, it);
+    return impl_->pages.front().second;
+}
+
+void Context::cache_page(std::string url, std::shared_ptr<const web::Page> page) {
+    const std::lock_guard lock(impl_->tracker_mutex);
+    const auto size = [](const auto& entry) {
+        const auto& p = *entry.second;
+        return entry.first.size() + p.url.size() + p.title.size() + p.content_type.size() + p.text.size();
+    };
+    const auto existing = std::ranges::find_if(impl_->pages, [&](const auto& p) { return p.first == url; });
+    if (existing != impl_->pages.end()) { impl_->page_bytes -= size(*existing); impl_->pages.erase(existing); }
+    impl_->pages.emplace_front(std::move(url), std::move(page));
+    impl_->page_bytes += size(impl_->pages.front());
+    while (impl_->page_bytes > impl_->options.web.cache_bytes && !impl_->pages.empty()) {
+        impl_->page_bytes -= size(impl_->pages.back()); impl_->pages.pop_back();
+    }
+}
 
 std::optional<workspace::Stamp> Context::tracked_stamp(const workspace::Resolved& resolved) const {
     const std::lock_guard lock(impl_->tracker_mutex);

@@ -10,6 +10,7 @@ DAgent 是用 C++23 编写的终端 Agent，仅支持 Linux。前端 `dagent` �
 | 构建、安装、准备运行环境 | [构建与安装](guide/build.md) |
 | 配置模型、运行与恢复会话 | [使用指南](guide/usage.md) |
 | 权限模式、审批、沙箱故障 | [权限与沙箱](guide/permissions.md) |
+| 使用网页搜索、抓取与引擎配置 | [web 工具](design/web.md) |
 | 理解当前架构和模块契约 | [设计索引](design/README.md) |
 | 查看剩余工作与验收边界 | [后续工作](../nexttodo/README.md) |
 | 查看选型背景和未落地建议 | [调研索引](research/README.md) |

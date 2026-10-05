@@ -45,6 +45,7 @@ struct Config {
     storage::Options session;
     base::LogOptions log;
     mcp::Options mcp;
+    std::filesystem::path searxng_environment;
     tools::Options tools;
     agent::Options agent; ///< context / run / progress
     agent::PermissionMode permissions = agent::PermissionMode::workspace; ///< 启动权限档初值

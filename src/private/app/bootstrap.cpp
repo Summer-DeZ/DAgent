@@ -1,3 +1,4 @@
+#include "app/searxng.hpp"
 #include "app/bootstrap.hpp"
 
 #include <chrono>
@@ -56,6 +57,8 @@ SessionAssembly::Options session_options(const Config& config, const runtime::Bo
     std::error_code ec;
     if (std::filesystem::exists(config.project_root / ".git", ec)) out.git_root = config.project_root;
     out.tools = config.tools;
+    auto searxng = std::make_shared<Searxng>(paths, config.searxng_environment, config.tools.web, config.process);
+    out.tools.search_endpoint = [searxng](std::stop_token stop) { return searxng->endpoint(stop); };
     out.files = config.files;
     out.search = config.search;
     out.process = config.process;

@@ -95,3 +95,15 @@ FetchContent_MakeAvailable(yaml-cpp)
 
 # Runtime archive integrity.
 find_package(OpenSSL REQUIRED COMPONENTS Crypto)
+
+# HTML5 and WHATWG URL parsing for sandboxed web tools.
+set(LEXBOR_BUILD_TESTS OFF CACHE BOOL "" FORCE)
+set(LEXBOR_BUILD_EXAMPLES OFF CACHE BOOL "" FORCE)
+set(LEXBOR_BUILD_SHARED OFF CACHE BOOL "" FORCE)
+set(LEXBOR_BUILD_STATIC ON CACHE BOOL "" FORCE)
+FetchContent_Declare(lexbor
+    GIT_REPOSITORY https://github.com/lexbor/lexbor.git
+    GIT_TAG v3.0.1
+    GIT_SHALLOW TRUE
+)
+FetchContent_MakeAvailable(lexbor)
