@@ -3,6 +3,9 @@
 与远端服务通信的模块。头文件在 `src/public/net/`，实现在 `src/private/net/`，构建为静态库 `dagent_net`，
 命名空间 `dagent::net`。唯一的外部依赖是系统的 libcurl（私有链接）。
 
+本模块用于模型 API、远端 MCP 和 SearXNG 的宿主健康检查。网页工具的请求通过 [web](web.md) 在 SRT 内调用 curl，
+使用独立的传输预算和网络审批；它们不走本模块的进程内 HttpClient。
+
 本模块只负责 HTTP 和 SSE，**不包含任何模型协议**：请求体怎么组织、SSE 事件里的 JSON 怎么解释，都由调用方决定。
 
 ---

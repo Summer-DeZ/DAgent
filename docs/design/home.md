@@ -11,7 +11,8 @@ home/
 │   ├── models.json       模型与认证，0600
 │   ├── mcp.json          MCP 连接与显式环境变量，0600
 │   ├── runtime.json      工具版本、下载校验、独立依赖环境
-│   └── sandbox/          SRT package.json 与锁文件
+│   ├── sandbox/          SRT package.json 与锁文件
+│   └── searxng/          SearXNG requirements.lock
 ├── AGENTS.md             可选的全局用户指令
 ├── prompts/
 │   ├── system.md         主提示词模板
@@ -21,7 +22,7 @@ home/
 ├── themes/               UI 主题
 ├── data/dagent.db        会话；SQLite WAL/SHM 与它同目录
 ├── logs/                 按进程记录日志
-├── run/                  模型、runtime、会话写锁
+├── run/                  模型、runtime、会话写锁；searxng-*/settings.yml
 ├── runtime/              已准备的工具和依赖环境
 └── cache/packages/       可重新下载的归档与包缓存
 ```
@@ -40,8 +41,8 @@ home/
 ## 首次安装与升级
 
 安装仅补充缺失的用户资源，不覆盖已有配置、提示词、主题、Skill 或子 Agent 定义。
-二进制旁的 `libexec/srt_bridge.mjs` 随程序更新，`libexec/dagent.apparmor` 按最终安装路径重新生成；
-两者不是 Home 下的可编辑用户资源。更换后端路径后需重新部署对应 profile。
+二进制旁的 `libexec/srt_bridge.mjs`、`libexec/searxng_server.py` 随程序更新，
+`libexec/dagent.apparmor` 按最终安装路径重新生成；这些是程序资源。更换后端路径后需重新部署对应 profile。
 源码的 `models.example.json`、`mcp.example.json` 安装为对应配置文件；本机真实认证文件不参与打包。
 模型、MCP 配置必须为 0600。数据库在第一次写入会话时创建，包括其父目录。
 
@@ -56,7 +57,8 @@ dagent
 
 首次准备需要下载。普通启动不安装工具、不执行包安装脚本；缺少已准备环境时给出 `runtime sync` 提示。
 工具与依赖配置详见 [toolchain](toolchain.md)。
-受限执行还需要宿主 bubblewrap/socat 与 namespace 能力，AppArmor 部署见 [构建与安装](../guide/build.md)。
+升级旧 Home 时需合并新增 runtime 声明与对应锁文件，保留用户配置；web 升级步骤见 [构建指南](../guide/build.md#升级已有-home-的-web-资源)。
+网页请求使用宿主 curl 7.75+；受限执行还需要宿主 bubblewrap/socat 与 namespace 能力，AppArmor 部署见 [构建与安装](../guide/build.md)。
 
 ## 唯一配置布局
 

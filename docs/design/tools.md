@@ -51,7 +51,7 @@ edit 和覆盖已有文件的 write 通过 `preview_request()` 声明读取需�
 
 | 类型 | 作用 |
 | --- | --- |
-| `Options` | `config.json` 的 `tools` 段：给模型的文本上限、read 默认行数与单行上限、grep/glob 数量上限、bash 最长超时、MCP 调用超时 |
+| `Options` | `config.json` 的 `tools` / `web` 段及装配注入的运行时：给模型的文本上限、read 默认行数与单行上限、grep/glob 数量上限、bash 最长超时、MCP 调用超时 |
 | `Spec` = `agent::ToolSpec` | 名字、说明、参数 JSON Schema；工具层与核心共用同一个类型，不再往返复制 |
 | `agent::PreparedIntent` | 工具打算做什么：`ToolKind`（read / write / exec / external / network）、`ResourceIntent`（规范化路径、读写方向、工作区内外）、bash 的 `CommandIntent`（原命令、分析版本、语法状态、dynamic、known_readonly、dangerous、路径/网络影响）、diff 预览和摘要 |
 | `Grant` = `agent::ExecutionGrant` | 核心的决定：沙箱 profile、backend、来源、读写/保护范围、通信开关与私有临时空间 |
@@ -190,6 +190,8 @@ dangerous / known_readonly 仍由 exec 的原分析函数计算，核心不重�
 
 ### web_search / web_fetch
 
+用户操作与排障见 [网页指南](../guide/web.md)。
+
 两个工具使用 `ToolKind::network`，只允许串行执行。Policy 先确认只读 SRT 可用，实际连接（包括每一跳重定向）
 通过 Dispatcher 的运行中网络闸门授权。bash 和 web 共同调用 `tools::detail::sandbox_request`，只有这一处 Grant→SRT 映射。
 即使 unrestricted 也不把网页请求改成宿主 curl；SRT 不可用时策略拒绝两个工具。
@@ -209,7 +211,7 @@ dangerous / known_readonly 仍由 exec 的原分析函数计算，核心不重�
 
 ### todo / ask / exit_plan / task
 
-这四个名字仍出现在模型的工具列表里（顺序 read、write、edit、bash、grep、glob、todo、ask、exit_plan，主会话再按配置加 task；有技能时再加 skill），
+这四个名字仍出现在模型的工具列表里（顺序 read、write、edit、bash、grep、glob、web_search、web_fetch、todo、ask、exit_plan，主会话再按配置加 task；有技能时再加 skill），
 但它们是核心控制动作，不在工具层注册。Schema、说明、给模型的文本与 View（TodoView / AskView / TaskView）保持原样；
 解析与执行规则见 [agent §7](agent.md#控制动作askexit_plantodotask) 与 [agent §12](agent.md#12-子-agent-与-task)。
 
@@ -257,7 +259,7 @@ dangerous / known_readonly 仍由 exec 的原分析函数计算，核心不重�
 | `AskView` | 问题、选项、选择和自由文本，供人工问答回放 |
 | `SkillView` | `name`、`path`，记录本轮技能激活，不保存技能正文 |
 
-- `View = std::variant<std::monostate, ReadView, FileChangeView, BashView, GrepView, GlobView, McpView, TodoView, AskView, TaskView, SkillView>`；
+- `View = std::variant<std::monostate, ReadView, FileChangeView, BashView, GrepView, GlobView, McpView, WebView, TodoView, AskView, TaskView, SkillView>`；
   `monostate` 表示 prepare 阶段就失败的调用（参数错误等），界面只显示文本。前端不链接核心，
   由 `ui/projection` 把协议里的 View JSON 解码成自己的投影类型，未知 kind 按文本回退。
 - `agent::to_json(view)` 输出 `{"kind": ..., 各字段}`，写进 tool 记录的 `view`，协议也原样传给前端；`kind` 为 `read`、`change`、
@@ -273,7 +275,7 @@ dangerous / known_readonly 仍由 exec 的原分析函数计算，核心不重�
 
 - **每个 tool_call 都要有一条 tool 消息**，包括未知工具、参数错误、用户拒绝、被取消的调用；否则 OpenAI
   协议下一次请求直接 400。顺序与 `tool_calls` 一致。
-- 可以并行的只有 read 意图和获准 `read_only` 沙箱的 bash；write、edit、MCP 串行，`task` 单独成组并发。
+- 可以并行的只有 read 意图和获准 `read_only` 沙箱的 bash；write、edit、web_search/web_fetch、MCP 串行，`task` 单独成组并发。
 - FileTracker 跟着会话走；恢复会话时不重建，模型需要重新 read 才能编辑——宁可多读一次，也不能拿旧 Stamp
   覆盖别人的改动。
 - read 可以读到 `.env` 这类文件，内容会发给模型。是否拦截由核心的权限策略决定（意图里有路径）。
@@ -282,7 +284,7 @@ dangerous / known_readonly 仍由 exec 的原分析函数计算，核心不重�
 
 ## 6. 已知限制
 
-- 没有多处编辑（`edits` 数组）、后台 shell、web_fetch、图片读取（编解码器还只支持文本）。
+- 没有多处编辑（`edits` 数组）、后台 shell、浏览器渲染、PDF/图片读取（编解码器还只支持文本）。
 - edit 只做精确匹配，失败时给提示，不做模糊回退。
 - bash 每次都是新进程，不保留 cwd。以后如果要保留，要先考虑和并行执行的冲突。
 
@@ -294,5 +296,7 @@ dangerous / known_readonly 仍由 exec 的原分析函数计算，核心不重�
   `read_default_lines`（2000）、`read_max_line_bytes`（2000）、`grep_max_matches`（200）、`glob_max_files`（200）、
   `bash_max_timeout_ms`（600000）、`mcp_call_timeout_ms`（120000），由 app 映射。文件读写上限沿用 `files` 段：
   `max_read_bytes` 是 read 能翻页的最大文件（8 MiB），`max_write_bytes` 是写入上限（1 MiB）。
+- web 请求和缓存使用独立的 `web` 段，默认值及约束见 [web](web.md#配置)；启动需要宿主 curl 7.75+，
+  搜索依赖 `internal/searxng`。bash 与 web 共用授权映射，协议处理通过 `dagent_web` 完成。
 - 需要模型的真实功能检测应确认所选服务可访问且支持工具调用；历史使用过的模型不代表当前服务已启动。
   接入方式见 [使用指南](../guide/usage.md)，已有验收见 [历史记录](../archive/README.md)。临时检测材料只放在 `temp/`。

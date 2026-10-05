@@ -114,20 +114,22 @@ sh/bash。它只向 agent Policy 提供判定，不执行命令。
 ## 5. 受限执行：SRT 后端
 
 `Policy` 包含读/写允许范围、受保护读/写子路径、网络与本地 socket 开关和私有临时空间要求。
-受限命令由 SRT 后端执行：每个 Bash 执行实例启动一个 Node bridge，bridge 初始化
+受限命令由 SRT 后端执行：每次 `run_srt` 调用（包括受限 bash 和 web 请求）启动一个 Node bridge，bridge 初始化
 `@anthropic-ai/sandbox-runtime`、生成 bubblewrap 包装命令并管理代理出口；命令的
 stdin/stdout/stderr 保持独立，网络判定经独立控制 FD 交回核心权限层（见 [agent 权限契约](agent.md#7-权限与沙箱)）。
 
 `exec::srt_config` 把中立 `Policy` 编译为 SRT 配置：`denyRead` 从 `/` 开始，只显式重开系统路径、
 工作区、实例私有 HOME 与工具链目录；`denyWrite` 在可写树内以启动时快照拒绝工作区里已有的
 `.env*`、`*.pem`、`*.key`、私钥名、`.ssh` 和 `.gnupg`；`/tmp` 只重开实例私有目录。敏感路径扫描由
-`exec::sensitive_paths` 提供，该规则本身进入 tool_started/BashView 记录。受限命令的 `/proc`、`/dev`
+`exec::sensitive_paths` 提供，授权范围进入 tool_started，BashView 另保存命令的执行事实。受限命令的 `/proc`、`/dev`
 由 SRT 以新挂载处理，`/sys` 不被根 deny 隐藏——这些都是平台例外，文档如实列出。
 
 `Support` 是启动时真实做一次最小隔离启动后的结果：`backend` 为 `srt` 或 `none`，并提供
 `read_only_ready()` / `workspace_ready()`。权限层只在对应 profile 真实满足时启用；能力不足时受限命令
 不启动。符合策略的 Bash 请求可询问一次性 host access，由人工或符合条件的父模型审批；没有可用审批路由时不执行。
-只读/规划上限不能借此突破，glob/grep 不提供宿主回退。`unrestricted` 明确使用 host 执行。
+只读/规划上限不能借此突破，glob/grep 和 web_search/web_fetch 不提供宿主回退。
+unrestricted 的 bash 使用 host；web 仍强制进入只读 SRT，由运行中网络闸门自动放行未被拒绝的目标。
+`tools::detail::sandbox_request` 统一把核心 Grant 映射为 SRT 请求，web 传输不自行建立另一套权限规则。
 
 ### 启动与并发
 

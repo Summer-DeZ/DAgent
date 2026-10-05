@@ -57,9 +57,10 @@ Python 发行包由固定 uv 版本的 managed Python 下载目录解析和校�
 Bash、Git 默认从准备机器导入快照，Git helper 路径采用 Ubuntu 布局；其它发行版应调整 `files`。
 需要重新导入时修改该包 `version`，不能靠反复 sync 更新同名已发布快照。
 
-## Skill 与 MCP 依赖
+## 独立依赖环境
 
-`environments` 用 `skills/<skill-name>` 或 `mcp/<server-name>` 标识独立环境，例如：
+`environments` 用 `skills/<skill-name>`、`mcp/<server-name>` 或 `internal/<name>` 标识独立环境。
+`internal/*` 仅供后端内部使用，不提供给模型选择。用户可配置的消费者环境例如：
 
 ```json
 {
@@ -139,6 +140,10 @@ MCP managed stdio 使用同一环境规则和 home cwd，server 的显式 `env` 
 
 `runtime sync` 只准备文件。`app::Searxng` 在第一次搜索时启动实际服务，随机密钥和 JSON/YAML settings 写到
 `run/searxng-*/`，监听 `127.0.0.1` 的系统分配端口，以 `/healthz` 确认就绪；当前 Home 配置只选引擎，不写端口。
-各后端互不共享实例。Child 管理进程组，退出时终止服务并清理 run 目录；进程死亡后下次搜索重建。
+各后端互不共享实例。Child 管理进程组，正常退出时终止服务并清理 run 目录；搜索进程死亡后下次搜索重建。
+当前正在执行的搜索若失败会如实返回，不在工具内自动重试。
 Python 入口监听由后端持有写端的 stdin 管道，EOF 时结束进程组，后端异常退出也结束服务。
 服务在宿主运行，网络地位与模型 API 类似；真正的工具连接仍是 SRT 内 curl → 当前托管端点。
+
+SearXNG 入口 `libexec/searxng_server.py` 与 SRT bridge 一样随二进制更新，定位基准为后端路径。
+依赖准备与用户配置升级见 [构建指南](../guide/build.md#升级已有-home-的-web-资源)，引擎、缓存和传输选项见 [网页指南](../guide/web.md)。

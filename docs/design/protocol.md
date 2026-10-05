@@ -111,7 +111,12 @@ context 显式携带 used/limit/window/trigger_percent；删除空的 phase、ch
 同一事件报告。审批交互载荷使用相同字段，身份对象名称为 `identity`。这些字段供关联审计，不构成可恢复的授权。
 会话授权复用时 `approval` 保留原始批准来源，当前工具由顶层 `id/execution_id` 标识；旧记录缺少 execution_id 时读为空。
 `audit.explicit_denial` 区分明确拒绝与审阅失败；仅明确网络拒绝可保存为会话拒绝规则。
-SRT 运行后才批准的域名会补入最终 bash 结果的 `view.network_targets`，具体批准来源见对应 permission 的 actual_grant。
+SRT 运行中放行的目标会补入最终 bash / web 结果的 `view.network_targets`；需要审批的批准来源见对应 permission 的 actual_grant。
+配置、当前模式或托管端点直接放行时没有额外审批记录。
+
+web 工具沿用 `tool_started/tool_finished` 事件，`tool_finished.data.view.kind` 为 `web`。`operation` 区分 search/fetch，
+视图包含 query、url、title、content_type、output、status、offset、next_offset、total_bytes、cached、truncated、network_targets 和 elapsed_ms。
+网页正文随工具完成事件返回，不经 `tool_output` 流式投递；视图字段和历史格式见 [tools](tools.md#4-界面数据view)。
 
 父审阅通过 `notice` 显示 `Reviewing subagent permission`，不创建 `interaction.requested` 模态交互。
 审批结果 Notice 增加可选 `persistent=true`，前端把它保留在正文；缺省为 false。历史审批条目投影为同类持久提示，

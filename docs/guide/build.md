@@ -76,7 +76,23 @@ cmake --install build/release --prefix <安装根>
 已有配置不会被安装覆盖，升级前应核对配置版本，当前 `sandbox.version` 为 2。
 这些步骤描述目录安装，不代表已经提供 `.deb` 或独立 `/usr/bin` 布局；后者仍见 [打包设计建议](../research/linux-packaging.md)。
 
+## 升级已有 Home 的 web 资源
+
 网页模块使用 FetchContent 固定的 lexbor v3.0.1，字符集转换使用 glibc iconv。
-`runtime sync` 同时安装 `internal/searxng`：固定源码 commit 与 SHA-256、独立托管 Python 环境、带哈希的 wheel 锁文件。
-安装后应具备 `config/searxng/requirements.lock` 和二进制旁的 `libexec/searxng_server.py`；不需要 Docker 或系统 SearXNG 服务。
-升级已有 Home 时，把发行配置中的 `internal/searxng` 环境声明合并到 `config/runtime.json` 后执行 sync；安装不会覆盖用户配置。
+`runtime sync` 准备 `internal/searxng`：固定源码 commit 与 SHA-256、独立托管 Python 环境、带哈希的 wheel 锁文件。
+不需要 Docker 或系统 SearXNG 服务。已有 Home 的配置、提示词和锁文件不会被安装自动覆盖，升级时按以下步骤合并：
+
+1. 安装同版本的前后端二进制及 `libexec/srt_bridge.mjs`、`libexec/searxng_server.py`。这些入口始终位于二进制旁，
+   即使通过 `DAGENT_HOME` 把数据目录放在别处也一样。
+2. 将发行版 [runtime.json](../../home/config/runtime.json) 中的 `environments["internal/searxng"]` 合并到自己的
+   `config/runtime.json`，保留其它工具、Skill、MCP 环境声明。
+3. 同步该声明对应的 [requirements.lock](../../home/config/searxng/requirements.lock) 到 Home 的
+   `config/searxng/requirements.lock`。以后更新 SearXNG 时，源码 commit/归档哈希和依赖锁文件需成对更新。
+4. 按需在 `config/config.json` 添加 `web` 段；省略时使用内置默认值。将新版 system prompt 的网页调研约定合并到自己的提示词，
+   保留用户原有指令。子 Agent 是否能用 web 工具，由各自 `agents/*.md` 的工具名单决定。
+5. 执行 `dagent runtime sync`、`dagent runtime list` 和 `dagent sandbox status`，然后重新启动后端。
+   仅调整 `web.engines` 等行为配置时无需 sync，但同样需重启后端。
+
+`runtime list` 为 current 表示依赖配置与快照一致；`sandbox status` 的真实 probe 确认隔离能力。
+搜索引擎能否实际返回结果需运行 `web_search` 确认。使用方式见 [网页指南](web.md)。
+本机目录安装仅验证了资源交付和配置可读，完整跨主机升级/卸载仍见 [验收边界](../archive/2026-10-05-web-tools-plan.md#验收边界)。

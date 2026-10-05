@@ -5,7 +5,7 @@
 | 目标 | 内容 | 依赖 |
 | --- | --- | --- |
 | `dagent_app_cli` | 命令行解析、安装根、后端启动器、run 输出适配、进程信号 | client、protocol、ipc、base；CLI11 私有 |
-| `dagent_app_config` | 托管工具准备、配置/资源读取、提示词渲染、会话与查询装配 | runtime、llm、tools、storage、workspace、exec、mcp、base、curl、OpenSSL Crypto |
+| `dagent_app_config` | 托管工具准备、搜索服务生命周期、配置/资源读取、提示词渲染、会话与查询装配 | runtime、llm、tools、storage、workspace、exec、mcp、base、curl、OpenSSL Crypto |
 | `dagent`（`app/main.cpp`） | 前端可执行文件 | `dagent_app_cli` + `dagent_ui` |
 | `dagent-backend`（`app/backend_main.cpp`） | 后端可执行文件，只接受 `--ipc-fd` | `dagent_backend` + `dagent_app_config` |
 
@@ -26,7 +26,7 @@
 <root>/
 ├── dagent
 ├── dagent-backend     前端从同目录启动
-├── libexec/           SRT bridge 与按安装路径生成的 AppArmor profile
+├── libexec/           SRT bridge、SearXNG 启动入口与按安装路径生成的 AppArmor profile
 ├── config/            config.json、models.json、mcp.json、runtime.json
 ├── prompts/           system.md、compact.md
 ├── AGENTS.md          可选的全局用户指令
@@ -34,7 +34,7 @@
 ├── agents/            子 Agent 定义
 ├── skills/            全局 Skill
 ├── data/dagent.db     首次写入会话时创建
-├── run/               runtime、模型与会话写锁
+├── run/               runtime、模型与会话写锁，搜索实例的运行配置
 ├── runtime/           托管工具与消费者依赖环境
 ├── cache/packages/    下载与包缓存
 └── logs/              dagent-<pid>.log
@@ -44,12 +44,12 @@
 前端解析安装根后在 `app.initialize` 里交给后端；后端不自行决定安装根。
 
 源码树中这些可管理文件统一放在 `home/`；dev 可执行文件无需设置环境变量就会读取这个目录。显式
-`DAGENT_HOME` 仍然具有最高优先级。安装只补充缺失的用户资源；二进制、bridge 与生成的 profile 随版本更新。
+`DAGENT_HOME` 仍然具有最高优先级。安装只补充缺失的用户资源；二进制、两个 libexec 启动入口与生成的 profile 随版本更新。
 `libexec/` 始终相对后端二进制定位，不随 `DAGENT_HOME` 迁移。目录职责与首次配置见 [home](home.md)，工具环境见 [toolchain](toolchain.md)。
 
 ## 2. 配置与提示词
 
-`config/config.json` 由用户维护，包含权限、UI、HTTP、上下文、工具、进程和日志策略；`config/models.json` 保存模型
+`config/config.json` 由用户维护，包含权限、UI、HTTP、网页搜索/抓取、上下文、工具、进程和日志策略；`config/models.json` 保存模型
 条目和默认模型。加载不做分层合并，不读项目配置、`.mcp.json`、`.env` 或 XDG 路径，也没有信任子系统。
 `prompts.system` 和 `prompts.compact` 分别指定主提示词与上下文压缩提示词；相对路径以安装根为准，默认是
 `prompts/system.md` 与 `prompts/compact.md`。两份提示词都由后端启动装配时读取并保存在快照中，不编入二进制；修改后重启后端生效，无需重新构建。
@@ -95,7 +95,7 @@ stdio 项支持 `command`、`args`、`env`、`environment`，HTTP 项支持 `url
 `allowed_targets/denied_targets` 表达网络目标；启动/网络审批超时与每执行网络请求预算由 sandbox 段配置。
 
 主要运行策略由 `home/config/config.json` 显式提供，缺少必填项时报配置错误。
-新增的 `run.max_total_tokens` 缺省为 0；`subagents.approval` 缺省采用下表值，兼容未添加这些字段的配置。
+`run.max_total_tokens` 缺省为 0；`subagents.approval` 和 `web` 缺省采用下表值，兼容未添加这些字段的配置。
 
 | 配置位置 | 用途 | 随附值 |
 |---|---|---|
@@ -109,6 +109,11 @@ stdio 项支持 `command`、`args`、`env`、`environment`，HTTP 项支持 `url
 | `subagents.approval.max_reviews_per_turn` | 每父 turn 审阅次数上限，0 表示不允许审阅 | 16 |
 | `subagents.approval.review_timeout_ms` | 从请求创建起计时，包含排队、模型调用和重试；必须为正 | 60000 |
 | `subagents.approval.failure` | 仅支持拒绝并反馈，不自动转人工 | deny_with_feedback |
+| `web.timeout_ms` | 单次 SRT 网页请求上限，含等待审批；正整数 | 120000 |
+| `web.startup_timeout_ms` | SearXNG 启动等待上限；正整数 | 30000 |
+| `web.max_body_bytes` | HTTP 正文下载上限，1–67108864 | 2097152 |
+| `web.cache_bytes` | 每个 Context 的页面缓存预算，至少等于下载上限 | 16777216 |
+| `web.engines` | 非空的 SearXNG 引擎名称列表；配置中没有端口字段 | yahoo / brave / duckduckgo |
 | `tools.bash_collect_bytes` | 中断时命令输出收集上限 | 4194304 |
 | `ui.completion_max_files` | 每次文件补全扫描上限；每次查询读取当前目录 | 5000 |
 | `session.history_scan_limit` | 每页历史最多扫描的记录数 | 100 |
@@ -116,6 +121,8 @@ stdio 项支持 `command`、`args`、`env`、`environment`，HTTP 项支持 `url
 上下文预算、工具结果与文件大小限制、HTTP/进程超时、日志大小及进度间隔也显式读取对应配置段。
 `process.kill_grace_ms`、`process.drain_after_exit_ms`、`process.env_deny` 与 `log.also_stderr` 已列入配置文件。
 HTTP 和进程配置同样传入 MCP；模型请求使用配置的总超时与空闲超时，不再强制覆盖。
+web 工具的传输超时和正文预算来自独立的 `web` 段，输出上限仍由 `tools.max_result_bytes` 控制。
+启动时解析宿主 curl 路径和 `internal/searxng` 环境目录；引擎名交由 SearXNG 启动时加载，详见 [web](web.md)。
 子 Agent 在 `home/agents/*.md` 的 frontmatter 中设置 `max_model_calls`、`max_tool_calls`，省略或为 0 时继承全局配置。
 模型输出预算统一设置在 `models.json` 每个模型的 `max_tokens`，必须大于 0；禁止通过 `extra_body` 再提供输出预算。
 Chat 编码为 `max_completion_tokens`，Anthropic 编码为 `max_tokens`，Ollama 编码为 `options.num_predict`。
@@ -159,7 +166,8 @@ resume_id, continue_last, log_level}`。后端的 `app::assemble_backend` 依次
 1. 维护命令执行 runtime sync/list 或 sandbox status，不创建会话。普通启动读取 config/ 下配置及 runtime 快照，按 argv 顺序应用 `--set` 与 `--model`；无效时返回 `config_error`，前端以 2 退出。
 2. 初始化日志：`<root>/logs/dagent-<pid>.log`；交互模式关闭 stderr sink，run 与查询模式沿用配置。
 3. 查询模式只构造配置网关与只读查询；interactive/run 模式另外收集一次工作区环境（git、AGENTS.md）、探测沙箱、
-   读取子 Agent 定义与提示词，直接创建共享 `McpHub`；环境事实和子定义存入 `SessionAssembly::Options`。
+   读取子 Agent 定义与提示词，创建共享 `McpHub` 和懒启动的 `Searxng` 管理器；环境事实和子定义存入 `SessionAssembly::Options`。
+搜索端点通过 `tools::Options::search_endpoint` 回调注入会话，每个后端共享一个搜索服务，每个 Context 独立缓存页面。
 `HubResources` 与会话实例只持有共享 MCP Hub，不依赖装配数据包装。
 模型解析与客户端工厂由 Configuration/启动装配负责；`load_models` 只读取模型文件并按序应用模型覆写，切模型不重复加载工具环境、MCP、Git 与子定义。Configuration 仅保存模型目录与主题路径，不保存完整 Config。
 

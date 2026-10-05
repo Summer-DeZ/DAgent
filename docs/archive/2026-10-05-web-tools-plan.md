@@ -1,6 +1,10 @@
 # web_search / web_fetch：沙箱内的联网工具
 
-设计日期：2026-10-05。状态：已实现，七项真实运行验收已完成（2026-10-05）。当前实现说明见 [web](../docs/design/web.md)。
+归档日期：2026-10-05。原位置：`nexttodo/web-tools-plan.md`。实现基线：`eec9829`。
+保留设计决策和当日本机验收记录；当前使用方法见 [网页指南](../guide/web.md)，实现契约见 [web](../design/web.md)，
+剩余覆盖范围见 [后续工作](../../nexttodo/README.md)。本次文档归档未重跑功能场景，原始材料仍在 `temp/web-tools/`，不随仓库分发。
+
+设计日期：2026-10-05。状态：已实现，七项验收场景在本机通过；审批由正式 RPC 接口回答，终端验证范围及其它边界见第 10 节。
 
 ## 1. 目标
 
@@ -102,8 +106,8 @@ lexbor v3.0.1 已随 `dagent_web` 编译通过，并用于真实 HTML 抓取、�
 
 ## 10. 实施与真实验收记录（2026-10-05）
 
-本计划已落地。所有运行使用真实 `dagent` / `dagent-backend`、当前配置的真实模型、SRT 0.0.77 和公网目标；
-审批操作经现有 JSON-RPC 前端协议完成。没有新增项目测试代码、模拟模型、模拟服务或测试构建目标。
+本计划已落地。2026-10-05 的运行使用真实 `dagent` / `dagent-backend`、本地真实模型 `Qwen3.6-35B-A3B`、SRT 0.0.77 和公网目标；
+审批操作由 `temp/` 下的协议客户端经正式 JSON-RPC 接口完成。模型生成真实工具调用，工具结果来自正式后端和实际网络连接。没有新增项目测试代码、模拟模型、模拟服务或测试构建目标。
 临时协议客户端及原始输出仅位于 `temp/web-tools/`。
 
 ### 实施范围
@@ -123,17 +127,17 @@ lexbor v3.0.1 已随 `dagent_web` 编译通过，并用于真实 HTML 抓取、�
 | 1. ask 搜索与生命周期 | 真实搜索返回 SearXNG 官方文档；无需端点审批。两个后端端口分别为 34419 / 40277；退出后进程消失。`search-lifecycle.rpc.jsonl`、`search-independent.rpc.jsonl`、`search-lifecycle.summary` |
 | 2. 新目标审批与 bash 共享 | 审批为 `web_fetch wants to connect to docs.python.org:443`；允许后 bash 连接不再网络审批。反向先批准 bash 的 api.github.com，再 web_fetch 也不询问。`permissions.rpc.jsonl`、`formats.rpc.jsonl` |
 | 3. 重定向与会话拒绝 | github.com → raw.githubusercontent.com 逐跳询问；拒绝第二跳后终止，下一次直接请求同目标返回会话拒绝，共两次审批。另一次全部允许成功返回最终纯文本 URL。`redirect-deny.rpc.jsonl`、`formats.rpc.jsonl` |
-| 4. 拒绝优先与运行中降权 | unrestricted 下 www.python.org 配置拒绝生效；127.0.0.1 配置拒绝也能阻止托管搜索。运行中降为 ask 后约 562 ms 的调用被权限终止；撤销已使用的 github.com 规则后约 510 ms 的调用终止。`config-deny.jsonl`、`search-config-deny.jsonl`、`downgrade.rpc.jsonl`、`revoke.rpc.jsonl` |
+| 4. 拒绝优先与运行中降权 | unrestricted 下 www.python.org 配置拒绝生效；127.0.0.1 配置拒绝也能阻止托管搜索。运行中降为 ask、撤销已使用的 github.com 规则，都使调用被权限终止；对应调用总耗时字段为 562 / 510 ms，不是控制操作后的响应延迟。`config-deny.jsonl`、`search-config-deny.jsonl`、`downgrade.rpc.jsonl`、`revoke.rpc.jsonl` |
 | 5. plan 与 headless | plan 中搜索和抓取均实际成功；headless 新域名返回 `runtime network approval is unavailable in this run`。`search-lifecycle.rpc.jsonl`、`headless.jsonl` |
-| 6. 缓存、编码和截断 | Python 长文档第二页 `cached=true`、耗时 0 ms、没有 network_targets；央广网 GB2312 页面正确返回中文标题和正文；8 KiB 下载上限保留前缀并报告 truncated。`permissions.rpc.jsonl`、`gbk.jsonl`、`truncation.rpc.jsonl` |
-| 7. 崩溃恢复与 SRT 缺失 | 搜索子进程 1876805 被终止后，下次搜索启动 1876997 并返回结果；独立后端进程 1877308 不受影响。真实缺少 SRT bridge 的后端副本在 unrestricted 下仍策略拒绝两个工具。`search-lifecycle.summary`、`missing-srt.rpc.jsonl` |
+| 6. 缓存、编码和截断 | Python 长文档第二页 `cached=true`、毫秒整数耗时字段为 0、没有 network_targets；央广网 GB2312 页面正确返回中文标题和正文；8 KiB 下载上限保留前缀并报告 truncated。`permissions.rpc.jsonl`、`gbk.jsonl`、`truncation.rpc.jsonl` |
+| 7. 崩溃恢复与 SRT 缺失 | 搜索子进程 1876805 被终止后，下次搜索启动 1876997 并返回结果；另一个后端的搜索进程 1877308 独立运行。真实缺少 SRT bridge 的后端副本在 unrestricted 下仍策略拒绝两个工具。`search-lifecycle.summary`、`missing-srt.rpc.jsonl` |
 
 补充：终止本次检测专用后端后，stdin EOF 使其搜索子进程退出，`abrupt-exit.summary` 记录没有存活子进程。
 `cmake --preset dev` 及 `cmake --build --preset dev --target dagent dagent-backend -j 4` 通过；
 `dagent runtime sync` 成功，`runtime list` 为 current；`sandbox status` 为 probe.ok=true / sandboxing_enabled=true。
 临时目录安装实际包含锁文件和两个 libexec 入口，安装后的 `runtime list` 正确读取搜索环境声明。
 真实终端 UI 已呈现 `Web fetch` / `HTTP 200` 卡片，证据为 `tui.ansi` 与 `tui.summary`。
-以上是本机功能验收，跨架构/跨主机发行升级与卸载仍按 [总后续工作](README.md) 单独跟踪。
+以上是本机功能验收，跨架构/跨主机发行升级与卸载仍按 [总后续工作](../../nexttodo/README.md) 单独跟踪。
 
 ### 实际发现并修正
 
@@ -142,7 +146,21 @@ lexbor v3.0.1 已随 `dagent_web` 编译通过，并用于真实 HTML 抓取、�
 - 相对链接转换保留 URL 片段，避免目录链接全部指向文档顶部；下载截断独立于输出分页。
 - 运行中权限终止的原因同步到 WebView，卡片和模型结果一致。
 
-### 运行边界
+### 验收边界
+
+| 已验证 | 尚未覆盖或不能据此推断 |
+| --- | --- |
+| 七项场景使用真实模型、正式后端、SRT 与实际 HTTP/SearXNG 请求 | 完整并发对抗矩阵、所有网络环境与站点行为 |
+| 网络审批请求内容、批准/拒绝、会话复用、撤销、降权由正式 RPC 验证 | 逐个人工点击审批弹窗；本次没有新增 web 子任务与父模型审阅的专项验收 |
+| 真实 TUI 显示 Web fetch / HTTP 200 抓取卡片 | 搜索卡片及所有交互状态的逐项人工验证、历史 web 卡片重放的专项运行 |
+| SRT bridge 缺失的真实后端副本在 unrestricted 下拒绝两个工具 | 所有可能的 SRT/内核/namespace 启动失败来源 |
+| 本机开发 Home 的 runtime sync；临时目录安装包含锁文件和两个 libexec 入口，安装后的 runtime list 可读 | 临时安装目录的完整搜索运行、跨主机/跨架构发行安装、升级和卸载 |
+| 权限变化后正在运行的抓取被终止 | 精确的撤销/降权响应延迟；elapsed_ms 是调用总耗时 |
+
+运行时记录里的 `turn_ended.status=done` 只表示该轮正常结束，工具成功还需查看 `tool_finished.data.is_error` 和实际结果。
+本次补充核对了这些字段；负向场景的预期结果是明确拒绝或终止，不是 HTTP 成功。
+
+### 上游与功能限制
 
 本机出口下 Yahoo 返回结果，Brave / DuckDuckGo 曾返回 HTTP 错误或验证码。结果会保留可用条目并报告失败引擎，
 默认引擎改为 Yahoo、Brave、DuckDuckGo；可通过 `web.engines` 调整。不能把本次成功解释为所有引擎在所有出口长期可用。

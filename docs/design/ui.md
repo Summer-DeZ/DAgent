@@ -167,9 +167,13 @@ PromptBox 左侧是一根竖条（忙碌时换成 `primary`），底纹用 `back
 | `TurnEnded` | interrupted/denied/limit/failed 留系统块；done 追加 `▣ 模式 · 模型 · 耗时` 尾行 |
 
 工具标题是状态符 + 加粗名称、muted 参数、右对齐统计三段；参数过长时省略。主体每行用 `│ `，折叠行独立用
-`└ `，同一工具三个块共享 group 且只有标题有上边距。默认折叠：edit/write 20 行、bash 10 行、grep/glob/MCP 5 行、
+`└ `，同一工具三个块共享 group 且只有标题有上边距。默认折叠：edit/write 20 行、bash 10 行、web 8 行、grep/glob/MCP 5 行、
 非结构化结果 3 行。Read 和 Plan 通常没有主体。`TaskView` 的统计是 `N steps · M tools · S.Ss`，展开后先列逐条
 工具摘要（错误项用 ✗），空行后是子 Agent 的最终文本。
+
+`WebView` 的卡片名称为 `Web search` / `Web fetch`，参数显示搜索词或最终 URL，统计显示 HTTP 状态和耗时；
+抓取另显示字节范围/正文总量、cached 和 truncated 标记。状态 0 表示尚未取得可显示的 HTTP 状态，应查看正文中的失败原因。
+搜索摘要与抓取正文都可展开；卡片恢复自历史记录不会重新联网，也不会重建分页缓存。
 
 思考正文默认收起（`collapsed_rows = 0`），Ctrl+R 统一展开或收起本会话的全部思考，标题前缀随之在 `+` 与 `-` 之间切换。
 

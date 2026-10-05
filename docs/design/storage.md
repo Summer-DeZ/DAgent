@@ -48,6 +48,8 @@ CREATE TABLE events (
 ```
 
 时间为 Unix 毫秒。`payload` 是 UTF-8 JSON 文本的 BLOB；大工具输出直接存在同一数据库，不再有外置 blob。
+web 结果使用现有 tool 记录保存 `WebView` 和该次返回的正文，不新增数据库表。网页完整缓存只在 Context 内存中，
+恢复历史可显示已返回的页面片段，但不能恢复未返回的缓存内容或网络授权。
 首条 user 事件写入时计算第一行标题（最多 60 个 UTF-8 字符），列表不读取事件正文。`parent_id` / `agent_name`
 标识子 Agent 会话，顶层会话为空。
 

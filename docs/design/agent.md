@@ -15,6 +15,8 @@ flowchart TD
     APP[app_config：配置与装配] -. 实现端口 .-> RT
     LLM[llm] -. ModelSession .-> AG
     TOOLS[tools] -. ToolSession / PreparedTool .-> AG
+    TOOLS --> WEB[web：网页传输与解码]
+    WEB --> EXEC[exec：SRT 与子进程]
     ST[storage] -. JournalWriter / SessionStore / Lease .-> AG
 ```
 
@@ -54,8 +56,8 @@ stop_token；不含配置、终端、数据库路径或查找任意对象的方�
 
 | 线程 | 工作与边界 |
 | --- | --- |
-| 会话执行线程 | runtime 控制器的串行线程；执行模型请求、串行工具、记录写入和工具目录更新 |
-| 工具工作线程 | 每个只读并行组临时创建，同时最多 `run.max_parallel_tools` 个；只执行 `PreparedTool::execute` |
+| 会话执行线程 | runtime 控制器的串行线程；执行模型请求、工具调度、审批/邮箱处理、记录写入和工具目录更新 |
+| 工具工作线程 | 普通串行工具也在临时 worker 执行，Dispatcher 同时消费邮箱中的网络请求；只读并行组最多 `run.max_parallel_tools` 个 |
 | task 组线程 | 每个并发子 Agent 一个，同时最多 `run.max_parallel_tasks`（配置文件为 4，必须为正整数）；在组内创建并运行子会话 |
 | MCP 连接/读取线程 | 由 tools 的 McpHub 与 mcp Client 持有；只交接状态与标志，不直接改工具目录或调用 Sink |
 
@@ -224,7 +226,7 @@ tool_calls → ActionCatalog.prepare → 普通 PreparedTool ── PreparedInte
 edit/write 如需读取原文件，先通过 `preview_request` 声明读意图，由 Policy 授权后执行 `prepare_preview`，
 再用完整 diff 判定写授权；参数准备不提前读取待审批内容。读取与写入均消费对应 grant。
 
-可并行的是 Policy 直接放行的 read 意图，以及获准使用 `read_only` 沙箱的 bash；写入、编辑、MCP 和经过询问的调用
+可并行的是 Policy 直接放行的 read 意图，以及获准使用 `read_only` 沙箱的 bash；写入、编辑、web_search/web_fetch、MCP 和经过询问的调用
 串行执行。连续的可并行调用构成一组，分块创建线程，每块最多 `run.max_parallel_tools` 个。
 
 遇到不能加入挂起组的调用，先运行并等待整个组，再重新 prepare 当前调用并重新判权、重算并行类别。这样「read a → edit a」
@@ -249,7 +251,7 @@ task 在权限判定里直接放行（真正的检查发生在子会话自己的
 ## 7. 权限与沙箱
 
 Policy 是纯逻辑，不弹窗、不读配置。它依据 `PreparedIntent` 的规范化路径、命令意图（`CommandIntent`）和外部工具名给出 allow / ask / deny；
-允许时的 `Grant` 决定 bash 沙箱和网络权限。工作区根决定写入范围。
+允许时的 `Grant` 决定执行范围；bash 与 web 在 tools 层共用 Grant→SRT 映射。工作区根决定写入范围。
 
 ### 模式和默认规则
 
@@ -273,6 +275,7 @@ Policy 是纯逻辑，不弹窗、不读配置。它依据 `PreparedIntent` 的�
 | 其他 bash，完整 workspace profile 可用 | ask 询问、workspace 自动；均使用明确范围且默认不联网 |
 | 写入型 bash 的 workspace profile 不可用 | 请求一次性 full_access，明确提示可访问网络、受保护数据和 `.git`；没有人工或合格父审批路由时不执行 |
 | MCP 工具 | ask / workspace 询问；unrestricted 放行；plan 拒绝 |
+| web_search / web_fetch | 所有模式都要求只读 SRT；目标由运行中网络闸门决定，工具不进入并行组 |
 
 显式 host access 不属于旧沙箱兼容后端：每次请求须由用户或符合条件的父模型明确批准，不提供会话级复用；拒绝后不执行。
 控制面写入、显式网络 deny、语法错误、高危硬拦和 read-only / plan 限制等属于不能通过普通批准扩大的条件。
@@ -582,9 +585,10 @@ denied、failed、interrupted 同样回传非成功状态，TaskView 与模型�
 
 ## 13. 当前范围
 
-当前提供单会话、每轮单模型的文本编码 Agent（空闲时可在同一会话切换模型），支持 read/write/edit/bash/grep/glob、
+当前提供单会话、每轮单模型的文本编码 Agent（空闲时可在同一会话切换模型），支持 read/write/edit/bash/grep/glob/web_search/web_fetch、
 todo/ask/exit_plan/task/skill 控制动作、MCP tools、并发子 Agent、父模型审批、终端与非交互前端、记录恢复和上下文压缩。
-尚未实现多模型路由、图片输入、web_fetch、hooks、插件或会话全文搜索。
+网页搜索使用托管 SearXNG，抓取只读取静态文本内容，见 [web](web.md)。
+尚未实现多模型路由、图片输入、浏览器渲染、hooks、插件或会话全文搜索。
 
 子 Agent 之间不直接通信、不向父追问、不跨轮存活、不参与 MCP 重连与通知投递，也不支持多级嵌套与单独的凭据配置。
 构建与真实功能验证约定见 [文档索引](../README.md)。

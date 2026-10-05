@@ -28,6 +28,8 @@ classDiagram
 
 `SessionInstance` 是一个已装配会话：核心 `Session` 与其工具目录、MCP 资源、记录写入器和写租约同寿。
 runtime 只看到核心类型；`tools::Context`、`Registry`、`SqliteJournal` 等具体对象留在 app 装配内部。
+网页缓存跟随 Context 生命周期；新建/恢复/切换模型产生的新实例不继承缓存。SearXNG 由 app 中的后端级管理器持有，
+同后端的会话通过回调共享服务，单次工具或子会话结束不会关闭它。详细生命周期见 [web](web.md#托管搜索)。
 
 公开状态与事件位于 `runtime/state.hpp`；`runtime.cpp` 负责组装与交互出口，`session_control.cpp` 实现 Runtime 的会话调度，两个文件共同实现一个控制类。
 主运行 ID 与取消源由 Runtime 的当前操作持有；主 `RunServices.stop` 直接传至核心。

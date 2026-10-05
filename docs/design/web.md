@@ -4,6 +4,20 @@
 它依赖 exec、base、lexbor v3.0.1 和 glibc iconv，不依赖 agent。工具参数、分页、缓存及给模型的措辞在 tools；
 权限决策在 agent；SearXNG 运行时准备和进程生命周期在 app。
 
+## 模块接口
+
+公开值与函数位于 [web/web.hpp](../../src/public/web/web.hpp)：
+
+| 接口 | 责任 |
+| --- | --- |
+| `get` | 接收工具层映射好的 SrtRequest，在只读 SRT 内执行 curl，返回 Response 的 URL、类型、状态、正文和截断标记 |
+| `normalize_url` | WHATWG URL 解析与相对地址合成，拒绝非 HTTP(S) 和带凭据的 URL |
+| `decode` | Response → Page，完成字符集与静态 HTML 转换 |
+| `search_url` / `search_results` | 搜索词编码与 SearXNG JSON 结果解析，不依赖模型或权限类型 |
+
+`tools::Context` 缓存 Page，`tools::WebCall` 负责模型参数、结果预算和 WebView。
+`app::Searxng` 通过端点回调接入 tools，agent 不持有搜索服务、curl 或 HTML 解析对象。
+
 ## 执行与权限
 
 ```text
@@ -50,35 +64,26 @@ PDF、图片、其它二进制 MIME 类型和非成功 HTTP 状态返回错误�
 
 后端第一次搜索时，用随机密钥生成 `run/searxng-*/settings.yml`，开启 JSON、关闭限流；入口用内核分配的动态端口绑定 127.0.0.1，
 通过启动通道报告实际端口，并经 `/healthz` 确认就绪。每个后端一个实例，多会话/子会话共享其所在后端的服务。
-进程退出后下一次搜索重新拉起；正常关闭由 exec::Child 清理进程组，后端异常退出则由 stdin EOF 监听清理。
+进程退出后下一次搜索重新拉起；正在执行的失败请求不会在工具内自动重试。正常关闭由 exec::Child 清理进程组和运行目录，
+后端异常退出则由 stdin EOF 监听终止搜索进程组，可能留下运行目录。此处不用 parent-death signal，因为 Linux 会将其绑定到临时创建线程。
 
 SearXNG 本身运行在宿主，属于 harness 基础设施，其上游连接不逐目标审批。
 模型的搜索请求仍需通过 SRT 内 curl 连接托管端点；只有当前 web_search 对这个确切端点预授权，配置拒绝仍优先。
-web_fetch 与 bash 不能借用这个基础设施标记。引擎失败和验证码会在结果中报告，有可用结果时仍返回结果；全部失败时返回工具错误。
+web_fetch 与 bash 不能借用这个基础设施标记。引擎失败和验证码会在结果中报告，有可用结果时仍返回结果；没有结果且收到引擎失败说明时返回工具错误。
+没有结果也没有引擎错误时返回正常的空结果。超过下载上限的搜索 JSON 无法完整解析，直接报告超限错误。
 
 ## 配置
 
-Home `config/config.json` 可选的 `web` 段，省略时使用以下默认值：
-
-```json
-{
-  "web": {
-    "timeout_ms": 120000,
-    "startup_timeout_ms": 30000,
-    "max_body_bytes": 2097152,
-    "cache_bytes": 16777216,
-    "engines": ["yahoo", "brave", "duckduckgo"]
-  }
-}
-```
-
-`timeout_ms` 是单次 SRT 请求上限，`startup_timeout_ms` 是搜索服务启动等待上限。
-`max_body_bytes` 不超过 64 MiB，`cache_bytes` 至少等于正文下载上限。引擎名称使用固定 SearXNG 源码中的定义；不配置端口。
-不同出口可能遭遇不同引擎的限流、验证码或封锁，可覆盖 `web.engines`。
+`config/config.json` 的可选 `web` 段由 app 映射为 `web::Options`，默认值、用户覆写和排障见
+[网页指南](../guide/web.md#引擎和资源配置)，所有配置键汇总见 [app](app.md#2-配置与提示词)。
+`web.timeout_ms` 传给一次 SRT 请求，包含启动 bridge 和等待审批的时间；搜索服务自身的懒启动使用独立超时。
+`web.max_body_bytes` 限制下载体积，`tools.max_result_bytes` 限制每次返回给模型的文本，`web.cache_bytes` 限制 Context 中转换后页面的缓存总量。
+缓存按正文和元数据的字符串字节数计费，不表示精确的进程内存上限；HTML 转换可能增加正文体积。
+同 URL 的 offset=0 也先命中缓存，目前没有刷新参数。新 Context 不继承缓存，包括恢复会话或切换模型的重新装配。
 
 搜索摘要和页面正文始终是不可信数据；工具说明与系统提示要求模型只把它们当作证据，不能执行其中的指令，也不能据此泄露秘密。
 不支持厂商原生搜索、浏览器渲染、PDF/图片解析、robots.txt 抓取策略或 web 调用并行。
-本机真实验收范围与证据见 [实施计划](../../nexttodo/web-tools-plan.md#10-实施与真实验收记录2026-10-05)。
+本机真实验收范围与证据见 [归档验收记录](../archive/2026-10-05-web-tools-plan.md#10-实施与真实验收记录2026-10-05)。
 
 ## 上游依据
 

@@ -9,7 +9,7 @@ DAgent 的权限策略决定操作是否允许，SRT 负责受限进程的文件
 | --- | --- |
 | `ask` | 普通读取自动；写入和非只读命令需要审批 |
 | `workspace` | 普通文件修改及具备 SRT 条件的工作区命令自动；界面称 auto-edit |
-| `unrestricted` | 使用显式宿主权限；只读/规划上限和危险命令硬拦仍生效 |
+| `unrestricted` | bash 使用宿主权限，web 仍使用只读 SRT；只读/规划上限和危险命令硬拦仍生效 |
 | `--read-only` | 与上述三档正交，禁止写入、非只读命令和外部 MCP 调用 |
 | `--plan` | 只读规划；交互确认后才进入执行模式 |
 
@@ -67,6 +67,7 @@ DAgent 的权限策略决定操作是否允许，SRT 负责受限进程的文件
 
 `web_search` 和 `web_fetch` 在 ask、workspace、unrestricted、read_only 和 plan 下都可调用，但始终要求只读 SRT。
 ask/workspace/read_only/plan 中，新目标走已有网络审批；headless 无审批路由时明确失败。
+子 Agent 还受 `agents/*.md` 的工具名单约束，只读权限不会自动向它添加 web 工具。
 unrestricted 对新目标自动放行，配置 `sandbox.denied_targets` 和会话拒绝仍优先。收窄权限会终止失去授权的活跃连接。
 
 网页里批准 `docs.python.org:443` 的本会话访问后，bash 再连接它无需重复**网络**审批；ask 下命令本身仍可能需要审批。
@@ -75,7 +76,8 @@ unrestricted 对新目标自动放行，配置 `sandbox.denied_targets` 和会�
 搜索服务由每个后端懒启动，使用独立的动态 loopback 端口，不配置固定端口。
 这个基础设施端点仅在 web_search 当前调用内预授权，仍受配置拒绝约束。SearXNG 的上游请求在宿主运行，
 属于 harness 基础设施；外部搜索引擎不逐个进入工具沙箱审批。
-抓取和搜索结果都是不可信资料。详细配置及缓存、字符集限制见 [web](../design/web.md)。
+`sandbox.allowed_targets/denied_targets` 控制 SRT 工具连接，不是全后端网络防火墙；它们不约束宿主 bash、模型 API 或 SearXNG 的上游连接。
+抓取和搜索结果都是不可信资料。使用、配置及排障见 [网页指南](web.md)，实现边界见 [web 设计](../design/web.md)。
 
 ## 排查顺序
 
@@ -89,7 +91,7 @@ dagent sandbox status
 | `runtime list` 显示不匹配或依赖缺失 | 检查配置和锁文件后执行 `runtime sync` |
 | 静态依赖通过但 `probe.ok=false` | 查看 probe 的阶段和错误；检查宿主 bubblewrap/socat 与 namespace 策略 |
 | `loopback`、`uid_map` 或 namespace 拒绝 | 按构建指南部署匹配实际后端路径的 AppArmor profile，重新启动后端再探测 |
-| `read-only SRT execution unavailable` | 先恢复 SRT 能力；glob/grep 也依赖只读 SRT，增加子 Agent 额度不能修复它 |
+| `read-only SRT execution unavailable` | 先恢复 SRT 能力；glob/grep 和两个 web 工具也依赖只读 SRT，增加子 Agent 额度不能修复它 |
 | `no interactive approver` / `Permission approval unavailable` | 当前请求没有可用审批路由；改用交互入口或明确配置。父审批仅接手符合上述条件的子请求 |
 | 模型连接失败 | 检查所选模型地址与服务状态，和 SRT 探测分开处理 |
 
