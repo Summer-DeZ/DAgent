@@ -130,6 +130,7 @@ std::string strip_ansi(std::string_view s) {
     std::size_t pos = 0;
     while (pos < s.size()) {
         const auto c = static_cast<unsigned char>(s[pos]);
+        // 0x1B是 ESC 控制字符
         if (c != 0x1B) {
             out += static_cast<char>(c);
             ++pos;
