@@ -61,6 +61,8 @@ struct PreparedIntent {
     std::string summary;                ///< 一行描述，如「编辑 src/a.cpp（+3 −1）」
     /// 外部工具的隔离边界："srt"（本机受限进程）、"remote"（远端服务）；供记录/界面如实标注。
     std::string external_boundary;
+    /// read 类工具在只读 SRT 中执行（grep/glob 调 rg）；授权按实际 backend 与 read_only profile 标注。
+    bool sandboxed_read = false;
 };
 
 } // namespace dagent::agent

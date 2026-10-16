@@ -41,6 +41,7 @@ public:
         intent_.kind = agent::ToolKind::read;
         intent_.paths = {to_intent(root_, agent::Access::read)};
         intent_.summary = std::format("Search {}", query_.pattern);
+        intent_.sandboxed_read = true;
     }
 
 private:

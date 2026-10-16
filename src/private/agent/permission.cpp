@@ -261,7 +261,8 @@ ExecutionGrant Policy::grant_for_files(const PreparedIntent& intent, GrantSource
     ExecutionGrant grant;
     grant.revision = revision();
     grant.source = source;
-    grant.backend = "native";
+    grant.backend = intent.sandboxed_read ? sandbox_.backend : "native";
+    if (intent.sandboxed_read) grant.sandbox = SandboxProfile::read_only;
     const EffectivePermission live = effective();
     grant.protect_sensitive_names =
         live.mode != PermissionMode::unrestricted || live.read_only || live.planning;

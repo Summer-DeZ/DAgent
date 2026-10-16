@@ -101,7 +101,7 @@ Session 只在所属执行线程推进对话、工具目录、模型和记录。
 | `ReasoningDelta` / `reasoning` | `text`，思考增量 |
 | `StreamReset` / `stream_reset` | 无附加字段；本次模型尝试的可见内容作废 |
 | `ToolPending` / `tool_pending` | `id, name`；参数仍在传输，仅作提示 |
-| `ToolStarted` / `tool_started` | `id, name, summary` 加实际 backend/profile、grant source、approval authority/identity、analysis version、读写/保护范围、network/local sockets/private tmp；已通过权限，开始执行 |
+| `ToolStarted` / `tool_started` | `id, name, summary` 加实际 backend/profile、grant source、approval authority/identity、analysis version、读写/保护范围、network/local sockets/private tmp；已通过权限，开始执行。read/write/edit 标为 `native`，grep/glob 标为 SRT 后端与 `read_only` |
 | `ToolOutput` / `tool_output` | `id, chunk`；bash 原始输出块 |
 | `ToolFinished` / `tool_finished` | `id, name, summary, text, is_error, interrupted, view`；结果已提交 |
 | `SubEvent` / `sub_event` | `session, agent, parent_call` 加递归 `event`；子 Agent 事件信封，父前端按 `parent_call` 归位 |
