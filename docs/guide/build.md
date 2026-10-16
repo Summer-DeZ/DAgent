@@ -82,7 +82,7 @@ cmake --install build/release --prefix <安装根>
 `runtime sync` 准备 `internal/searxng`：固定源码 commit 与 SHA-256、独立托管 Python 环境、带哈希的 wheel 锁文件。
 不需要 Docker 或系统 SearXNG 服务。已有 Home 的配置、提示词和锁文件不会被安装自动覆盖，升级时按以下步骤合并：
 
-1. 安装同版本的前后端二进制及 `libexec/srt_bridge.mjs`、`libexec/searxng_server.py`。这些入口始终位于二进制旁，
+1. 安装同版本的前后端二进制及 `libexec/srt_bridge.mjs`、`libexec/srt_bwrap.sh`、`libexec/searxng_server.py`。这些入口始终位于二进制旁，
    即使通过 `DAGENT_HOME` 把数据目录放在别处也一样。
 2. 将发行版 [runtime.json](../../home/config/runtime.json) 中的 `environments["internal/searxng"]` 合并到自己的
    `config/runtime.json`，保留其它工具、Skill、MCP 环境声明。

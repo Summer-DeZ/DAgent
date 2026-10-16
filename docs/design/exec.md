@@ -42,7 +42,7 @@ exec::Result r = exec::run(cmd, options,
 | 会话 | 子进程先 `setsid()`：成为新进程组的组长，**并且没有控制终端**。`sudo`、`ssh` 这类要打开 `/dev/tty` 的程序会直接失败，不会跟 TUI 抢键盘 |
 | stdin | 没有 `stdin_data` 时接 `/dev/null`，不继承 agent 的 stdin |
 | 额外描述符 | `Command::inherit_fds` 显式列出需要跨 exec 保留的 FD，所有权仍属于调用方；启动器登记白名单，仅在目标子进程中清除这些 FD 的 CLOEXEC |
-| 环境变量 | `Command::inherit_env=true` 时继承 agent 环境并按 `env_deny` 过滤；false 时从空环境开始。两者随后注入非交互默认项、`Options::environment`，再应用 `env_unset` 和 `env_set`。托管命令使用 false 和托管 PATH；受限 bash 还把 HOME/XDG/TMP 指向私有目录，宿主凭据及 BASH_ENV/加载器/语言注入变量不会进入命令 |
+| 环境变量 | `Command::inherit_env=true` 时继承 agent 环境并按 `env_deny` 过滤；false 时从空环境开始。两者随后注入非交互默认项、`Options::environment`，再应用 `env_unset` 和 `env_set`。托管命令使用 false 和托管 PATH；受限 bash 还把 HOME/XDG/TMP 及 uv/npm 缓存指向私有目录，宿主凭据及 BASH_ENV/加载器/语言注入变量不会进入命令 |
 | 查找程序 | argv[0] 带 `/` 时直接使用，相对路径**相对 `Command::cwd`**；否则按**子进程将看到的 PATH**（也就是叠加 `env_set` 之后的值）查找 |
 | 信号 | SIGPIPE 在子进程里恢复为默认行为，所以 `yes \| head` 这类管道能正常结束；信号屏蔽清空（父进程为 sigwait 屏蔽的 SIGINT/SIGTERM 不会带进子进程，`timeout` 与 SIGTERM 清理照常生效） |
 | exec 前失败 | fork 之后 chdir、应用沙箱或 `execve` 失败时，错误码经管道交回父进程，子进程直接 `_exit(127)`：不执行 agent 的 atexit 与静态析构，也不会把 fork 时复制来的 stdio 缓冲再写一遍 |
@@ -123,6 +123,12 @@ stdin/stdout/stderr 保持独立，网络判定经独立控制 FD 交回核心�
 `.env*`、`*.pem`、`*.key`、私钥名、`.ssh` 和 `.gnupg`；`/tmp` 只重开实例私有目录。敏感路径扫描由
 `exec::sensitive_paths` 提供，授权范围进入 tool_started，BashView 另保存命令的执行事实。受限命令的 `/proc`、`/dev`
 由 SRT 以新挂载处理，`/sys` 不被根 deny 隐藏——这些都是平台例外，文档如实列出。
+
+SRT 用 tmpfs 遮蔽 `denyRead` 目录，而 tmpfs 本身可写。bridge 把 SRT 的 `bwrapPath` 指向二进制旁的
+`libexec/srt_bwrap.sh`：它在全部挂载之后把最上层仍是 tmpfs 的挂载点重挂为只读，越界写入直接得到 EROFS，
+不再写进随命令消失的内存目录并返回成功。`/tmp` 是每次执行私有的可写临时目录；叠在 tmpfs 上的工作区、
+私有 HOME 等 bind 是独立挂载，不受影响。托管环境里指向 Home 的 `UV_CACHE_DIR`、`NPM_CONFIG_CACHE`
+在沙箱内不可见，受限命令中与 XDG 缓存一起改到私有 HOME。
 
 `Support` 是启动时真实做一次最小隔离启动后的结果：`backend` 为 `srt` 或 `none`，并提供
 `read_only_ready()` / `workspace_ready()`。权限层只在对应 profile 真实满足时启用；能力不足时受限命令

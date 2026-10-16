@@ -17,9 +17,11 @@ import os from 'node:os';
 import { spawn } from 'node:child_process';
 import fs from 'node:fs';
 import path from 'node:path';
-import { pathToFileURL } from 'node:url';
+import { fileURLToPath, pathToFileURL } from 'node:url';
 
 const PROTOCOL_VERSION = 1;
+// SRT 经同目录的包装脚本调用真实 bwrap，由它把遮蔽用的 tmpfs 重挂为只读（见 srt_bwrap.sh）。
+const BWRAP_WRAPPER = fileURLToPath(new URL('./srt_bwrap.sh', import.meta.url));
 
 function parse_args(argv) {
   const args = {};
@@ -38,6 +40,11 @@ function shell_quote(value) {
   return `'${String(value).replaceAll("'", `'\\''`)}'`;
 }
 
+function use_bwrap(config, bwrap) {
+  process.env.DAGENT_SRT_BWRAP = bwrap;
+  config.bwrapPath = BWRAP_WRAPPER;
+}
+
 async function load_srt(entry) {
   if (!entry) fail('missing --srt entry');
   const url = pathToFileURL(entry).href;
@@ -50,7 +57,7 @@ function build_config(args, extra = {}) {
     filesystem: { denyRead: [], allowRead: [], allowWrite: [], denyWrite: [] },
     ...extra,
   };
-  if (args.bwrap) config.bwrapPath = args.bwrap;
+  if (args.bwrap) use_bwrap(config, args.bwrap);
   if (args.socat) config.socatPath = args.socat;
   if (args.rg) config.ripgrep = { command: args.rg };
   return config;
@@ -201,7 +208,7 @@ async function run(args) {
 
   let SandboxManager;
   const config = init.config ?? build_config(args);
-  if (args.bwrap && !config.bwrapPath) config.bwrapPath = args.bwrap;
+  if (args.bwrap && !config.bwrapPath) use_bwrap(config, args.bwrap);
   if (args.socat && !config.socatPath) config.socatPath = args.socat;
   if (args.rg && !config.ripgrep) config.ripgrep = { command: args.rg };
 
@@ -368,7 +375,7 @@ async function stdio(args) {
     return;
   }
   const config = init.config ?? build_config(args);
-  if (args.bwrap && !config.bwrapPath) config.bwrapPath = args.bwrap;
+  if (args.bwrap && !config.bwrapPath) use_bwrap(config, args.bwrap);
   if (args.socat && !config.socatPath) config.socatPath = args.socat;
   if (args.rg && !config.ripgrep) config.ripgrep = { command: args.rg };
 

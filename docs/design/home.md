@@ -41,7 +41,7 @@ home/
 ## 首次安装与升级
 
 安装仅补充缺失的用户资源，不覆盖已有配置、提示词、主题、Skill 或子 Agent 定义。
-二进制旁的 `libexec/srt_bridge.mjs`、`libexec/searxng_server.py` 随程序更新，
+二进制旁的 `libexec/srt_bridge.mjs`、`libexec/srt_bwrap.sh`、`libexec/searxng_server.py` 随程序更新，
 `libexec/dagent.apparmor` 按最终安装路径重新生成；这些是程序资源。更换后端路径后需重新部署对应 profile。
 源码的 `models.example.json`、`mcp.example.json` 安装为对应配置文件；本机真实认证文件不参与打包。
 模型、MCP 配置必须为 0600。数据库在第一次写入会话时创建，包括其父目录。
