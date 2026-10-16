@@ -57,7 +57,7 @@ std::size_t on_write(char* p, std::size_t size, std::size_t n, void* ud) {
                 (*t.on_data)(std::string_view(p, len));
             } catch (...) {
                 t.error = std::current_exception();
-                return CURL_WRITEFUNC_ERROR;
+                return len + 1; // 返回不同于输入的长度，以兼容 libcurl 7.68+ 的错误约定。
             }
         } else {
             t.resp.body.append(p, std::min(len, t.limit - std::min(t.limit, t.resp.body.size())));
@@ -66,7 +66,7 @@ std::size_t on_write(char* p, std::size_t size, std::size_t n, void* ud) {
     }
     if (t.resp.body.size() + len > t.limit) {
         t.too_large = true;
-        return CURL_WRITEFUNC_ERROR;
+        return len + 1;
     }
     t.resp.body.append(p, len);
     return len;
