@@ -91,11 +91,15 @@
   },
   "subagents": {
     "approval": {
-      "mode": "parent_when_unrestricted",
+      "mode": "parent_when_workspace_or_unrestricted",
       "max_reviews_per_turn": 16,
       "review_timeout_ms": 60000,
       "failure": "deny_with_feedback"
     }
+  },
+  "decision_review": {
+    "timeout_ms": 10000,
+    "threshold_profile": "default"
   },
   "web": {
     "timeout_ms": 120000,

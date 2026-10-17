@@ -164,6 +164,11 @@ struct Strings {
     std::string_view thought_closed;
     std::string_view cmd_thoughts;
     std::string_view status_hint;
+    // unrestricted 首次开启确认
+    std::string_view permission_unrestricted_title;
+    std::string_view permission_unrestricted_body;
+    std::string_view permission_enable;
+    std::string_view permission_cancel;
 };
 
 const Strings& text() noexcept;

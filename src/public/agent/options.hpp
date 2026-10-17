@@ -30,8 +30,15 @@ struct ProgressOptions {
     std::chrono::milliseconds interval{0}; ///< run 模式心跳、界面计时刷新
 };
 
+/// @brief 父模型复批的适用范围。
+enum class ParentReviewMode {
+    disabled,                 ///< 不做父模型审阅
+    unrestricted_only,        ///< 旧默认：仅父 unrestricted
+    workspace_and_unrestricted, ///< 新默认：auto-edit 与 unrestricted 都启用
+};
+
 struct ParentApprovalOptions {
-    bool parent_when_unrestricted = true;
+    ParentReviewMode mode = ParentReviewMode::workspace_and_unrestricted;
     int max_reviews_per_turn = 16;
     std::chrono::milliseconds review_timeout{60000};
 };

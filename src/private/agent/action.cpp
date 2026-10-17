@@ -45,4 +45,13 @@ ToolResult PreparedTool::execute(const ExecutionGrant& grant,
     }
 }
 
+// 默认不可用：只有 bash 提供运行中文件执行证据（计划 5.2）。
+std::expected<ScriptEvidence, DecisionError> PreparedTool::script_evidence(
+    const ScriptTarget&, std::chrono::system_clock::time_point, ReviewDeadline, std::stop_token) const {
+    ScriptEvidence evidence;
+    evidence.kind = ScriptEvidence::Kind::unavailable;
+    evidence.reason = "this tool does not provide script evidence";
+    return evidence;
+}
+
 } // namespace dagent::agent

@@ -15,7 +15,9 @@ namespace dagent::agent {
 class TurnRunner {
 public:
     /// @brief 执行一轮普通对话（模型 → 工具 → 回填），直到 Run 收尾。
-    RunOutcome run(Session&, Run&, const RunServices&, std::string input);
+    /// origin 区分真实用户输入与委派任务：只有 user 会更新审阅用的用户原话缓存。
+    RunOutcome run(Session&, Run&, const RunServices&, std::string input,
+                   UserInputOrigin origin = UserInputOrigin::user);
     /// @brief 手动压缩：不追加 user/turn_end，使用同一收尾约束。
     RunOutcome compact(Session&, Run&, const RunServices&);
 

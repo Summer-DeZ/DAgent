@@ -13,6 +13,7 @@
 #include <string_view>
 
 #include "agent/options.hpp"
+#include "agent/port_decision.hpp"
 #include "agent/skills.hpp"
 #include "agent/port_model.hpp"
 #include "agent/public_model.hpp"
@@ -55,6 +56,7 @@ public:
         storage::Options storage;
         std::string user_instructions;
         std::string system_prompt, compact_prompt; ///< 主会话提示词模板
+        std::shared_ptr<agent::DecisionServices> decision; ///< 决策审阅依赖；为空表示未配置
         runtime::SessionState initial;             ///< 启动权限档/只读/规划；model 空表示 default_model
         ModelSelection default_model;
         std::function<ModelSelection(const std::string&)> resolve_model;

@@ -22,12 +22,21 @@ struct RecoveryResult {
     WorkPlan plan; ///< 从 Todo View 重建的整份计划
     bool unfinished = false;          ///< 最后一轮没有 turn_end
     std::vector<ToolCall> open_calls; ///< unfinished 时尚未有结果的调用
+    /// 最近真实用户原话（最多 3 条，最新在末尾）；委派任务不计入。
+    std::vector<std::string> recent_user_messages;
+    /// 子会话初始化记录（主要任务与辅助用户原话）；旧会话缺失时保持为空。
+    bool has_delegation = false;
+    std::string delegated_task;
+    std::vector<std::string> delegated_user_messages;
+    /// 本会话用户已确认 unrestricted 警告；缺失（旧会话）表示未确认，不从旧 mode 反推。
+    bool unrestricted_acked = false;
 };
 
 class SessionRecovery {
 public:
     /// @brief 按 seq 升序的全部记录重建会话；非法历史抛 RecordError(corrupt)。
-    RecoveryResult restore(const std::vector<StoredRecord>& records) const;
+    /// child 表示子会话：旧 user 记录缺少 origin 时按会话身份判定来源。
+    RecoveryResult restore(const std::vector<StoredRecord>& records, bool child = false) const;
 };
 
 } // namespace dagent::agent

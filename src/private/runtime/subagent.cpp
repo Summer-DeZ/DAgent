@@ -83,18 +83,37 @@ public:
                 if (context_.parent_policy != nullptr) {
                     const auto parent = context_.parent_policy->authority_view();
                     approval.identity.parent_revision = parent.revision;
-                    if (parent.can_review() && context_.parent_reviewer != nullptr &&
+                    const bool gate_open = context_.review_gate == nullptr || context_.review_gate->enabled();
+                    if (gate_open && parent.can_review(context_.approval_mode) && context_.parent_reviewer != nullptr &&
                         *context_.parent_reviewer) {
                         approval.authority = agent::ApprovalAuthority::parent_model;
                         approval.authority_stop = parent.stop;
-                        // 创建时父可能尚未 unrestricted；首次代审后也须保留撤权依赖，
-                        // 覆盖运行中网络审批及随后命中的子会话授权。
-                        parent_review_stop_ =
-                            std::make_unique<std::stop_callback<std::function<void()>>>(
-                                parent.stop, [child_stop] { child_stop->request_stop(); });
-                        // 邮箱在父 Dispatcher 等待 task 时处理。拒绝、超时或撤权直接反馈，
-                        // 同一个请求绝不能降级为人工弹窗重新申请。
-                        return (*context_.parent_reviewer)(approval, stop);
+                        // 邮箱在父 Dispatcher 等待 task 时处理。父批准实际被消费后才建立撤权依赖；
+                        // 父拒绝、超时或模型失败转人工，不能把失败的父审阅 token 带到人工批准上。
+                        const agent::Decision decision = (*context_.parent_reviewer)(approval, stop);
+                        const bool approved = decision.answer == agent::Decision::Answer::allow ||
+                                              decision.answer == agent::Decision::Answer::allow_session;
+                        if (approved && (context_.review_gate == nullptr || context_.review_gate->enabled())) {
+                            parent_review_stop_ =
+                                std::make_unique<std::stop_callback<std::function<void()>>>(
+                                    parent.stop, [child_stop] { child_stop->request_stop(); });
+                            return decision;
+                        }
+                        if (decision.state == "cancelled" ||
+                            stop.stop_requested() || context_.stop.stop_requested() ||
+                            parent_authority_.stop_requested()) {
+                            return decision;
+                        }
+                        if (parent.stop.stop_requested() ||
+                            context_.parent_policy->revision() != parent.revision) {
+                            agent::Decision cancelled;
+                            cancelled.state = "cancelled";
+                            cancelled.feedback = "Parent authority changed during permission review.";
+                            return cancelled;
+                        }
+                        // 父拒绝、超时、预算耗尽或输出无效：保留父审阅记录，转人工；清除未生效的父审阅 token。
+                        approval.authority = agent::ApprovalAuthority::user;
+                        approval.authority_stop = {};
                     }
                 }
 
@@ -112,13 +131,14 @@ public:
         const agent::Asker asker{};
 
         agent::RunServices services{child_sink, approver, asker, nullptr, &instance_->resources(),
-                                    child_stop->get_token()};
+                                    child_stop->get_token(), context_.review_gate};
         agent::Run run;
 
         const auto began = std::chrono::steady_clock::now();
         session.begin_run(services, run);
         agent::TurnRunner runner;
-        const agent::RunOutcome outcome = runner.run(session, run, services, prompt_);
+        const agent::RunOutcome outcome = runner.run(session, run, services, prompt_,
+                                                     agent::UserInputOrigin::delegation);
         session.end_run();
         seconds_ = std::chrono::duration<double>(std::chrono::steady_clock::now() - began).count();
 
@@ -229,7 +249,7 @@ std::shared_ptr<std::stop_source> SubagentExecutor::attach(agent::Policy& policy
     const auto effective = policy.set_parent_cap(parent.permission.mode, parent.permission.read_only,
                                                  parent.permission.planning);
     children_.push_back({&policy, stop, effective, context.parent_policy, parent.revision,
-                         parent.can_review()});
+                         parent.can_review(context.approval_mode)});
     return stop;
 }
 

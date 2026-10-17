@@ -159,6 +159,15 @@ constexpr Strings kEnglish{
     .thought_closed = "+ Thought: {0:.1f}s",
     .cmd_thoughts = "Expand thoughts",
     .status_hint = "ctrl+p commands",
+    .permission_unrestricted_title = "开启 unrestricted 模式？",
+    .permission_unrestricted_body =
+        "命令将以你的用户权限直接在主机上执行，不经过沙箱，可以访问网络、"
+        "读写工作区之外的文件（包括 .ssh、.env 等敏感数据）。\n"
+        "除少数明显危险的系统命令外，不再进行任何审批。模型误操作或被网页内容诱导时，"
+        "可能删除数据、泄露信息或改动远端仓库，后果可能无法撤销。\n"
+        "仅在你信任当前任务、并能随时盯着会话时使用。",
+    .permission_enable = "开启",
+    .permission_cancel = "取消",
 };
 }
 

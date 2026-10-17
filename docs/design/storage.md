@@ -73,6 +73,21 @@ web 结果使用现有 tool 记录保存 `WebView` 和该次返回的正文，�
 
 父子会话各持独立的连接，并发写由 WAL + busy timeout 覆盖。整轮模型/工具执行不包在数据库事务里。
 
+## 3.1 决策审阅库
+
+`data/decision.sqlite` 独立保存决策审阅（与主会话库分开，缺它不影响会话恢复）：
+
+| 表 | 内容 |
+| --- | --- |
+| `reviews` | 审阅 ID、approval_request_id、会话/调用/执行关联、场景、版本键、实际 state 与问句、响应分数、阈值快照、结果、固定理由、耗时 |
+| `feedback` | 最终审批请求 ID、关联审阅 ID、最终来源与人工决定；主键去重，重启后不重放 |
+| `thresholds` | 版本键 + 场景/维度/方向 + 严格端/宽松端/当前值与 revision |
+| `fixed_thresholds` | `net_change_low` / `net_change_high` / `injection_limit` 等固定界限 |
+
+`finish()` 在一个事务内回填人工决定：只在恰好一个可调整检查不达标、分数处于两端之间时，
+批准向宽松端走 1 步、拒绝向严格端走 3 步（步长为两端之差的 1/10），并限制在端点内；
+多个失败检查、fixed 阈值、modify/unknown 与缺有效标定不参与调整。审阅链中任一项不可用、证据失败或缺失时也不归因更新；没有人工渠道、取消及撤权不算用户最终决定。
+
 ## 4. 写所有权
 
 同一 session_id 同时只允许一个可写执行者。`SessionWriteLease` 对安装根下 `run/session-locks/<id>.lock` 加 `flock`：

@@ -18,7 +18,7 @@ dagent --permissions ask "用 web_search 查找 Python 官方 urllib 文档，�
 `web_fetch` 直接通过只读 SRT 内的 curl 请求网页，不需要启动 SearXNG。
 
 ask/workspace 中，新网页目标需要网络审批。允许本会话访问后，web 和受限 bash 可复用同一 host:port 授权；
-ask 下 bash 命令本身仍可能需要审批。重定向的每个目标分别判定，`/permissions` 可撤销允许或拒绝规则。
+ask 下 bash 命令本身仍可能需要审批。重定向的每一跳重新判定（配置决策模型时每跳完整 URL 都重新审阅），`/permissions` 可撤销允许或拒绝规则；发现注入或扫描失败时该次抓取不返回正文。
 
 规划模式也可以联网调研：
 

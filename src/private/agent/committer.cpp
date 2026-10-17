@@ -55,9 +55,10 @@ void SessionCommitter::check_broken() {
                                error)});
 }
 
-std::int64_t SessionCommitter::commit_user(std::string text, const std::vector<SkillView>& skills) {
+std::int64_t SessionCommitter::commit_user(std::string text, const std::vector<SkillView>& skills,
+                                           UserInputOrigin origin) {
     const std::int64_t ordinal = conversation_.add_user(text);
-    append(record_codec::user(ordinal, text, skills));
+    append(record_codec::user(ordinal, text, skills, origin));
     check_broken();
     return ordinal;
 }
@@ -116,8 +117,25 @@ void SessionCommitter::commit_parent_review(const Approval& approval, const Deci
         (*sink_)(Notice{Notice::Level::info, record_codec::permission_summary(approval, decision), true});
 }
 
+void SessionCommitter::commit_auto_review(const AutoReview& event) {
+    append(record_codec::auto_review(event));
+    check_broken();
+    if (sink_ != nullptr) (*sink_)(event);
+}
+
+void SessionCommitter::commit_delegation_context(std::string_view task,
+                                                 const std::vector<std::string>& user_messages) {
+    append(record_codec::delegation_context(task, user_messages));
+    check_broken();
+}
+
 void SessionCommitter::commit_permission_revoked(std::string_view id) {
     append(record_codec::permission_revoked(id));
+}
+
+void SessionCommitter::commit_unrestricted_ack() {
+    append(record_codec::unrestricted_ack());
+    check_broken();
 }
 
 void SessionCommitter::commit_compaction(CompactionChange change) {

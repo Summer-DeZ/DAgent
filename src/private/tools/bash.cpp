@@ -7,12 +7,34 @@
 #include "base/text.hpp"
 #include "exec/shell.hpp"
 #include "tools/detail.hpp"
+#include "workspace/diff.hpp"
+#include "workspace/git.hpp"
 
 namespace dagent::tools {
 using detail::error_result;
 using detail::require_string;
 
 namespace {
+
+// 单文件脚本证据的正文上限（计划 5.2）：超过不截断，直接转后续审批。
+constexpr std::size_t kScriptReviewLineLimit = 300;
+
+// diff 正文行数：跳过 `---`/`+++` 文件头与 `@@` hunk 头，含上下文行。
+std::size_t count_diff_lines(std::string_view text) {
+    std::size_t lines = 0;
+    std::size_t index = 0;  // 当前行序号，前两行固定是文件头
+    std::size_t start = 0;
+    while (start < text.size()) {
+        const std::size_t newline = text.find('\n', start);
+        const std::size_t end = newline == std::string_view::npos ? text.size() : newline;
+        const std::string_view line = text.substr(start, end - start);
+        if (index >= 2 && !line.starts_with("@@ ") && !line.empty()) ++lines;
+        ++index;
+        if (newline == std::string_view::npos) break;
+        start = newline + 1;
+    }
+    return lines;
+}
 
 constexpr std::string_view kDescription = R"(Run a bash command in the workspace root.
 
@@ -29,7 +51,7 @@ public:
     BashCall(const Context& ctx, std::string command,
              exec::Analysis analysis, std::optional<std::chrono::milliseconds> timeout,
              std::string environment_name, exec::Environment environment)
-        : root_(ctx.root()), process_options_(ctx.process()),
+        : root_(ctx.root()), process_options_(ctx.process()), files_(ctx.files()),
           max_result_bytes_(ctx.options().max_result_bytes), collect_bytes_(ctx.options().bash_collect_bytes),
           srt_(ctx.options().srt), sandbox_state_root_(ctx.options().sandbox_state_root),
           sandbox_options_(ctx.options().sandbox), command_(std::move(command)),
@@ -54,6 +76,30 @@ public:
                                            : impact.kind == exec::ImpactKind::network ? agent::ImpactKind::network
                                                                                       : agent::ImpactKind::special;
             cmd.impacts.push_back(agent::CommandImpact{kind, impact.target, impact.reason, impact.dynamic});
+        }
+        // 只存中立值：目标脚本与只读读取路径按工作区根解析成绝对路径。
+        const auto to_absolute = [this](const std::string& raw) {
+            return workspace::resolve(root_, raw).path;
+        };
+        const bool changes_cwd = analysis_.cwd_unknown || std::ranges::any_of(analysis_.commands, [](const auto& c) {
+            return !c.argv.empty() && c.argv.front() == "cd";
+        });
+        cmd.script_targets.reserve(analysis_.script_targets.size());
+        cmd.has_unresolved_execution = analysis_.has_unresolved_execution;
+        for (const exec::ScriptTarget& target : analysis_.script_targets) {
+            if (changes_cwd && !std::filesystem::path(target.path).is_absolute()) {
+                cmd.has_unresolved_execution = true;
+                continue; // 不拿工作区根下的同名文件替代实际执行目标。
+            }
+            cmd.script_targets.push_back(agent::ScriptTarget{to_absolute(target.path), target.command_index});
+        }
+        for (const std::string& raw : exec::readonly_read_paths(analysis_)) {
+            if (changes_cwd && !std::filesystem::path(raw).is_absolute()) continue;
+            const auto resolved = workspace::resolve(root_, raw);
+            std::error_code ec;
+            const bool directory = std::filesystem::is_directory(resolved.path, ec);
+            cmd.read_paths.push_back(resolved.path);
+            intent_.paths.push_back({resolved.path, agent::Access::read, resolved.inside_workspace, directory});
         }
         intent_.command = std::move(cmd);
         auto line = command_;
@@ -197,8 +243,92 @@ private:
         return result;
     }
 
+    // 运行中复审用的单目标文件证据：只读文件系统与不可变成员，不修改对象状态。
+    std::expected<agent::ScriptEvidence, agent::DecisionError> script_evidence(
+        const agent::ScriptTarget& target, std::chrono::system_clock::time_point session_started,
+        agent::ReviewDeadline deadline, std::stop_token stop) const override {
+        agent::ScriptEvidence evidence;
+        evidence.target = target.path;
+
+        std::error_code ec;
+        const std::filesystem::file_time_type mtime = std::filesystem::last_write_time(target.path, ec);
+        if (ec) {
+            evidence.kind = agent::ScriptEvidence::Kind::unavailable;
+            evidence.reason = "the script file cannot be read";
+            return evidence;
+        }
+
+        // 会话开始时间是 system_clock；换算到文件时钟后与 mtime 用同一口径比较。
+        const auto since_start = std::chrono::system_clock::now() - session_started;
+        const std::filesystem::file_time_type session_file =
+            std::filesystem::file_time_type::clock::now() -
+            std::chrono::duration_cast<std::filesystem::file_time_type::duration>(since_start);
+        if (mtime <= session_file) {
+            evidence.kind = agent::ScriptEvidence::Kind::unchanged;
+            return evidence;
+        }
+
+        const auto unreadable = [&evidence](std::string reason) {
+            evidence.kind = agent::ScriptEvidence::Kind::unavailable;
+            evidence.reason = std::move(reason);
+        };
+        const workspace::HeadDiff head = workspace::head_diff(target.path, deadline, stop);
+        if (!head.error.empty()) {
+            if (head.error != "not a git repository") {
+                unreadable(head.error);
+            } else {
+                // 不在 Git 仓库：退回全文，按全文行数计。
+                try {
+                    const workspace::TextFile file = workspace::read_text(target.path, files_);
+                    evidence.kind = agent::ScriptEvidence::Kind::full_text;
+                    evidence.text = file.content;
+                    evidence.content_lines = detail::count_lines(evidence.text);
+                    if (file.truncated) unreadable("the script exceeds the complete-read limit");
+                } catch (const workspace::WorkspaceError& e) {
+                    unreadable(e.kind() == workspace::WorkspaceError::Kind::not_text
+                                   ? "binary file"
+                                   : "the script file cannot be read");
+                }
+            }
+        } else if (!head.tracked) {
+            // 未跟踪：按整体新增生成 diff。
+            try {
+                const workspace::TextFile file = workspace::read_text(target.path, files_);
+                evidence.kind = agent::ScriptEvidence::Kind::diff;
+                evidence.text = workspace::unified_diff({}, file.content, target.path.string()).text;
+                evidence.content_lines = count_diff_lines(evidence.text);
+                if (file.truncated) unreadable("the script exceeds the complete-read limit");
+            } catch (const workspace::WorkspaceError& e) {
+                unreadable(e.kind() == workspace::WorkspaceError::Kind::not_text
+                               ? "binary file"
+                               : "the script file cannot be read");
+            }
+        } else if (!head.text.empty()) {
+            evidence.kind = agent::ScriptEvidence::Kind::diff;
+            evidence.text = head.text;
+            evidence.content_lines = head.content_lines;
+        } else {
+            evidence.kind = agent::ScriptEvidence::Kind::diff; // mtime 已修改；空 HEAD diff 仍属于复审。
+        }
+
+        if (evidence.content_lines > kScriptReviewLineLimit) {
+            evidence.kind = agent::ScriptEvidence::Kind::too_large;
+            evidence.text.clear();
+            evidence.reason = "the script diff exceeds the 300-line review limit";
+        }
+
+        const bool expired = deadline <= std::chrono::steady_clock::now();
+        if (expired || stop.stop_requested()) {
+            evidence.kind = agent::ScriptEvidence::Kind::unavailable;
+            evidence.text.clear();
+            evidence.reason = expired ? "review deadline exceeded" : "review cancelled";
+        }
+        return evidence;
+    }
+
     std::filesystem::path root_;
     exec::Options process_options_;
+    workspace::FileOptions files_;
     std::size_t max_result_bytes_ = 0;
     std::size_t collect_bytes_ = 0;
     std::optional<exec::SrtRuntime> srt_;

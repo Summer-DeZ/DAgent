@@ -13,6 +13,8 @@
 #include "exec/shell.hpp"
 #include "storage/storage.hpp"
 
+#include <ctime>
+
 namespace dagent::app {
 namespace {
 
@@ -26,7 +28,33 @@ struct SessionSpec {
     std::string prompt_template;
     bool child = false;
     std::optional<std::vector<std::string>> allowed_tools; ///< 未指定表示不收窄
+    std::chrono::system_clock::time_point session_started{std::chrono::system_clock::now()};
+    std::vector<std::string> recent_user_messages;   ///< 主会话恢复出的真实用户原话
+    std::string delegated_task;                      ///< 子会话主要依据
+    std::vector<std::string> delegated_user_messages;///< 子会话辅助参考原话
+    /// 启动即以 unrestricted 时，降为 workspace 后保留的待确认目标；空表示无。
+    std::optional<agent::PermissionMode> pending_permission;
+    bool unrestricted_acked = false; ///< 恢复出的本会话确认事实
 };
+
+/// @brief 会话记录里的创建时间（ISO8601 UTC，毫秒）；无法解析时退回当前时间。
+std::chrono::system_clock::time_point parse_created(std::string_view text) {
+    std::tm utc{};
+    int year = 0, month = 0, day = 0, hour = 0, minute = 0, second = 0, millis = 0;
+    if (std::sscanf(std::string(text).c_str(), "%d-%d-%dT%d:%d:%d.%dZ", &year, &month, &day, &hour,
+                    &minute, &second, &millis) == 7) {
+        utc.tm_year = year - 1900;
+        utc.tm_mon = month - 1;
+        utc.tm_mday = day;
+        utc.tm_hour = hour;
+        utc.tm_min = minute;
+        utc.tm_sec = second;
+        const std::time_t raw = ::timegm(&utc);
+        if (raw != static_cast<std::time_t>(-1))
+            return std::chrono::system_clock::from_time_t(raw) + std::chrono::milliseconds(millis);
+    }
+    return std::chrono::system_clock::now();
+}
 
 std::string render_prompt(const SessionAssembly::Options& base, const SessionSpec& spec,
                           const workspace::Environment& env) {
@@ -84,8 +112,15 @@ agent::SessionConfig make_session_config(const SessionAssembly::Options& base, S
     config.permission_mode = spec.state.mode;
     config.read_only = spec.state.read_only;
     config.planning = spec.state.planning;
+    config.unrestricted_acked = spec.unrestricted_acked;
+    config.pending_permission = spec.pending_permission;
     config.is_main = !spec.child;
     config.shell_analysis_version = exec::kShellAnalysisVersion;
+    config.decision = base.decision;
+    config.session_started = spec.session_started;
+    config.recent_user_messages = spec.recent_user_messages;
+    config.delegated_task = spec.delegated_task;
+    config.delegated_user_messages = spec.delegated_user_messages;
     return config;
 }
 
@@ -178,6 +213,8 @@ SessionSpec derive_child(const SessionAssembly::Options& base, const agent::Suba
         return !def.tools && name.starts_with("mcp__"); // 默认不含 MCP 工具
     });
     spec.allowed_tools = std::move(allowed);
+    spec.delegated_task = context.delegated_task;
+    spec.delegated_user_messages = context.user_messages;
     return spec;
 }
 
@@ -192,9 +229,17 @@ struct SessionAssembly::Impl {
     }
 
     /// @brief 顶层会话的差异：state 为空用启动初值；model_name 优先于 state 里的模型名。
-    SessionSpec top_level(const std::optional<runtime::SessionState>& state, std::string_view model_name) const {
+    /// 目标为 unrestricted 且本会话尚未确认时，先降为 workspace 并把 unrestricted 记为待确认，
+    /// 保证弹窗前不执行用户请求、提示词也按沙箱目标渲染（启动、恢复、新建、显式切换同此路径）。
+    SessionSpec top_level(const std::optional<runtime::SessionState>& state, std::string_view model_name,
+                          bool unrestricted_acked = false) const {
         SessionSpec spec;
         spec.state = state.value_or(options.initial);
+        spec.unrestricted_acked = unrestricted_acked;
+        if (spec.state.mode == agent::PermissionMode::unrestricted && !unrestricted_acked) {
+            spec.pending_permission = agent::PermissionMode::unrestricted;
+            spec.state.mode = agent::PermissionMode::workspace;
+        }
         spec.model = pick(!model_name.empty() ? std::string(model_name) : spec.state.model);
         spec.agent = options.agent;
         spec.prompt_template = options.system_prompt;
@@ -278,6 +323,7 @@ struct SessionAssembly::Impl {
             log_assembly()->error("Failed to write the session record: {}", session.committer().error());
         log_assembly()->info("子会话已创建：id={} agent={} model={}", session.meta().id, meta.agent_name,
                              session.meta().model);
+        session.committer().commit_delegation_context(context.delegated_task, context.user_messages);
         return instance;
     }
 
@@ -291,14 +337,22 @@ struct SessionAssembly::Impl {
         auto store = storage::open_store(options.storage);
         const std::int64_t upper = store->max_seq(session_id);
         std::vector<agent::StoredRecord> records = store->read_records(session_id, 0, upper + 1);
-        agent::SessionRecovery recovery;
-        agent::RecoveryResult restored = recovery.restore(records);
-
-        SessionSpec spec = top_level(state, model_name);
-        std::string system_prompt = render_prompt(options, spec, options.environment);
-        agent::SessionConfig config = make_session_config(options, spec, std::move(system_prompt));
         auto journal = store->open_writer_resume(session_id);
         agent::SessionMeta meta = journal->meta();
+
+        agent::SessionRecovery recovery;
+        agent::RecoveryResult restored = recovery.restore(records, !meta.parent_id.empty());
+
+        SessionSpec spec = top_level(state, model_name, restored.unrestricted_acked);
+        // 恢复会话继续使用原会话创建时间，避免把恢复前的 Agent 修改当作未修改。
+        spec.session_started = parse_created(meta.created);
+        if (!spec.child) spec.recent_user_messages = restored.recent_user_messages;
+        if (restored.has_delegation) {
+            spec.delegated_task = restored.delegated_task;
+            spec.delegated_user_messages = restored.delegated_user_messages;
+        }
+        std::string system_prompt = render_prompt(options, spec, options.environment);
+        agent::SessionConfig config = make_session_config(options, spec, std::move(system_prompt));
         const std::string previous_model = restored.model.empty() ? meta.model : restored.model;
 
         auto instance = make_instance(spec, std::move(config), std::move(meta), std::move(journal),

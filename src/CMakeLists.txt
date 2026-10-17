@@ -97,6 +97,7 @@ add_library(dagent_workspace STATIC
     private/workspace/files.cpp
     private/workspace/search.cpp
     private/workspace/diff.cpp
+    private/workspace/git.cpp
     private/workspace/context.cpp
 )
 
@@ -111,6 +112,7 @@ target_link_libraries(dagent_workspace
 # 会话存储：单个 SQLite 数据库、脱敏、按 cwd 列表与顺序回放。
 add_library(dagent_storage STATIC
     private/storage/storage.cpp
+    private/storage/decision_store.cpp
     public/lib/sqlite/sqlite3.c
 )
 
@@ -196,6 +198,7 @@ add_library(dagent_agent STATIC
     private/agent/catalog.cpp
     private/agent/committer.cpp
     private/agent/record_codec.cpp
+    private/agent/decision_review.cpp
     private/agent/history.cpp
     private/agent/recovery.cpp
     private/agent/session.cpp
@@ -224,6 +227,8 @@ add_library(dagent_llm STATIC
     private/llm/provider_chat.cpp
     private/llm/provider_anthropic.cpp
     private/llm/provider_ollama.cpp
+    private/llm/decision_provider.cpp
+    private/llm/decision_systemone.cpp
 )
 
 target_include_directories(dagent_llm PUBLIC ${CMAKE_SOURCE_DIR}/src/public)

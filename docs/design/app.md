@@ -127,6 +127,30 @@ web 工具的传输超时和正文预算来自独立的 `web` 段，输出上限
 模型输出预算统一设置在 `models.json` 每个模型的 `max_tokens`，必须大于 0；禁止通过 `extra_body` 再提供输出预算。
 Chat 编码为 `max_completion_tokens`，Anthropic 编码为 `max_tokens`，Ollama 编码为 `options.num_predict`。
 
+### 决策审阅配置
+
+`config/models.json` 增加决策目录与选择（不影响生成模型的 `default`、`models` 与 `--model` 语义）：
+
+```json
+{
+  "decision": null,
+  "decision_models": {
+    "d3-local": {"kind": "systemone", "endpoint": "http://127.0.0.1:10006/v1/systemone",
+                 "model": "d3", "model_revision": "deployment-1"}
+  }
+}
+```
+
+`config/config.json` 的行为配置：
+
+```json
+{"decision_review": {"timeout_ms": 10000, "threshold_profile": "default"}}
+```
+
+`decision` 缺省或 null 表示禁用；命名不存在的条目或不支持的 kind 报配置错误。阈值数据在
+`data/decision.sqlite`，`threshold_profile` 用于正式与临时配置分开；阈值按 endpoint、协议 kind、
+适配器版本、model、model_revision、问句版本与 profile 隔离。
+
 ## 3. 工作目录与项目根
 
 `Args::cwd` 是 `-C` 指定目录或进程启动目录，工具路径、沙箱和会话列表都以它为准。`project_root(cwd)` 仍用于

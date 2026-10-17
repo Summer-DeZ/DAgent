@@ -19,7 +19,7 @@ enum class SandboxProfile { read_only, workspace_write, full_access };
 /// 授权来源。
 enum class GrantSource { mode, once, session, unrestricted };
 
-enum class ApprovalAuthority { user, parent_model };
+enum class ApprovalAuthority { user, parent_model, decision_model };
 std::string_view to_string(ApprovalAuthority);
 
 /// 审批与执行的关联身份；只读回放，不能从记录恢复权限。
@@ -45,6 +45,37 @@ enum class NetworkAction {
 /// 由调度器提供的运行中网络判定；只在上层显式接入时存在，为空表示全部拒绝。
 using NetworkDecider = std::function<NetworkAction(const NetworkTarget&, std::string& reason, std::stop_token)>;
 
+/// @brief web_fetch 的一跳请求意图：完整 URL、目标与重定向序号（初始为 0）。
+struct WebRequestIntent {
+    std::string url;
+    NetworkTarget target;
+    std::size_t redirect_index = 0;
+};
+
+/// @brief 一跳请求的访问结果：决定 + 绑定当前 URL 审阅结果的网络回调。
+struct WebRequestAccess {
+    NetworkAction action = NetworkAction::deny;
+    std::string reason;
+    NetworkDecider network_decider; ///< 仅这一跳使用；同一操作不再调用一次决策模型
+};
+
+/// @brief 结果扫描输入：准备交付的 fetch 结果。
+struct WebScanInput {
+    std::string url;
+    std::string result_text;
+};
+
+/// @brief 结果扫描结果；正文是否交付给模型由它决定。
+struct ScanResult {
+    enum class Kind { clean, injection, unavailable, cancelled, bypass };
+    Kind kind = Kind::unavailable;
+    std::string record_id;
+    std::string message;
+};
+
+using WebRequestDecider = std::function<WebRequestAccess(const WebRequestIntent&, std::stop_token)>;
+using WebResultScanner = std::function<ScanResult(const WebScanInput&, std::stop_token)>;
+
 /// @brief 一次执行的决定，授权后传回工具执行。
 struct ExecutionGrant {
     SandboxProfile sandbox = SandboxProfile::workspace_write; ///< 只对 bash 有意义
@@ -67,6 +98,9 @@ struct ExecutionGrant {
     std::vector<std::string> network_targets;
     /// 运行中网络判定入口；不写入会话记录，只在本执行存续期内有效。
     NetworkDecider network_decider;
+    /// web_fetch 逐跳 URL 审阅与结果扫描入口；同样只在本执行存续期内有效。
+    WebRequestDecider web_request_decider;
+    WebResultScanner web_result_scanner;
     std::uint64_t revision = 0;
     std::vector<std::filesystem::path> read_exceptions; ///< Explicitly approved protected targets only
 };

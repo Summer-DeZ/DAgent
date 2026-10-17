@@ -77,7 +77,28 @@ ApprovalAuthority parse_authority(std::string_view type, const json& payload) {
     const std::string authority = string_field(type, payload, "authority");
     if (authority == "user") return ApprovalAuthority::user;
     if (authority == "parent_model") return ApprovalAuthority::parent_model;
+    if (authority == "decision_model") return ApprovalAuthority::decision_model;
     corrupt(type, "unknown approval authority");
+}
+
+std::string_view approval_scope_name(Approval::Scope scope) {
+    switch (scope) {
+    case Approval::Scope::operation: return "operation";
+    case Approval::Scope::exact_file_read: return "exact_file_read";
+    case Approval::Scope::network_target: return "network_target";
+    case Approval::Scope::web_request: return "web_request";
+    case Approval::Scope::mcp_action: return "mcp_action";
+    }
+    return "operation";
+}
+
+Approval::Scope parse_approval_scope(std::string_view type, std::string_view value) {
+    if (value == "operation") return Approval::Scope::operation;
+    if (value == "exact_file_read") return Approval::Scope::exact_file_read;
+    if (value == "network_target") return Approval::Scope::network_target;
+    if (value == "web_request") return Approval::Scope::web_request;
+    if (value == "mcp_action") return Approval::Scope::mcp_action;
+    corrupt(type, "unknown approval scope");
 }
 
 ApprovalIdentity parse_identity(std::string_view type, const json& value) {
@@ -106,7 +127,7 @@ std::string decision_state(const Decision& decision) {
 std::string decision_scope(const Approval& approval, const Decision& decision) {
     if (!allowed(decision)) return "none";
     if (decision.answer == Decision::Answer::allow) return "one_call";
-    return approval.identity.child_session_id.empty() ? "session" : "child_session";
+    return approval.identity.parent_session_id.empty() ? "session" : "child_session";
 }
 
 } // namespace
@@ -115,8 +136,9 @@ Record system(std::string_view text, std::string_view model) {
     return {"system", json{{"schema", 1}, {"text", text}, {"model", model}}};
 }
 
-Record user(std::int64_t n, std::string_view text, const std::vector<SkillView>& skills) {
-    json payload{{"n", n}, {"text", text}};
+Record user(std::int64_t n, std::string_view text, const std::vector<SkillView>& skills,
+            UserInputOrigin origin) {
+    json payload{{"n", n}, {"text", text}, {"origin", origin == UserInputOrigin::user ? "user" : "delegation"}};
     if (!skills.empty()) {
         payload["skills"] = json::array();
         for (const auto& skill : skills)
@@ -159,8 +181,10 @@ Record tool(std::int64_t n, const ToolCall& call, std::string_view summary, cons
 }
 
 std::string permission_summary(const Approval& approval, const Decision& decision) {
-    std::string text = std::format("{} permission {}: {} [{}]",
-        approval.authority == ApprovalAuthority::parent_model ? "Parent model" : "User",
+    const std::string_view source = approval.authority == ApprovalAuthority::parent_model ? "Parent model"
+                                       : approval.authority == ApprovalAuthority::decision_model ? "Auto-review"
+                                                                                                : "User";
+    std::string text = std::format("{} permission {}: {} [{}]", source,
         decision_state(decision), approval.tool.empty() ? approval.call_id : approval.tool,
         decision_scope(approval, decision));
     if (!approval.agent.empty()) text += " via " + approval.agent;
@@ -211,7 +235,9 @@ Record permission(const Approval& approval, const Decision& decision, const Exec
                               {"dangerous", command.dangerous}, {"impacts", std::move(impacts)}};
     }
     const auto& identity = approval.identity;
-    json payload{{"schema", 4},
+    json reviews = json::array();
+    for (const std::string& id : approval.review_ids) reviews.push_back(id);
+    json payload{{"schema", 5},
                                {"call_id", approval.call_id},
                                {"answer", answer_name(decision.answer)},
                                {"rule", approval.session_rule},
@@ -222,6 +248,8 @@ Record permission(const Approval& approval, const Decision& decision, const Exec
                                {"partially_executed", approval.partially_executed},
                                {"requests", requests},
                                {"authority", to_string(approval.authority)},
+                               {"approval_scope", approval_scope_name(approval.scope)},
+                               {"review_ids", std::move(reviews)},
                                {"identity", {{"request_id", identity.request_id},
                                               {"parent_session_id", identity.parent_session_id},
                                               {"child_session_id", identity.child_session_id},
@@ -253,6 +281,26 @@ Record parent_review(const Approval& approval, const Decision& decision) {
     Record record = permission(approval, decision);
     record.type = "parent_review";
     return record;
+}
+
+Record auto_review(const AutoReview& event) {
+    json reviews = json::array();
+    for (const std::string& id : event.review_ids) reviews.push_back(id);
+    return {"auto_review", json{{"schema", 1},
+                                {"call_id", event.call_id},
+                                {"review_ids", std::move(reviews)},
+                                {"result", event.result},
+                                {"reason", event.reason}}};
+}
+
+Record delegation_context(std::string_view task, const std::vector<std::string>& user_messages) {
+    json messages = json::array();
+    for (const std::string& message : user_messages) messages.push_back(message);
+    return {"delegation_context", json{{"schema", 1}, {"task", task}, {"user_messages", std::move(messages)}}};
+}
+
+Record unrestricted_ack() {
+    return {"unrestricted_ack", json{{"schema", 1}}};
 }
 
 Record permission_revoked(std::string_view id) {
@@ -307,6 +355,13 @@ DecodedRecord decode(std::string_view type, const nlohmann::json& payload) {
                 require_object(type, skill);
                 record.skills.push_back({string_field(type, skill, "name"), string_field(type, skill, "path")});
             }
+        }
+        if (const auto origin = payload.find("origin"); origin != payload.end() && !origin->is_null()) {
+            if (!origin->is_string()) corrupt(type, "origin must be a string");
+            const std::string value = origin->get<std::string>();
+            if (value == "user") record.origin = UserInputOrigin::user;
+            else if (value == "delegation") record.origin = UserInputOrigin::delegation;
+            else corrupt(type, "unknown user origin");
         }
         return record;
     }
@@ -408,8 +463,8 @@ DecodedRecord decode(std::string_view type, const nlohmann::json& payload) {
     if (type == "permission" || type == "parent_review") {
         const int schema = integer_field(type, payload, "schema");
         // schema 2 的 network 布尔已由显式请求范围取代；旧记录只读回放，忽略该字段。
-        if (schema != 2 && schema != 3 && schema != 4) corrupt(type, "unknown schema");
-        if (type == "parent_review" && schema != 4) corrupt(type, "unknown parent review schema");
+        if (schema != 2 && schema != 3 && schema != 4 && schema != 5) corrupt(type, "unknown schema");
+        if (type == "parent_review" && schema != 4 && schema != 5) corrupt(type, "unknown parent review schema");
         (void)string_field(type, payload, "cwd");
         (void)string_field(type, payload, "mode");
         (void)bool_field(type, payload, "partially_executed");
@@ -437,7 +492,7 @@ DecodedRecord decode(std::string_view type, const nlohmann::json& payload) {
                 approval.requests.push_back({Approval::Request::Kind::host_access,
                     request["target"].get<std::string>(), request["reason"].get<std::string>()});
         }
-        if (schema == 4) {
+        if (schema >= 4) {
             record.authority = parse_authority(type, payload);
             const auto identity = payload.find("identity");
             if (identity == payload.end()) corrupt(type, "missing approval identity");
@@ -478,10 +533,55 @@ DecodedRecord decode(std::string_view type, const nlohmann::json& payload) {
             record.state = decision_state(decision);
             record.scope = decision_scope(approval, decision);
         }
+        if (schema >= 5) {
+            record.approval_scope = string_field(type, payload, "approval_scope");
+            (void)parse_approval_scope(type, record.approval_scope);
+            const auto review_ids = payload.find("review_ids");
+            if (review_ids == payload.end() || !review_ids->is_array())
+                corrupt(type, "review_ids must be an array");
+            for (const auto& value : *review_ids) {
+                if (!value.is_string()) corrupt(type, "review_ids entries must be strings");
+                record.review_ids.push_back(value.get<std::string>());
+            }
+        } else {
+            record.approval_scope = "operation";
+        }
         record.audit = payload;
         record.summary = permission_summary(approval, decision);
         if (type == "parent_review") return ParentReviewRecord{std::move(record)};
         return record;
+    }
+    if (type == "auto_review") {
+        if (integer_field(type, payload, "schema") != 1) corrupt(type, "unknown schema");
+        AutoReviewRecord record;
+        record.call_id = string_field(type, payload, "call_id");
+        record.result = string_field(type, payload, "result");
+        record.reason = string_field(type, payload, "reason");
+        const auto review_ids = payload.find("review_ids");
+        if (review_ids == payload.end() || !review_ids->is_array())
+            corrupt(type, "review_ids must be an array");
+        for (const auto& value : *review_ids) {
+            if (!value.is_string()) corrupt(type, "review_ids entries must be strings");
+            record.review_ids.push_back(value.get<std::string>());
+        }
+        return record;
+    }
+    if (type == "delegation_context") {
+        if (integer_field(type, payload, "schema") != 1) corrupt(type, "unknown schema");
+        DelegationContextRecord record;
+        record.task = string_field(type, payload, "task");
+        const auto messages = payload.find("user_messages");
+        if (messages == payload.end() || !messages->is_array())
+            corrupt(type, "user_messages must be an array");
+        for (const auto& value : *messages) {
+            if (!value.is_string()) corrupt(type, "user_messages entries must be strings");
+            record.user_messages.push_back(value.get<std::string>());
+        }
+        return record;
+    }
+    if (type == "unrestricted_ack") {
+        if (integer_field(type, payload, "schema") != 1) corrupt(type, "unknown schema");
+        return UnrestrictedAckRecord{};
     }
     if (type == "permission_revoked") {
         if (integer_field(type, payload, "schema") != 1) corrupt(type, "unknown schema");

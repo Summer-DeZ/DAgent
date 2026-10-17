@@ -2,11 +2,13 @@
 /// @brief 一轮运行所需的外部能力与共享资源；不含配置、终端、数据库路径或查找任意对象的方法。
 #pragma once
 
+#include <memory>
 #include <stdexcept>
 #include <stop_token>
 #include <string>
 #include <string_view>
 
+#include "agent/decision_types.hpp"
 #include "agent/events.hpp"
 #include "agent/port_delegation.hpp"
 
@@ -45,6 +47,8 @@ struct RunServices {
     DelegationChannel* delegation = nullptr;
     SessionResources* resources = nullptr;
     std::stop_token stop;
+    /// 本轮（含所有子 Agent）共享的自动审批开关；为空表示不参与决策代批。
+    std::shared_ptr<RunReviewGate> review_gate;
 };
 
 } // namespace dagent::agent

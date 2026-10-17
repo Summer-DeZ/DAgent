@@ -3,6 +3,7 @@
 #include <algorithm>
 #include <atomic>
 #include <cassert>
+#include <chrono>
 #include <format>
 #include <map>
 #include <future>
@@ -17,6 +18,7 @@
 
 #include "agent/catalog.hpp"
 #include "agent/committer.hpp"
+#include "agent/decision_review.hpp"
 #include "agent/permission.hpp"
 #include "agent/parent_review.hpp"
 #include "base/log.hpp"
@@ -69,7 +71,8 @@ ActionDispatcher::Outcome ActionDispatcher::dispatch(const std::vector<ToolCall>
     const Approver parent_reviewer = [&](Approval& approval, std::stop_token child_stop) {
         return reviewer.submit(mailbox, approval, child_stop);
     };
-    control.set_parent_reviewer(session_.config().options.approval.parent_when_unrestricted ? &parent_reviewer : nullptr);
+    control.set_parent_reviewer(
+        session_.config().options.approval.mode != ParentReviewMode::disabled ? &parent_reviewer : nullptr);
     struct ResetReviewer {
         ControlActionExecutor& control;
         ~ResetReviewer() { control.set_parent_reviewer(nullptr); }
@@ -211,7 +214,58 @@ ActionDispatcher::Outcome ActionDispatcher::dispatch(const std::vector<ToolCall>
         slot.execution.reset();
     };
 
-    // 运行中网络判定：先查配置/会话规则；需要时走现有审批器；同一执行内同目标只问一次。
+    // 决策审阅：只有配置了决策模型、且本轮自动审批未被关闭时才尝试代批（计划 2.2/2.9）。
+    const std::shared_ptr<DecisionServices>& decisions = session_.decision();
+    const bool decision_ready = decisions != nullptr && decisions->enabled();
+    std::optional<DecisionReviewer> decision_reviewer;
+    const ReviewContext review_context = session_.review_context();
+    if (decision_ready) decision_reviewer.emplace(*decisions, review_context, root_turn_id_);
+    const auto gate_open = [&] {
+        return services_.review_gate == nullptr || services_.review_gate->enabled();
+    };
+    /// 决策模型可用于本会话：只在 auto-edit（workspace、无只读/规划上限）下代批；
+    /// unrestricted、ask、只读/规划保持原有语义（计划 §2.3/§3）。
+    /// 子会话 may_ask=false（无人工出口）时也不能借它新增权限。
+    const auto decision_allowed = [&] {
+        if (decisions == nullptr) return false;
+        if (!session_.is_main() && !services_.approver) return false;
+        const EffectivePermission live = policy.effective();
+        return live.mode == PermissionMode::workspace && !live.read_only && !live.planning;
+    };
+    const auto review_deadline = [&] {
+        return std::chrono::steady_clock::now() +
+               (decisions != nullptr ? decisions->options.timeout : std::chrono::milliseconds{10000});
+    };
+    const auto commit_auto_review = [&](const std::string& call_id, std::vector<std::string> review_ids,
+                                        std::string_view result, std::string reason) {
+        AutoReview event;
+        event.call_id = call_id;
+        event.review_ids = std::move(review_ids);
+        event.result = std::string(result);
+        event.reason = std::move(reason);
+        committer.commit_auto_review(event);
+    };
+    /// 人工最终决定回填：只有用户明确批准/拒绝才更新动态阈值；父复批与取消不调整。
+    const auto commit_feedback = [&](const Approval& approval, const Decision& decision) {
+        if (!decision_ready || decisions->store == nullptr) return;
+        if (approval.authority != ApprovalAuthority::user) return;
+        if (decision.state != "approved" &&
+            !(decision.state == "denied" && decision.explicit_denial)) return;
+        ReviewFeedback feedback;
+        feedback.approval_request_id = approval.identity.request_id;
+        feedback.review_ids = approval.review_ids;
+        feedback.final_authority = approval.authority;
+        feedback.user_decided = true;
+        feedback.approved = decision.answer == Decision::Answer::allow ||
+                            decision.answer == Decision::Answer::allow_session;
+        try {
+            decisions->store->finish(feedback);
+        } catch (const std::exception& error) {
+            log_agent()->warn("决策审阅反馈保存失败：{}", error.what());
+        }
+    };
+
+    // 运行中网络判定：先查配置/会话拒绝；需要时做脚本强制复审与 d3 代批；再走现有审批器。
     // Dispatcher consumes requests from the execution mailbox and owns approval/journal calls.
     const auto make_network_decider = [&](std::size_t index) {
         auto decided = std::make_shared<std::map<std::string, std::pair<std::uint64_t, NetworkAction>>>();
@@ -237,36 +291,182 @@ ActionDispatcher::Outcome ActionDispatcher::dispatch(const std::vector<ToolCall>
                 if (action == NetworkAction::cancel) return cancel();
                 return action;
             };
-            const Policy::NetworkDecision verdict = policy.check_network(target);
+
+            const Policy::NetworkRules rules = policy.inspect_network(target);
             if (policy.revision() != request_revision) {
                 reason = "permission changed during network authorization";
                 return cancel();
             }
-            if (verdict.kind == Policy::NetworkDecision::Kind::allow)
-                return remember(NetworkAction::allow, true);
-            if (verdict.kind == Policy::NetworkDecision::Kind::deny) {
-                reason = verdict.reason;
+            if (rules.match == Policy::NetworkRules::Match::denied) {
+                reason = rules.reason;
                 return remember(NetworkAction::deny);
             }
-            if (!services_.approver) {
-                reason = "runtime network approval is unavailable in this run";
-                return remember(NetworkAction::deny);
-            }
+
             Slot& slot = slots[index];
+            const auto* tool = std::get_if<std::unique_ptr<PreparedTool>>(&slot.action.value());
+            const PreparedIntent empty_intent;
+            const PreparedIntent& intent = tool != nullptr ? (*tool)->intent() : empty_intent;
+            const CommandIntent* command = intent.command ? &*intent.command : nullptr;
+            const bool has_targets = command != nullptr && !command->script_targets.empty();
+            // 本轮自动审批关闭：跳过 d3 与父复批，直接交给人工（计划 2.1/2.9）。
+            const bool review_enabled = decision_allowed() && gate_open() && decision_reviewer.has_value();
+            std::vector<ScriptEvidence> evidence;
+            bool must_review = false;
+            if (decision_allowed() && has_targets) {
+                for (const auto& script : command->script_targets) {
+                    const auto relative = script.path.lexically_relative(session_.config().cwd);
+                    PreparedIntent reading;
+                    reading.kind = ToolKind::read;
+                    reading.paths.push_back({script.path, Access::read,
+                        !relative.empty() && !relative.is_absolute() && *relative.begin() != ".."});
+                    if (policy.evaluate(*slot.call, reading).kind != Verdict::Kind::allow) {
+                        ScriptEvidence missing;
+                        missing.target = script.path;
+                        missing.kind = ScriptEvidence::Kind::unavailable;
+                        missing.reason = "script evidence requires file read approval";
+                        evidence.push_back(std::move(missing));
+                        must_review = true;
+                        continue;
+                    }
+                    auto item = (*tool)->script_evidence(script, session_.config().session_started,
+                                                         review_deadline(), execution_stop);
+                    if (execution_stop.stop_requested() || stop.stop_requested()) return cancel();
+                    if (!item) {
+                        ScriptEvidence missing;
+                        missing.target = script.path;
+                        missing.kind = ScriptEvidence::Kind::unavailable;
+                        missing.reason = item.error().detail;
+                        evidence.push_back(std::move(missing));
+                    } else evidence.push_back(std::move(*item));
+                    must_review = must_review || evidence.back().kind != ScriptEvidence::Kind::unchanged;
+                }
+            }
+            if (rules.match == Policy::NetworkRules::Match::allowed && !must_review)
+                return remember(NetworkAction::allow, true);
+
+            // 审批身份在审阅前生成：审阅记录携带同一个 request_id，供后续阈值反馈关联。
             Approval approval;
             approval.partially_executed = true;
             approval.call_id = slot.call->id;
             approval.tool = slot.call->name;
             approval.reason = std::format("{} wants to connect to {}", slot.call->name, key);
-            approval.session_rule = std::format("Allow connections to {} for this session", key);
             approval.cwd = session_.config().cwd.string();
             approval.mode = policy.planning() ? "plan" : std::string(to_string(policy.mode()));
-            if (const auto* tool = std::get_if<std::unique_ptr<PreparedTool>>(&slot.action.value()))
-                approval.intent = (*tool)->intent();
+            approval.intent = intent;
             approval.requests.push_back({Approval::Request::Kind::network, key, "runtime network request"});
             approval.arguments = slot.call->arguments;
             identify(approval);
             approval.identity.child_revision = request_revision;
+            bool approved_by_review = false;
+            std::string review_reason;
+            std::vector<std::string> review_ids;
+            bool scripts_passed = true;
+
+            if (review_enabled && has_targets) {
+                // 本会话修改过的目标必须复审，不能因 host 已放行而跳过（计划 2.2/2.4）。
+                const ReviewOperation operation = [&] {
+                    ReviewOperation value;
+                    value.identity = approval.identity;
+                    value.tool = slot.call->name;
+                    value.command = command->command;
+                    value.arguments = slot.call->arguments;
+                    value.network = target;
+                    value.file_execution = true;
+                    return value;
+                }();
+                for (std::size_t i = 0; i < command->script_targets.size(); ++i) {
+                    const ScriptTarget& script = command->script_targets[i];
+                    const ReviewOperation scoped = operation;
+                    const ReviewResult result = decision_reviewer->review_script(scoped, script, evidence[i],
+                                                                        review_deadline(), execution_stop);
+                    review_ids.push_back(result.record_id);
+                    if (result.disposition == ReviewDisposition::cancelled) {
+                        reason = result.reason;
+                        return cancel();
+                    }
+                    if (result.disposition == ReviewDisposition::approve) continue;
+                    scripts_passed = false;
+                    review_reason = result.reason.empty()
+                                        ? "the script review did not approve this network request"
+                                        : result.reason;
+                }
+                if (scripts_passed && !command->has_unresolved_execution) approved_by_review = true;
+            }
+            if (review_enabled && scripts_passed && !approved_by_review &&
+                (!has_targets || (command != nullptr && command->has_unresolved_execution)) &&
+                (has_targets || rules.match == Policy::NetworkRules::Match::unmatched)) {
+                // 普通命令联网（或混合命令的其余联网动作）：按完整命令判断方向与相关性。
+                ReviewOperation operation;
+                operation.identity = approval.identity;
+                operation.tool = slot.call->name;
+                operation.command = command != nullptr ? command->command : std::string{};
+                operation.arguments = slot.call->arguments;
+                operation.network = target;
+                operation.file_execution = command != nullptr && command->has_unresolved_execution;
+                const ReviewResult result = decision_reviewer->review_action(ReviewScene::command_network, operation,
+                                                                    review_deadline(), execution_stop);
+                review_ids.push_back(result.record_id);
+                if (result.disposition == ReviewDisposition::cancelled) {
+                    reason = result.reason;
+                    return cancel();
+                }
+                if (result.disposition == ReviewDisposition::approve) approved_by_review = true;
+                else if (review_reason.empty()) review_reason = result.reason;
+            }
+
+            if (approved_by_review) {
+                if (!gate_open()) {
+                    // 审阅期间整轮被关闭：结果不生效，转人工。
+                    approved_by_review = false;
+                    review_reason = "automatic approval was disabled for this turn; the request needs approval";
+                } else {
+                    approval.authority = ApprovalAuthority::decision_model;
+                    approval.scope = Approval::Scope::network_target;
+                    approval.review_ids = review_ids;
+                    Decision decision;
+                    decision.answer = Decision::Answer::allow;
+                    decision.state = "approved";
+                    decision.feedback = review_reason.empty() ? "auto-review approved this network request"
+                                                              : review_reason;
+                    if (!policy.consume_network_approval(target, approval, decision)) {
+                        decision.answer = Decision::Answer::deny_with_feedback;
+                        decision.state = "cancelled";
+                        decision.feedback = "Permission changed before network authorization was consumed.";
+                        committer.commit_permission(approval, decision);
+                        reason = decision.feedback;
+                        return remember(NetworkAction::cancel);
+                    }
+                    slot.execution->note_authority(approval.authority_stop);
+                    ExecutionGrant network_grant = slot.execution->grant;
+                    network_grant.authority = approval.authority;
+                    network_grant.approval = approval.identity;
+                    network_grant.source = GrantSource::once;
+                    network_grant.revision = policy.revision();
+                    network_grant.authority_stop = approval.authority_stop;
+                    network_grant.network_targets.push_back(key);
+                    committer.commit_permission(approval, decision, &network_grant);
+                    commit_auto_review(slot.call->id, review_ids, "approved", decision.feedback);
+                    if (execution_stop.stop_requested() || approval.authority_stop.stop_requested()) {
+                        reason = "permission revoked before network approval was applied";
+                        return cancel();
+                    }
+                    return remember(NetworkAction::allow);
+                }
+            } else if (review_enabled && !review_ids.empty()) {
+                // d3 未批准：不写入会话拒绝规则，转后续审批。
+                commit_auto_review(slot.call->id, review_ids, "needs_approval",
+                                   review_reason.empty() ? "the decision model did not approve this request"
+                                                         : review_reason);
+            }
+
+            if (!services_.approver) {
+                reason = review_reason.empty() ? "runtime network approval is unavailable in this run" : review_reason;
+                return remember(NetworkAction::deny);
+            }
+
+            approval.authority = ApprovalAuthority::user;
+            approval.session_rule = std::format("Allow connections to {} for this session", key);
+            approval.review_ids = review_ids;
             Decision decision = services_.approver(approval, execution_stop);
             validate_decision(approval, decision, execution_stop);
             if (decision.answer == Decision::Answer::allow || decision.answer == Decision::Answer::allow_session) {
@@ -287,6 +487,7 @@ ActionDispatcher::Outcome ActionDispatcher::dispatch(const std::vector<ToolCall>
                 network_grant.authority_stop = approval.authority_stop;
                 network_grant.network_targets.push_back(key);
                 committer.commit_permission(approval, decision, &network_grant);
+                commit_feedback(approval, decision);
                 if (execution_stop.stop_requested() || approval.authority_stop.stop_requested()) {
                     reason = "permission revoked before network approval was applied";
                     return cancel();
@@ -294,6 +495,7 @@ ActionDispatcher::Outcome ActionDispatcher::dispatch(const std::vector<ToolCall>
                 return remember(NetworkAction::allow, decision.answer == Decision::Answer::allow_session);
             }
             committer.commit_permission(approval, decision);
+            commit_feedback(approval, decision);
             reason = decision.answer == Decision::Answer::deny_with_feedback ? decision.feedback
                 : approval.authority == ApprovalAuthority::parent_model ? "the parent agent denied network access"
                                                                          : "the user denied network access";
@@ -309,9 +511,87 @@ ActionDispatcher::Outcome ActionDispatcher::dispatch(const std::vector<ToolCall>
         if (verdict.kind == Verdict::Kind::deny)
             return std::unexpected(make_result(std::format(texts::kPolicyDenied, verdict.reason), true, false));
         if (verdict.kind == Verdict::Kind::allow) return verdict.grant;
+        identify(verdict.approval);
+
+        // 决策模型代批：只处理本计划列出的场景（工作区外普通文件读取、MCP 动作）。
+        // 不代批的请求直接进入后续审批，不写入会话拒绝规则。
+        if (decision_allowed() && gate_open() && decision_reviewer &&
+            (verdict.approval.scope == Approval::Scope::exact_file_read ||
+             (verdict.approval.scope == Approval::Scope::operation &&
+              intent.kind == ToolKind::external))) {
+            const bool outside_read = verdict.approval.scope == Approval::Scope::exact_file_read;
+            std::vector<std::string> review_ids;
+            std::string review_reason;
+            bool all_approved = true;
+            if (outside_read) {
+                for (const ResourceIntent& path : verdict.approval.intent.paths) {
+                    ReviewOperation operation;
+                    operation.identity = verdict.approval.identity;
+                    operation.tool = call.name;
+                    operation.command = intent.command ? intent.command->command : std::string{};
+                    operation.arguments = call.arguments;
+                    operation.path = path.path;
+                    operation.file_execution = intent.command && intent.command->known_readonly;
+                    const ReviewResult result = decision_reviewer->review_action(ReviewScene::outside_read, operation,
+                                                                        review_deadline(), stop);
+                    review_ids.push_back(result.record_id);
+                    if (result.disposition == ReviewDisposition::approve) continue;
+                    all_approved = false;
+                    review_reason = result.reason;
+                    break;
+                }
+            } else {
+                ReviewOperation operation;
+                operation.identity = verdict.approval.identity;
+                operation.tool = call.name;
+                operation.arguments = call.arguments;
+                const ReviewResult result = decision_reviewer->review_action(ReviewScene::mcp_action, operation,
+                                                                    review_deadline(), stop);
+                review_ids.push_back(result.record_id);
+                all_approved = result.disposition == ReviewDisposition::approve;
+                review_reason = result.reason;
+            }
+            if (all_approved && !gate_open()) {
+                all_approved = false;
+                review_reason = "automatic approval was disabled for this turn; the request needs approval";
+            }
+            if (all_approved) {
+                verdict.approval.authority = ApprovalAuthority::decision_model;
+                verdict.approval.scope = outside_read ? Approval::Scope::exact_file_read
+                                                      : Approval::Scope::mcp_action;
+                verdict.approval.review_ids = review_ids;
+                Decision decision;
+                // 工作区外普通文件可保存文件级会话授权；MCP 只放行这一次调用。
+                decision.answer = outside_read ? Decision::Answer::allow_session : Decision::Answer::allow;
+                decision.state = "approved";
+                decision.feedback = review_reason.empty() ? "auto-review approved this request" : review_reason;
+                std::optional<ExecutionGrant> grant = policy.consume_approval(verdict.approval, decision);
+                if (!grant) {
+                    decision.answer = Decision::Answer::deny_with_feedback;
+                    decision.state = "cancelled";
+                    decision.feedback = "Permission changed before authorization was consumed; prepare again.";
+                    committer.commit_permission(verdict.approval, decision);
+                    commit_auto_review(call.id, review_ids, "cancelled", decision.feedback);
+                    return std::unexpected(make_result(decision.feedback, true, false));
+                }
+                grant->execution_id = execution_id(call.id);
+                committer.commit_permission(verdict.approval, decision, &*grant);
+                commit_auto_review(call.id, review_ids, "approved", decision.feedback);
+                if (stop.stop_requested()) {
+                    outcome.stop = Outcome::Stop::interrupted;
+                    return std::unexpected(make_result(std::string(texts::kInterruptedCall), false, true));
+                }
+                return *grant;
+            }
+            commit_auto_review(call.id, review_ids, "needs_approval",
+                               review_reason.empty() ? "the decision model did not approve this request"
+                                                     : review_reason);
+            // 切换到后续审批时保留前序审阅编号（计划 §8.1）。
+            verdict.approval.review_ids = review_ids;
+        }
+
         if (!services_.approver)
             return std::unexpected(make_result(std::format(texts::kApprovalUnavailable, verdict.approval.reason), true, false));
-        identify(verdict.approval);
         auto decision = services_.approver(verdict.approval, stop);
         validate_decision(verdict.approval, decision, stop);
         std::optional<ExecutionGrant> grant;
@@ -325,6 +605,7 @@ ActionDispatcher::Outcome ActionDispatcher::dispatch(const std::vector<ToolCall>
             }
         }
         committer.commit_permission(verdict.approval, decision, grant ? &*grant : nullptr);
+        commit_feedback(verdict.approval, decision);
         if (stop.stop_requested()) {
             outcome.stop = Outcome::Stop::interrupted;
             return std::unexpected(make_result(std::string(texts::kInterruptedCall), false, true));
@@ -340,6 +621,173 @@ ActionDispatcher::Outcome ActionDispatcher::dispatch(const std::vector<ToolCall>
             return std::unexpected(make_result(feedback, true, false));
         }
         return *grant;
+    };
+
+    // web_fetch 逐跳 URL 审阅与结果扫描：审阅与扫描都走 execution mailbox（在执行线程上编排）。
+    const auto make_web_request_decider = [&](std::size_t index) {
+        return [&, index](const WebRequestIntent& request, std::stop_token execution_stop) -> WebRequestAccess {
+            WebRequestAccess access;
+            access.action = NetworkAction::deny;
+            if (execution_stop.stop_requested() || stop.stop_requested()) {
+                access.action = NetworkAction::cancel;
+                access.reason = "execution cancelled before web request authorization";
+                return access;
+            }
+            const std::string key = request.target.host + ":" + std::to_string(request.target.port);
+            const auto request_revision = policy.revision();
+            const auto hop_decider = [&, index](WebRequestIntent reviewed, std::uint64_t revision,
+                                               bool persisted, std::stop_token authority_stop) {
+                return [&, index, reviewed, revision, persisted, authority_stop](const NetworkTarget& target,
+                    std::string& reason, std::stop_token token) -> NetworkAction {
+                    if (token.stop_requested() || stop.stop_requested() || authority_stop.stop_requested() ||
+                        policy.revision() != revision) {
+                        reason = "permission changed or execution cancelled before the web request was sent";
+                        return NetworkAction::cancel;
+                    }
+                    if (target.host != reviewed.target.host || target.port != reviewed.target.port) {
+                        reason = "the connection target does not match the reviewed URL";
+                        return NetworkAction::cancel;
+                    }
+                    if (policy.inspect_network(target).match == Policy::NetworkRules::Match::denied) {
+                        reason = "network target is denied";
+                        return NetworkAction::deny;
+                    }
+                    slots[index].execution->note_network(target, persisted);
+                    return NetworkAction::allow;
+                };
+            };
+            const Policy::NetworkRules rules = policy.inspect_network(request.target);
+            if (rules.match == Policy::NetworkRules::Match::denied) {
+                access.reason = rules.reason;
+                return access;
+            }
+            if (!decision_allowed() && rules.match == Policy::NetworkRules::Match::allowed) {
+                access.action = NetworkAction::allow;
+                access.network_decider = hop_decider(request, request_revision, true, {});
+                return access;
+            }
+
+            Approval approval;
+            approval.partially_executed = true;
+            approval.call_id = slots[index].call->id;
+            approval.tool = slots[index].call->name;
+            approval.reason = "web_fetch wants to fetch " + request.url;
+            approval.scope = decision_allowed() ? Approval::Scope::web_request : Approval::Scope::network_target;
+            if (!decision_allowed())
+                approval.session_rule = std::format("Allow connections to {} for this session", key);
+            approval.cwd = session_.config().cwd.string();
+            approval.mode = policy.planning() ? "plan" : std::string(to_string(policy.mode()));
+            if (const auto* tool = std::get_if<std::unique_ptr<PreparedTool>>(&slots[index].action.value()))
+                approval.intent = (*tool)->intent();
+            approval.requests.push_back({Approval::Request::Kind::network, request.url, "runtime web request"});
+            approval.arguments = slots[index].call->arguments;
+            identify(approval);
+            approval.identity.child_revision = request_revision;
+            std::optional<Decision> reviewed;
+            if (decision_allowed() && gate_open() && decision_reviewer) {
+                ReviewOperation operation;
+                operation.identity = approval.identity;
+                operation.tool = approval.tool;
+                operation.url = request.url;
+                operation.target = request.url;
+                operation.network = request.target;
+                operation.arguments = approval.arguments;
+                const ReviewResult result = decision_reviewer->review_action(
+                    ReviewScene::fetch_url, operation, review_deadline(), execution_stop);
+                approval.review_ids.push_back(result.record_id);
+                if (result.disposition == ReviewDisposition::cancelled || execution_stop.stop_requested()) {
+                    access.action = NetworkAction::cancel;
+                    access.reason = "web request review cancelled";
+                    return access;
+                }
+                if (result.disposition == ReviewDisposition::approve && gate_open()) {
+                    approval.authority = ApprovalAuthority::decision_model;
+                    reviewed.emplace();
+                    reviewed->answer = Decision::Answer::allow;
+                    reviewed->state = "approved";
+                    reviewed->feedback = result.reason;
+                } else {
+                    commit_auto_review(approval.call_id, approval.review_ids, "needs_approval", result.reason);
+                }
+            }
+            if (!reviewed && !services_.approver) {
+                access.reason = "web request approval is unavailable in this run";
+                return access;
+            }
+            Decision decision = reviewed ? *reviewed : services_.approver(approval, execution_stop);
+            validate_decision(approval, decision, execution_stop);
+            if (decision.answer == Decision::Answer::allow || decision.answer == Decision::Answer::allow_session) {
+                if (!policy.consume_network_approval(request.target, approval, decision)) {
+                    decision.answer = Decision::Answer::deny_with_feedback;
+                    decision.state = "cancelled";
+                    decision.feedback = "Permission changed before the web request was consumed.";
+                } else {
+                    slots[index].execution->note_authority(approval.authority_stop);
+                    ExecutionGrant grant = slots[index].execution->grant;
+                    grant.authority = approval.authority;
+                    grant.approval = approval.identity;
+                    grant.source = decision.answer == Decision::Answer::allow_session ? GrantSource::session
+                                                                                     : GrantSource::once;
+                    grant.revision = policy.revision();
+                    grant.authority_stop = approval.authority_stop;
+                    grant.network_targets.push_back(key);
+                    committer.commit_permission(approval, decision, &grant);
+                    commit_feedback(approval, decision);
+                    if (reviewed)
+                        commit_auto_review(approval.call_id, approval.review_ids, "approved", decision.feedback);
+                    access.action = NetworkAction::allow;
+                    access.network_decider = hop_decider(request, grant.revision,
+                        decision.answer == Decision::Answer::allow_session, approval.authority_stop);
+                    return access;
+                }
+            }
+            committer.commit_permission(approval, decision);
+            commit_feedback(approval, decision);
+            access.action = NetworkAction::cancel;
+            access.reason = decision.feedback.empty() ? "the web request was denied" : decision.feedback;
+            if (decision.explicit_denial && decision.state == "denied")
+                policy.remember_denied_network(request.target, approval.authority);
+            return access;
+        };
+    };
+
+    const auto make_web_result_scanner = [&](std::size_t index) {
+        return [&, index](const WebScanInput& input, std::stop_token execution_stop) -> ScanResult {
+            ScanResult scan;
+            if (!decision_allowed()) {
+                // 未配置决策模型：不扫描，沿用原结果。
+                scan.kind = ScanResult::Kind::bypass;
+                return scan;
+            }
+            if (execution_stop.stop_requested() || stop.stop_requested()) {
+                scan.kind = ScanResult::Kind::cancelled;
+                scan.message = "web content scanning was cancelled";
+                return scan;
+            }
+            if (decision_reviewer) {
+                Approval scan_operation;
+                scan_operation.call_id = slots[index].call->id;
+                identify(scan_operation);
+                scan = decision_reviewer->scan_web(input.url, input.result_text, scan_operation.identity,
+                                                   review_deadline(), execution_stop);
+            } else {
+                scan.kind = ScanResult::Kind::unavailable;
+                scan.message = "web result withheld: decision review storage is unavailable";
+            }
+            if (scan.kind == ScanResult::Kind::injection || scan.kind == ScanResult::Kind::unavailable) {
+                // 扫描判定完成后立即关闭整轮及子 Agent 的自动审批，再返回工具结果。
+                if (services_.review_gate != nullptr)
+                    services_.review_gate->disable(scan.kind == ScanResult::Kind::injection
+                                                       ? AutoReviewBlock::injection
+                                                       : AutoReviewBlock::scan_failed);
+                commit_auto_review(slots[index].call->id,
+                                   scan.record_id.empty() ? std::vector<std::string>{}
+                                                          : std::vector<std::string>{scan.record_id},
+                                   scan.kind == ScanResult::Kind::injection ? "needs_approval" : "unavailable",
+                                   scan.message);
+            }
+            return scan;
+        };
     };
 
     const auto execute = [&](Slot& slot, const ExecutionGrant& grant) {
@@ -396,6 +844,36 @@ ActionDispatcher::Outcome ActionDispatcher::dispatch(const std::vector<ToolCall>
                 reason = std::move(detail);
                 return action;
             };
+            if (decision_allowed()) {
+                const auto url_decider = make_web_request_decider(i);
+                const auto scanner = make_web_result_scanner(i);
+                scoped.web_request_decider = [&, url_decider](const WebRequestIntent& request, std::stop_token execution_stop) {
+                    auto promise = std::make_shared<std::promise<WebRequestAccess>>();
+                    auto reply = promise->get_future();
+                    mailbox.post([&, request, execution_stop, promise, url_decider] {
+                        WebRequestAccess access;
+                        access.action = NetworkAction::cancel;
+                        try { access = url_decider(request, execution_stop); }
+                        catch (const std::exception& error) { access.reason = error.what(); }
+                        promise->set_value(std::move(access));
+                    });
+                    return reply.get();
+                };
+                scoped.web_result_scanner = [&, scanner](const WebScanInput& input, std::stop_token execution_stop) {
+                    auto promise = std::make_shared<std::promise<ScanResult>>();
+                    auto reply = promise->get_future();
+                    mailbox.post([&, input, execution_stop, promise, scanner] {
+                        ScanResult result;
+                        try { result = scanner(input, execution_stop); }
+                        catch (const std::exception& error) {
+                            result.kind = ScanResult::Kind::unavailable;
+                            result.message = error.what();
+                        }
+                        promise->set_value(std::move(result));
+                    });
+                    return reply.get();
+                };
+            }
             const std::stop_token execution_stop = slot.execution->stop.get_token();
             mailbox.start(1);
             std::jthread worker([&] {

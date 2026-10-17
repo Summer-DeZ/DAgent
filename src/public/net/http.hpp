@@ -76,6 +76,9 @@ public:
 
     /// @brief 发送请求并读取完整响应体。
     HttpResponse send(const HttpRequest& req, std::stop_token stop = {});
+    /// @brief 带绝对截止时间的发送：与 stop 相同的中断语义，超时按 timeout 分类。
+    HttpResponse send(const HttpRequest& req, std::stop_token stop,
+                      std::optional<std::chrono::steady_clock::time_point> deadline);
 
     /// @brief 发送请求并流式接收：状态码为 2xx 时每到一段数据就在调用线程上回调 on_data，
     /// 否则把错误体收进返回值的 body。on_data 抛出的异常会中止传输并原样重新抛出。

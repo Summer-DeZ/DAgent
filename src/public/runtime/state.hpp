@@ -41,6 +41,10 @@ struct RuntimeSnapshot {
     bool recording_broken = false;
     std::string recording_error;
     std::vector<agent::Policy::SessionGrant> grants;
+    /// 待确认的 unrestricted 升权目标；为空表示没有待确认（确认前不改变当前权限）。
+    std::optional<agent::PermissionMode> pending_permission_confirmation;
+    /// pending 存在时的入口（"startup" / "cycle"），决定取消后的回退文案与目标。
+    std::string pending_permission_entry;
 };
 
 /// @brief runtime 层的控制事件：不属于核心执行事实的状态变化与操作结果。
@@ -81,6 +85,12 @@ struct RuntimeError {
     };
     Kind kind = Kind::invalid_state;
     std::string message;
+};
+
+/// @brief 权限切换请求的中立结果：当前生效模式与仍待确认的目标。
+struct PermissionChangeResult {
+    agent::PermissionMode effective_mode = agent::PermissionMode::workspace;
+    std::optional<agent::PermissionMode> pending;
 };
 
 struct StartOptions {

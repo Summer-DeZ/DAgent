@@ -98,7 +98,7 @@ Decision ParentReviewer::review(const Approval& approval, std::stop_token reques
     const auto deadline = approval.created + options.review_timeout;
     const auto valid = [&] {
         const auto live = session_.policy().authority_view();
-        return options.parent_when_unrestricted && live.can_review() &&
+        return live.can_review(options.mode) &&
                live.revision == approval.identity.parent_revision &&
                approval.identity.parent_session_id == session_.meta().id &&
                approval.authority == ApprovalAuthority::parent_model &&
@@ -108,6 +108,12 @@ Decision ParentReviewer::review(const Approval& approval, std::stop_token reques
         return denied("Parent permission review expired in the queue.", "expired");
     if (request_stop.stop_requested() || services_.stop.stop_requested() || !valid())
         return denied("Parent permission review cancelled or authority changed.", "cancelled");
+    // 放宽 workspace 父复批入口不等于允许它授予主机完全访问：host access 仍要求 unrestricted 父。
+    if (std::ranges::any_of(approval.requests, [](const Approval::Request& request) {
+            return request.kind == Approval::Request::Kind::host_access;
+        }) &&
+        session_.policy().authority_view().permission.mode != PermissionMode::unrestricted)
+        return denied("host access requires an unrestricted parent review; user approval is required");
     if (run_.reviews() >= options.max_reviews_per_turn || run_.model_budget_exhausted(limits))
         return denied("Parent permission review budget exhausted; replan without additional permissions.");
 

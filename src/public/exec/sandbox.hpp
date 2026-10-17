@@ -48,6 +48,7 @@ struct Policy {
 };
 
 /// @brief 枚举 root 下已存在的敏感路径（.env、*.pem、*.key、id_*、.ssh、.gnupg）。
+/// root 为单个文件时仅检查该文件的敏感名，不进行目录遍历。
 /// 执行后端用它把保护落实到显式拒绝规则；不存在的名字不返回，避免制造占位点。
 std::vector<std::filesystem::path> sensitive_paths(const std::filesystem::path& root);
 

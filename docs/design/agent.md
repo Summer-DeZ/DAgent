@@ -253,6 +253,29 @@ task 在权限判定里直接放行（真正的检查发生在子会话自己的
 Policy 是纯逻辑，不弹窗、不读配置。它依据 `PreparedIntent` 的规范化路径、命令意图（`CommandIntent`）和外部工具名给出 allow / ask / deny；
 允许时的 `Grant` 决定执行范围；bash 与 web 在 tools 层共用 Grant→SRT 映射。工作区根决定写入范围。
 
+### 决策模型代批（auto-review）
+
+workspace（auto-edit）下可配置决策模型（第一版为 System One 协议上的 d3）：`config/models.json` 的
+`decision_models` 目录与 `decision` 选择，行为参数在 `config.json` 的 `decision_review`。
+未配置时不建客户端、不发请求，审批行为与原来一致；ask / unrestricted / 只读与硬拒绝不经过决策模型。
+
+内部职责与顺序：
+
+1. `Policy::inspect_network()` 给出规则事实（配置拒绝、会话拒绝、已有放行），`check_network()` 保留为纯查询兼容入口。
+2. 执行中联网时由 `agent/decision_review` 构造 state（用户原话 + 确定性操作事实）并向 `DecisionModel` 请求；
+   本会话修改过的明确目标脚本先用 `PreparedTool::script_evidence()` 取单文件 diff（相对 HEAD，未跟踪按新增，
+   非 Git 仓库用全文，超过 300 行或无法完整取证时转后续审批），未修改的目标只问 relevance。
+   mtime 判为修改时，空 HEAD diff 也须复审；多目标逐个审查，任一失败不能被混合命令的后续审阅覆盖。
+3. `direction` 先取最高概率类别，`fetch` / `send` 需要类别概率与对应 relevance 同时达标；`modify` / `unknown` 或最高概率并列时不代批；send 的 relevance 单独标定，不能复用方向阈值。
+4. 批准经 `Policy::consume_approval()` / `consume_network_approval()` 消费：网络与 MCP 只限一次，
+   工作区外普通文件保存文件级会话授权。阈值按模型/问句/配置版本隔离，未标定场景转人工。
+5. 决策模型未批准时保留审阅编号，转人工（子会话先父复批）；父复批允许 auto-edit 父会话，
+   但 host access 仍只允许无只读/规划上限的 unrestricted 父复批。
+6. `web_fetch` 每跳 URL 单独审阅；结果在交付前扫描注入，发现注入或扫描失败时本轮（含子 Agent）关闭自动代批，
+   该次正文不交付，后续审批直接转人工。关闭状态由 `RunReviewGate` 在根轮次与子 Agent 间原子共享且单向；正在返回的父复批也须重新检查该状态。
+7. 审阅记录写入 Home 的 `data/decision.sqlite`；会话记录只保留来源 `decision_model`、结果、理由与审阅编号，
+   界面显示为 `auto-review`，不显示分数。动态阈值只在用户最终人工决定后按单维度调整。
+
 ### 模式和默认规则
 
 | 模式 | 未命中已有授权时的行为 |
@@ -271,7 +294,7 @@ Policy 是纯逻辑，不弹窗、不读配置。它依据 `PreparedIntent` 的�
 | --- | --- |
 | 普通读取 | 允许；敏感读取或被分类为工作区外的读取询问 |
 | edit / write | ask 下询问；workspace 放行工作区内普通路径；unrestricted 全部放行 |
-| 已知只读 bash，沙箱可用 | 自动允许，但仍放进 `read_only` 沙箱；前置 `cd` 到 workspace 内不改变只读结论 |
+| 已知只读 bash，沙箱可用 | 自动允许，但仍放进 `read_only` 沙箱；前置 `cd` 到 workspace 内不改变只读结论；命令读取工作区外普通路径时按读取审批（精确文件），敏感/控制面路径走原敏感读取规则 |
 | 其他 bash，完整 workspace profile 可用 | ask 询问、workspace 自动；均使用明确范围且默认不联网 |
 | 写入型 bash 的 workspace profile 不可用 | 请求一次性 full_access，明确提示可访问网络、受保护数据和 `.git`；没有人工或合格父审批路由时不执行 |
 | MCP 工具 | ask / workspace 询问；unrestricted 放行；plan 拒绝 |
@@ -474,8 +497,11 @@ compact 模板保留六段结构，标题为 `User requests`、`Decisions made`�
 | `assistant` | `n, content, reasoning, reasoning_signature, tool_calls, finish`，有 usage 时另存 `usage` |
 | `tool_started` | `schema: 3`、id/name/summary/execution_id、实际 sandbox/backend/grant_source、authority/approval 身份、analysis_version、revision、读写/保护范围、read_exceptions、通信开关 |
 | `tool` | `n, call_id, name, summary, text, is_error, interrupted, view` |
-| `permission` | `schema: 4`、call_id、answer、explicit_denial、rule、cwd、mode、partially_executed、requests、authority、identity、state、scope、approved_requests、reason、model、usage/usage_owner、estimated_budget_tokens、actual_grant；另有原始 arguments、委派任务与意图证据 |
-| `parent_review` | `schema: 4`、同 permission 的审阅证据；父会话独立审计，不插入 Conversation，actual_grant 为 null |
+| `permission` | `schema: 5`、call_id、answer、explicit_denial、rule、cwd、mode、partially_executed、requests、authority、approval_scope、review_ids、identity、state、scope、approved_requests、reason、model、usage/usage_owner、estimated_budget_tokens、actual_grant；另有原始 arguments、委派任务与意图证据 |
+| `auto_review` | `schema: 1`、call_id、review_ids、result（approved/needs_approval/unavailable/cancelled）、reason；只回放展示，不插入模型对话 |
+| `delegation_context` | `schema: 1`、子会话主要任务与最多两条辅助用户原话；缺失时不从 user 记录补造 |
+| `unrestricted_ack` | `schema: 1`、该会话用户已确认 unrestricted 警告；缺失表示未确认 |
+| `parent_review` | `schema: 5`、同 permission 的审阅证据；父会话独立审计，不插入 Conversation，actual_grant 为 null |
 | `permission_revoked` | `schema: 1, id` |
 | `prune` | `ordinals`；恢复时用工具摘要生成同样的占位 |
 | `compaction` | `keep_from, summary`；空 summary 表示丢弃前缀、保留既有摘要 |
@@ -520,7 +546,7 @@ UI 显示完成不代表记录可靠保存；broken 状态进入会话快照。
 不根据任何记录自动重做工具。第二次恢复不会重复补齐。FileTracker 和会话授权从空开始，MCP 使用当前连接。
 不认识的类型、缺失或非法的必需字段、不一致历史直接报 corrupt，不猜测修复。
 `system.model`、`reasoning_signature`、`protect_sensitive_names` 和当前 View 的字段必填。
-`tool_started` 接受 schema 1/2/3，`permission` 接受 schema 2/3/4，`parent_review` 接受 schema 4；这是旧记录的解码兼容，
+`tool_started` 接受 schema 1/2/3，`permission` 与 `parent_review` 接受 schema 2/3/4/5；这是旧记录的解码兼容，
 不恢复历史授权，也不恢复旧执行后端。新写入统一使用上表版本。
 `assistant.usage` 仍为可选，因为当前模型响应可以没有 usage；View 仅以显式 `kind: null` 表示没有结构化展示。
 

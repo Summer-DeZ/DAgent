@@ -1,5 +1,6 @@
 {
   "default": "local",
+  "decision": null,
   "models": {
     "local": {
       "base_url": "http://116.56.129.99:10005/v1",
@@ -9,6 +10,14 @@
       "max_tokens": 8192,
       "model": "MiniCPM-V-4.7-35B-A3B",
       "send_reasoning_content": false
+    }
+  },
+  "decision_models": {
+    "d3-local": {
+      "kind": "systemone",
+      "endpoint": "http://116.56.129.99:10006/v1/systemone",
+      "model": "d3",
+      "model_revision": "deployment-1"
     }
   }
 }

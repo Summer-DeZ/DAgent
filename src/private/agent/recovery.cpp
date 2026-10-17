@@ -24,7 +24,7 @@ Entry entry_from(const Message& message, std::int64_t ordinal) {
 
 } // namespace
 
-RecoveryResult SessionRecovery::restore(const std::vector<StoredRecord>& records) const {
+RecoveryResult SessionRecovery::restore(const std::vector<StoredRecord>& records, bool child) const {
     RecoveryResult result;
     bool open_turn = false;
     std::int64_t next_ordinal = 0;
@@ -49,6 +49,18 @@ RecoveryResult SessionRecovery::restore(const std::vector<StoredRecord>& records
                     result.conversation.restore(entry_from(message, value.n));
                     ++next_ordinal;
                     open_turn = true;
+                    const bool real_user = value.origin ? *value.origin == UserInputOrigin::user : !child;
+                    if (real_user) {
+                        result.recent_user_messages.push_back(value.text);
+                        if (result.recent_user_messages.size() > 3)
+                            result.recent_user_messages.erase(result.recent_user_messages.begin());
+                    }
+                } else if constexpr (std::is_same_v<T, record_codec::DelegationContextRecord>) {
+                    result.has_delegation = true;
+                    result.delegated_task = value.task;
+                    result.delegated_user_messages = value.user_messages;
+                } else if constexpr (std::is_same_v<T, record_codec::UnrestrictedAckRecord>) {
+                    result.unrestricted_acked = true;
                 } else if constexpr (std::is_same_v<T, record_codec::AssistantRecord>) {
                     if (!saw_system) corrupt("first core record is not system");
                     if (value.n != next_ordinal)

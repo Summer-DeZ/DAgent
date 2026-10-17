@@ -87,6 +87,12 @@ protocol::SessionSnapshot to_protocol(const runtime::RuntimeSnapshot& snapshot) 
     }
     out.recording.broken = snapshot.recording_broken;
     out.recording.error = snapshot.recording_error;
+    if (snapshot.pending_permission_confirmation) {
+        protocol::PermissionConfirmation confirmation;
+        confirmation.target = std::string(agent::to_string(*snapshot.pending_permission_confirmation));
+        confirmation.entry = snapshot.pending_permission_entry;
+        out.permission_confirmation = std::move(confirmation);
+    }
     return out;
 }
 
@@ -99,6 +105,7 @@ protocol::HistoryItem to_protocol(const agent::HistoryItem& item) {
     case agent::HistoryItem::Kind::tool_started: out.kind = "tool_started"; break;
     case agent::HistoryItem::Kind::permission: out.kind = "permission"; break;
     case agent::HistoryItem::Kind::parent_review: out.kind = "parent_review"; break;
+    case agent::HistoryItem::Kind::auto_review: out.kind = "auto_review"; break;
     case agent::HistoryItem::Kind::system: out.kind = "system"; break;
     case agent::HistoryItem::Kind::turn_end: out.kind = "turn_end"; break;
     }

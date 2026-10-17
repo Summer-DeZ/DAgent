@@ -194,6 +194,9 @@ struct QuestionRequest {
     std::string header, prompt;
     std::vector<AskOption> options;
     bool multi_select = false, allow_other = true;
+    int default_option = 0; ///< 初始光标选项；缺省 0 保持旧行为
+    /// 该确认框允许 Shift+Tab 穿透到全局键位（unrestricted 确认用它作为「取消并跳到 ask」）。
+    bool allow_permission_cycle = false;
 };
 
 struct ApprovalAnswer {

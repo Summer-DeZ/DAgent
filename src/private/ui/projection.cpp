@@ -187,6 +187,14 @@ std::optional<EventPayload> decode_payload(std::string_view kind, const json& da
         out.persistent = data.value("persistent", false);
         return out;
     }
+    if (kind == "auto_review") {
+        Notice out;
+        out.level = NoticeLevel::info;
+        out.text = "auto-review " + data.value("result", "") +
+                   (data.value("reason", "").empty() ? std::string{} : ": " + data.value("reason", ""));
+        out.persistent = true;
+        return out;
+    }
     if (kind == "model_changed") return ModelChanged{data.value("model", "")};
     if (kind == "mode_changed")
         return ModeChanged{data.value("mode", ""), data.value("planning", false)};
@@ -222,6 +230,11 @@ std::vector<Event> decode_history(const protocol::HistoryItem& item) {
                                           item.started.value("summary", "")}});
     } else if (item.kind == "permission" || item.kind == "parent_review") {
         events.push_back(Event{Notice{NoticeLevel::info, item.text, true}});
+    } else if (item.kind == "auto_review") {
+        events.push_back(Event{Notice{NoticeLevel::info,
+                                      "auto-review " + item.error +
+                                          (item.text.empty() ? std::string{} : ": " + item.text),
+                                      true}});
     } else if (item.kind == "tool") {
         ToolFinished out;
         out.id = item.call_id;
@@ -262,6 +275,7 @@ QuestionRequest decode_question(const json& payload) {
     out.prompt = payload.value("prompt", "");
     out.multi_select = payload.value("multi_select", false);
     out.allow_other = payload.value("allow_other", true);
+    out.default_option = payload.value("default_option", 0);
     for (const json& option : payload.value("options", json::array())) {
         out.options.push_back({option.value("label", ""), option.value("description", "")});
     }

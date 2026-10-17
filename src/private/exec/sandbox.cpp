@@ -26,7 +26,12 @@ bool sensitive_name(std::string_view name) {
 std::vector<fs::path> sensitive_paths(const fs::path& root) {
     std::vector<fs::path> out;
     std::error_code ec;
-    if (!fs::exists(root, ec)) return out;
+    const auto root_status = fs::status(root, ec);
+    if (!fs::exists(root_status)) return out;
+    if (!fs::is_directory(root_status)) {
+        if (sensitive_name(root.filename().string())) out.push_back(normalized(root));
+        return out;
+    }
     fs::recursive_directory_iterator it(root, fs::directory_options::skip_permission_denied, ec), end;
     for (; !ec && it != end; it.increment(ec)) {
         const auto status = it->symlink_status(ec);

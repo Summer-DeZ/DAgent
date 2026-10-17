@@ -15,7 +15,10 @@
 #include "app/session_assembly.hpp"
 #include "base/log.hpp"
 #include "exec/sandbox.hpp"
+#include "agent/decision_review.hpp"
+#include "llm/decision_provider.hpp"
 #include "llm/llm.hpp"
+#include "storage/decision_store.hpp"
 #include "workspace/context.hpp"
 #include "workspace/files.hpp"
 
@@ -30,6 +33,35 @@ ModelFactory make_model_factory(const Config& config) {
                const llm::ProviderConfig& provider) {
         return llm::make_session(provider, http, agent::RetryOptions{retries});
     };
+}
+
+/// @brief 决策审阅依赖：配置了 decision 时创建模型客户端与独立审阅库。
+/// 审阅库打不开时停用决策代批；已配置场景仍转人工，网页结果仍须扫描。
+std::shared_ptr<agent::DecisionServices> make_decision_services(const Config& config, const HomePaths& paths) {
+    if (!config.decision) return nullptr;
+    const llm::DecisionProviderConfig& selected = config.decision_models.at(*config.decision);
+    const llm::DecisionProviderInfo* info = llm::find_decision_provider(selected.kind);
+    if (info == nullptr)
+        throw runtime::ConfigurationError("unknown decision provider kind: " + selected.kind);
+    auto services = std::make_shared<agent::DecisionServices>();
+    services->options = config.decision_review;
+    services->version = agent::ReviewVersion{selected.kind,
+                                             std::string(info->adapter_version),
+                                             selected.endpoint,
+                                             selected.model,
+                                             selected.model_revision,
+                                             std::string(agent::decision_question_version()),
+                                             config.decision_review.threshold_profile};
+    services->model = llm::make_decision_model(selected, config.decision_review.timeout, config.http);
+    try {
+        services->store = storage::open_decision_store({paths.decision_database});
+    } catch (const std::exception& error) {
+        base::logger("app")->warn("decision review storage is unavailable ({}); decision approvals are disabled",
+                                  error.what());
+        return services; // 保留“已配置”事实，强制复审与网页扫描不能降级为未配置。
+    }
+    base::logger("app")->info("decision model enabled: {} ({})", selected.name, selected.endpoint);
+    return services;
 }
 
 agent::PermissionMode permission_mode(const Config& config, const runtime::BootstrapOptions& options) {
@@ -190,6 +222,7 @@ runtime::Assembled assemble_backend(const runtime::BootstrapOptions& options) {
     session.environment = workspace::collect_environment(options.cwd, context);
     session.subagents = std::move(config.subagents);
     session.skills = skills;
+    session.decision = make_decision_services(config, paths);
     out.factory = std::make_unique<SessionAssembly>(std::move(session));
     return out;
 }

@@ -70,6 +70,15 @@ std::vector<HistoryItem> HistoryProjector::project(const StoredRecord& record,
                 if constexpr (std::is_same_v<T, record_codec::ParentReviewRecord>)
                     item.usage = decision.usage;
                 items.push_back(std::move(item));
+            } else if constexpr (std::is_same_v<T, record_codec::AutoReviewRecord>) {
+                HistoryItem item;
+                item.kind = HistoryItem::Kind::auto_review;
+                item.seq = record.seq;
+                item.call_id = value.call_id;
+                item.status = value.result == "approved" ? TurnStatus::done : TurnStatus::denied;
+                item.error = value.result;
+                item.text = value.reason;
+                items.push_back(std::move(item));
             } else if constexpr (std::is_same_v<T, record_codec::TurnEndRecord>) {
                 HistoryItem item;
                 item.kind = HistoryItem::Kind::turn_end;

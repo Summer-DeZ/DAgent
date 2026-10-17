@@ -41,6 +41,10 @@ std::string read_rule_id(const fs::path& path) {
     return std::format("read-{:x}", std::hash<std::string>{}(path.string()));
 }
 
+std::string read_file_rule_id(const fs::path& path) {
+    return std::format("read-file-{:x}", std::hash<std::string>{}(path.string()));
+}
+
 std::string network_rule_id(std::string_view host, int port) {
     return std::format("net-{:x}", std::hash<std::string>{}(std::string(host) + ":" + std::to_string(port)));
 }
@@ -101,7 +105,12 @@ std::string_view to_string(PermissionMode mode) {
 }
 
 std::string_view to_string(ApprovalAuthority authority) {
-    return authority == ApprovalAuthority::parent_model ? "parent_model" : "user";
+    switch (authority) {
+    case ApprovalAuthority::parent_model: return "parent_model";
+    case ApprovalAuthority::decision_model: return "decision_model";
+    case ApprovalAuthority::user: return "user";
+    }
+    return "user";
 }
 
 std::string_view to_string(SandboxProfile profile) {
@@ -168,7 +177,10 @@ std::optional<bool> Policy::matches_session(const Approval& approval, const Prep
                 return classify(path) == PathClass::normal ||
                        std::ranges::any_of(read_dirs_, [&](const fs::path& dir) {
                            return is_relative_to(path.path, dir);
-                       });
+                       }) ||
+                       (!path.directory && std::ranges::any_of(read_files_, [&](const FileRule& rule) {
+                           return rule.path == path.path;
+                       }));
             })) return false;
         return std::nullopt;
     case ToolKind::external:
@@ -179,7 +191,20 @@ std::optional<bool> Policy::matches_session(const Approval& approval, const Prep
         const auto rule = std::ranges::find_if(exec_rules_, [&](const ExecRule& item) {
             return item.command == intent.command->command && item.cwd == workspace_root_.string();
         });
-        return rule == exec_rules_.end() ? std::nullopt : std::optional<bool>{false};
+        if (rule != exec_rules_.end()) return false;
+        // 简单只读命令的工作区外读取：文件级授权可逐文件复用。
+        if (intent.command->known_readonly) {
+            const auto allowed_file = [&](const fs::path& path) {
+                return std::ranges::any_of(read_files_, [&](const FileRule& item) {
+                    return item.path == path;
+                });
+            };
+            if (!intent.paths.empty() &&
+                std::ranges::all_of(intent.paths, [&](const ResourceIntent& path) {
+                    return classify(path) == PathClass::normal || (!path.directory && allowed_file(path.path));
+                })) return false;
+        }
+        return std::nullopt;
     }
     }
     return std::nullopt;
@@ -337,10 +362,7 @@ Verdict Policy::evaluate(const ToolCall& call, const PreparedIntent& intent) con
                 verdict.reason = "required read-only sandbox capabilities are unavailable";
                 return verdict;
             }
-            verdict.grant = grant_for_exec(SandboxProfile::read_only, GrantSource::mode);
-            return answer(Verdict::Kind::allow);
-        }
-        if (intent.kind != ToolKind::read) {
+        } else if (intent.kind != ToolKind::read) {
             verdict.kind = Verdict::Kind::deny;
             verdict.reason = live.planning
                                  ? "Planning mode permits research only; state-changing and dynamic commands are disabled"
@@ -369,16 +391,30 @@ Verdict Policy::evaluate(const ToolCall& call, const PreparedIntent& intent) con
             }
             verdict.kind = Verdict::Kind::ask;
         } else if (has(PathClass::outside)) {
-            verdict.approval.reason = "Read a file outside the workspace";
-            const auto outside = std::ranges::find_if(intent.paths, [&](const ResourceIntent& path) {
-                return classify(path) == PathClass::outside;
+            // 普通文件读取精确到文件；目录读取继续按目录范围审批（计划 §8.1）。
+            const bool files_only = std::ranges::all_of(intent.paths, [&](const ResourceIntent& path) {
+                return classify(path) != PathClass::outside || !path.directory;
             });
-            if (outside != intent.paths.end()) {
-                const std::string dir = outside->path.string();
-                verdict.approval.requests.push_back({Approval::Request::Kind::read_path, dir,
-                                                     "read outside the workspace"});
-                verdict.approval.session_rule = std::format("Allow reads under {} for this session", dir);
+            verdict.approval.reason = files_only ? "Read a file outside the workspace"
+                                                 : "Read outside the workspace";
+            if (files_only) verdict.approval.scope = Approval::Scope::exact_file_read;
+            std::size_t files = 0;
+            for (const auto& path : intent.paths) {
+                if (classify(path) != PathClass::outside) continue;
+                ++files;
+                verdict.approval.requests.push_back({Approval::Request::Kind::read_path,
+                                                     path.path.string(),
+                                                     files_only ? "read an outside file"
+                                                                : "read outside the workspace"});
             }
+            if (files_only)
+                verdict.approval.session_rule = files == 1
+                    ? "Allow reading this file for this session"
+                    : "Allow reading these files for this session";
+            else if (const auto outside = std::ranges::find_if(intent.paths, [&](const ResourceIntent& path) {
+                         return classify(path) == PathClass::outside;
+                     }); outside != intent.paths.end())
+                verdict.approval.session_rule = std::format("Allow reads under {} for this session", outside->path.string());
             verdict.kind = Verdict::Kind::ask;
         } else return answer(Verdict::Kind::allow);
         break;
@@ -415,6 +451,40 @@ Verdict Policy::evaluate(const ToolCall& call, const PreparedIntent& intent) con
         if (!intent.command) break;
         const CommandIntent& cmd = *intent.command;
         if (cmd.known_readonly) {
+            // 简单只读命令的工作区外普通文件读取：先按读取审批，不直接放行（计划 §2.3/§8.1）。
+            std::vector<ResourceIntent> outside;
+            bool protected_path = false;
+            for (const auto& item : intent.paths) {
+                const PathClass cls = classify(item);
+                if (cls == PathClass::normal) continue;
+                if (cls == PathClass::sensitive || cls == PathClass::guarded) protected_path = true;
+                outside.push_back(item);
+            }
+            if (!outside.empty() || protected_path) {
+                verdict.approval.intent = intent;
+                verdict.approval.intent.paths = std::move(outside);
+                if (protected_path) {
+                    verdict.approval.reason = "Read a file outside the workspace that may contain secrets";
+                    for (const auto& path : verdict.approval.intent.paths)
+                        verdict.approval.requests.push_back(
+                            {Approval::Request::Kind::sensitive_read, path.path.string(),
+                             "protected data requires one-time approval"});
+                } else {
+                    verdict.approval.reason = "Read a file outside the workspace";
+                    const bool files_only = std::ranges::none_of(verdict.approval.intent.paths,
+                        [](const ResourceIntent& path) { return path.directory; });
+                    if (files_only) verdict.approval.scope = Approval::Scope::exact_file_read;
+                    for (const auto& path : verdict.approval.intent.paths)
+                        verdict.approval.requests.push_back({Approval::Request::Kind::read_path,
+                                                             path.path.string(), "read an outside file"});
+                    verdict.approval.session_rule = !files_only ? "Allow this exact read command for this session"
+                        : verdict.approval.intent.paths.size() == 1
+                        ? "Allow reading this file for this session"
+                        : "Allow reading these files for this session";
+                }
+                verdict.kind = Verdict::Kind::ask;
+                break;
+            }
             if (!sandbox_.read_only_ready) {
                 verdict.kind = Verdict::Kind::deny;
                 verdict.reason = "required read-only sandbox capabilities are unavailable";
@@ -470,8 +540,14 @@ Verdict Policy::evaluate(const ToolCall& call, const PreparedIntent& intent) con
     }
     if (!single_use_only(verdict.approval) && matches_session(verdict.approval, intent)) {
         verdict.kind = Verdict::Kind::allow;
-        if (intent.kind == ToolKind::exec)
-            verdict.grant = grant_for_exec(SandboxProfile::workspace_write, GrantSource::session);
+        if (intent.kind == ToolKind::exec) {
+            const bool readonly = intent.command && intent.command->known_readonly;
+            verdict.grant = grant_for_exec(readonly ? SandboxProfile::read_only : SandboxProfile::workspace_write,
+                                           GrantSource::session);
+            if (readonly && intent.command)
+                for (const auto& path : intent.command->read_paths)
+                    if (!is_relative_to(path, workspace_root_)) verdict.grant.readable.push_back(path);
+        }
         else if (intent.kind == ToolKind::external)
             verdict.grant = grant_for_external(intent, GrantSource::session);
         else verdict.grant = grant_for_files(intent, GrantSource::session);
@@ -482,7 +558,11 @@ Verdict Policy::evaluate(const ToolCall& call, const PreparedIntent& intent) con
         if (intent.kind == ToolKind::write && !has(PathClass::guarded) &&
             !has(PathClass::sensitive) && !has(PathClass::outside))
             return answer(Verdict::Kind::allow);
-        if (intent.kind == ToolKind::exec) {
+        // 仅自动批准工作区命令本身，不能覆盖上面生成的文件读取审批。
+        if (intent.kind == ToolKind::exec &&
+            std::ranges::any_of(verdict.approval.requests, [](const Approval::Request& request) {
+                return request.kind == Approval::Request::Kind::dynamic_command;
+            })) {
             verdict.grant = grant_for_exec(SandboxProfile::workspace_write, GrantSource::mode);
             return answer(Verdict::Kind::allow);
         }
@@ -496,6 +576,20 @@ bool Policy::valid_approval(const Approval& approval, const Decision& decision) 
     if (decision.answer == Decision::Answer::allow_session &&
         (approval.session_rule.empty() || single_use_only(approval))) return false;
     if (approval.identity.child_revision != revision()) return false;
+    if (approval.authority == ApprovalAuthority::decision_model) {
+        // 决策模型只允许本计划列出的范围：网络目标只放行一次，工作区外文件可有文件级会话授权。
+        if (approval.review_ids.empty()) return false;
+        switch (approval.scope) {
+        case Approval::Scope::network_target:
+        case Approval::Scope::web_request:
+        case Approval::Scope::mcp_action:
+            return decision.answer == Decision::Answer::allow;
+        case Approval::Scope::exact_file_read:
+            return true;
+        case Approval::Scope::operation:
+            return false;
+        }
+    }
     if (approval.authority != ApprovalAuthority::parent_model) return true;
     const auto& id = approval.identity;
     return !id.request_id.empty() && !id.parent_session_id.empty() && !id.child_session_id.empty() &&
@@ -522,6 +616,20 @@ bool Policy::consume_network_approval(const NetworkTarget& target, const Approva
 ExecutionGrant Policy::grant_for(const Approval& approval, const Decision& decision) const {
     const auto source = decision.answer == Decision::Answer::allow_session ? GrantSource::session : GrantSource::once;
     ExecutionGrant grant;
+    if (approval.scope == Approval::Scope::exact_file_read) {
+        // 只读精确文件：bash 保持只读 profile，仅追加被批准文件的读取范围。
+        if (approval.intent.kind == ToolKind::exec) {
+            grant = grant_for_exec(SandboxProfile::read_only, source);
+            for (const auto& path : approval.intent.paths)
+                if (!path.inside_workspace) grant.readable.push_back(path.path);
+        } else {
+            grant = grant_for_files(approval.intent, source);
+        }
+        grant.authority = approval.authority;
+        grant.approval = approval.identity;
+        grant.authority_stop = approval.authority_stop;
+        return grant;
+    }
     if (approval.intent.kind == ToolKind::read || approval.intent.kind == ToolKind::write)
         grant = grant_for_files(approval.intent, source);
     else if (approval.intent.kind == ToolKind::external)
@@ -530,8 +638,17 @@ ExecutionGrant Policy::grant_for(const Approval& approval, const Decision& decis
         const bool host = std::ranges::any_of(approval.requests, [](const Approval::Request& request) {
             return request.kind == Approval::Request::Kind::host_access;
         });
-        grant = grant_for_exec(host ? SandboxProfile::full_access : SandboxProfile::workspace_write,
+        const bool readonly = approval.intent.command && approval.intent.command->known_readonly;
+        grant = grant_for_exec(host ? SandboxProfile::full_access
+                                   : readonly ? SandboxProfile::read_only : SandboxProfile::workspace_write,
                                host ? GrantSource::once : source);
+        if (!host && readonly) {
+            for (const auto& path : approval.intent.paths) {
+                grant.readable.push_back(path.path);
+                if (classify(path) == PathClass::sensitive || classify(path) == PathClass::guarded)
+                    grant.read_exceptions.push_back(path.path);
+            }
+        }
     }
     grant.authority = approval.authority;
     grant.approval = approval.identity;
@@ -544,6 +661,18 @@ void Policy::remember_locked(const Approval& approval, const Decision& decision)
     revision_.fetch_add(1);
     if (approval.authority == ApprovalAuthority::parent_model) {
         parent_grants_.push_back({approval, decision});
+        return;
+    }
+    if (approval.authority == ApprovalAuthority::decision_model ||
+        approval.scope == Approval::Scope::exact_file_read) {
+        // 精确文件读取（无论决策模型还是人工批准）只保存文件级规则；网络与 MCP 不生成会话规则。
+        if (approval.scope != Approval::Scope::exact_file_read) return;
+        for (const auto& path : approval.intent.paths) {
+            if (path.inside_workspace) continue;
+            const std::string id = read_file_rule_id(path.path);
+            if (std::ranges::none_of(read_files_, [&](const FileRule& rule) { return rule.id == id; }))
+                read_files_.push_back({id, path.path, approval.identity, approval.review_ids});
+        }
         return;
     }
     switch (approval.intent.kind) {
@@ -576,6 +705,8 @@ std::vector<Policy::SessionGrant> Policy::session_grants() const {
     if (session_edits_) grants.push_back({"workspace-edits", "Workspace file edits"});
     for (const auto& path : read_dirs_)
         grants.push_back({read_rule_id(path), "Read under " + path.string()});
+    for (const auto& rule : read_files_)
+        grants.push_back({rule.id, "Read file " + rule.path.string()});
     for (const auto& rule : network_rules_)
         grants.push_back({rule.id, "Network " + rule.host + ":" + std::to_string(rule.port)});
     for (const auto& rule : network_denied_)
@@ -618,6 +749,12 @@ bool Policy::revoke(std::string_view id) {
         return changed();
     }
     if (id == "workspace-edits" && session_edits_) { session_edits_ = false; return changed(); }
+    if (id.starts_with("read-file-")) {
+        const auto it = std::ranges::find_if(read_files_, [&](const FileRule& rule) { return rule.id == id; });
+        if (it == read_files_.end()) return false;
+        read_files_.erase(it);
+        return changed();
+    }
     if (id.starts_with("read-")) {
         const auto it = std::ranges::find_if(read_dirs_, [&](const fs::path& path) {
             return read_rule_id(path) == id;
@@ -640,29 +777,57 @@ bool Policy::revoke(std::string_view id) {
 
 std::uint64_t Policy::revision() const { return revision_.load(); }
 
-Policy::NetworkDecision Policy::check_network(const NetworkTarget& target) const {
+Policy::NetworkRules Policy::inspect_network(const NetworkTarget& target) const {
     const std::lock_guard lock(rules_mutex_);
+    NetworkRules rules;
+    rules.revision = revision();
     for (const auto& pattern : sandbox_options_.network_denied)
-        if (network_pattern_matches(pattern, target))
-            return {NetworkDecision::Kind::deny, "network target is on the configured deny list"};
+        if (network_pattern_matches(pattern, target)) {
+            rules.match = NetworkRules::Match::denied;
+            rules.reason = "network target is on the configured deny list";
+            return rules;
+        }
     for (const auto& rule : network_denied_)
-        if (rule.host == target.host && rule.port == target.port)
-            return {NetworkDecision::Kind::deny,
-                    rule.authority == ApprovalAuthority::parent_model
-                        ? "the parent agent denied this network target earlier in the session"
-                        : "the user denied this network target earlier in the session"};
+        if (rule.host == target.host && rule.port == target.port) {
+            rules.match = NetworkRules::Match::denied;
+            rules.reason = rule.authority == ApprovalAuthority::parent_model
+                               ? "the parent agent denied this network target earlier in the session"
+                               : "the user denied this network target earlier in the session";
+            return rules;
+        }
     const auto live = effective();
-    if (target.infrastructure || (live.mode == PermissionMode::unrestricted && !live.read_only && !live.planning))
-        return {NetworkDecision::Kind::allow, {}};
+    if (target.infrastructure || (live.mode == PermissionMode::unrestricted && !live.read_only && !live.planning)) {
+        rules.match = NetworkRules::Match::allowed;
+        return rules;
+    }
     for (const auto& rule : parent_network_rules_)
-        if (!rule.approval.authority_stop.stop_requested() && rule.target.host == target.host && rule.target.port == target.port)
-            return {NetworkDecision::Kind::allow, {}};
+        if (!rule.approval.authority_stop.stop_requested() && rule.target.host == target.host &&
+            rule.target.port == target.port) {
+            rules.match = NetworkRules::Match::allowed;
+            return rules;
+        }
     for (const auto& rule : network_rules_)
-        if (rule.host == target.host && rule.port == target.port) return {NetworkDecision::Kind::allow, {}};
+        if (rule.host == target.host && rule.port == target.port) {
+            rules.match = NetworkRules::Match::allowed;
+            return rules;
+        }
     for (const auto& pattern : sandbox_options_.network_allowed)
-        if (network_pattern_matches(pattern, target)) return {NetworkDecision::Kind::allow, {}};
-    return {NetworkDecision::Kind::ask,
-            std::format("connect to {}:{} from a sandboxed command", target.host, target.port)};
+        if (network_pattern_matches(pattern, target)) {
+            rules.match = NetworkRules::Match::allowed;
+            return rules;
+        }
+    rules.reason = std::format("connect to {}:{} from a sandboxed command", target.host, target.port);
+    return rules;
+}
+
+Policy::NetworkDecision Policy::check_network(const NetworkTarget& target) const {
+    const NetworkRules rules = inspect_network(target);
+    switch (rules.match) {
+    case NetworkRules::Match::denied: return {NetworkDecision::Kind::deny, rules.reason};
+    case NetworkRules::Match::allowed: return {NetworkDecision::Kind::allow, {}};
+    case NetworkRules::Match::unmatched: break;
+    }
+    return {NetworkDecision::Kind::ask, rules.reason};
 }
 
 void Policy::remember_network_locked(const NetworkTarget& target, const Approval& approval) {

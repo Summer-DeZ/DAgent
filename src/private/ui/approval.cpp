@@ -107,6 +107,7 @@ ApprovalDialog::~ApprovalDialog() { close(); }
 void ApprovalDialog::open(const ApprovalRequest& approval,
                            std::function<void(ApprovalAnswer)> answer) {
     close(); approval_ = approval; answer_ = std::move(answer);
+    allow_cycle_ = false;
     auto panel = std::make_unique<Panel>(rt_); panel_ = panel.get();
     panel_->tool = approval.tool;
     panel_->via = approval.agent.empty() ? std::string{} : format_text(ui::text().approve_via_task, approval.agent);
@@ -145,8 +146,10 @@ void ApprovalDialog::open(const QuestionRequest& question,
     close();
     question_ = question;
     question_answer_ = std::move(answer);
+    allow_cycle_ = question.allow_permission_cycle;
     selected_.assign(question.options.size(), false);
-    question_cursor_ = 0;
+    const int count = static_cast<int>(question.options.size()) + (question.allow_other ? 1 : 0);
+    question_cursor_ = count > 0 ? std::clamp(question.default_option, 0, count - 1) : 0;
     auto panel = std::make_unique<Panel>(rt_);
     panel_ = panel.get();
     panel_->tool = question.header;
@@ -199,6 +202,10 @@ bool ApprovalDialog::on_event(const tui::Event& e) {
         panel_->preview->scroll_pages(e.key == tui::Key::page_up ? -1 : 1); return true;
     }
     if (question_answer_) {
+        // unrestricted 确认框：Shift+Tab 交给全局键位（取消并跳到 ask）。
+        if (allow_cycle_ && e.kind == tui::Event::Kind::key && e.key == tui::Key::tab &&
+            tui::any(e.mods & tui::Mods::shift))
+            return false;
         const int count = static_cast<int>(question_.options.size()) + (question_.allow_other ? 1 : 0);
         if (panel_->feedback->visible) {
             if (e.key == tui::Key::escape) {

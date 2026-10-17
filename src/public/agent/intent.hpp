@@ -23,6 +23,7 @@ struct ResourceIntent {
     std::filesystem::path path; ///< 绝对路径，已规范化并解析符号链接
     Access access = Access::read;
     bool inside_workspace = true;
+    bool directory = false; ///< read 工具针对目录时为 true；目录范围继续按原有审批处理
 };
 
 /// bash 语法状态；由原 exec 分析得出，核心不重写解析。
@@ -38,6 +39,12 @@ struct CommandImpact {
     bool dynamic = false;
 };
 
+/// @brief 一条被明确执行的脚本目标：规范化绝对路径与对应简单命令。
+struct ScriptTarget {
+    std::filesystem::path path; ///< 规范化绝对路径
+    std::size_t command_index = 0; ///< 对应解析出的简单命令，保持命令原顺序
+};
+
 /// @brief 一条 bash 命令的中立摘要。dangerous / known_readonly 由原 exec 分析函数在
 /// tools 侧计算成布尔值，不能在核心重写简化白名单。
 struct CommandIntent {
@@ -50,6 +57,13 @@ struct CommandIntent {
     bool dangerous = false;
     bool cwd_unknown = false;
     std::vector<CommandImpact> impacts; ///< 已解析路径/网络影响和不确定影响
+    /// 简单只读命令中可静态确定的读取路径（绝对路径）；工作区外普通路径按读取审阅。
+    std::vector<std::filesystem::path> read_paths;
+    /// 明确的目标脚本；运行中联网时逐个复审。
+    std::vector<ScriptTarget> script_targets;
+    /// 存在解释器动态参数、任务运行器或不能静态确定目标的执行片段；
+    /// 该标记不能被解释成「未修改的用户代码」。
+    bool has_unresolved_execution = false;
 };
 
 /// @brief 一次已准备调用的完整意图摘要：权限决策、调度分组与审批展示的全部输入。

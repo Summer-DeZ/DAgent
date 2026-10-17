@@ -5,6 +5,7 @@
 /// 所有会话修改经 SessionCommitter，调度器不直接写对话、计划或记录。
 #pragma once
 
+#include <atomic>
 #include <cstdint>
 #include <string>
 #include <vector>
@@ -25,7 +26,8 @@ public:
     };
 
     ActionDispatcher(Session& session, Run& run, const RunServices& services)
-        : session_(session), run_(run), services_(services) {}
+        : session_(session), run_(run), services_(services),
+          root_turn_id_(session.meta().id + "/turn/" + std::to_string(++turn_sequence_)) {}
 
     Outcome dispatch(const std::vector<ToolCall>& calls, int budget);
 
@@ -33,6 +35,8 @@ private:
     Session& session_;
     Run& run_;
     const RunServices& services_;
+    std::string root_turn_id_;
+    static inline std::atomic<std::uint64_t> turn_sequence_{0};
 };
 
 } // namespace dagent::agent

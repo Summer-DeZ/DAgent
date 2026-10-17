@@ -439,6 +439,10 @@ ToolResult ControlActionExecutor::run_delegation(const DelegationRequest& reques
     context.parent_reviewer = parent_reviewer_;
     context.model = services_.model;
     context.parent_tools = services_.tool_names;
+    context.approval_mode = services_.approval_mode;
+    context.delegated_task = request.prompt;
+    if (services_.user_messages) context.user_messages = services_.user_messages();
+    context.review_gate = services_.review_gate;
     context.sink = &services_.sink;
     context.approver = services_.approver;
     context.stop = stop;

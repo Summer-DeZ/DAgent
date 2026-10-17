@@ -46,6 +46,11 @@ bool Runtime::start(const StartOptions& options) {
         current_ = shared;
         generation_ = 1;
         state_ = State::ready;
+        // 启动即以 unrestricted：装配层已降为 workspace 并记录待确认目标；此处只承接 pending。
+        if (const auto pending = shared->session().config().pending_permission) {
+            pending_permission_ = *pending;
+            pending_permission_entry_ = "startup";
+        }
     }
     refresh_snapshot(*shared);
     log_runtime()->info("会话已就绪：id={} resumed={}", shared->session().meta().id, resumed);
@@ -123,6 +128,8 @@ void Runtime::refresh_snapshot(SessionInstance& instance) {
         const std::lock_guard lock(mutex_);
         next.generation = generation_;
         next.busy = state_ == State::executing || state_ == State::replacing;
+        next.pending_permission_confirmation = pending_permission_;
+        next.pending_permission_entry = pending_permission_entry_;
         for (const QueueEntry& entry : queue_) next.queue.push_back(entry.input);
         if (run_) {
             next.operation = run_->operation;
@@ -380,7 +387,8 @@ std::expected<void, RuntimeError> Runtime::revoke_grant(std::string grant_id, Gr
 
 std::expected<void, RuntimeError> Runtime::cycle_permission() {
     std::shared_ptr<SessionInstance> instance;
-    std::uint64_t generation = 0;
+    std::optional<agent::PermissionMode> pending;
+    agent::PermissionMode current = agent::PermissionMode::workspace;
     {
         const std::lock_guard lock(mutex_);
         if (closed_ || command_pending_ || state_ == State::replacing ||
@@ -392,22 +400,116 @@ std::expected<void, RuntimeError> Runtime::cycle_permission() {
             return std::unexpected(RuntimeError{RuntimeError::Kind::invalid_state, "no current session"});
         }
         instance = current_;
-        generation = generation_;
+        pending = pending_permission_;
+        current = instance->session().policy().mode();
     }
-    agent::Policy& policy = instance->session().policy();
-    switch (policy.mode()) {
-    case agent::PermissionMode::ask: policy.set_mode(agent::PermissionMode::workspace); break;
-    case agent::PermissionMode::workspace: policy.set_mode(agent::PermissionMode::unrestricted); break;
-    case agent::PermissionMode::unrestricted: policy.set_mode(agent::PermissionMode::ask); break;
+    // pending 已存在时再次 cycle：取消待确认并跳到 unrestricted 之后的目标（ask）。
+    if (pending) {
+        const auto result = request_permission(agent::PermissionMode::ask, false);
+        if (!result) return std::unexpected(result.error());
+        return {};
     }
-    apply_permission_change(*instance);
+    agent::PermissionMode target = agent::PermissionMode::ask;
+    switch (current) {
+    case agent::PermissionMode::ask: target = agent::PermissionMode::workspace; break;
+    case agent::PermissionMode::workspace: target = agent::PermissionMode::unrestricted; break;
+    case agent::PermissionMode::unrestricted: target = agent::PermissionMode::ask; break;
+    }
+    const auto result = request_permission(target, false);
+    if (!result) return std::unexpected(result.error());
+    return {};
+}
+
+std::expected<PermissionChangeResult, RuntimeError> Runtime::request_permission(
+    agent::PermissionMode target, bool confirmed) {
+    return request_permission_impl(target, confirmed, "cycle");
+}
+
+std::expected<PermissionChangeResult, RuntimeError> Runtime::cancel_permission_change() {
+    std::shared_ptr<SessionInstance> instance;
+    {
+        const std::lock_guard lock(mutex_);
+        if (closed_ || state_ == State::replacing || state_ == State::closing || state_ == State::closed)
+            return std::unexpected(
+                RuntimeError{RuntimeError::Kind::invalid_state, "the session is not available"});
+        if (current_ == nullptr)
+            return std::unexpected(RuntimeError{RuntimeError::Kind::invalid_state, "no current session"});
+        instance = current_;
+        pending_permission_.reset();
+        pending_permission_entry_.clear();
+    }
+    const agent::PermissionMode effective = instance->session().policy().mode();
     {
         const std::lock_guard lock(publish_mutex_);
-        snapshot_.permission_mode = policy.mode();
+        snapshot_.permission_mode = effective;
+        snapshot_.pending_permission_confirmation.reset();
+        snapshot_.pending_permission_entry.clear();
     }
-    publish(EventPayload{agent::ModeChanged{std::string(agent::to_string(policy.mode())), policy.planning()}},
-            instance->session().meta().id, generation);
-    return {};
+    // 取消后排队输入可以继续执行。
+    cv_.notify_all();
+    return PermissionChangeResult{effective, std::nullopt};
+}
+
+std::expected<PermissionChangeResult, RuntimeError> Runtime::request_permission_impl(
+    agent::PermissionMode target, bool confirmed, std::string entry) {
+    std::shared_ptr<SessionInstance> instance;
+    std::uint64_t generation = 0;
+    bool acked = false;
+    {
+        const std::lock_guard lock(mutex_);
+        if (closed_ || state_ == State::replacing || state_ == State::closing || state_ == State::closed)
+            return std::unexpected(
+                RuntimeError{RuntimeError::Kind::invalid_state, "the session is not available"});
+        if (current_ == nullptr)
+            return std::unexpected(RuntimeError{RuntimeError::Kind::invalid_state, "no current session"});
+        instance = current_;
+        generation = generation_;
+        acked = instance->session().unrestricted_acked();
+    }
+    agent::Session& session = instance->session();
+    agent::Policy& policy = session.policy();
+
+    // 目标为 unrestricted 且尚未确认、本会话也未确认过：只记录 pending，当前权限不变。
+    if (target == agent::PermissionMode::unrestricted && !confirmed && !acked) {
+        const agent::PermissionMode effective = policy.mode();
+        {
+            const std::lock_guard lock(mutex_);
+            pending_permission_ = target;
+            pending_permission_entry_ = entry;
+        }
+        {
+            const std::lock_guard lock(publish_mutex_);
+            snapshot_.permission_mode = effective;
+            snapshot_.pending_permission_confirmation = target;
+            snapshot_.pending_permission_entry = entry;
+        }
+        return PermissionChangeResult{effective, target};
+    }
+
+    // 应用目标：确认、本会话已确认，或非 unrestricted 目标。
+    const bool changed = policy.mode() != target;
+    policy.set_mode(target);
+    if (target == agent::PermissionMode::unrestricted && confirmed && interactive_)
+        session.mark_unrestricted_acked(); // 只有 interactive 才算用户确认；headless 不写 ack。
+    {
+        const std::lock_guard lock(mutex_);
+        pending_permission_.reset();
+        pending_permission_entry_.clear();
+    }
+    if (changed) apply_permission_change(*instance);
+    {
+        const std::lock_guard lock(publish_mutex_);
+        snapshot_.permission_mode = target;
+        snapshot_.pending_permission_confirmation.reset();
+        snapshot_.pending_permission_entry.clear();
+    }
+    if (changed) {
+        publish(EventPayload{agent::ModeChanged{std::string(agent::to_string(target)), policy.planning()}},
+                session.meta().id, generation);
+    }
+    // pending 解除后允许排队输入开始执行。
+    cv_.notify_all();
+    return PermissionChangeResult{target, std::nullopt};
 }
 
 std::expected<void, RuntimeError> Runtime::toggle_planning() {
@@ -471,6 +573,14 @@ void Runtime::install(PendingReplace pending, bool replace_transcript) {
         generation = generation_;
         state_ = State::ready;
         run_.reset();
+        // 切换/新建会话：旧会话的待确认状态随 generation 变化作废；新会话若以 unrestricted
+        // 建立（尚未确认）则由装配层降为 workspace 并带出待确认目标。
+        pending_permission_.reset();
+        pending_permission_entry_.clear();
+        if (const auto pending_permission = instance->session().config().pending_permission) {
+            pending_permission_ = *pending_permission;
+            pending_permission_entry_ = "startup";
+        }
     }
     refresh_snapshot(*instance);
     ControlEvent replaced;
@@ -652,8 +762,10 @@ void Runtime::run_input(const QueuedInput& input) {
                   return broker_.request_answer(question, session_id, generation, stop);
               });
 
+    // 本轮的自动审阅开关：新建的每个用户请求一轮，所有子 Agent 共用。
+    auto review_gate = std::make_shared<agent::RunReviewGate>();
     agent::RunServices services{sink, approver, asker, subagent_.get(), &instance->resources(),
-                                run.control->stop.get_token()};
+                                run.control->stop.get_token(), std::move(review_gate)};
     agent::Run agent_run;
     agent::Session& session = instance->session();
     session.begin_run(services, agent_run);
@@ -681,7 +793,7 @@ void Runtime::run_compact() {
     const agent::Approver approver{};
     const agent::Asker asker{};
     agent::RunServices services{sink, approver, asker, subagent_.get(), &instance->resources(),
-                                run.control->stop.get_token()};
+                                run.control->stop.get_token(), {}};
     agent::Run agent_run;
     agent::Session& session = instance->session();
     session.begin_run(services, agent_run);
@@ -708,7 +820,7 @@ void Runtime::drain() {
         std::optional<QueuedInput> next;
         {
             const std::lock_guard lock(mutex_);
-            if (closed_ || state_ != State::ready || !front_ready_locked()) return;
+            if (closed_ || state_ != State::ready || pending_permission_ || !front_ready_locked()) return;
             next = std::move(queue_.front().input);
             queue_.pop_front();
             state_ = State::executing;
@@ -726,7 +838,8 @@ void Runtime::worker(std::stop_token stop) {
         {
             std::unique_lock lock(mutex_);
             cv_.wait(lock, stop, [&] {
-                return closed_ || !commands_.empty() || (state_ == State::ready && front_ready_locked());
+                return closed_ || !commands_.empty() ||
+                       (state_ == State::ready && !pending_permission_ && front_ready_locked());
             });
             if (closed_ || stop.stop_requested()) break;
             if (!commands_.empty()) {

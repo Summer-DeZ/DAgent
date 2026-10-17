@@ -13,7 +13,9 @@
 
 #include "agent/options.hpp"
 #include "agent/permission.hpp"
+#include "agent/port_decision.hpp"
 #include "agent/subagent_def.hpp"
+#include "llm/decision_provider.hpp"
 #include "llm/provider.hpp"
 #include "base/log.hpp"
 #include "exec/process.hpp"
@@ -35,6 +37,9 @@ struct Config {
     std::map<std::string, llm::ProviderConfig> models;
     std::string model;
     std::vector<std::string> model_selection_log; ///< 日志初始化后输出 CLI 选择/覆盖路径
+    std::map<std::string, llm::DecisionProviderConfig> decision_models; ///< models.json 决策目录
+    std::optional<std::string> decision; ///< 选中的决策模型配置名；nullopt 表示禁用决策审阅
+    agent::DecisionReviewOptions decision_review;
     std::filesystem::path system_prompt_file;
     std::filesystem::path compact_prompt_file;
     net::HttpOptions http;
@@ -78,10 +83,13 @@ private:
 };
 
 /// @brief 模型文件与按序选择；不加载工具、MCP 或工作区环境。
+/// 同时读取生成模型与决策模型目录；决策选择不影响 --model 语义。
 struct ModelCatalog {
     std::map<std::string, llm::ProviderConfig> models;
     std::string selected;
     std::vector<std::string> selection_log;
+    std::map<std::string, llm::DecisionProviderConfig> decision_models;
+    std::optional<std::string> selected_decision;
 };
 ModelCatalog load_models(const std::filesystem::path& root,
                          const std::vector<std::string>& overrides);

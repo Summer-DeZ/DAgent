@@ -17,6 +17,7 @@
 #include "agent/grant.hpp"
 #include "agent/intent.hpp"
 #include "agent/message.hpp"
+#include "agent/options.hpp"
 
 namespace dagent::agent {
 
@@ -73,9 +74,13 @@ public:
         EffectivePermission permission;
         std::uint64_t revision = 0;
         std::stop_token stop;
-        bool can_review() const {
-            return permission.mode == PermissionMode::unrestricted &&
-                   !permission.read_only && !permission.planning && !stop.stop_requested();
+        /// @brief 当前父会话是否可以审阅子请求；只读/规划上限与不可审阅模式直接拒绝。
+        bool can_review(ParentReviewMode mode) const {
+            if (stop.stop_requested() || permission.read_only || permission.planning) return false;
+            if (mode == ParentReviewMode::disabled) return false;
+            if (permission.mode == PermissionMode::unrestricted) return true;
+            return permission.mode == PermissionMode::workspace &&
+                   mode == ParentReviewMode::workspace_and_unrestricted;
         }
     };
     AuthorityView authority_view() const;
@@ -92,6 +97,15 @@ public:
         Kind kind = Kind::ask;
         std::string reason; ///< deny/ask 时的说明
     };
+    /// @brief 网络规则事实：拒绝、已有放行或未命中；放行不绕过强制复审与完整 URL 审阅。
+    struct NetworkRules {
+        enum class Match { denied, allowed, unmatched };
+        Match match = Match::unmatched;
+        std::uint64_t revision = 0;
+        std::string reason;
+    };
+    /// @brief 运行中网络目标的规则事实（配置拒绝 → 会话拒绝 → 会话/配置放行为 allowed）。
+    NetworkRules inspect_network(const NetworkTarget&) const;
     /// @brief 运行中网络目标的当前判定：配置拒绝优先，其次配置允许与会话规则，最后才需要审批。
     NetworkDecision check_network(const NetworkTarget&) const;
     /// @brief 原子消费运行中网络批准，allow_session 时保存 host:port 精确规则。
@@ -168,6 +182,14 @@ private:
     std::vector<NetworkRule> network_denied_;
     std::vector<std::string> external_rules_;
     std::vector<std::filesystem::path> read_dirs_;
+    /// 工作区外普通文件的文件级会话授权；精确匹配，不扩大到目录或兄弟文件。
+    struct FileRule {
+        std::string id;
+        std::filesystem::path path;
+        ApprovalIdentity approval;
+        std::vector<std::string> review_ids;
+    };
+    std::vector<FileRule> read_files_;
 };
 
 /// @brief docs/design/agent.md §6：只有直接放行的只读调用能进并行组。

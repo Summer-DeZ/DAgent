@@ -31,6 +31,7 @@ private:
     QuestionRequest question_;
     std::vector<bool> selected_;
     int question_cursor_ = 0;
+    bool allow_cycle_ = false; ///< 确认框允许 Shift+Tab 穿透（见 QuestionRequest::allow_permission_cycle）
     uint32_t overlay_ = 0;
     Panel* panel_ = nullptr;
     tui::ThemeTokens theme_ = tui::dark_theme();

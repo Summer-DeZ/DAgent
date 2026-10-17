@@ -15,9 +15,42 @@ Session::Session(SessionConfig config, SessionMeta meta, std::unique_ptr<Journal
       plan_(std::move(plan)),
       conversation_(std::move(conversation)),
       compactor_(config_.options.context, config_.provider.max_tokens, config_.compact_prompt),
-      committer_(conversation_, plan_, *journal_) {}
+      committer_(conversation_, plan_, *journal_) {
+    recent_user_messages_ = config_.recent_user_messages;
+    unrestricted_acked_ = config_.unrestricted_acked;
+}
 
 Session::~Session() = default;
+
+void Session::mark_unrestricted_acked() {
+    if (unrestricted_acked_) return;
+    unrestricted_acked_ = true;
+    committer_.commit_unrestricted_ack();
+}
+
+void Session::note_user_message(std::string text) {
+    recent_user_messages_.push_back(std::move(text));
+    if (recent_user_messages_.size() > 3)
+        recent_user_messages_.erase(recent_user_messages_.begin(),
+                                    recent_user_messages_.end() - 3);
+}
+
+ReviewContext Session::review_context() const {
+    ReviewContext context;
+    context.workspace_root = config_.cwd;
+    context.session_started = config_.session_started;
+    context.delegated_task = config_.delegated_task;
+    if (config_.is_main) {
+        context.user_messages = recent_user_messages_;
+    } else {
+        // 子会话：父委派任务为主要依据，父会话原话为辅助参考（最多 2 条）。
+        context.user_messages = config_.delegated_user_messages;
+        const auto begin = context.user_messages.size() > 2 ? context.user_messages.end() - 2
+                                                           : context.user_messages.begin();
+        context.user_messages.erase(context.user_messages.begin(), begin);
+    }
+    return context;
+}
 
 ModelParams Session::model_params() const {
     return ModelParams{config_.provider.model, config_.provider.max_tokens, config_.provider.temperature};
@@ -81,6 +114,10 @@ void Session::begin_run(const RunServices& services, Run& run) {
     control_.begin_turn(ControlActionExecutor::Services{&services.asker, &services.approver,
                                                         services.delegation, &policy_, config_.read_only,
                                                         services.sink, meta_.id, config_.provider.name, catalog_.names(),
+                                                        services.review_gate,
+                                                        [this] { return config_.is_main ? recent_user_messages_
+                                                                                        : config_.delegated_user_messages; },
+                                                        config_.options.approval.mode,
                                                         [this](std::string_view name) { return activate_skill(name); }});
 }
 

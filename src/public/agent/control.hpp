@@ -83,6 +83,11 @@ public:
         std::string session_id;          ///< 委派上下文的父会话身份
         std::string model;               ///< 父当前模型配置名（默认子模型继承）
         std::vector<std::string> tool_names; ///< 委派默认子名单
+        /// 本轮共享自动审批开关与父会话真实用户原话（委派时传给子会话）。
+        std::shared_ptr<RunReviewGate> review_gate;
+        /// 委派时取当前真实用户原话（主会话为最近 3 条，子会话为辅助参考）。
+        std::function<std::vector<std::string>()> user_messages;
+        ParentReviewMode approval_mode = ParentReviewMode::workspace_and_unrestricted;
         std::function<ToolResult(std::string_view)> activate_skill;
     };
 

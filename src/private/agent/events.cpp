@@ -159,6 +159,13 @@ json to_json(const Event& event) {
                 return json{{"type", "notice"}, {"level", level_name(e.level)}, {"text", e.text},
                             {"persistent", e.persistent}};
             },
+            [](const AutoReview& e) {
+                return json{{"type", "auto_review"},
+                            {"id", e.call_id},
+                            {"review_ids", e.review_ids},
+                            {"result", e.result},
+                            {"reason", e.reason}};
+            },
             [](const TurnEnded& e) {
                 return json{{"type", "turn_ended"},
                             {"status", std::string(to_string(e.status))},

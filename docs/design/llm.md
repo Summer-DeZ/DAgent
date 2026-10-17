@@ -96,6 +96,23 @@ message_delta 使用累计 output_tokens。end_turn/stop_sequence、max_tokens�
 extended thinking 尚未开放；配置试图启用时明确拒绝。虽然保留思考文本和 signature 的流/记录通道，
 仍未声称支持完整 thinking 块回传。实现依据 [Claude 流式接口文档](https://platform.claude.com/docs/en/build-with-claude/streaming)。
 
+## 4.1 决策适配器（systemone）
+
+决策审阅使用独立的 `DecisionModel` 端口，不与生成模型 `ModelSession` 共用会话历史、消息或 token 预算：
+
+| 文件 | 职责 |
+| --- | --- |
+| `agent/port_decision.hpp` | `DecisionModel::evaluate(request, deadline, stop)` 与 `DecisionReviewStore` 端口 |
+| `llm/decision_provider.*` | `DecisionProviderConfig`、适配器目录与 `make_decision_model` 工厂 |
+| `llm/decision_systemone.*` | `POST /v1/systemone`：编码 state + questions，解码 `answers.<键>.noul` / `.choice` 与 `probabilities` |
+
+- `criteria` 为空的问题编码成 `type: "noul"`，否则 `type: "choice"`；不使用 choice 的 `confidence` 字段。
+- 超时从提交请求起计入排队与 HTTP 等待（默认 10 秒，可被整体 deadline 收窄）；失败与响应不合法统一返回
+  `DecisionError`，不静默重试，不补分数。同一实例串行使用一个 `HttpClient`（服务只有单个处理槽）。
+- 响应必须匹配配置的模型标识，并提供所有请求类别的有限概率（0–1）；不完整、类型错误或越界的响应转后续审批。
+- 问句由核心 `agent/decision_review` 提供并带版本号；适配器不生成或改写问句。
+- `endpoint` 是完整地址；`model_revision` 由部署方在权重或量化变化时更新，阈值按它隔离。
+
 ## 5. 错误与预算
 
 共享分类支持 408、429、5xx 重试（含 529），解析 retry-after 秒数或 HTTP-date。

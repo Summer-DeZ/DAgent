@@ -466,6 +466,7 @@ private:
         refresh_mcp();
         const auto [done, total] = side_->progress();
         status_->todo(done, total, total > 0 && (side_->collapsed() || terminal_.size().cols < 80));
+        maybe_prompt_permission(snapshot);
     }
 
     void handle_event(const protocol::Event& event) {
@@ -493,6 +494,10 @@ private:
     void apply_session_changed(const protocol::Event& event) {
         if (event.session_generation < generation_) return;
         cancel_history();
+        if (permission_prompt_) {
+            permission_prompt_ = false;
+            if (permission_dialog_open_) { dialog_.close(); permission_dialog_open_ = false; }
+        }
         id_ = event.session_id;
         generation_ = event.session_generation;
         const bool replace = event.data.value("replace_transcript", true);
@@ -1256,6 +1261,42 @@ private:
             toast(error.message, tui::Notice::Severity::warn);
         });
     }
+    /// 快照里出现待确认的 unrestricted 升权：弹本地确认框，默认焦点在「取消」。
+    void maybe_prompt_permission(const protocol::SessionSnapshot& snapshot) {
+        if (!snapshot.permission_confirmation) {
+            // 待确认状态消失（确认/取消/切换会话）：关闭本地确认框。
+            if (permission_dialog_open_) { dialog_.close(); permission_dialog_open_ = false; }
+            permission_prompt_ = false;
+            return;
+        }
+        if (permission_prompt_) return;
+        permission_prompt_ = true;
+        permission_dialog_open_ = true;
+        ui::QuestionRequest request;
+        request.header = std::string(ui::text().permission_unrestricted_title);
+        request.prompt = std::string(ui::text().permission_unrestricted_body);
+        request.multi_select = false;
+        request.allow_other = false;
+        request.default_option = 1; // 取消
+        request.allow_permission_cycle = true; // Shift+Tab 取消并跳到 ask
+        request.options.push_back({std::string(ui::text().permission_enable), {}});
+        request.options.push_back({std::string(ui::text().permission_cancel), {}});
+        dialog_.open(std::move(request), [this](QuestionAnswer answer) {
+            permission_dialog_open_ = false;
+            const bool enable = !answer.cancelled && answer.selected.size() == 1 && answer.selected[0] == 0;
+            set_permission_confirmation(enable);
+        });
+    }
+    void set_permission_confirmation(bool confirmed) {
+        nlohmann::json params = target();
+        params["target"] = "unrestricted";
+        params["confirmed"] = confirmed;
+        request("session.set_permission", std::move(params), [this](const nlohmann::json& value) {
+            apply_snapshot(value.get<protocol::SessionSnapshot>());
+        }, [this](const protocol::RpcError& error) {
+            toast(error.message, tui::Notice::Severity::warn);
+        });
+    }
     void toggle_plan() {
         if (busy_) return;
         request("session.toggle_planning", target(), [this](const nlohmann::json& value) {
@@ -1270,6 +1311,8 @@ private:
 
     void show_interaction(const protocol::InteractionRequest& request) {
         active_interaction_ = request.interaction_id;
+        // 后端交互对话框会替换本地 unrestricted 确认框；此时不再由快照关闭它。
+        permission_dialog_open_ = false;
         if (request.kind == "approval") {
             dialog_.open(decode_approval(request.payload),
                          [this, id = request.interaction_id](ApprovalAnswer answer) {
@@ -1340,6 +1383,8 @@ private:
     std::string id_, error_, phase_, project_path_, branch_, completion_kind_;
     std::filesystem::path project_root_;
     std::string active_interaction_, model_name_, model_label_;
+    bool permission_prompt_ = false; ///< 本会话已就当前 pending 弹出过确认框
+    bool permission_dialog_open_ = false; ///< 当前对话框仍是本地 unrestricted 确认框
     std::string mode_ = "ask";
     std::uint64_t generation_ = 0, state_seq_ = 0;
     bool planning_ = false, read_only_ = false;

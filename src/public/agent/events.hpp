@@ -88,6 +88,14 @@ struct Notice {
     bool persistent = false; ///< Keep audit information visible in the transcript.
 };
 
+/// @brief 一次自动审阅的轻量结果；不把 defer 冒充成最终拒绝，也不复制分数或证据。
+struct AutoReview {
+    std::string call_id;
+    std::vector<std::string> review_ids;
+    std::string result; ///< approved / needs_approval / unavailable / cancelled
+    std::string reason;
+};
+
 struct TurnEnded {
     TurnStatus status = TurnStatus::done;
     std::string error;
@@ -110,7 +118,7 @@ struct SubEvent {
 
 using Event = std::variant<TurnStarted, StepStarted, TextDelta, ReasoningDelta, StreamReset, ToolPending,
                            ToolStarted, ToolOutput, ToolFinished, SubEvent, Retrying, Compacted,
-                           ContextUpdate, Notice, ModelChanged, ModeChanged, TurnEnded>;
+                           ContextUpdate, Notice, ModelChanged, ModeChanged, TurnEnded, AutoReview>;
 using Sink = std::function<void(const Event&)>;
 
 struct EventBox { Event event; }; // 此处 Event 已完整
@@ -133,12 +141,22 @@ struct Approval {
         Kind kind = Kind::dynamic_command;
         std::string target, reason;
     };
+    /// @brief 批准的消费范围；不能只从 ToolKind 推导。
+    enum class Scope {
+        operation,      ///< 原审批语义（工具/命令会话规则）
+        exact_file_read,///< 只读某几个精确文件；批准不扩大到目录或兄弟文件
+        network_target, ///< 一次运行中网络目标
+        web_request,    ///< 一次完整 URL 请求
+        mcp_action,     ///< 一次 MCP 调用
+    };
     std::string call_id, tool;
     std::string arguments; ///< 原始工具参数；只供审阅，不作为执行入口
     ApprovalAuthority authority = ApprovalAuthority::user;
     ApprovalIdentity identity;
     std::stop_token authority_stop;
     std::string delegated_task;
+    Scope scope = Scope::operation;
+    std::vector<std::string> review_ids; ///< 关联的决策审阅记录；切换到后续审批时保留
     std::chrono::steady_clock::time_point created = std::chrono::steady_clock::now();
     PreparedIntent intent;    ///< 拷贝：交互界面要把它 post 到渲染线程
     std::string reason;       ///< 为什么要问，见 docs/design/agent.md §7
@@ -173,6 +191,8 @@ struct Question {
     std::vector<Option> options;
     bool multi_select = false;
     bool allow_other = true;
+    /// 初始光标所在的选项下标；缺省 0 保持旧行为（unrestricted 确认框用它把焦点放在「取消」）。
+    int default_option = 0;
 };
 
 struct Answer {

@@ -111,11 +111,20 @@ struct HttpClient::Impl {
     }
 
     HttpResponse run(const HttpOptions& opt, const HttpRequest& req, const DataFn* on_data,
-                     std::stop_token stop);
+                     std::stop_token stop, std::optional<std::chrono::steady_clock::time_point> deadline);
 };
 
 HttpResponse HttpClient::Impl::run(const HttpOptions& opt, const HttpRequest& req,
-                                   const DataFn* on_data, std::stop_token stop) {
+                                   const DataFn* on_data, std::stop_token stop,
+                                   std::optional<std::chrono::steady_clock::time_point> deadline) {
+    std::optional<std::chrono::milliseconds> remaining;
+    if (deadline) {
+        const auto left = std::chrono::duration_cast<std::chrono::milliseconds>(
+            *deadline - std::chrono::steady_clock::now());
+        if (left.count() <= 0)
+            throw HttpError(Kind::timeout, req.method + " " + req.url + " exceeded its deadline before sending");
+        remaining = std::max(left, std::chrono::milliseconds{1});
+    }
     Transfer t;
     t.easy = easy;
     t.on_data = on_data;
@@ -144,6 +153,11 @@ HttpResponse HttpClient::Impl::run(const HttpOptions& opt, const HttpRequest& re
     curl_easy_setopt(easy, CURLOPT_USERAGENT, "DAgent/0.1");
     curl_easy_setopt(easy, CURLOPT_ERRORBUFFER, errbuf);
     curl_easy_setopt(easy, CURLOPT_TIMEOUT, static_cast<long>(opt.timeout.count()));
+    if (remaining) {
+        const auto configured = std::chrono::duration_cast<std::chrono::milliseconds>(opt.timeout);
+        const auto limit = configured.count() > 0 ? std::min(*remaining, configured) : *remaining;
+        curl_easy_setopt(easy, CURLOPT_TIMEOUT_MS, static_cast<long>(limit.count()));
+    }
     curl_easy_setopt(easy, CURLOPT_CONNECTTIMEOUT, static_cast<long>(opt.connect_timeout.count()));
     if (opt.idle_timeout.count() > 0) {
         curl_easy_setopt(easy, CURLOPT_LOW_SPEED_LIMIT, 1L);
@@ -195,12 +209,17 @@ HttpClient::HttpClient(HttpOptions opt) : opt_(opt) {
 HttpClient::~HttpClient() = default;
 
 HttpResponse HttpClient::send(const HttpRequest& req, std::stop_token stop) {
-    return impl_->run(opt_, req, nullptr, std::move(stop));
+    return impl_->run(opt_, req, nullptr, std::move(stop), std::nullopt);
+}
+
+HttpResponse HttpClient::send(const HttpRequest& req, std::stop_token stop,
+                              std::optional<std::chrono::steady_clock::time_point> deadline) {
+    return impl_->run(opt_, req, nullptr, std::move(stop), deadline);
 }
 
 HttpResponse HttpClient::stream(const HttpRequest& req, const std::function<void(std::string_view)>& on_data,
                                 std::stop_token stop) {
-    return impl_->run(opt_, req, &on_data, std::move(stop));
+    return impl_->run(opt_, req, &on_data, std::move(stop), std::nullopt);
 }
 
 } // namespace dagent::net

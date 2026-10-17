@@ -138,7 +138,8 @@ nlohmann::json question_payload(const agent::Question& question) {
                           {"prompt", question.prompt},
                           {"options", std::move(options)},
                           {"multi_select", question.multi_select},
-                          {"allow_other", question.allow_other}};
+                          {"allow_other", question.allow_other},
+                          {"default_option", question.default_option}};
 }
 
 } // namespace
@@ -384,6 +385,28 @@ void Backend::dispatch(const protocol::Request& request) {
     if (method == "session.cycle_permission") {
         if (!check_target(id, params)) return;
         const auto result = runtime_->cycle_permission();
+        if (!result) {
+            fail_target(id, result.error());
+            return;
+        }
+        respond_snapshot(id);
+        return;
+    }
+    if (method == "session.set_permission") {
+        if (!check_target(id, params)) return;
+        const std::string target = params.value("target", "");
+        agent::PermissionMode mode = agent::PermissionMode::workspace;
+        if (target == "ask") mode = agent::PermissionMode::ask;
+        else if (target == "workspace") mode = agent::PermissionMode::workspace;
+        else if (target == "unrestricted") mode = agent::PermissionMode::unrestricted;
+        else {
+            fail(id, invalid_params("target must be ask, workspace or unrestricted"));
+            return;
+        }
+        // confirmed=false 表示用户取消待确认的升权；confirmed=true 才显式应用目标。
+        const bool confirmed = params.value("confirmed", false);
+        std::expected<runtime::PermissionChangeResult, runtime::RuntimeError> result =
+            confirmed ? runtime_->request_permission(mode, true) : runtime_->cancel_permission_change();
         if (!result) {
             fail_target(id, result.error());
             return;

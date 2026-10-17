@@ -69,6 +69,12 @@ public:
     std::expected<void, RuntimeError> compact();
     std::expected<void, RuntimeError> revoke_grant(std::string grant_id, GrantRevoked done);
     std::expected<void, RuntimeError> cycle_permission();
+    /// @brief 请求切换权限：目标为 unrestricted 且本会话尚未确认时只记录 pending，不升权。
+    /// @param confirmed 用户已确认（UI 确认或 headless 立即确认）；只有 interactive 才写 ack 记录。
+    std::expected<PermissionChangeResult, RuntimeError> request_permission(
+        agent::PermissionMode target, bool confirmed = false);
+    /// @brief 取消待确认的 unrestricted 升权：清除 pending，保持当前模式。
+    std::expected<PermissionChangeResult, RuntimeError> cancel_permission_change();
     std::expected<void, RuntimeError> toggle_planning();
     bool cancel(std::string_view run_id);
     std::expected<std::string, RuntimeError> resolve_session(std::optional<std::string_view> prefix);
@@ -112,6 +118,9 @@ private:
     void run_input(const QueuedInput& input);
     void run_compact();
 
+    std::expected<PermissionChangeResult, RuntimeError> request_permission_impl(
+        agent::PermissionMode target, bool confirmed, std::string entry);
+
     std::expected<void, RuntimeError> enqueue(Command command);
     PendingReplace prepare_new();
     PendingReplace prepare_resume(const std::string& session_id);
@@ -142,6 +151,9 @@ private:
     std::uint64_t generation_ = 0;
     State state_ = State::empty;
     std::optional<CurrentRun> run_;
+    /// 待确认的 unrestricted 升权；存在时 drain/worker 不启动排队输入，确认或取消后唤醒。
+    std::optional<agent::PermissionMode> pending_permission_;
+    std::string pending_permission_entry_;
     std::uint64_t input_seq_ = 0;
     std::uint64_t run_seq_ = 0;
     bool closed_ = false;

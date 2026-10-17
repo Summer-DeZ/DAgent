@@ -36,6 +36,12 @@ struct SimpleCommand {
     bool arguments_dynamic = false;
 };
 
+/// @brief 明确的目标脚本：规范化前的字面路径与对应简单命令下标。
+struct ScriptTarget {
+    std::string path; ///< 字面路径（可能相对，由上层按工作区根规范化）
+    std::size_t command_index = 0; ///< 对应 commands 里的简单命令，保持命令原顺序
+};
+
 struct Analysis {
     int version = kShellAnalysisVersion;
     std::string source;
@@ -49,6 +55,10 @@ struct Analysis {
     bool dynamic = false;
     /// 某个 cd 目标或分支使后续相对路径基准不能静态确定。
     bool cwd_unknown = false;
+    /// 可静态定位的目标脚本（./script、bash/sh/python/node file）；不读取脚本正文。
+    std::vector<ScriptTarget> script_targets;
+    /// 存在解释器动态参数、任务运行器（npm run / make）或不能静态确定目标的执行片段。
+    bool has_unresolved_execution = false;
 };
 
 /// @brief 用 tree-sitter-bash 纯分析一条命令；不会执行替换、脚本或函数。
@@ -62,5 +72,9 @@ bool is_known_readonly(const Analysis& analysis, const std::filesystem::path& wo
 
 /// @brief 系统级不可逆命令的短硬拦名单；任何权限模式都不得执行。
 bool is_dangerous(const Analysis& analysis);
+
+/// @brief 简单只读命令里可静态确定的读取路径（字面量，含重定向输入）。
+/// 只解析命令与参数，不读取文件内容；用于工作区外读取审批。
+std::vector<std::string> readonly_read_paths(const Analysis& analysis);
 
 } // namespace dagent::exec

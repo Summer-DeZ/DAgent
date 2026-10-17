@@ -33,7 +33,7 @@
 会话允许按 host:port 共享，撤销和降权会停止失去授权的活跃调用。
 完整规则见 [agent §7](agent.md#7-权限与沙箱) 和 [权限指南](../guide/permissions.md)。
 
-curl 禁用 curlrc、URL glob、非 HTTP(S) 协议和非 HTTP(S) 重定向；保留 TLS 校验，最多跟随 10 跳重定向。
+curl 禁用 curlrc、URL glob、非 HTTP(S) 协议和非 HTTP(S) 重定向；保留 TLS 校验，最多 10 跳重定向。每次只发送一跳并读取 Location，交给调用方的 `BeforeRequest` 回调后继续，不再使用 curl 的自动跳转。
 `--noproxy ''` 强制 loopback/私网连接也进入 SRT 代理。`--output -` 明确通过管道输出字节，避免 curl 对某些响应的二进制检测提前停止输出。
 正文经 `head -c (max_body_bytes+1)` 限制，curl JSON 元数据走独立 stderr；超限保留正文前缀，退出码 23 只有在确实达到截断上限时才被接受。
 网络回调另外保存拒绝目标与原因，避免把代理的 HTTP 403 当成成功。超时包含等待审批；SRT 不可用时绝不转宿主抓取。

@@ -13,6 +13,9 @@
 #include <string>
 #include <vector>
 
+#include "agent/action.hpp"
+#include "agent/decision_types.hpp"
+#include "agent/port_decision.hpp"
 #include "agent/catalog.hpp"
 #include "agent/committer.hpp"
 #include "agent/compaction.hpp"
@@ -45,8 +48,21 @@ struct SessionConfig {
     PermissionMode permission_mode = PermissionMode::workspace;
     bool read_only = false;
     bool planning = false;
+    /// 本会话用户已确认过 unrestricted 警告；headless 启用不置为 true，之后首次 TUI 进入仍需确认。
+    bool unrestricted_acked = false;
+    /// 启动即以 unrestricted 时，确认前使用的待确认目标；空表示无（恢复已确认会话也不设置）。
+    std::optional<PermissionMode> pending_permission;
     bool is_main = true; ///< 主会话才在步骤边界处理 MCP 等待/刷新/断连
     int shell_analysis_version = 0; ///< 外围 exec 分析器版本，供权限规则身份使用
+    /// 决策审阅依赖；为空表示未配置决策模型，保持原有审批行为。
+    std::shared_ptr<DecisionServices> decision;
+    /// 会话开始时间（恢复保留原会话创建时间）；「本会话修改过」按 mtime 与它比较。
+    std::chrono::system_clock::time_point session_started{};
+    /// 恢复出的真实用户原话（最近 3 条）；子会话为空。
+    std::vector<std::string> recent_user_messages;
+    /// 子会话的主要依据（委派任务文本）与委派时父会话的辅助用户原话。
+    std::string delegated_task;
+    std::vector<std::string> delegated_user_messages;
 };
 
 /// @brief 会话的只读快照：UI/协议适配只消费值，不接触内部容器。
@@ -72,6 +88,19 @@ public:
     const SessionMeta& meta() const { return meta_; }
     const SessionConfig& config() const { return config_; }
     bool is_main() const { return config_.is_main; }
+    const std::shared_ptr<DecisionServices>& decision() const { return config_.decision; }
+
+    /// @brief 用户是否已确认过本会话的 unrestricted 警告（内存标记或恢复出的 ack 记录）。
+    bool unrestricted_acked() const { return unrestricted_acked_; }
+    /// @brief 记录用户确认事实：写一条 unrestricted_ack 记录并置内存标记。headless 不调用。
+    void mark_unrestricted_acked();
+
+    /// @brief 记录一条真实用户原话（委派任务不计入），只保留最近 3 条；
+    /// 独立于压缩后的模型上下文，供决策审阅构造 state。
+    void note_user_message(std::string text);
+    const std::vector<std::string>& recent_user_messages() const { return recent_user_messages_; }
+    /// @brief 构造本轮审阅背景；子会话以委派任务为主要依据。
+    ReviewContext review_context() const;
 
     /// @brief 提交入口：唯一能修改对话、计划与记录的位置。
     SessionCommitter& committer() { return committer_; }
@@ -121,6 +150,8 @@ private:
     Compactor compactor_;
     ControlActionExecutor control_;
     SessionCommitter committer_;
+    std::vector<std::string> recent_user_messages_; ///< 最近 3 条真实用户原话（最新在末尾）
+    bool unrestricted_acked_ = false; ///< 本会话已确认 unrestricted 警告（内存或恢复值）
 };
 
 } // namespace dagent::agent

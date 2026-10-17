@@ -247,6 +247,7 @@ const std::set<std::string>& known_keys() {
         "process.kill_grace_ms", "process.drain_after_exit_ms", "process.env_deny",
         "run.max_model_calls", "run.max_tool_calls", "run.max_model_retries",
         "run.max_parallel_tasks", "run.max_parallel_tools", "run.max_total_tokens",
+        "decision_review.timeout_ms", "decision_review.threshold_profile",
         "subagents.approval.mode", "subagents.approval.max_reviews_per_turn",
         "subagents.approval.review_timeout_ms", "subagents.approval.failure",
         "session.redact_fields", "session.history_scan_limit", "log.max_file_bytes",
@@ -348,6 +349,29 @@ std::map<std::string, llm::ProviderConfig> map_models(const Node& node) {
             fail(ConfigError::Kind::invalid, key + "/api_key is required");
         if (info->needs_max_tokens && model.max_tokens == 0)
             fail(ConfigError::Kind::invalid, key + "/max_tokens must be greater than zero");
+        out.emplace(name, std::move(model));
+    }
+    return out;
+}
+
+std::map<std::string, llm::DecisionProviderConfig> map_decision_models(const Node& node) {
+    std::map<std::string, llm::DecisionProviderConfig> out;
+    if (!node.has()) return out;
+    if (!node.raw().is_object()) fail(ConfigError::Kind::type, node.pointer() + " must be an object");
+    for (const auto& [name, entry] : node.raw().items()) {
+        const std::string key = node.pointer() + "/" + name;
+        if (name.empty() || !entry.is_object()) fail(ConfigError::Kind::type, key + " must be an object");
+        const Node value(entry, key);
+        llm::DecisionProviderConfig model;
+        model.name = name;
+        model.kind = value.required("kind").str();
+        if (llm::find_decision_provider(model.kind) == nullptr)
+            fail(ConfigError::Kind::invalid, key + "/kind: unknown decision provider " + model.kind);
+        model.endpoint = value.required("endpoint").str();
+        if (model.endpoint.empty()) fail(ConfigError::Kind::invalid, key + "/endpoint must not be empty");
+        model.model = value.required("model").str();
+        if (model.model.empty()) fail(ConfigError::Kind::invalid, key + "/model must not be empty");
+        model.model_revision = value.child("model_revision").str();
         out.emplace(name, std::move(model));
     }
     return out;
@@ -725,6 +749,15 @@ ModelCatalog load_models(const fs::path& root, const std::vector<std::string>& o
     catalog.selection_log = std::move(model_log);
     if (!catalog.models.contains(catalog.selected))
         fail(ConfigError::Kind::invalid, "models.json default names an unknown model: " + catalog.selected);
+
+    catalog.decision_models = map_decision_models(Node(models_json, "").child("decision_models"));
+    const Node decision = Node(models_json, "").child("decision");
+    if (decision.has()) {
+        const std::string name = decision.str();
+        if (!catalog.decision_models.contains(name))
+            fail(ConfigError::Kind::invalid, "/decision names an unknown decision model: " + name);
+        catalog.selected_decision = name;
+    }
     return catalog;
 }
 
@@ -753,6 +786,8 @@ Config load_config(const LoadOptions& options) {
     config.model_selection_log = std::move(catalog.selection_log);
     config.models = std::move(catalog.models);
     config.model = std::move(catalog.selected);
+    config.decision_models = std::move(catalog.decision_models);
+    config.decision = std::move(catalog.selected_decision);
     config.ui.theme_file = node.child("ui").child("theme_file").str();
     config.ui.completion_max_files = size_option(node.required("ui"), "completion_max_files");
     config.system_prompt_file = node.child("prompts").child("system").str((paths.prompts / "system.md").string());
@@ -774,11 +809,27 @@ Config load_config(const LoadOptions& options) {
     config.tools.web = map_web(node.child("web"));
     config.agent.context = map_context(node.required("context"));
     config.agent.run = map_run(node.required("run"));
+    if (const Node decision_review = node.child("decision_review"); decision_review.has()) {
+        if (decision_review.child("timeout_ms").has())
+            config.decision_review.timeout = std::chrono::milliseconds(
+                count_option(decision_review, "timeout_ms", 1));
+        config.decision_review.threshold_profile =
+            decision_review.child("threshold_profile").str(config.decision_review.threshold_profile);
+        if (config.decision_review.threshold_profile.empty())
+            fail(ConfigError::Kind::invalid, "/decision_review/threshold_profile must not be empty");
+    }
     const auto approval = node.child("subagents").child("approval");
     const auto approval_mode = approval.child("mode").str("parent_when_unrestricted");
-    if (approval_mode != "parent_when_unrestricted" && approval_mode != "user")
-        fail(ConfigError::Kind::invalid, "/subagents/approval/mode: expected parent_when_unrestricted or user");
-    config.agent.approval.parent_when_unrestricted = approval_mode == "parent_when_unrestricted";
+    if (approval_mode == "parent_when_workspace_or_unrestricted")
+        config.agent.approval.mode = agent::ParentReviewMode::workspace_and_unrestricted;
+    else if (approval_mode == "parent_when_unrestricted")
+        config.agent.approval.mode = agent::ParentReviewMode::unrestricted_only;
+    else if (approval_mode == "user")
+        config.agent.approval.mode = agent::ParentReviewMode::disabled;
+    else
+        fail(ConfigError::Kind::invalid,
+             "/subagents/approval/mode: expected parent_when_workspace_or_unrestricted, "
+             "parent_when_unrestricted or user");
     if (approval.child("max_reviews_per_turn").has())
         config.agent.approval.max_reviews_per_turn = count_option(approval, "max_reviews_per_turn");
     if (approval.child("review_timeout_ms").has())

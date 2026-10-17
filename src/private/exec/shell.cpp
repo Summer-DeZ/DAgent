@@ -454,6 +454,134 @@ bool is_readonly_command(const std::vector<std::string>& argv) {
     return false;
 }
 
+// 任务运行器/构建器：入口按配置执行任意脚本，第一版不展开对应文件内容。
+bool is_task_runner(std::string_view name) {
+    static constexpr std::string_view kRunners[] = {"npm", "make", "yarn", "pnpm", "npx"};
+    for (const auto runner : kRunners)
+        if (name == runner) return true;
+    return false;
+}
+
+// 第一版能静态定位目标脚本的解释器：目标为第一个非选项参数。
+bool is_script_interpreter(std::string_view name) {
+    static constexpr std::string_view kInterpreters[] = {"bash", "sh", "python", "python3", "node"};
+    for (const auto interpreter : kInterpreters)
+        if (name == interpreter) return true;
+    return false;
+}
+
+// 会加载/执行其它片段的命令：目标不能静态确定时按未解析执行处理。
+bool is_unresolved_interpreter(std::string_view name) {
+    static constexpr std::string_view kInterpreters[] = {"eval", "source", "."};
+    for (const auto interpreter : kInterpreters)
+        if (name == interpreter) return true;
+    return false;
+}
+
+// 填充 script_targets 与 has_unresolved_execution；只做静态分类，不读取脚本正文。
+// 不改变 dynamic/known_readonly/is_dangerous 的既有语义。
+void classify_execution(const std::vector<SimpleCommand>& commands, Analysis& analysis) {
+    for (std::size_t index = 0; index < commands.size(); ++index) {
+        const SimpleCommand& command = commands[index];
+        if (command.argv.empty()) continue;
+        const std::string& name = command.argv.front();
+
+        if (is_task_runner(name)) {
+            analysis.has_unresolved_execution = true;
+            continue;
+        }
+        if (is_script_interpreter(name)) {
+            // 参数可静态还原且目标不是选项时定位脚本；否则目标不能静态确定。
+            if (!command.arguments_dynamic && command.argv.size() >= 2 && !command.argv[1].starts_with('-'))
+                analysis.script_targets.push_back({command.argv[1], index});
+            else
+                analysis.has_unresolved_execution = true;
+            continue;
+        }
+        if (is_unresolved_interpreter(name)) {
+            analysis.has_unresolved_execution = true;
+            continue;
+        }
+        if (name.find('/') != std::string::npos) {
+            // 只有 ./script 这种带路径前缀、参数可静态还原的入口能记录目标；其余（子目录路径、
+            // 参数含展开）第一版定位不到，按未解析执行处理。
+            if (!command.arguments_dynamic && name.starts_with("./"))
+                analysis.script_targets.push_back({name, index});
+            else
+                analysis.has_unresolved_execution = true;
+            continue;
+        }
+        // 混合命令中的 curl/git fetch 等也可能联网，不能被脚本的简化审查覆盖。
+        if (name != "cd" && !is_readonly_command(command.argv))
+            analysis.has_unresolved_execution = true;
+    }
+}
+
+// 静态收集只读命令的字面量路径参数；不读文件、不 resolve 绝对路径。
+bool is_path_parameter(const std::string& arg) {
+    return arg != "-" && arg != "/dev/null";  // stdin 与空设备不算读取路径
+}
+
+void add_read_path(std::vector<std::string>& paths, const std::string& arg) {
+    if (!is_path_parameter(arg)) return;
+    if (std::ranges::find(paths, arg) == paths.end()) paths.push_back(arg);
+}
+
+// 只收集文件操作数；选项值（计数、模式、排序等）不是文件路径。
+void collect_read_paths(const SimpleCommand& command, std::vector<std::string>& paths) {
+    const auto& argv = command.argv;
+    const auto& name = argv.front();
+    if (name == "find") {
+        for (std::size_t i = 1; i < argv.size(); ++i) {
+            const auto& arg = argv[i];
+            if (arg == "-H" || arg == "-L" || arg == "-P" || arg == "--") continue;
+            if (arg.starts_with('-') || arg == "!" || arg == "(") break;
+            add_read_path(paths, arg);
+        }
+        return;
+    }
+    const bool search = name == "grep" || name == "rg";
+    if (!search && name != "cat" && name != "head" && name != "tail" && name != "ls" && name != "wc") return;
+    bool options = true, explicit_pattern = false;
+    std::vector<std::string> positional;
+    for (std::size_t i = 1; i < argv.size(); ++i) {
+        const auto& arg = argv[i];
+        if (options && arg == "--") { options = false; continue; }
+        if (options && arg.starts_with('-') && arg != "-") {
+            if (search && (arg.starts_with("--regexp=") || arg.starts_with("--file="))) {
+                explicit_pattern = true;
+                if (arg.starts_with("--file=")) add_read_path(paths, arg.substr(7));
+                continue;
+            }
+            if (search && (arg == "--regexp" || arg == "--file")) {
+                explicit_pattern = true;
+                if (++i < argv.size() && arg == "--file") add_read_path(paths, argv[i]);
+                continue;
+            }
+            // 短选项可合并；e/f 后的尾串或下一参数分别为模式/模式文件。
+            if (search && !arg.starts_with("--")) {
+                const auto at = arg.find_first_of("ef", 1);
+                if (at != std::string::npos) {
+                    explicit_pattern = true;
+                    const auto value = at + 1 < arg.size() ? arg.substr(at + 1)
+                        : ++i < argv.size() ? argv[i] : std::string{};
+                    if (arg[at] == 'f' && !value.empty()) add_read_path(paths, value);
+                    continue;
+                }
+            }
+            const bool valued =
+                ((name == "head" || name == "tail") && (arg == "-n" || arg == "-c" || arg == "--lines" || arg == "--bytes")) ||
+                (name == "ls" && (arg == "-I" || arg == "--ignore" || arg == "--block-size" || arg == "--format" || arg == "--sort" || arg == "--time" || arg == "--time-style" || arg == "--quoting-style" || arg == "-w" || arg == "--width" || arg == "-T" || arg == "--tabsize")) ||
+                (search && (arg == "-A" || arg == "-B" || arg == "-C" || arg == "-m" || arg == "--after-context" || arg == "--before-context" || arg == "--context" || arg == "--max-count" || arg == "--include" || arg == "--exclude" || arg == "--exclude-dir" || arg == "-g" || arg == "--glob" || arg == "--iglob" || arg == "-t" || arg == "--type" || arg == "-T" || arg == "--type-not" || arg == "--encoding" || arg == "--max-depth"));
+            if (valued) ++i;
+            continue;
+        }
+        positional.push_back(arg);
+    }
+    const std::size_t first = search && !explicit_pattern && !positional.empty() ? 1 : 0;
+    for (std::size_t i = first; i < positional.size(); ++i) add_read_path(paths, positional[i]);
+}
+
 bool cd_inside_workspace(const std::vector<std::string>& argv,
                          const std::filesystem::path& workspace_root) {
     if (argv.size() != 2 || argv[0] != "cd" || argv[1].empty() || argv[1][0] == '~' ||
@@ -502,6 +630,7 @@ Analysis analyze(std::string_view bash_source) {
         if (!command.argv.empty() && command.argv.front() != "cd" && !is_readonly_command(command.argv))
             analysis.dynamic = true;
     }
+    classify_execution(analysis.commands, analysis);
     return analysis;
 }
 
@@ -596,6 +725,21 @@ bool is_dangerous(const Analysis& analysis) {
         }
     }
     return downloader && shell && source.find('|') != std::string_view::npos;
+}
+
+std::vector<std::string> readonly_read_paths(const Analysis& analysis) {
+    std::vector<std::string> paths;
+    if (analysis.syntax != SyntaxStatus::valid) return paths;
+    for (const SimpleCommand& command : analysis.commands) {
+        // 只处理参数可静态还原、且命令本身是已知只读的简单命令。
+        if (command.argv.empty() || command.arguments_dynamic) continue;
+        if (!is_readonly_command(command.argv)) continue;
+        collect_read_paths(command, paths);
+    }
+    for (const auto& impact : analysis.impacts)
+        if (impact.kind == ImpactKind::read && !impact.dynamic && !impact.target.empty())
+            add_read_path(paths, impact.target);
+    return paths;
 }
 
 } // namespace dagent::exec

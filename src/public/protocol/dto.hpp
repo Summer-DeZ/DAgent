@@ -17,7 +17,7 @@ namespace dagent::protocol {
 
 /// 业务协议版本（与 JSON-RPC 的 jsonrpc="2.0" 分开）。
 inline constexpr int kMajor = 1;
-inline constexpr int kMinor = 1;
+inline constexpr int kMinor = 2;
 
 struct PublicModel {
     std::string name, kind, model, base_url;
@@ -58,6 +58,12 @@ struct RecordingInfo {
     std::string error;
 };
 
+/// @brief 待确认的 unrestricted 升权：目标模式与入口（startup / cycle）。
+struct PermissionConfirmation {
+    std::string target; ///< ask / workspace / unrestricted
+    std::string entry;  ///< startup / cycle
+};
+
 /// @brief session.* 的权威只读状态；字段与运行时快照一一对应。
 struct SessionSnapshot {
     std::string session_id;
@@ -72,6 +78,7 @@ struct SessionSnapshot {
     nlohmann::json work_plan = nlohmann::json::array();
     nlohmann::json mcp = nlohmann::json::array();
     RecordingInfo recording;
+    std::optional<PermissionConfirmation> permission_confirmation;
 };
 
 /// @brief 历史条目；一个持久记录产生 0/1 条。
@@ -140,6 +147,8 @@ void to_json(nlohmann::json&, const ContextInfo&);
 void from_json(const nlohmann::json&, ContextInfo&);
 void to_json(nlohmann::json&, const RecordingInfo&);
 void from_json(const nlohmann::json&, RecordingInfo&);
+void to_json(nlohmann::json&, const PermissionConfirmation&);
+void from_json(const nlohmann::json&, PermissionConfirmation&);
 void to_json(nlohmann::json&, const SessionSnapshot&);
 void from_json(const nlohmann::json&, SessionSnapshot&);
 void to_json(nlohmann::json&, const HistoryItem&);

@@ -53,7 +53,8 @@ RunOutcome TurnRunner::finish(Session& session, Run& run, const RunServices& ser
     return outcome;
 }
 
-RunOutcome TurnRunner::run(Session& session, Run& run, const RunServices& services, std::string input) {
+RunOutcome TurnRunner::run(Session& session, Run& run, const RunServices& services, std::string input,
+                           UserInputOrigin origin) {
     const Sink& sink = services.sink;
     const std::stop_token stop = services.stop;
 
@@ -64,7 +65,8 @@ RunOutcome TurnRunner::run(Session& session, Run& run, const RunServices& servic
         const auto* skill = session.config().skills ? session.config().skills->find(name) : nullptr;
         requested.push_back({name, skill ? skill->file.string() : std::string{}});
     }
-    session.committer().commit_user(input, requested);
+    session.committer().commit_user(input, requested, origin);
+    if (origin == UserInputOrigin::user) session.note_user_message(input);
     sink(TurnStarted{input});
     for (const auto& name : mentions) {
         if (stop.stop_requested()) return finish(session, run, services, TurnStatus::interrupted, "");

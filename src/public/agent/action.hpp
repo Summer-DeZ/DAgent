@@ -5,6 +5,8 @@
 /// shell 分析树、MCP Client、workspace 实现对象留在具体 PreparedTool 内部。
 #pragma once
 
+#include <chrono>
+#include <expected>
 #include <functional>
 #include <optional>
 #include <stop_token>
@@ -12,6 +14,7 @@
 #include <string_view>
 #include <utility>
 
+#include "agent/decision_types.hpp"
 #include "agent/grant.hpp"
 #include "agent/intent.hpp"
 #include "agent/tool_data.hpp"
@@ -29,6 +32,11 @@ public:
 
     virtual std::optional<PreparedIntent> preview_request() const { return std::nullopt; }
     std::optional<ToolResult> prepare_preview(const ExecutionGrant&);
+
+    /// @brief 运行中复审用的单目标文件证据；只由执行期网络复审调用，不在 prepare 或执行前调用。
+    /// 默认不可用；实现只在 BashCall。接口只读取不可变参数与文件系统，不修改执行中的状态。
+    virtual std::expected<ScriptEvidence, DecisionError> script_evidence(
+        const ScriptTarget&, std::chrono::system_clock::time_point, ReviewDeadline, std::stop_token) const;
 
     /// @brief 在调用线程上阻塞执行；不抛异常：取消返回 interrupted，环境失败返回 is_error 结果。
     ToolResult execute(const ExecutionGrant& grant,

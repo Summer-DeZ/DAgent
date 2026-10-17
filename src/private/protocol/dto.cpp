@@ -100,6 +100,15 @@ void from_json(const nlohmann::json& json, RecordingInfo& info) {
     info.error = json.value("error", "");
 }
 
+void to_json(nlohmann::json& json, const PermissionConfirmation& confirmation) {
+    json = nlohmann::json{{"target", confirmation.target}, {"entry", confirmation.entry}};
+}
+
+void from_json(const nlohmann::json& json, PermissionConfirmation& confirmation) {
+    confirmation.target = json.value("target", "");
+    confirmation.entry = json.value("entry", "");
+}
+
 void to_json(nlohmann::json& json, const SessionSnapshot& snapshot) {
     json = nlohmann::json{
         {"session_id", snapshot.session_id},
@@ -117,6 +126,9 @@ void to_json(nlohmann::json& json, const SessionSnapshot& snapshot) {
         {"work_plan", snapshot.work_plan},
         {"mcp", snapshot.mcp},
         {"recording", snapshot.recording},
+        {"permission_confirmation", snapshot.permission_confirmation
+                                        ? nlohmann::json(*snapshot.permission_confirmation)
+                                        : nlohmann::json(nullptr)},
     };
 }
 
@@ -137,6 +149,8 @@ void from_json(const nlohmann::json& json, SessionSnapshot& snapshot) {
     snapshot.work_plan = json.value("work_plan", nlohmann::json::array());
     snapshot.mcp = json.value("mcp", nlohmann::json::array());
     snapshot.recording = json.value("recording", RecordingInfo{});
+    if (const auto it = json.find("permission_confirmation"); it != json.end() && !it->is_null())
+        snapshot.permission_confirmation = it->get<PermissionConfirmation>();
 }
 
 void to_json(nlohmann::json& json, const HistoryItem& item) {

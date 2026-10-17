@@ -12,6 +12,7 @@
 #include <vector>
 
 #include "agent/conversation.hpp"
+#include "agent/decision_types.hpp"
 #include "agent/events.hpp"
 #include "agent/port_journal.hpp"
 #include "agent/tool_data.hpp"
@@ -33,7 +34,8 @@ public:
     void clear_sink() { sink_ = nullptr; }
 
     // ---- live_message ----
-    std::int64_t commit_user(std::string text, const std::vector<SkillView>& skills = {});
+    std::int64_t commit_user(std::string text, const std::vector<SkillView>& skills = {},
+                            UserInputOrigin origin = UserInputOrigin::user);
     std::int64_t commit_assistant(const Reply& reply);
     /// @brief 按原序提交一个工具结果；todo 的 WorkPlan 替换与 tool 记录在同一提交内完成。
     std::int64_t commit_tool(const ToolCall& call, std::string_view summary, const ToolResult& result,
@@ -48,6 +50,12 @@ public:
                            const ExecutionGrant* grant = nullptr);
     /// Parent audit and usage evidence only; never inserts conversation messages.
     void commit_parent_review(const Approval& approval, const Decision& decision);
+    /// 一次自动审阅的轻量结果；不插入模型 Conversation。
+    void commit_auto_review(const AutoReview& event);
+    /// 子会话初始化记录：主要任务与辅助用户原话；供恢复保留。
+    void commit_delegation_context(std::string_view task, const std::vector<std::string>& user_messages);
+    /// 用户确认 unrestricted 警告的事实；不改变权限，只供同会话记忆与恢复。
+    void commit_unrestricted_ack();
     void commit_permission_revoked(std::string_view id);
 
     // ---- compact_commit ----

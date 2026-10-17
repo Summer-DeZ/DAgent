@@ -63,6 +63,7 @@ public:
           offset_(offset), limit_(limit), directory_(directory) {
         intent_.kind = agent::ToolKind::read;
         intent_.paths = {to_intent(target_, agent::Access::read)};
+        intent_.paths.front().directory = directory_;
         intent_.summary = std::format("{} {}", directory_ ? "List directory" : "Read", display_);
     }
 

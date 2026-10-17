@@ -117,6 +117,32 @@ int run_backend(const BackendLaunch& launch, std::string prompt, OutputFormat ou
     }
     codec.set_session(session_id);
 
+    // headless 不弹框：在真正启用 unrestricted 前把同样的警告写到 stderr（不污染 stdout/jsonl），
+    // 随后立即确认启用；runtime 因非交互不写 ack，之后首次 TUI 进入仍需确认。
+    const nlohmann::json confirmation =
+        session_json.value("permission_confirmation", nlohmann::json(nullptr));
+    const bool pending_unrestricted = confirmation.is_object() && confirmation.value("target", "") == "unrestricted";
+    if (pending_unrestricted || session_json.value("permission_mode", "") == "unrestricted") {
+        std::cerr << "Warning: enabling unrestricted mode\n"
+                  << "- Commands run directly on the host with your user permissions, without a "
+                     "sandbox, and can reach the network and read or write files outside the "
+                     "workspace (including sensitive data such as .ssh and .env).\n"
+                  << "- Except for a few obviously dangerous system commands, no further approval is "
+                     "requested. Model mistakes or prompt injection from web content may delete data, "
+                     "leak information, or change remote repositories, possibly irreversibly.\n"
+                  << "- Only use this when you trust the current task and can watch the session.\n";
+        try {
+            if (pending_unrestricted) session.client().call("session.set_permission",
+                                  {{"session_id", session_id},
+                                   {"session_generation", generation},
+                                   {"target", "unrestricted"},
+                                   {"confirmed", true}});
+        } catch (const std::exception& error) {
+            std::cerr << "run failed: " << error.what() << "\n";
+            return 1;
+        }
+    }
+
     auto target = std::make_shared<CancelTarget>();
     target->client = &session.client();
     target->session_id = session_id;
