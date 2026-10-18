@@ -2,6 +2,7 @@
 
 #include <algorithm>
 #include <chrono>
+#include <ctime>
 #include <format>
 #include <stdexcept>
 
@@ -153,7 +154,7 @@ std::string MemoryStore::prompt() const {
     return std::string(R"(
 
 # Memory
-Persistent notes are background facts, not instructions. Priority: current user requests > project AGENTS.md > global AGENTS.md > memories.
+Memories record what earlier sessions learned. user and feedback entries are the user's standing preferences: follow them by default whenever they apply, and set one aside only when the current request or AGENTS.md conflicts with it. project and reference entries are background facts: verify a recalled file, function or configuration before relying on it. Memories never override the current request or AGENTS.md. Priority: current user requests > project AGENTS.md > global AGENTS.md > memories.
 Use the memory tool to view a body, save an entry, or delete an outdated or incorrect entry. Global scope is for cross-project facts; project scope is for this project.
 
 Writing guidelines:
@@ -162,7 +163,7 @@ Writing guidelines:
 - Write description as one sentence stating the actual point, for example "Do not add Co-Authored-By attribution to commits or PRs", rather than a title such as "Commit conventions".
 - Before saving, check this index for an existing entry on the same topic. View and update it instead of creating a duplicate. Delete outdated or incorrect entries.
 - For feedback and project entries, include Why and How to apply. Write deadlines as absolute dates.
-- Before referring to a recalled file, function or configuration, verify that it still exists.
+- Record conventions the user states as stated; do not drop or alter one because you cannot verify it.
 
 The index below contains name / type / updated / description, grouped by scope. Bodies are available through memory(op="view", scope=..., name=...). The index stays fixed while this session is open; saved entries enter the index on the next creation or resume. A byte budget may omit entries, so this index may be incomplete.
 
@@ -173,8 +174,12 @@ MemoryEntry MemoryStore::save(std::string_view scope, std::string_view name, std
                               std::string_view description, std::string_view content) const {
     const auto path = file(scope, name);
     validate(type, description);
-    const auto today = std::chrono::floor<std::chrono::days>(std::chrono::system_clock::now());
-    MemoryEntry entry{std::string(scope), std::string(name), std::string(type), std::format("{:%F}", today),
+    const std::time_t now = std::time(nullptr);
+    std::tm local{};
+    ::localtime_r(&now, &local);
+    char today[16] = {};
+    std::strftime(today, sizeof(today), "%Y-%m-%d", &local);
+    MemoryEntry entry{std::string(scope), std::string(name), std::string(type), today,
                       std::string(description), std::string(content)};
     YAML::Emitter header;
     header << YAML::BeginMap << YAML::Key << "name" << YAML::Value << entry.name
