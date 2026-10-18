@@ -82,11 +82,23 @@ web 结果使用现有 tool 记录保存 `WebView` 和该次返回的正文，�
 | `reviews` | 审阅 ID、approval_request_id、会话/调用/执行关联、场景、版本键、实际 state 与问句、响应分数、阈值快照、结果、固定理由、耗时 |
 | `feedback` | 最终审批请求 ID、关联审阅 ID、最终来源与人工决定；主键去重，重启后不重放 |
 | `thresholds` | 版本键 + 场景/维度/方向 + 严格端/宽松端/当前值与 revision |
-| `fixed_thresholds` | `net_change_low` / `net_change_high` / `injection_limit` 等固定界限 |
+| `fixed_thresholds` | `<scene>.risk_low` / `<scene>.risk_high` / `<scene>.unknown_authorize`（0=转后续审批，1=授权检查），以及 `injection_limit`；旧 `net_change_*` 仍可读取历史配置 |
+
+风险优先问句版本为 `risk-first-v2`，不会继承旧版本 `1` 的阈值。`script_basic` 与
+`script_mixed_basic` 分开存储，修改脚本共用 `script_diff`。新增维度 `needs_authorization`、
+`evidence_sufficient`、`manual_only`、`authorization` 保留在实际请求与响应记录中；风险分流的
+固定边界和灰区策略也进入每条审阅的阈值快照。任何必需配置缺失时，该场景转后续审批。
 
 `finish()` 在一个事务内回填人工决定：只在恰好一个可调整检查不达标、分数处于两端之间时，
 批准向宽松端走 1 步、拒绝向严格端走 3 步（步长为两端之差的 1/10），并限制在端点内；
 多个失败检查、fixed 阈值、modify/unknown 与缺有效标定不参与调整。审阅链中任一项不可用、证据失败或缺失时也不归因更新；没有人工渠道、取消及撤权不算用户最终决定。
+风险分流、证据灰区和不可代批判定不进行单维反馈调整；授权阶段的 authorization、direction、privacy
+仍按上述唯一失败检查规则调整。严格端等于宽松端表示固定候选，不更新数值或 revision。
+
+`DecisionStoreOptions.initial_profile` 接收启动配置快照，在单事务内只补齐缺失的键。
+已有 adaptive 的 pass/strict/relaxed 与 fixed 值须匹配，current/revision 保留；冲突要求采用新 profile 名。
+读取、导入及反馈更新共享数值校验：拒绝 NULL/文本、非有限或超出 [0,1] 的值、错误比较方向、
+逆序上下界及区间外 current。非法或不完整的配置不会生成自动批准。
 
 ## 4. 写所有权
 

@@ -40,15 +40,8 @@ std::optional<agent::Direction> direction_from(std::string_view name) {
     return std::nullopt;
 }
 
-const char* dimension_name(agent::Dimension dimension) {
-    switch (dimension) {
-    case agent::Dimension::relevance: return "relevance";
-    case agent::Dimension::direction: return "direction";
-    case agent::Dimension::net_change: return "net_change";
-    case agent::Dimension::privacy: return "privacy";
-    case agent::Dimension::injection: return "injection";
-    }
-    return "relevance";
+std::string dimension_name(agent::Dimension dimension) {
+    return std::string(agent::to_string(dimension));
 }
 
 /// @brief System One 客户端：state + questions → answers。<键>.<noul|choice>。

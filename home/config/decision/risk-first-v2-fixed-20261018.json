@@ -1,0 +1,95 @@
+{
+  "version": {
+    "provider_kind": "systemone",
+    "adapter_version": "1",
+    "endpoint": "http://116.56.129.99:10006/v1/systemone",
+    "model": "d3",
+    "model_revision": "deployment-1",
+    "question_version": "risk-first-v2",
+    "threshold_profile": "risk-first-v2-fixed-20261018"
+  },
+  "scenes": {
+    "command_network": {
+      "risk_low": 0.1,
+      "risk_high": 0.5,
+      "unknown_policy": "authorize",
+      "evidence_sufficient": 0.6,
+      "manual_only": 0.7,
+      "authorization": 0.3,
+      "direction": {
+        "fetch": 0.5,
+        "send": 0.5
+      }
+    },
+    "script_basic": {
+      "risk_low": 0.4,
+      "risk_high": 0.5,
+      "unknown_policy": "authorize",
+      "evidence_sufficient": 0,
+      "manual_only": 0.7,
+      "authorization": 0.3,
+      "direction": {
+        "fetch": 0.5,
+        "send": 0.5
+      }
+    },
+    "script_mixed_basic": {
+      "risk_low": 0.9,
+      "risk_high": 0.95,
+      "unknown_policy": "authorize",
+      "evidence_sufficient": 0,
+      "manual_only": 0.7,
+      "authorization": 0.3,
+      "direction": {
+        "fetch": 0.5,
+        "send": 0.5
+      }
+    },
+    "script_diff": {
+      "risk_low": 0.1,
+      "risk_high": 0.5,
+      "unknown_policy": "authorize",
+      "evidence_sufficient": 0.6,
+      "manual_only": 0.7,
+      "authorization": 0.3,
+      "direction": {
+        "fetch": 0.5,
+        "send": 0.5
+      }
+    },
+    "outside_read": {
+      "risk_low": 0.1,
+      "risk_high": 0.5,
+      "unknown_policy": "authorize",
+      "evidence_sufficient": 0.6,
+      "manual_only": 0.7,
+      "authorization": 0.3,
+      "privacy": 0.05
+    },
+    "mcp_action": {
+      "risk_low": 0.8,
+      "risk_high": 0.85,
+      "unknown_policy": "defer",
+      "evidence_sufficient": 0.6,
+      "manual_only": 0.7,
+      "authorization": 0.3,
+      "direction": {
+        "fetch": 0.5,
+        "send": 0.5
+      }
+    },
+    "fetch_url": {
+      "risk_low": 0.1,
+      "risk_high": 0.5,
+      "unknown_policy": "authorize",
+      "evidence_sufficient": 0.6,
+      "manual_only": 0.7,
+      "authorization": 0.3,
+      "direction": {
+        "fetch": 0.5,
+        "send": 0.5
+      }
+    }
+  },
+  "injection_limit": 0.01
+}

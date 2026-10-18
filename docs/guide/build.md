@@ -1,6 +1,7 @@
 # 构建与安装
 
-环境要求见 [README](../README.md#构建)。
+环境要求：Linux，CMake ≥ 3.25、Ninja、支持 C++23 的编译器，Boost ≥ 1.83、libcurl ≥ 7.68 和 OpenSSL Crypto。
+首次配置需要联网获取其余第三方依赖。运行时还需要下文列出的沙箱与网页工具依赖。
 
 ## 开发构建
 
@@ -67,6 +68,8 @@ cmake --install build/release --prefix <安装根>
 安装补充缺失的用户资源，更新二进制、SRT bridge 和 SearXNG 启动入口，并生成 profile。
 非 dev 构建的 Home 是可执行文件所在目录，`DAGENT_HOME` 可覆盖。
 `dagent` 与 `dagent-backend` 必须在同一目录。目录布局见 [home](../design/home.md)。
+目标主机需要与编译器兼容的 C++ 运行库。开发构建可能通过 build RPATH 使用工具链自带的 libstdc++，
+安装时会移除该路径；若系统库较旧，应安装兼容运行库或在启动环境中配置相应库路径。
 
 安装时生成 `<安装根>/libexec/dagent.apparmor`，匹配最终安装路径（不含 `DESTDIR`）。
 在上述主机上用该文件替代开发 profile 安装并加载，再从正式安装路径运行
@@ -74,7 +77,10 @@ cmake --install build/release --prefix <安装根>
 
 正式安装也要在目标 Home 执行 `runtime sync`；不要把开发 Home 的凭据、数据库或已准备 runtime 当作发行资源。
 已有配置不会被安装覆盖，升级前应核对配置版本，当前 `sandbox.version` 为 2。
-这些步骤描述目录安装，不代表已经提供 `.deb` 或独立 `/usr/bin` 布局；后者仍见 [打包设计建议](../research/linux-packaging.md)。
+这些步骤描述目录安装，目前未提供 `.deb` 或独立 `/usr/bin` 布局。
+
+决策模型的固定阈值配置位于 `config/decision/`，随 Home 一起安装。安装模板仍将决策模型设为禁用；
+启用及升级配置见 [决策模型代批](permissions.md#决策模型代批auto-review)。已有配置不会自动合并新的阈值文件设置。
 
 ## 升级已有 Home 的 web 资源
 

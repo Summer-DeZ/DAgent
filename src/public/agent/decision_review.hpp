@@ -22,7 +22,7 @@ public:
 
     /// @brief 普通动作审阅：普通命令联网 / 工作区外读取 / MCP / web_fetch URL。
     ReviewResult review_action(ReviewScene, const ReviewOperation&, ReviewDeadline, std::stop_token);
-    /// @brief 明确目标脚本复审：未修改只问 relevance，修改过的按 diff 两阶段审阅。
+    /// @brief 明确目标脚本复审：风险优先，未修改不读正文，修改过的仅审本目标 diff/全文。
     ReviewResult review_script(const ReviewOperation&, const ScriptTarget&, const ScriptEvidence&,
                                ReviewDeadline, std::stop_token);
     /// @brief fetch 结果注入扫描；正文交付前调用，缓存分页同样执行。

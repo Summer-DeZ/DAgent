@@ -25,7 +25,10 @@
 namespace dagent::agent {
 
 /// @brief 打分维度；键名只是标识，问句与选项说明见实现中的固定常量。
-enum class Dimension { relevance, direction, net_change, privacy, injection };
+enum class Dimension {
+    relevance, direction, net_change, privacy, injection, // 保留旧记录维度
+    needs_authorization, evidence_sufficient, manual_only, authorization
+};
 
 /// @brief 数据流向类别（direction 的选项）。
 enum class Direction { fetch, modify, send, unknown };
@@ -39,6 +42,7 @@ enum class ReviewScene {
     mcp_action,      ///< MCP 调用本身
     fetch_url,       ///< web_fetch 的逐跳完整 URL
     web_content,     ///< web_fetch 结果的注入扫描
+    script_mixed_basic, ///< 多目标命令中未修改脚本的基础审查
 };
 
 std::string_view to_string(Dimension);
@@ -121,11 +125,20 @@ struct ThresholdKey {
     friend bool operator==(const ThresholdKey&, const ThresholdKey&) = default;
 };
 
+/// @brief 风险分流的固定边界；每项均须显式标定。
+struct RiskThresholds {
+    enum class UnknownPolicy { defer, authorize };
+    std::optional<double> low;
+    std::optional<double> high;
+    std::optional<UnknownPolicy> unknown_policy;
+};
+
 /// @brief 一个版本的阈值快照；缺少的键表示该场景尚未标定。
 struct ThresholdProfile {
     ReviewVersion version;
     std::uint64_t revision = 0;
     std::map<ThresholdKey, AdaptiveThreshold> adaptive;
+    std::map<ReviewScene, RiskThresholds> risk;
     /// 只供脚本 diff 分流使用，不参与动态调整。
     std::optional<double> net_change_low;
     std::optional<double> net_change_high;
@@ -158,6 +171,7 @@ struct ReviewOperation {
     std::optional<std::filesystem::path> path; ///< 工作区外读取路径
     std::string url;       ///< web_fetch 当前完整 URL
     bool file_execution = false; ///< 是否文件执行
+    bool mixed_scripts = false; ///< 命令是否包含多个明确目标脚本
     std::string target;    ///< 当前审查目标（脚本路径）；无则为空
 };
 

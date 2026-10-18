@@ -40,6 +40,7 @@ struct Config {
     std::map<std::string, llm::DecisionProviderConfig> decision_models; ///< models.json 决策目录
     std::optional<std::string> decision; ///< 选中的决策模型配置名；nullopt 表示禁用决策审阅
     agent::DecisionReviewOptions decision_review;
+    std::filesystem::path decision_threshold_file; ///< 可选的、与模型及问句版本匹配的阈值配置
     std::filesystem::path system_prompt_file;
     std::filesystem::path compact_prompt_file;
     net::HttpOptions http;

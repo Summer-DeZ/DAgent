@@ -99,7 +99,8 @@
   },
   "decision_review": {
     "timeout_ms": 10000,
-    "threshold_profile": "default"
+    "threshold_profile": "risk-first-v2-fixed-20261018",
+    "threshold_file": "config/decision/risk-first-v2-fixed-20261018.json"
   },
   "web": {
     "timeout_ms": 120000,

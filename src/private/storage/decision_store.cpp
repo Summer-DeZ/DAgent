@@ -67,28 +67,36 @@ const char* decision_error_name(DecisionError::Kind kind) {
 }
 
 ReviewScene scene_from(std::string_view name) {
+    if (name == "command_network") return ReviewScene::command_network;
     if (name == "script_basic") return ReviewScene::script_basic;
+    if (name == "script_mixed_basic") return ReviewScene::script_mixed_basic;
     if (name == "script_diff") return ReviewScene::script_diff;
     if (name == "outside_read") return ReviewScene::outside_read;
     if (name == "mcp_action") return ReviewScene::mcp_action;
     if (name == "fetch_url") return ReviewScene::fetch_url;
     if (name == "web_content") return ReviewScene::web_content;
-    return ReviewScene::command_network;
+    fail(StorageError::Kind::corrupt, "unknown decision scene: " + std::string(name));
 }
 
 Dimension dimension_from(std::string_view name) {
+    if (name == "relevance") return Dimension::relevance;
+    if (name == "needs_authorization") return Dimension::needs_authorization;
+    if (name == "evidence_sufficient") return Dimension::evidence_sufficient;
+    if (name == "manual_only") return Dimension::manual_only;
+    if (name == "authorization") return Dimension::authorization;
     if (name == "direction") return Dimension::direction;
     if (name == "net_change") return Dimension::net_change;
     if (name == "privacy") return Dimension::privacy;
     if (name == "injection") return Dimension::injection;
-    return Dimension::relevance;
+    fail(StorageError::Kind::corrupt, "unknown decision dimension: " + std::string(name));
 }
 
 Direction direction_from(std::string_view name) {
     if (name == "fetch") return Direction::fetch;
     if (name == "modify") return Direction::modify;
     if (name == "send") return Direction::send;
-    return Direction::unknown;
+    if (name == "unknown") return Direction::unknown;
+    fail(StorageError::Kind::corrupt, "unknown decision direction: " + std::string(name));
 }
 
 // ---- SQLite 连接与语句（沿用 storage.cpp 的风格） ----
@@ -128,7 +136,12 @@ public:
         return value == nullptr ? std::string{} : std::string(reinterpret_cast<const char*>(value), size);
     }
     std::int64_t integer(int column) const { return sqlite3_column_int64(stmt_, column); }
-    double real(int column) const { return sqlite3_column_double(stmt_, column); }
+    double real(int column) const {
+        const int type = sqlite3_column_type(stmt_, column);
+        if (type != SQLITE_INTEGER && type != SQLITE_FLOAT)
+            fail(StorageError::Kind::corrupt, "decision threshold is not numeric");
+        return sqlite3_column_double(stmt_, column);
+    }
     bool is_null(int column) const { return sqlite3_column_type(stmt_, column) == SQLITE_NULL; }
 
 private:
@@ -300,8 +313,17 @@ json thresholds_json(const ThresholdProfile& profile) {
         adaptive.push_back(json{{"key", threshold_key_json(key)},
                                 {"threshold", adaptive_threshold_json(threshold)}});
     }
+    json risk = json::object();
+    for (const auto& [scene, gate] : profile.risk) {
+        risk[std::string(to_string(scene))] = {
+            {"low", gate.low ? json(*gate.low) : json(nullptr)},
+            {"high", gate.high ? json(*gate.high) : json(nullptr)},
+            {"unknown_policy", !gate.unknown_policy ? json(nullptr)
+                : json(*gate.unknown_policy == RiskThresholds::UnknownPolicy::authorize ? "authorize" : "defer")}};
+    }
     return json{{"revision", profile.revision},
                 {"adaptive", std::move(adaptive)},
+                {"risk", std::move(risk)},
                 {"net_change_low", profile.net_change_low ? json(*profile.net_change_low) : json(nullptr)},
                 {"net_change_high", profile.net_change_high ? json(*profile.net_change_high) : json(nullptr)},
                 {"injection_limit", profile.injection_limit ? json(*profile.injection_limit) : json(nullptr)}};
@@ -395,7 +417,9 @@ json record_json(const DecisionReviewRecord& record) {
 
 class SqliteDecisionStore final : public DecisionReviewStore {
 public:
-    explicit SqliteDecisionStore(fs::path database) : db_(database) {}
+    explicit SqliteDecisionStore(const DecisionStoreOptions& options) : db_(options.database) {
+        if (options.initial_profile) seed(*options.initial_profile);
+    }
 
     std::optional<ThresholdProfile> thresholds(const ReviewVersion& version) override {
         const std::lock_guard lock(mutex_);
@@ -416,12 +440,16 @@ public:
                 const std::string direction = query.string(2);
                 if (!direction.empty()) threshold_key.direction = direction_from(direction);
                 AdaptiveThreshold threshold;
-                threshold.pass = query.string(3) == "at_most" ? AdaptiveThreshold::Pass::at_most
+                const auto pass = query.string(3);
+                if (pass != "at_most" && pass != "at_least")
+                    fail(StorageError::Kind::corrupt, "invalid decision threshold pass");
+                threshold.pass = pass == "at_most" ? AdaptiveThreshold::Pass::at_most
                                                               : AdaptiveThreshold::Pass::at_least;
                 threshold.strict_value = query.real(4);
                 threshold.relaxed_value = query.real(5);
                 threshold.current_value = query.real(6);
                 profile.adaptive.emplace(threshold_key, threshold);
+                if (query.integer(7) < 0) fail(StorageError::Kind::corrupt, "negative threshold revision");
                 const auto revision = static_cast<std::uint64_t>(query.integer(7));
                 if (revision > profile.revision) profile.revision = revision;
             }
@@ -436,9 +464,24 @@ public:
                 if (name == "net_change_low") profile.net_change_low = value;
                 else if (name == "net_change_high") profile.net_change_high = value;
                 else if (name == "injection_limit") profile.injection_limit = value;
+                else {
+                    const auto dot = name.find('.');
+                    if (dot == std::string::npos)
+                        fail(StorageError::Kind::corrupt, "unknown fixed decision threshold: " + name);
+                    const auto scene_name = std::string_view(name).substr(0, dot);
+                    const auto scene = scene_from(scene_name);
+                    const auto field = std::string_view(name).substr(dot + 1);
+                    if (field == "risk_low") profile.risk[scene].low = value;
+                    else if (field == "risk_high") profile.risk[scene].high = value;
+                    else if (field == "unknown_authorize" && (value == 0.0 || value == 1.0))
+                        profile.risk[scene].unknown_policy = value == 1.0
+                            ? RiskThresholds::UnknownPolicy::authorize : RiskThresholds::UnknownPolicy::defer;
+                    else fail(StorageError::Kind::corrupt, "invalid fixed decision threshold: " + name);
+                }
             }
         }
         if (!found) return std::nullopt;
+        validate_decision_profile(profile);
         return profile;
     }
 
@@ -498,6 +541,66 @@ public:
     }
 
 private:
+    void seed(const ThresholdProfile& profile) {
+        validate_decision_profile(profile);
+        Transaction tx(db_);
+        // 先校验已有快照，不能用新文件掩盖数据库中的非法值。
+        const auto existing = thresholds(profile.version);
+        const auto conflict = [] {
+            fail(StorageError::Kind::corrupt,
+                 "decision profile differs from stored calibration; choose a new threshold_profile name");
+        };
+        for (const auto& [key, value] : profile.adaptive) {
+            if (existing) {
+                const auto* old = existing->find(key.scene, key.dimension, key.direction);
+                if (old) {
+                    if (old->pass != value.pass || old->strict_value != value.strict_value ||
+                        old->relaxed_value != value.relaxed_value) conflict();
+                    continue; // current 和 revision 属于人工反馈，重启不覆盖。
+                }
+            }
+            Statement insert(db_.get(),
+                "INSERT INTO thresholds(version_key,scene,dimension,direction,pass,strict,relaxed,current,revision) "
+                "VALUES(?,?,?,?,?,?,?,?,0)");
+            insert.text(1, profile.version.key());
+            insert.text(2, to_string(key.scene));
+            insert.text(3, to_string(key.dimension));
+            insert.text(4, key.direction ? to_string(*key.direction) : std::string_view{});
+            insert.text(5, pass_name(value.pass));
+            insert.real(6, value.strict_value);
+            insert.real(7, value.relaxed_value);
+            insert.real(8, value.current_value);
+            insert.done();
+        }
+        const auto fixed = [&](std::string_view name, double value) {
+            Statement query(db_.get(), "SELECT value FROM fixed_thresholds WHERE version_key=? AND name=?");
+            query.text(1, profile.version.key());
+            query.text(2, name);
+            if (query.row()) {
+                if (query.real(0) != value) conflict();
+                return;
+            }
+            Statement insert(db_.get(), "INSERT INTO fixed_thresholds(version_key,name,value) VALUES(?,?,?)");
+            insert.text(1, profile.version.key());
+            insert.text(2, name);
+            insert.real(3, value);
+            insert.done();
+        };
+        if (profile.injection_limit) fixed("injection_limit", *profile.injection_limit);
+        if (profile.net_change_low) fixed("net_change_low", *profile.net_change_low);
+        if (profile.net_change_high) fixed("net_change_high", *profile.net_change_high);
+        for (const auto& [scene, risk] : profile.risk) {
+            const auto prefix = std::string(to_string(scene)) + ".";
+            if (risk.low) fixed(prefix + "risk_low", *risk.low);
+            if (risk.high) fixed(prefix + "risk_high", *risk.high);
+            if (risk.unknown_policy) fixed(prefix + "unknown_authorize",
+                *risk.unknown_policy == RiskThresholds::UnknownPolicy::authorize ? 1.0 : 0.0);
+        }
+        // 补齐的固定边界与已有的另一端也必须相容。
+        thresholds(profile.version);
+        tx.commit();
+    }
+
     /// @brief 一次可能触发更新的失败检查，连同它所属记录的版本键。
     struct MergedCheck {
         std::string version_key;
@@ -550,7 +653,7 @@ private:
         std::int64_t revision = 0;
         {
             Statement query(db_.get(),
-                            "SELECT strict,relaxed,current,revision FROM thresholds "
+                            "SELECT strict,relaxed,current,revision,pass FROM thresholds "
                             "WHERE version_key=? AND scene=? AND dimension=? AND direction=?");
             query.text(1, unique->version_key);
             query.text(2, to_string(unique->check.scene));
@@ -561,6 +664,17 @@ private:
             relaxed = query.real(1);
             current = query.real(2);
             revision = query.integer(3);
+            const auto pass = query.string(4);
+            if (pass != "at_most" && pass != "at_least")
+                fail(StorageError::Kind::corrupt, "invalid decision threshold pass");
+            if (revision < 0) fail(StorageError::Kind::corrupt, "negative threshold revision");
+            ThresholdProfile snapshot;
+            snapshot.adaptive.emplace(
+                ThresholdKey{unique->check.scene, unique->check.dimension, unique->check.direction},
+                AdaptiveThreshold{pass == "at_most" ? AdaptiveThreshold::Pass::at_most
+                                                     : AdaptiveThreshold::Pass::at_least,
+                                  strict, relaxed, current});
+            validate_decision_profile(snapshot);
         }
 
         const double low = std::min(strict, relaxed);
@@ -569,6 +683,7 @@ private:
         if (unique->check.score < low || unique->check.score > high) return;
 
         const double step = std::abs(strict - relaxed) / 10.0;
+        if (step == 0.0) return; // 固定候选没有可调范围，不制造无变化的 revision。
         const double toward_relaxed = relaxed >= strict ? 1.0 : -1.0;
         const double delta = feedback.approved ? toward_relaxed * step : -toward_relaxed * step * 3.0;
         const double next = std::clamp(current + delta, low, high);
@@ -591,10 +706,40 @@ private:
 
 } // namespace
 
+void validate_decision_profile(const agent::ThresholdProfile& profile) {
+    const auto probability = [](double value) {
+        if (!std::isfinite(value) || value < 0.0 || value > 1.0)
+            fail(StorageError::Kind::corrupt, "decision threshold must be finite and within [0,1]");
+    };
+    for (const auto& [key, threshold] : profile.adaptive) {
+        probability(threshold.strict_value);
+        probability(threshold.relaxed_value);
+        probability(threshold.current_value);
+        const auto expected = key.dimension == Dimension::privacy || key.dimension == Dimension::manual_only ||
+                              key.dimension == Dimension::injection
+            ? AdaptiveThreshold::Pass::at_most : AdaptiveThreshold::Pass::at_least;
+        if (threshold.pass != expected)
+            fail(StorageError::Kind::corrupt, "decision threshold pass disagrees with its dimension");
+        const bool ordered = threshold.pass == AdaptiveThreshold::Pass::at_most
+            ? threshold.strict_value <= threshold.current_value && threshold.current_value <= threshold.relaxed_value
+            : threshold.relaxed_value <= threshold.current_value && threshold.current_value <= threshold.strict_value;
+        if (!ordered) fail(StorageError::Kind::corrupt, "decision threshold current is outside its ordered bounds");
+    }
+    const auto bounds = [&](const std::optional<double>& low, const std::optional<double>& high) {
+        if (low) probability(*low);
+        if (high) probability(*high);
+        if (low && high && *low > *high)
+            fail(StorageError::Kind::corrupt, "decision risk low exceeds high");
+    };
+    for (const auto& [scene, risk] : profile.risk) bounds(risk.low, risk.high);
+    bounds(profile.net_change_low, profile.net_change_high);
+    if (profile.injection_limit) probability(*profile.injection_limit);
+}
+
 std::shared_ptr<agent::DecisionReviewStore> open_decision_store(const DecisionStoreOptions& options) {
     if (options.database.empty())
         throw StorageError(StorageError::Kind::io, "decision database path is empty");
-    return std::make_shared<SqliteDecisionStore>(options.database);
+    return std::make_shared<SqliteDecisionStore>(options);
 }
 
 } // namespace dagent::storage

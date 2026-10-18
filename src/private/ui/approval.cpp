@@ -68,7 +68,10 @@ public:
     void layout(tui::Rect area) override {
         tui::Container::layout(area);
         // 预览和输入不能借用边框列；长权限说明在预览区自然折行。
-        for (tui::Widget* child : {static_cast<tui::Widget*>(preview),
+        for (tui::Widget* child : {static_cast<tui::Widget*>(heading),
+                                   static_cast<tui::Widget*>(summary),
+                                   static_cast<tui::Widget*>(choices),
+                                   static_cast<tui::Widget*>(preview),
                                    static_cast<tui::Widget*>(feedback)}) {
             const auto r = child->rect();
             child->layout({2, r.y, std::max(0, area.w - 4), r.h});
@@ -177,7 +180,7 @@ void ApprovalDialog::refresh_question() {
         choices += question_cursor_ == static_cast<int>(question_.options.size()) ? "▌" : " ";
         choices += std::format("{}  Other…", question_.options.size() + 1);
     }
-    panel_->summary->set_text("  " + question_.prompt);
+    panel_->summary->set_text("");
     panel_->choices->set_text(std::move(choices));
 }
 

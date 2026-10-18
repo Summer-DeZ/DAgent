@@ -10,6 +10,7 @@
 | [protocol](protocol.md) | 前后端进程与私有协议 |
 | [runtime](runtime.md) | 会话控制、交互代理、子执行 |
 | [agent](agent.md) | 核心业务对象与执行循环、权限、上下文、记录与恢复 |
+| [d3-authorization](d3-authorization.md) | d3 风险优先授权、取证、审批链、阈值配置与反馈 |
 | [ui](ui.md) | 应用层界面 |
 | [opencode-theme](opencode-theme.md) | 当前主题结构、预览与终端配色 |
 | [tui-framework](tui-framework.md) | 终端 UI 框架 |

@@ -211,6 +211,7 @@ void resolve_paths(json& config, const fs::path& root) {
     resolve({"prompts", "system"});
     resolve({"prompts", "compact"});
     resolve({"ui", "theme_file"});
+    resolve({"decision_review", "threshold_file"});
     resolve({"search", "rg_path"}, true);
 }
 
@@ -247,7 +248,7 @@ const std::set<std::string>& known_keys() {
         "process.kill_grace_ms", "process.drain_after_exit_ms", "process.env_deny",
         "run.max_model_calls", "run.max_tool_calls", "run.max_model_retries",
         "run.max_parallel_tasks", "run.max_parallel_tools", "run.max_total_tokens",
-        "decision_review.timeout_ms", "decision_review.threshold_profile",
+        "decision_review.timeout_ms", "decision_review.threshold_profile", "decision_review.threshold_file",
         "subagents.approval.mode", "subagents.approval.max_reviews_per_turn",
         "subagents.approval.review_timeout_ms", "subagents.approval.failure",
         "session.redact_fields", "session.history_scan_limit", "log.max_file_bytes",
@@ -815,6 +816,7 @@ Config load_config(const LoadOptions& options) {
                 count_option(decision_review, "timeout_ms", 1));
         config.decision_review.threshold_profile =
             decision_review.child("threshold_profile").str(config.decision_review.threshold_profile);
+        config.decision_threshold_file = decision_review.child("threshold_file").str();
         if (config.decision_review.threshold_profile.empty())
             fail(ConfigError::Kind::invalid, "/decision_review/threshold_profile must not be empty");
     }

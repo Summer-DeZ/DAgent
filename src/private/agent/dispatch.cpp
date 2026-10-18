@@ -372,6 +372,7 @@ ActionDispatcher::Outcome ActionDispatcher::dispatch(const std::vector<ToolCall>
                     value.arguments = slot.call->arguments;
                     value.network = target;
                     value.file_execution = true;
+                    value.mixed_scripts = command->script_targets.size() > 1;
                     return value;
                 }();
                 for (std::size_t i = 0; i < command->script_targets.size(); ++i) {
@@ -395,7 +396,7 @@ ActionDispatcher::Outcome ActionDispatcher::dispatch(const std::vector<ToolCall>
             if (review_enabled && scripts_passed && !approved_by_review &&
                 (!has_targets || (command != nullptr && command->has_unresolved_execution)) &&
                 (has_targets || rules.match == Policy::NetworkRules::Match::unmatched)) {
-                // 普通命令联网（或混合命令的其余联网动作）：按完整命令判断方向与相关性。
+                // 普通命令联网（或混合命令的其余联网动作）：按完整命令判断风险与授权。
                 ReviewOperation operation;
                 operation.identity = approval.identity;
                 operation.tool = slot.call->name;
@@ -523,6 +524,7 @@ ActionDispatcher::Outcome ActionDispatcher::dispatch(const std::vector<ToolCall>
             std::vector<std::string> review_ids;
             std::string review_reason;
             bool all_approved = true;
+            bool review_cancelled = false;
             if (outside_read) {
                 for (const ResourceIntent& path : verdict.approval.intent.paths) {
                     ReviewOperation operation;
@@ -538,6 +540,7 @@ ActionDispatcher::Outcome ActionDispatcher::dispatch(const std::vector<ToolCall>
                     if (result.disposition == ReviewDisposition::approve) continue;
                     all_approved = false;
                     review_reason = result.reason;
+                    review_cancelled = result.disposition == ReviewDisposition::cancelled;
                     break;
                 }
             } else {
@@ -550,6 +553,13 @@ ActionDispatcher::Outcome ActionDispatcher::dispatch(const std::vector<ToolCall>
                 review_ids.push_back(result.record_id);
                 all_approved = result.disposition == ReviewDisposition::approve;
                 review_reason = result.reason;
+                review_cancelled = result.disposition == ReviewDisposition::cancelled;
+            }
+            if (review_cancelled || stop.stop_requested()) {
+                commit_auto_review(call.id, review_ids, "cancelled",
+                                   review_reason.empty() ? "the decision review was cancelled" : review_reason);
+                outcome.stop = Outcome::Stop::interrupted;
+                return std::unexpected(make_result(std::string(texts::kInterruptedCall), false, true));
             }
             if (all_approved && !gate_open()) {
                 all_approved = false;

@@ -255,6 +255,8 @@ Policy 是纯逻辑，不弹窗、不读配置。它依据 `PreparedIntent` 的�
 
 ### 决策模型代批（auto-review）
 
+完整的场景、风险判定、授权范围、配置版本和反馈契约见 [d3 授权设计](d3-authorization.md)。
+
 workspace（auto-edit）下可配置决策模型（第一版为 System One 协议上的 d3）：`config/models.json` 的
 `decision_models` 目录与 `decision` 选择，行为参数在 `config.json` 的 `decision_review`。
 未配置时不建客户端、不发请求，审批行为与原来一致；ask / unrestricted / 只读与硬拒绝不经过决策模型。
@@ -264,17 +266,28 @@ workspace（auto-edit）下可配置决策模型（第一版为 System One 协�
 1. `Policy::inspect_network()` 给出规则事实（配置拒绝、会话拒绝、已有放行），`check_network()` 保留为纯查询兼容入口。
 2. 执行中联网时由 `agent/decision_review` 构造 state（用户原话 + 确定性操作事实）并向 `DecisionModel` 请求；
    本会话修改过的明确目标脚本先用 `PreparedTool::script_evidence()` 取单文件 diff（相对 HEAD，未跟踪按新增，
-   非 Git 仓库用全文，超过 300 行或无法完整取证时转后续审批），未修改的目标只问 relevance。
+   非 Git 仓库用全文，超过 300 行或无法完整取证时转后续审批），未修改的目标只提供命令和目标，不读正文。
    mtime 判为修改时，空 HEAD diff 也须复审；多目标逐个审查，任一失败不能被混合命令的后续审阅覆盖。
-3. `direction` 先取最高概率类别，`fetch` / `send` 需要类别概率与对应 relevance 同时达标；`modify` / `unknown` 或最高概率并列时不代批；send 的 relevance 单独标定，不能复用方向阈值。
+3. 风险阶段分别评分 `needs_authorization`、`evidence_sufficient`、`manual_only`。不可代批超过阈值时回退；
+   证据达标且授权需求不高于低界限时直接批准，不要求任务相关性。授权需求达到高界限时进入授权检查；
+   证据不足或处于灰区时按该场景显式配置的 `unknown_policy` 转后续审批或授权检查。
+   授权阶段评分 `authorization`，核对当前目标的对象、目的地、数据范围和用户限制；普通联网同时检查 `direction`，
+   工作区外读取同时检查 `privacy`。方向须唯一最高且为 `fetch` / `send`，其类别概率也须达标；`modify` / `unknown` 不代批。
+   MCP 的方向检查提前至风险阶段，低风险也不能跳过远端修改限制；授权阶段复用同次方向结果。
+   独立未修改脚本使用 `script_basic`，含多个明确目标的未修改脚本使用 `script_mixed_basic`，修改目标仍用 `script_diff`。
+   每个目标分别审查，全部通过后才可批准整条命令；不展开 npm run / make 或追踪其他文件。
 4. 批准经 `Policy::consume_approval()` / `consume_network_approval()` 消费：网络与 MCP 只限一次，
    工作区外普通文件保存文件级会话授权。阈值按模型/问句/配置版本隔离，未标定场景转人工。
 5. 决策模型未批准时保留审阅编号，转人工（子会话先父复批）；父复批允许 auto-edit 父会话，
    但 host access 仍只允许无只读/规划上限的 unrestricted 父复批。
-6. `web_fetch` 每跳 URL 单独审阅；结果在交付前扫描注入，发现注入或扫描失败时本轮（含子 Agent）关闭自动代批，
+6. `web_fetch` 每跳 URL 单独审阅；结果在交付前按既定 16 KB 切片规则扫描注入。问句区分安全教学中的引用/防御说明和要求当前助手执行的攻击指令；模型仍可能误报，阈值实验结果单独记录。
+   发现注入或扫描失败时本轮（含子 Agent）关闭自动代批，
    该次正文不交付，后续审批直接转人工。关闭状态由 `RunReviewGate` 在根轮次与子 Agent 间原子共享且单向；正在返回的父复批也须重新检查该状态。
 7. 审阅记录写入 Home 的 `data/decision.sqlite`；会话记录只保留来源 `decision_model`、结果、理由与审阅编号，
-   界面显示为 `auto-review`，不显示分数。动态阈值只在用户最终人工决定后按单维度调整。
+   界面显示为 `auto-review`，不显示分数；理由区分低风险批准和任务授权批准。
+   新问句版本 `risk-first-v2` 隔离旧 relevance/net_change 阈值，旧维度仅保留解析历史记录。
+   风险低/高边界及灰区策略是分场景固定配置；动态阈值只在用户最终人工决定后，对唯一失败的
+   authorization/direction/privacy 维度调整，不把不可代批或证据灰区当作可自动放宽的授权失败。
 
 ### 模式和默认规则
 

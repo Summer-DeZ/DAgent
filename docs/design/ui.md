@@ -207,12 +207,13 @@ Enter 执行，Esc 关闭。会话列表和文件候选的 I/O 不发生在渲�
 ToastStack 是单一右上角 overlay，内部维护最多三条通知，新通知在上；info/warn/error 分别使用 `·`/`⚠`/`✗`。
 错误 Event 已永久进入 Transcript，因此不重复弹 error toast。权限对话框使用 y/a/n/e/Esc/Ctrl+C，
 使用 active 圆角边框、`Approval needed` 标题、英文 reason 与 session rule、可滚动预览和横排选项。
-长意图和 session rule 放在可折行的预览区，预览与输入不占用边框列。
+长意图和 session rule 放在可折行的预览区，标题说明、选项、预览与输入均不占用边框列。
 审批预览同时显示实际 cwd、模式和每项增量权限原因；敏感/受保护请求不显示 session 选项。
 底边单独预留一行，避免覆盖选项；紧凑选项为 `[y] allow / [a] session / [n] deny / [e] explain`。
 请求条目按 kind 显示（命令 / 读取 / 写入 / 网络目标 / 敏感读取 / 受保护写入 / host access），
 host access 附完整宿主边界说明，一次性请求说明不能会话允许，部分执行显示警告。
 同一模态骨架也显示 Question：数字或上下键选择，Enter 确认，多选用空格，Other 进入自由输入，Esc 取消。
+问题正文只在可折行预览区显示一次，选中标记保留在左边框内侧；unrestricted 确认默认选中取消。
 权限与问题浮层互斥。子 Agent 发起的审批在标题里追加 `· via task · <agent>`，与主 Agent 自己的请求区分。
 unrestricted 的输入/消息尾行使用 error 色，plan 使用 accent 色。长计划条目与通知按显示列宽截断。
 `/permissions` 复用 Panel 显示当前内存授权，Enter 撤销所选规则；空列表只显示不可选提示。

@@ -144,12 +144,20 @@ Chat 编码为 `max_completion_tokens`，Anthropic 编码为 `max_tokens`，Olla
 `config/config.json` 的行为配置：
 
 ```json
-{"decision_review": {"timeout_ms": 10000, "threshold_profile": "default"}}
+{"decision_review": {"timeout_ms": 10000, "threshold_profile": "risk-first-v2-fixed-20261018", "threshold_file": "config/decision/risk-first-v2-fixed-20261018.json"}}
 ```
 
 `decision` 缺省或 null 表示禁用；命名不存在的条目或不支持的 kind 报配置错误。阈值数据在
 `data/decision.sqlite`，`threshold_profile` 用于正式与临时配置分开；阈值按 endpoint、协议 kind、
 适配器版本、model、model_revision、问句版本与 profile 隔离。
+当前风险优先问句版本是 `risk-first-v2`；升级不会自动复制旧版阈值，也不会自动启用决策模型。
+没有与当前身份匹配的完整场景配置时仍进入后续审批。正式或试验参数应以独立 profile 名导入，
+避免覆盖旧实验记录所使用的配置。
+
+`app/decision_profile.*` 读取可选的 `decision_review.threshold_file`，将声明的完整版本与当前模型身份
+逐项匹配，解析显式场景参数并交由存储层校验及幂等导入。没有文件配置时保留只读取数据库的行为。
+文件路径在 config.json 中相对 Home，在 `--set` 中相对工作目录；模板文件随 Home 安装，不覆盖用户已有配置。
+文件读取、版本匹配或存储导入失败时保留“已配置决策模型”的事实，使强制复审与网页扫描继续按失败回退。
 
 ## 3. 工作目录与项目根
 

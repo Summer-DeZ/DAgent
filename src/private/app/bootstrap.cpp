@@ -7,6 +7,7 @@
 #include <system_error>
 
 #include "app/config.hpp"
+#include "app/decision_profile.hpp"
 #include "app/sandbox_status.hpp"
 #include "app/skills.hpp"
 #include "app/toolchain.hpp"
@@ -54,9 +55,13 @@ std::shared_ptr<agent::DecisionServices> make_decision_services(const Config& co
                                              config.decision_review.threshold_profile};
     services->model = llm::make_decision_model(selected, config.decision_review.timeout, config.http);
     try {
-        services->store = storage::open_decision_store({paths.decision_database});
+        storage::DecisionStoreOptions options;
+        options.database = paths.decision_database;
+        if (!config.decision_threshold_file.empty())
+            options.initial_profile = load_decision_profile(config.decision_threshold_file, services->version);
+        services->store = storage::open_decision_store(options);
     } catch (const std::exception& error) {
-        base::logger("app")->warn("decision review storage is unavailable ({}); decision approvals are disabled",
+        base::logger("app")->warn("decision review configuration or storage is unavailable ({}); decision approvals are disabled",
                                   error.what());
         return services; // 保留“已配置”事实，强制复审与网页扫描不能降级为未配置。
     }

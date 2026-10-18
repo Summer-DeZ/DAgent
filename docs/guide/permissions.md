@@ -73,29 +73,35 @@ unrestricted，且 `subagents.approval.mode` 允许该模式时，可审批的�
 
 ## 决策模型代批（auto-review）
 
-auto-edit（workspace）下可以配置决策模型（第一版为 System One 协议上的 d3）。它只在计划列出的场景里代批，
+auto-edit（workspace）下可以配置决策模型（第一版为 System One 协议上的 d3）。它只在下列场景里代批，
 不覆盖硬拒绝、不扩大写入范围，也不改变 ask / unrestricted / 只读的既有语义；未配置时全部保持原行为。
 
 | 场景 | 交给决策模型的证据 | 判定维度 |
 | --- | --- | --- |
-| 普通命令联网 | 用户原话、命令、host:port | relevance、direction |
-| 明确目标脚本联网（本会话未修改） | 完整命令、目标路径 | relevance |
-| 目标脚本联网（本会话修改过） | 上述内容加该脚本相对 HEAD 的 diff | relevance、net_change，涉网时再问 direction |
-| 工作区外普通文件读取 | 路径与用户任务（不读正文） | relevance、privacy |
-| MCP 调用 | 工具名与调用参数 | relevance、direction |
-| web_fetch 每一跳 URL | 当前完整 URL（含重定向后的下一跳） | relevance、direction |
+| 普通命令联网 | 用户原话、命令、host:port | 先风险；需授权时 authorization、direction |
+| 明确目标脚本联网（本会话未修改） | 完整命令、目标路径，不读正文 | 先风险；需授权时 authorization、direction |
+| 目标脚本联网（本会话修改过） | 上述内容加该脚本相对 HEAD 的 diff | 先风险；需授权时 authorization、direction |
+| 工作区外普通文件读取 | 路径与用户任务（不读正文） | 先风险；需授权时 authorization、privacy |
+| MCP 调用 | 工具名与调用参数 | 先风险及 direction；需授权时 authorization |
+| web_fetch 每一跳 URL | 当前完整 URL（含重定向后的下一跳） | 先风险；需授权时 authorization、direction |
 | web_fetch 结果 | 按切片抽样的正文 | injection（固定阈值，从严） |
 
 判定顺序：配置/会话拒绝 → 修改脚本的强制复审 → 已放行 → 决策模型代批 → 人工（子会话先父复批）。
-`fetch` / `send` 需要所选类别概率与对应 relevance 同时达标；`modify` / `unknown` 不代批。
+风险阶段分别判断授权需求（`needs_authorization`）、证据充分性（`evidence_sufficient`）和不可代批可能性（`manual_only`）。
+证据充分且风险低时直接通过，不因与任务不相关而拦截；需要额外授权时，`authorization` 核对用户允许的对象、目的地和数据范围。
+信息不足或处于风险灰区时按该场景配置转后续审批或继续授权检查；不可代批判定或服务失败转后续审批。
+授权分支中，`fetch` / `send` 还须是唯一最高概率类别且达到方向阈值；`modify` / `unknown` 不代批。
+MCP 在低风险分支也检查方向，避免远端修改绕过审批。一个命令含多个目标脚本时逐个审阅，全部通过才批准；
+混合命令中未修改脚本的参数与单独脚本分开标定。
 网络批准只对本次执行的该 host:port 有效，MCP 只对这一次调用有效，都不生成会话规则；
 决策模型批准的工作区外文件读取保存文件级会话授权，可在 `/permissions` 撤销。
 
 `fetch_url` 的 URL 批准只覆盖这一跳；同 host 的不同 URL 仍重新审阅，拒绝后当前 web_fetch 结束。
-网页结果扫描发现注入或扫描失败时，该次 web_fetch 不返回正文，并关闭本次用户请求整轮（含所有子 Agent）的自动代批；
+网页结果仍按既定切片规则扫描；问句区分安全教程中的攻击引用和要求助手实际服从的指令，但不能保证没有误报。
+扫描发现注入或扫描失败时，该次 web_fetch 不返回正文，并关闭本次用户请求整轮（含所有子 Agent）的自动代批；
 之后需要审批的请求直接交给人工，直到下一个用户请求开始新一轮。
 
-界面把决策模型的结果显示为 `auto-review`，只显示来源、结果与固定理由，不显示分数。
+界面把决策模型的结果显示为 `auto-review`，只显示来源、结果与固定理由，不显示分数；理由区分低风险直接批准和符合任务授权后批准。
 审阅证据、各维度分数与人工最终决定保存在 `data/decision.sqlite` 的独立记录中；会话记录只保留
 `authority=decision_model`、结果、理由与审阅编号。阈值按模型/问句/配置版本隔离，未标定场景一律转人工。
 
@@ -105,7 +111,7 @@ auto-edit（workspace）下可以配置决策模型（第一版为 System One �
   "decision_models": {
     "d3-local": {
       "kind": "systemone",
-      "endpoint": "http://127.0.0.1:10006/v1/systemone",
+      "endpoint": "http://116.56.129.99:10006/v1/systemone",
       "model": "d3",
       "model_revision": "deployment-1"
     }
@@ -113,9 +119,29 @@ auto-edit（workspace）下可以配置决策模型（第一版为 System One �
 }
 ```
 
-以上放在 `config/models.json`；`decision: null` 或缺省表示禁用。行为配置在 `config/config.json`：
-`decision_review.timeout_ms`（默认 10000）与 `decision_review.threshold_profile`（默认 default）。
-决策选择在进程启动时生效，切换模型需重启后端。
+以上放在 `config/models.json`；`decision: null` 或缺省表示禁用，安装模板保持禁用。
+`config/config.json` 随安装提供以下行为配置：
+
+```json
+{
+  "decision_review": {
+    "timeout_ms": 10000,
+    "threshold_profile": "risk-first-v2-fixed-20261018",
+    "threshold_file": "config/decision/risk-first-v2-fixed-20261018.json"
+  }
+}
+```
+
+阈值文件随安装分发，包含各场景风险边界、方向与授权等阈值；本版均为固定值。
+启动时核对 provider、适配器、endpoint、model、model_revision、问句版本及 profile 名，
+匹配后在一个事务内补齐 SQLite 配置，重复启动保留已有反馈值和 revision。
+同一版本已有标定与文件冲突时停用本次决策代批，修改标定须同时更换文件中的 profile 名与配置选择。
+配置缺失、版本不匹配或非法数值均进入原有后续审批；不会自动套用别的模型的参数。
+
+文件内维度标量表示固定值，也支持 `{ "strict": 0.9, "relaxed": 0.5, "current": 0.7 }`
+形式。这只是格式示例，本轮未标定有宽度的动态范围。`threshold_file` 的相对路径以 Home 为基准；
+通过 `--set` 提供的相对路径以当前工作目录为基准。省略或设为 null/空串时只读取 SQLite，兼容旧配置方式。
+旧安装不会自动覆盖用户的 config.json，升级时需要补上上述配置。决策模型选择和阈值文件在进程启动时生效。
 
 ## 网页搜索与抓取
 
