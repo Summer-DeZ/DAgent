@@ -239,6 +239,7 @@ json override_layer(const std::string& entry, const fs::path& cwd) {
 
 const std::set<std::string>& known_keys() {
     static const std::set<std::string> keys = {
+        "memory.enabled", "memory.max_index_bytes", "memory.max_entry_bytes",
         "prompts.system", "prompts.compact", "http.timeout_seconds", "http.connect_timeout_seconds",
         "http.idle_timeout_seconds", "http.max_body_bytes", "http.max_error_body_bytes",
         "http.verify_peer", "http.verify_host", "context.window_tokens",
@@ -806,6 +807,10 @@ Config load_config(const LoadOptions& options) {
     config.mcp = map_mcp(node.required("mcp"));
     config.mcp.http = config.http;
     config.mcp.process = config.process;
+    const auto memory = node.child("memory");
+    config.memory.enabled = memory.child("enabled").flag(true);
+    if (memory.child("max_index_bytes").has()) config.memory.max_index_bytes = size_option(memory, "max_index_bytes");
+    if (memory.child("max_entry_bytes").has()) config.memory.max_entry_bytes = size_option(memory, "max_entry_bytes");
     config.tools = map_tools(node.required("tools"));
     config.tools.web = map_web(node.child("web"));
     config.agent.context = map_context(node.required("context"));

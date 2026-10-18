@@ -132,7 +132,8 @@ private:
 };
 
 /// @brief 注册内置工具：read / write / edit / bash / grep / glob。
-void add_builtin(Registry&);
+class MemoryStore;
+void add_builtin(Registry&, std::shared_ptr<const MemoryStore> memory = {});
 
 /// @brief 把一个 MCP server 的所有工具包进 Registry（名字 mcp__<server>__<name>）。
 /// 工具项持有 Client 的 shared_ptr：刷新/重连替换目录时，仍被子快照引用的连接不会悬空。

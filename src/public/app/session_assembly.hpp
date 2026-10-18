@@ -47,6 +47,7 @@ public:
         std::filesystem::path cwd, project_root, control_root;
         std::optional<std::filesystem::path> git_root;
         tools::Options tools;
+        std::shared_ptr<const tools::MemoryStore> memory;
         workspace::FileOptions files;
         workspace::SearchOptions search;
         exec::Options process;

@@ -70,6 +70,9 @@ ToolView decode_tool_view(const json& view) {
         out.elapsed_ms = view.value("elapsed_ms", 0);
         return out;
     }
+    if (kind == "memory") return MemoryView{text_field(view, "op"), text_field(view, "scope"),
+        text_field(view, "name"), text_field(view, "type"), text_field(view, "updated"),
+        text_field(view, "description"), text_field(view, "content")};
     if (kind == "skill") return SkillView{text_field(view, "name"), text_field(view, "path")};
     if (kind == "grep") {
         GrepView out;

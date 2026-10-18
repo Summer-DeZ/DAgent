@@ -50,9 +50,26 @@ private:
 QueryGatewayImpl::QueryGatewayImpl(storage::Options storage, std::filesystem::path cwd,
                                    std::filesystem::path project_root, workspace::SearchOptions search,
                                    std::shared_ptr<const agent::SkillCatalog> skills, exec::Options process,
-                                   std::size_t completion_max_files)
-    : skills_(std::move(skills)), process_(std::move(process)), storage_(std::move(storage)), cwd_(std::move(cwd)), project_root_(std::move(project_root)),
+                                   std::size_t completion_max_files, std::shared_ptr<const tools::MemoryStore> memory)
+    : skills_(std::move(skills)), memory_(std::move(memory)), process_(std::move(process)), storage_(std::move(storage)), cwd_(std::move(cwd)), project_root_(std::move(project_root)),
       search_(std::move(search)), completion_max_files_(completion_max_files) {}
+
+std::vector<agent::MemoryView> QueryGatewayImpl::memory_list() const {
+    std::vector<agent::MemoryView> entries;
+    for (const auto& entry : memory_->list())
+        entries.push_back({"list", entry.scope, entry.name, entry.type, entry.updated, entry.description, {}});
+    return entries;
+}
+
+agent::MemoryView QueryGatewayImpl::memory_view(std::string_view scope, std::string_view name) const {
+    const auto entry = memory_->view(scope, name);
+    return {"view", entry.scope, entry.name, entry.type, entry.updated, entry.description, entry.content};
+}
+
+agent::MemoryView QueryGatewayImpl::memory_delete(std::string_view scope, std::string_view name) {
+    memory_->erase(scope, name);
+    return {"delete", std::string(scope), std::string(name), {}, {}, {}, {}};
+}
 
 std::vector<runtime::SessionSummary> QueryGatewayImpl::sessions(std::size_t limit) {
     std::vector<runtime::SessionSummary> out;

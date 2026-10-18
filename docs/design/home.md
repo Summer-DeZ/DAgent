@@ -20,6 +20,7 @@ home/
 ├── skills/<name>/        SKILL.md、scripts、references、assets
 ├── agents/               子 Agent 定义
 ├── themes/               UI 主题
+├── memory/              Agent 记忆：global/ 与 projects/<project-key>/
 ├── data/dagent.db        会话；SQLite WAL/SHM 与它同目录
 ├── logs/                 按进程记录日志
 ├── run/                  模型、runtime、会话写锁；searxng-*/settings.yml
@@ -28,7 +29,7 @@ home/
 ```
 
 `config` 表达用户配置，`prompts/skills/agents/themes` 保存可编辑资源，`data` 保存不可丢弃的会话，
-`run` 保存协调状态，`runtime` 保存实际执行环境。缓存不是会话或配置的来源。
+`memory` 保存用户可编辑的跨会话笔记（详见 [memory](memory.md)），`run` 保存协调状态，`runtime` 保存实际执行环境。缓存不是会话或配置的来源。
 提示词、主题等配置路径相对于 home，命令行 `--set` 中的对应路径相对于工作目录；
 `sandbox.extra_readable/extra_writable` 始终相对于工作目录，详见 [配置契约](app.md#2-配置与提示词)。
 
@@ -36,7 +37,10 @@ home/
 
 `home/AGENTS.md` 可放语言、协作方式等个人偏好，由后端追加到 system prompt。
 项目 `AGENTS.md` 继续由工作区上下文收集；当前用户要求、项目具体指令优先于全局一般偏好。
-提示词是系统模板，Skill 是按轮激活的操作指导，三者分别加载。编辑配置或资源后重启后端生效。
+提示词是系统模板，Skill 是按轮激活的操作指导，记忆是模型维护的背景笔记，分别加载。
+当前用户要求 > 项目 AGENTS.md > 全局 AGENTS.md > 记忆。配置与普通资源修改后重启后端生效；
+记忆文件在新建或恢复会话时重新扫描，目录首次保存时创建，dev 的 `/home/memory/` 不纳入版本控制。
+`memory/` 属于控制根受保护目录，普通文件与命令工具仍按控制路径权限处理。
 
 ## 首次安装与升级
 

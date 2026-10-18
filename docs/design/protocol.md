@@ -72,6 +72,7 @@ sequenceDiagram
 | `session.revoke_grant` | 读线程校验后走即时控制路径 | 提交撤销记录、终止使用旧授权的活跃执行后返回 removed（运行中也可用） |
 | `model.list` | 读线程 | 公开模型、provider 种类、default_name、selected_name |
 | `session.new` / `resume` / `select_model`、`model.add`、`session.compact` | 命令线程 | 成功返回快照；`model.add` 返回 model/selected/selection_error；compact 返回 operation_id，完成走 `operation.finished` |
+| `memory.list` / `memory.view` / `memory.delete` | 查询线程 | 全局与当前项目条目元数据 / 正文 / 删除结果；详见 [memory](memory.md#5-用户管理) |
 | `session.list` / `children` / `history` / `history_close`、`workspace.info` / `complete` | 查询线程 | 会话列表、子会话、HistoryItem 页与游标、项目信息、文件候选 |
 
 读线程只做校验与即时操作，不会被模型调用阻塞；耗时命令与只读查询各有一个工作线程，查询失败不影响执行中的 Run。
@@ -149,3 +150,10 @@ version_mismatch、closing；前端只按 kind 分支，不解析文案。模型
 ## Skill queries
 
 `skills.list` is a read-only query returning `skills: [{name, description, path}]` and `diagnostics: [{path, message}]`. `input.submit` remains text-only. Tool presentation adds `kind: "skill"` with `name` and `path`. See [skills](skills.md).
+
+## 记忆管理
+
+`memory.list` 不带参数，返回 `entries: [{scope, name, type, updated, description}]`。
+`memory.view` 与 `memory.delete` 接收 `{scope, name}`，返回 `view: {kind: "memory", op, scope, name, type, updated, description, content}`。
+它们作用于后端当前 Home 和项目，不要求 SessionTarget；delete 是用户管理操作，不重试有副作用的请求。
+memory 工具的 `tool_finished` 和历史 tool 条目使用相同 MemoryView JSON，run JSONL 沿用事件信封。

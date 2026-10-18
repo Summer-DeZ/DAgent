@@ -33,6 +33,7 @@
 ├── themes/
 ├── agents/            子 Agent 定义
 ├── skills/            全局 Skill
+├── memory/            全局与项目记忆，首次保存时创建目录
 ├── data/dagent.db     首次写入会话时创建
 ├── run/               runtime、模型与会话写锁，搜索实例的运行配置
 ├── runtime/           托管工具与消费者依赖环境
@@ -49,7 +50,7 @@
 
 ## 2. 配置与提示词
 
-`config/config.json` 由用户维护，包含权限、UI、HTTP、网页搜索/抓取、上下文、工具、进程和日志策略；`config/models.json` 保存模型
+`config/config.json` 由用户维护，包含权限、UI、HTTP、网页搜索/抓取、记忆、上下文、工具、进程和日志策略；`config/models.json` 保存模型
 条目和默认模型。加载不做分层合并，不读项目配置、`.mcp.json`、`.env` 或 XDG 路径，也没有信任子系统。
 `prompts.system` 和 `prompts.compact` 分别指定主提示词与上下文压缩提示词；相对路径以安装根为准，默认是
 `prompts/system.md` 与 `prompts/compact.md`。两份提示词都由后端启动装配时读取并保存在快照中，不编入二进制；修改后重启后端生效，无需重新构建。
@@ -95,7 +96,7 @@ stdio 项支持 `command`、`args`、`env`、`environment`，HTTP 项支持 `url
 `allowed_targets/denied_targets` 表达网络目标；启动/网络审批超时与每执行网络请求预算由 sandbox 段配置。
 
 主要运行策略由 `home/config/config.json` 显式提供，缺少必填项时报配置错误。
-`run.max_total_tokens` 缺省为 0；`subagents.approval` 和 `web` 缺省采用下表值，兼容未添加这些字段的配置。
+`run.max_total_tokens` 缺省为 0；`subagents.approval`、`web` 和 `memory` 缺省采用下表值，兼容未添加这些字段的配置。
 
 | 配置位置 | 用途 | 随附值 |
 |---|---|---|
@@ -109,6 +110,9 @@ stdio 项支持 `command`、`args`、`env`、`environment`，HTTP 项支持 `url
 | `subagents.approval.max_reviews_per_turn` | 每父 turn 审阅次数上限，0 表示不允许审阅 | 16 |
 | `subagents.approval.review_timeout_ms` | 从请求创建起计时，包含排队、模型调用和重试；必须为正 | 60000 |
 | `subagents.approval.failure` | 仅支持拒绝并反馈，不自动转人工 | deny_with_feedback |
+| `memory.enabled` | 向主 Agent 提供 memory 工具与 system 索引，不控制用户管理面板 | true |
+| `memory.max_index_bytes` | 索引文本预算（含分组标题），正整数 | 8192 |
+| `memory.max_entry_bytes` | 含 frontmatter 的完整条目读写上限，正整数 | 4096 |
 | `web.timeout_ms` | 单次 SRT 网页请求上限，含等待审批；正整数 | 120000 |
 | `web.startup_timeout_ms` | SearXNG 启动等待上限；正整数 | 30000 |
 | `web.max_body_bytes` | HTTP 正文下载上限，1–67108864 | 2097152 |
@@ -223,6 +227,7 @@ json 结果字段为 `session_id, status, error, result, steps, tool_calls, usag
 jsonl 每行直接序列化 `protocol::Event`：`seq, session_id, session_generation, kind, data,
 parent_session_id, model_call_id, agent`。子事件身份保留在同一信封中；
 会话和操作通知也原样输出，恢复时不输出历史。
+`memory` 沿用工具进度输出；jsonl 的 `tool_finished.data.view` 保留完整 MemoryView，text/json 的 stderr 显示操作摘要。
 各格式共用主会话结果累积，在新步和流重试时重置正文缓冲，并从主会话 `turn_ended` 取得状态与用量。
 子 Agent 事件不修改主会话结果，也不结束本次 run；JSONL 同样按最终状态返回退出码。
 
@@ -247,3 +252,10 @@ stdout 被关闭时 jsonl 请求取消本轮并返回 1，text / json 最终写�
 
 后端在启动时发现 `<root>/skills/*/SKILL.md`，把不可变目录共享给会话与查询网关。
 格式、诊断和重启生效规则见 [skills](skills.md)。
+
+## 8. Agent 记忆
+
+后端通过 `HomePaths` 和同一 `project_root` 装配 `tools::MemoryStore`。`SessionAssembly` 在创建与恢复时
+扫描并追加 `# Memory`，工具注册同时受 `memory.enabled` 与子会话限制控制；system 在打开期间固定。
+QueryGateway 提供 `memory.list/view/delete`，供 `/memory` 分组查看与删除，关闭模型记忆不禁止用户管理已有文件。
+存储格式、优先级、索引预算和模型写入准则见 [memory](memory.md)。

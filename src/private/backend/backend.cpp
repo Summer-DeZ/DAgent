@@ -88,6 +88,7 @@ nlohmann::json approval_payload(const agent::Approval& approval) {
     case agent::ToolKind::read:
         for (const auto& path : approval.intent.paths) preview += path.path.string() + '\n';
         break;
+    case agent::ToolKind::memory:
     case agent::ToolKind::network: preview = approval.intent.summary; break;
     case agent::ToolKind::external: preview_kind = "code"; break;
     }
@@ -455,7 +456,8 @@ void Backend::dispatch(const protocol::Request& request) {
     }
     if (method == "session.list" || method == "session.children" || method == "session.history" ||
         method == "session.history_close" || method == "workspace.info" ||
-        method == "workspace.complete" || method == "skills.list") {
+        method == "workspace.complete" || method == "skills.list" ||
+        method == "memory.list" || method == "memory.view" || method == "memory.delete") {
         push_query(Job{id, method, params});
         return;
     }
@@ -769,6 +771,18 @@ void Backend::handle_query(Job job) {
             for (const auto& diagnostic : catalog.diagnostics)
                 diagnostics.push_back({{"path", diagnostic.path}, {"message", diagnostic.message}});
             respond(job.id, {{"skills", std::move(skills)}, {"diagnostics", std::move(diagnostics)}});
+        } else if (job.method == "memory.list") {
+            nlohmann::json entries = nlohmann::json::array();
+            for (const auto& entry : queries_->memory_list())
+                entries.push_back({{"scope", entry.scope}, {"name", entry.name}, {"type", entry.type},
+                                   {"updated", entry.updated}, {"description", entry.description}});
+            respond(job.id, {{"entries", std::move(entries)}});
+        } else if (job.method == "memory.view" || job.method == "memory.delete") {
+            const auto scope = job.params.at("scope").get<std::string>();
+            const auto name = job.params.at("name").get<std::string>();
+            const auto view = job.method == "memory.view" ? queries_->memory_view(scope, name)
+                                                          : queries_->memory_delete(scope, name);
+            respond(job.id, {{"view", agent::to_json(agent::View(view))}});
         } else if (job.method == "workspace.complete") {
             workspace_complete(job.id, job.params);
         }

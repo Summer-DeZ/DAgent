@@ -17,6 +17,7 @@
 | [app](app.md) | 入口、命令行、配置、后端装配、run 输出 |
 | [home](home.md) | 安装根的目录布局、配置与资源 |
 | [skills](skills.md) | 全局技能 |
+| [memory](memory.md) | 全局与项目记忆、索引注入、工具与管理面板 |
 | [toolchain](toolchain.md) | 托管工具与依赖 |
 | [tools](tools.md) | 内置工具与 MCP 工具包装 |
 | [llm](llm.md) | 模型客户端（openai-chat / ollama / anthropic） |

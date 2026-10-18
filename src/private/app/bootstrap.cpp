@@ -94,6 +94,8 @@ SessionAssembly::Options session_options(const Config& config, const runtime::Bo
     std::error_code ec;
     if (std::filesystem::exists(config.project_root / ".git", ec)) out.git_root = config.project_root;
     out.tools = config.tools;
+    if (config.memory.enabled)
+        out.memory = std::make_shared<tools::MemoryStore>(paths.memory, paths.project_memory(config.project_root), config.memory);
     auto searxng = std::make_shared<Searxng>(paths, config.searxng_environment, config.tools.web, config.process);
     out.tools.search_endpoint = [searxng](std::stop_token stop) { return searxng->endpoint(stop); };
     out.files = config.files;
@@ -130,7 +132,7 @@ SessionAssembly::Options session_options(const Config& config, const runtime::Bo
     out.search.sandbox.runtime = out.srt;
     out.search.sandbox.state_root = paths.runtime / "sandbox";
     out.search.sandbox.protected_read = {paths.root / "config", paths.root / "data",
-                                         paths.root / "logs", paths.root / "run"};
+                                         paths.root / "logs", paths.root / "run", paths.memory};
     out.storage = config.session;
     out.system_prompt = workspace::read_text(config.system_prompt_file, config.files).content;
     out.compact_prompt = workspace::read_text(config.compact_prompt_file, config.files).content;
@@ -180,6 +182,7 @@ runtime::Assembled assemble_backend(const runtime::BootstrapOptions& options) {
         if (config.tools.environments.contains(name))
             skill.body += "\n\nFor commands belonging to this skill, set the bash environment parameter to " + name + ".";
     }
+    auto memory = std::make_shared<tools::MemoryStore>(paths.memory, paths.project_memory(config.project_root), config.memory);
     runtime::Assembled out;
     out.configuration = configuration;
 
@@ -187,7 +190,7 @@ runtime::Assembled assemble_backend(const runtime::BootstrapOptions& options) {
     out.progress_interval_ms = static_cast<int>(config.agent.progress.interval.count());
     if (options.mode == "sessions" || options.mode == "models") {
         out.queries = std::make_shared<QueryGatewayImpl>(config.session, options.cwd, config.project_root,
-                                                       config.search, skills, config.process, config.ui.completion_max_files);
+                                                       config.search, skills, config.process, config.ui.completion_max_files, memory);
         return out;
     }
 
@@ -195,7 +198,7 @@ runtime::Assembled assemble_backend(const runtime::BootstrapOptions& options) {
     auto session = session_options(config, options, configuration, make_session);
     context.sandbox = session.search.sandbox;
     out.queries = std::make_shared<QueryGatewayImpl>(config.session, options.cwd, config.project_root,
-                                                   session.search, skills, config.process, config.ui.completion_max_files);
+                                                   session.search, skills, config.process, config.ui.completion_max_files, memory);
     // stdio MCP：用受信任 profile + 已解析 SRT 运行时构造受限启动参数；缺 profile 的 server 不启动。
     if (session.srt) {
         for (auto& server : config.mcp_servers) {
@@ -210,7 +213,7 @@ runtime::Assembled assemble_backend(const runtime::BootstrapOptions& options) {
             policy.writable = server.profile_write;
             policy.network_targets = server.profile_network;
             policy.protected_read = {paths.root / "config", paths.root / "data", paths.root / "logs",
-                                     paths.root / "run"};
+                                     paths.root / "run", paths.memory};
             policy.protected_write = policy.protected_read;
             policy.protect_sensitive_names = true;
             policy.private_tmp = true;

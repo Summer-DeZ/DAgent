@@ -5,6 +5,7 @@
 #include <utility>
 
 #include "tools/detail.hpp"
+#include "tools/memory.hpp"
 
 namespace dagent::tools {
 
@@ -46,7 +47,8 @@ std::vector<const Spec*> Registry::specs() const {
     return out;
 }
 
-void add_builtin(Registry& registry) {
+void add_builtin(Registry& registry, std::shared_ptr<const MemoryStore> memory) {
+    if (memory) registry.add(make_memory_tool(std::move(memory)));
     registry.add(detail::make_read_tool());
     registry.add(detail::make_write_tool());
     registry.add(detail::make_edit_tool());

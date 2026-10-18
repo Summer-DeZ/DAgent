@@ -146,7 +146,7 @@ public:
     virtual std::int64_t upper_seq() const = 0;
 };
 
-/// @brief 只读查询：列表、历史投影、项目信息与文件补全；在查询线程调用，不碰当前 Writer。
+/// @brief 查询与记忆管理：在查询线程调用，不碰当前会话 Writer。
 class QueryGateway {
 public:
     virtual ~QueryGateway() = default;
@@ -156,6 +156,9 @@ public:
     virtual std::vector<ChildSummary> children(std::string_view session_id) = 0;
     virtual WorkspaceInfo workspace() = 0;
     virtual const agent::SkillCatalog& skills() const = 0;
+    virtual std::vector<agent::MemoryView> memory_list() const = 0;
+    virtual agent::MemoryView memory_view(std::string_view scope, std::string_view name) const = 0;
+    virtual agent::MemoryView memory_delete(std::string_view scope, std::string_view name) = 0;
     virtual std::vector<FileCandidate> complete(std::string_view query, std::size_t limit) = 0;
 };
 

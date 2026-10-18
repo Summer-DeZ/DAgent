@@ -384,6 +384,11 @@ void Transcript::finished(const ToolFinished& event) {
             if (v.cancelled) body += "Cancelled\n";
             rows = 8;
         },
+        [&](const MemoryView& v) {
+            name = "memory"; param = v.op + " " + v.scope + "/" + v.name;
+            body = v.type + " " + v.updated + "\n" + v.description + "\n\n" + v.content;
+            rows = 8;
+        },
         [&](const SkillView& v) {
             name = std::string(ui::text().card_skill); param = v.name;
             body = v.path + "\n" + event.text;

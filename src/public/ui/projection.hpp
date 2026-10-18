@@ -101,11 +101,12 @@ struct TaskView {
     double seconds = 0;
 };
 
+struct MemoryView { std::string op, scope, name, type, updated, description, content; };
 struct SkillView { std::string name, path; };
 
 using TodoList = std::vector<TodoItem>;
 using ToolView = std::variant<std::monostate, ReadView, FileChangeView, BashView, GrepView, GlobView,
-                              McpView, WebView, TodoList, AskView, TaskView, SkillView>;
+                              McpView, WebView, TodoList, AskView, TaskView, SkillView, MemoryView>;
 
 struct ToolFinished {
     std::string id, name, summary, text;

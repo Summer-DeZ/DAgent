@@ -24,6 +24,7 @@
 #include "net/http.hpp"
 #include "storage/storage.hpp"
 #include "tools/tools.hpp"
+#include "tools/memory.hpp"
 #include "workspace/files.hpp"
 #include "workspace/search.hpp"
 
@@ -53,6 +54,7 @@ struct Config {
     mcp::Options mcp;
     std::filesystem::path searxng_environment;
     tools::Options tools;
+    tools::MemoryOptions memory;
     agent::Options agent; ///< context / run / progress
     agent::PermissionMode permissions = agent::PermissionMode::workspace; ///< 启动权限档初值
     std::vector<mcp::ServerConfig> mcp_servers;

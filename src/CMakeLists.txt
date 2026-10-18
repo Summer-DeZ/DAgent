@@ -157,6 +157,7 @@ add_library(tools STATIC
     private/tools/web.cpp
     private/tools/grep.cpp
     private/tools/glob.cpp
+    private/tools/memory.cpp
     private/tools/mcp.cpp
     private/tools/mcp_hub.cpp
 )
@@ -166,6 +167,7 @@ target_compile_features(tools PUBLIC cxx_std_23)
 target_compile_options(tools PRIVATE -Wall -Wextra)
 target_link_libraries(tools
     PUBLIC dagent_agent dagent_base dagent_exec dagent_workspace dagent_mcp dagent_web
+    PRIVATE yaml-cpp
 )
 
 # 前端入口层：命令行解析、安装根、前端启动与输出适配。其他模块都不依赖它。

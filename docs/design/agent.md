@@ -226,7 +226,7 @@ tool_calls → ActionCatalog.prepare → 普通 PreparedTool ── PreparedInte
 edit/write 如需读取原文件，先通过 `preview_request` 声明读意图，由 Policy 授权后执行 `prepare_preview`，
 再用完整 diff 判定写授权；参数准备不提前读取待审批内容。读取与写入均消费对应 grant。
 
-可并行的是 Policy 直接放行的 read 意图，以及获准使用 `read_only` 沙箱的 bash；写入、编辑、web_search/web_fetch、MCP 和经过询问的调用
+可并行的是 Policy 直接放行的 read 意图，以及获准使用 `read_only` 沙箱的 bash；写入、编辑、memory、web_search/web_fetch、MCP 和经过询问的调用
 串行执行。连续的可并行调用构成一组，分块创建线程，每块最多 `run.max_parallel_tools` 个。
 
 遇到不能加入挂起组的调用，先运行并等待整个组，再重新 prepare 当前调用并重新判权、重算并行类别。这样「read a → edit a」
@@ -297,7 +297,7 @@ workspace（auto-edit）下可配置决策模型（第一版为 System One 协�
 | `workspace` | 工作区内普通文件工具放行；动态/写入型 bash 在完整 workspace profile 下自动执行，否则询问一次性 full_access |
 | `unrestricted` | 普通请求直接放行，bash 使用 full_access；语法、高危命令、read_only/planning 硬限制仍优先，MCP 启动/连接仍需显式配置 profile |
 
-路径分类包括：含 `.git` 路径段，以及控制根中的 `config/`、`data/`、`logs/`、`run/` 等控制数据路径；`.env`、`.env.*`、
+路径分类包括：含 `.git` 路径段，以及控制根中的 `config/`、`data/`、`logs/`、`run/`、`memory/` 等控制数据路径；`.env`、`.env.*`、
 `*.pem`、`*.key`、`id_rsa*`、`id_ed25519*` 及含 `.ssh` / `.gnupg` 段的敏感路径；其余按工作区内外区分。
 开发目录把 `home/` 同时用作控制根时，不会把整个 Home 树隐藏起来；提示词、主题等普通资源仍按工作区路径处理，
 但受版本控制不意味着可以绕过 config 等控制路径保护。
@@ -311,6 +311,7 @@ workspace（auto-edit）下可配置决策模型（第一版为 System One 协�
 | 其他 bash，完整 workspace profile 可用 | ask 询问、workspace 自动；均使用明确范围且默认不联网 |
 | 写入型 bash 的 workspace profile 不可用 | 请求一次性 full_access，明确提示可访问网络、受保护数据和 `.git`；没有人工或合格父审批路由时不执行 |
 | MCP 工具 | ask / workspace 询问；unrestricted 放行；plan 拒绝 |
+| memory | 所有模式直接放行（含 read_only / planning），不进入并行组 |
 | web_search / web_fetch | 所有模式都要求只读 SRT；目标由运行中网络闸门决定，工具不进入并行组 |
 
 显式 host access 不属于旧沙箱兼容后端：每次请求须由用户或符合条件的父模型明确批准，不提供会话级复用；拒绝后不执行。
@@ -320,9 +321,12 @@ workspace（auto-edit）下可配置决策模型（第一版为 System One 协�
 `workspace_ready()`。workspace 不授予 bash 网络权限，
 能力缺失也不会自动降级 full_access；只有明确获批的 host-access 单次调用使用 host。具体限制见 [exec](exec.md)。
 
-`read_only` 与三档正交：写入、非只读 bash 和 external 都走策略拒绝，已知只读 bash 强制 read_only 沙箱。
+`read_only` 与三档正交：普通文件写入、非只读 bash 和 external 都走策略拒绝，已知只读 bash 强制 read_only 沙箱。
 plan 在此基础上给出规划专用反馈，使模型改为调研和提案而不结束本轮。`mkfs*`、裸写块设备、大范围 `rm -rf`、
 关机重启、对根/HOME 的递归 chmod/chown、下载后直接 pipe 到 shell 会在全部模式中直接拒绝。
+
+`ToolKind::memory` 用于跨会话笔记，Policy 在只读/规划限制前直接放行，不扩展普通工具的文件权限。
+其 `MemoryView` 通过统一 View 编解码进入会话记录、历史投影、协议事件与界面，详见 [memory](memory.md)。
 
 `ToolKind::network` 专供 web_search/web_fetch：所有模式都先要求只读 SRT，包括 unrestricted、read_only 和 plan。
 它不属于只读工具并行组，也不按 external 工具名审批。运行中闸门按「配置拒绝 → 会话拒绝 →
@@ -490,6 +494,9 @@ compact 模板保留六段结构，标题为 `User requests`、`Decisions made`�
 `Current progress`、`Remaining work`、`Unresolved issues`；用户原文（包括中文）不翻译。
 用户原话和路径逐字保留，优先于 1500 字的建议长度；从可见工具原文提取任务所需事实，省略占位不代表调用失败。
 渲染后的 system 写进会话记录供排查，恢复时仍按当前环境重新渲染。
+主会话启用 memory 且工具集允许时，装配层追加固定英文 `# Memory` 准则与全局/项目索引。
+索引在创建（包括 `/new`）和恢复时重新扫描，本会话内固定，压缩不改写 system；正文通过 memory view 读取。
+当前用户要求、项目 AGENTS.md、全局 AGENTS.md 均优先于记忆。
 
 ## 10. 会话记录、恢复与历史投影
 
@@ -611,7 +618,8 @@ app 校验名字唯一、`permission` 取值、`model` 引用和上限，未知�
   父 Sink/人工 Approver、只读父 Policy、父审阅邮箱出口与 stop；子定义由委派请求查找，不含可写父 Session。
   权限视图在创建和审批时重新取样。子会话生命周期严格在一次 `delegate` 内，父等待整组结束，按原顺序回填。
 - 禁止二级子 Agent：子会话的动作目录不含 task；子会话也不能使用 ask / exit_plan（没有 Asker，也不参与规划确认）。
-- `allowed_tools` 取定义里的 `tools`，缺省继承父工具名再剔除 `task` / `ask` / `exit_plan` 与 MCP 工具。显式空列表或过滤后为空均表示不提供工具，只有主会话的未限制状态才使用 nullopt。
+- `allowed_tools` 取定义里的 `tools`，缺省继承父工具名再剔除 `task` / `ask` / `exit_plan` / `memory` 与 MCP 工具。显式空列表或过滤后为空均表示不提供工具，只有主会话的未限制状态才使用 nullopt。
+- 子会话即便显式列出 memory 也会移除，不注入记忆索引；父会话把所需事实写入委派 prompt。
 - 定义未指定模型时继承父当前模型；显式指定时按配置名解析。
 - 子会话记录带 `parent_id` / `agent_name`，不进 `sessions` 列表与 `/resume`，按父会话列出供界面浏览。
 

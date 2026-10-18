@@ -4,7 +4,7 @@
 把结果整理成两份——**给模型的文本**和**给界面与会话的结构化数据（View）**。头文件在 `src/public/tools/`，
 实现在 `src/private/tools/`，构建为静态库 `tools`（不带 `dagent_` 前缀），命名空间 `dagent::tools`。
 依赖 agent（只用中立契约：`ToolSpec`、`PreparedTool`、`PreparedIntent`、`ExecutionGrant`、`ToolResult`、`ToolSession`）、
-base、exec、workspace、mcp、web。核心不依赖 tools：后端装配把 `tools::ToolSession` 作为核心端口的实现交给 Session。
+base、exec、workspace、mcp、web，私有链接 yaml-cpp 解析记忆 frontmatter。核心不依赖 tools：后端装配把 `tools::ToolSession` 作为核心端口的实现交给 Session。
 
 分工的判断标准和外围相反：这里放「面向模型的语义」。read 要不要带行号、edit 怎样匹配、bash 的输出怎样
 呈现给模型，都在这一层；「执行一条命令、截断输出」仍然在 exec。
@@ -53,7 +53,7 @@ edit 和覆盖已有文件的 write 通过 `preview_request()` 声明读取需�
 | --- | --- |
 | `Options` | `config.json` 的 `tools` / `web` 段及装配注入的运行时：给模型的文本上限、read 默认行数与单行上限、grep/glob 数量上限、bash 最长超时、MCP 调用超时 |
 | `Spec` = `agent::ToolSpec` | 名字、说明、参数 JSON Schema；工具层与核心共用同一个类型，不再往返复制 |
-| `agent::PreparedIntent` | 工具打算做什么：`ToolKind`（read / write / exec / external / network）、`ResourceIntent`（规范化路径、读写方向、工作区内外）、bash 的 `CommandIntent`（原命令、分析版本、语法状态、dynamic、known_readonly、dangerous、路径/网络影响）、diff 预览和摘要 |
+| `agent::PreparedIntent` | 工具打算做什么：`ToolKind`（read / write / exec / external / network / memory）、`ResourceIntent`（规范化路径、读写方向、工作区内外）、bash 的 `CommandIntent`（原命令、分析版本、语法状态、dynamic、known_readonly、dangerous、路径/网络影响）、diff 预览和摘要 |
 | `Grant` = `agent::ExecutionGrant` | 核心的决定：沙箱 profile、backend、来源、读写/保护范围、通信开关与私有临时空间 |
 | `Result` = `agent::ToolResult` | `model_text` 给模型、`is_error`、`interrupted`、`display`（View）、`signals`（如 `McpDisconnected`） |
 | `Context` | 会话级状态，每个会话一个，所有调用共用，线程安全；持有工作区根、各模块的 Options、FileTracker 和按字节预算淘汰的网页缓存 |
@@ -93,6 +93,14 @@ dangerous / known_readonly 仍由 exec 的原分析函数计算，核心不重�
 ---
 
 ## 3. 各工具
+
+### memory
+
+参数为 `op(view/save/delete)`、`scope(global/project)`、`name`；save 额外要求 `type`、`description`、`content`。
+`MemoryStore` 根据 Home 与项目根组装路径，按条目解析 Markdown frontmatter，复用 workspace 原子写入；不接受路径参数。
+`add_builtin` 接收可选的记忆存储，禁用配置与子会话不注册工具。Policy 对 `ToolKind::memory` 在所有模式直接放行，
+包括 planning/read_only，三种操作均串行。普通工具访问 `home/memory/` 仍走控制路径保护。
+结果带 `MemoryView`，view 给模型正文，save/delete 给模型操作摘要。配置、索引与写入准则见 [memory](memory.md)。
 
 ### read
 
@@ -257,9 +265,10 @@ dangerous / known_readonly 仍由 exec 的原分析函数计算，核心不重�
 | `TodoView` | `items` 整份列表；`TodoItem` 含 `text` 与四态 `state` |
 | `TaskView` | `agent`、`task`、`session_id`（父到子的跳转锚点）、`result`、`steps`（`TaskStep`：`summary`、`is_error`）、`model_calls`、`tool_calls`、`seconds`、`interrupted` |
 | `AskView` | 问题、选项、选择和自由文本，供人工问答回放 |
+| `MemoryView` | `op`、`scope`、`name`、`type`、`updated`、`description`、`content`，记忆操作结果 |
 | `SkillView` | `name`、`path`，记录本轮技能激活，不保存技能正文 |
 
-- `View = std::variant<std::monostate, ReadView, FileChangeView, BashView, GrepView, GlobView, McpView, WebView, TodoView, AskView, TaskView, SkillView>`；
+- `View = std::variant<std::monostate, ReadView, FileChangeView, BashView, GrepView, GlobView, McpView, WebView, TodoView, AskView, TaskView, SkillView, MemoryView>`；
   `monostate` 表示 prepare 阶段就失败的调用（参数错误等），界面只显示文本。前端不链接核心，
   由 `ui/projection` 把协议里的 View JSON 解码成自己的投影类型，未知 kind 按文本回退。
 - `agent::to_json(view)` 输出 `{"kind": ..., 各字段}`，写进 tool 记录的 `view`，协议也原样传给前端；`kind` 为 `read`、`change`、
@@ -275,7 +284,7 @@ dangerous / known_readonly 仍由 exec 的原分析函数计算，核心不重�
 
 - **每个 tool_call 都要有一条 tool 消息**，包括未知工具、参数错误、用户拒绝、被取消的调用；否则 OpenAI
   协议下一次请求直接 400。顺序与 `tool_calls` 一致。
-- 可以并行的只有 read 意图和获准 `read_only` 沙箱的 bash；write、edit、web_search/web_fetch、MCP 串行，`task` 单独成组并发。
+- 可以并行的只有 read 意图和获准 `read_only` 沙箱的 bash；write、edit、memory、web_search/web_fetch、MCP 串行，`task` 单独成组并发。
 - FileTracker 跟着会话走；恢复会话时不重建，模型需要重新 read 才能编辑——宁可多读一次，也不能拿旧 Stamp
   覆盖别人的改动。
 - read 可以读到 `.env` 这类文件，内容会发给模型。是否拦截由核心的权限策略决定（意图里有路径）。
@@ -296,6 +305,7 @@ dangerous / known_readonly 仍由 exec 的原分析函数计算，核心不重�
   `read_default_lines`（2000）、`read_max_line_bytes`（2000）、`grep_max_matches`（200）、`glob_max_files`（200）、
   `bash_max_timeout_ms`（600000）、`mcp_call_timeout_ms`（120000），由 app 映射。文件读写上限沿用 `files` 段：
   `max_read_bytes` 是 read 能翻页的最大文件（8 MiB），`max_write_bytes` 是写入上限（1 MiB）。
+- memory 使用独立的 `memory` 配置段；默认索引 8192 字节、完整条目 4096 字节，详见 [memory](memory.md)。
 - web 请求和缓存使用独立的 `web` 段，默认值及约束见 [web](web.md#配置)；启动需要宿主 curl 7.75+，
   搜索依赖 `internal/searxng`。bash 与 web 共用授权映射，协议处理通过 `dagent_web` 完成。
 - 需要模型的真实功能检测应确认所选服务可访问且支持工具调用；历史使用过的模型不代表当前服务已启动。

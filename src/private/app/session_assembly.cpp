@@ -12,6 +12,7 @@
 #include "base/log.hpp"
 #include "exec/shell.hpp"
 #include "storage/storage.hpp"
+#include "tools/memory.hpp"
 
 #include <ctime>
 
@@ -74,6 +75,9 @@ std::string render_prompt(const SessionAssembly::Options& base, const SessionSpe
     if (base.skills && (!spec.allowed_tools ||
         std::ranges::find(*spec.allowed_tools, "skill") != spec.allowed_tools->end()))
         prompt += base.skills->prompt();
+    if (base.memory && !spec.child && (!spec.allowed_tools ||
+        std::ranges::find(*spec.allowed_tools, "memory") != spec.allowed_tools->end()))
+        prompt += base.memory->prompt();
     return prompt;
 }
 
@@ -209,7 +213,7 @@ SessionSpec derive_child(const SessionAssembly::Options& base, const agent::Suba
 
     std::vector<std::string> allowed = def.tools.value_or(context.parent_tools);
     std::erase_if(allowed, [&](const std::string& name) {
-        if (name == "task" || name == "ask" || name == "exit_plan") return true;
+        if (name == "task" || name == "ask" || name == "exit_plan" || name == "memory") return true;
         return !def.tools && name.starts_with("mcp__"); // 默认不含 MCP 工具
     });
     spec.allowed_tools = std::move(allowed);
@@ -263,7 +267,7 @@ struct SessionAssembly::Impl {
         auto context = std::make_unique<tools::Context>(options.cwd, options.control_root, options.tools,
                                                         options.files, options.search, options.process);
         auto registry = std::make_unique<tools::Registry>();
-        tools::add_builtin(*registry);
+        tools::add_builtin(*registry, spec.child ? nullptr : options.memory);
         // 每个新目录先继承现有连接，再按该会话的工具限制收窄。
         // 只读/规划上限的会话不接触外部工具 lease：server 进程的权限高于该上限。
         if (!spec.state.read_only && !spec.state.planning) options.hub->snapshot(*registry);
@@ -344,6 +348,7 @@ struct SessionAssembly::Impl {
         agent::RecoveryResult restored = recovery.restore(records, !meta.parent_id.empty());
 
         SessionSpec spec = top_level(state, model_name, restored.unrestricted_acked);
+        spec.child = !meta.parent_id.empty();
         // 恢复会话继续使用原会话创建时间，避免把恢复前的 Agent 修改当作未修改。
         spec.session_started = parse_created(meta.created);
         if (!spec.child) spec.recent_user_messages = restored.recent_user_messages;

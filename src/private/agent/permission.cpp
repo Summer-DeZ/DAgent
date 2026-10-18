@@ -29,7 +29,7 @@ bool is_relative_to(const fs::path& path, const fs::path& base) {
 bool sensitive_control_path(const fs::path& path, const fs::path& root) {
     return !root.empty() && (is_relative_to(path, root / "config") || is_relative_to(path, root / "data") ||
            is_relative_to(path, root / "logs") || is_relative_to(path, root / "run") ||
-           is_relative_to(path, root / "runtime"));
+           is_relative_to(path, root / "runtime") || is_relative_to(path, root / "memory"));
 }
 
 std::string exec_rule_id(std::string_view command, std::string_view cwd) {
@@ -166,6 +166,7 @@ Policy::PathClass Policy::classify(const ResourceIntent& intent) const {
 
 std::optional<bool> Policy::matches_session(const Approval& approval, const PreparedIntent& intent) const {
     switch (intent.kind) {
+    case ToolKind::memory:
     case ToolKind::network: return std::nullopt;
     case ToolKind::write:
         if (session_edits_ && std::ranges::all_of(intent.paths, [&](const ResourceIntent& path) {
@@ -213,6 +214,7 @@ std::optional<bool> Policy::matches_session(const Approval& approval, const Prep
 bool Policy::matches_parent_session(const Approval& saved, const Approval& requested) const {
     if (saved.intent.kind != requested.intent.kind) return false;
     switch (requested.intent.kind) {
+    case ToolKind::memory:
     case ToolKind::network: return false;
     case ToolKind::write:
         return std::ranges::all_of(requested.intent.paths, [&](const ResourceIntent& path) {
@@ -263,7 +265,7 @@ ExecutionGrant Policy::grant_for_exec(SandboxProfile profile, GrantSource source
                               sandbox_options_.extra_writable.end());
     }
     grant.protected_read = {control_root_ / "config", control_root_ / "data",
-                            control_root_ / "logs", control_root_ / "run", workspace_root_ / ".env"};
+                            control_root_ / "logs", control_root_ / "run", control_root_ / "memory", workspace_root_ / ".env"};
     if (const char* home = std::getenv("HOME")) {
         grant.protected_read.emplace_back(fs::path(home) / ".ssh");
         grant.protected_read.emplace_back(fs::path(home) / ".gnupg");
@@ -342,6 +344,8 @@ Verdict Policy::evaluate(const ToolCall& call, const PreparedIntent& intent) con
         return verdict;
     }
 
+    if (intent.kind == ToolKind::memory) return answer(Verdict::Kind::allow);
+
     // Network tools always enter read-only SRT, including unrestricted mode.
     // Destination authorization remains in the shared runtime network gate.
     if (intent.kind == ToolKind::network) {
@@ -378,6 +382,7 @@ Verdict Policy::evaluate(const ToolCall& call, const PreparedIntent& intent) con
     }
 
     switch (intent.kind) {
+    case ToolKind::memory:
     case ToolKind::network: break; // handled above
     case ToolKind::read:
         if (has(PathClass::sensitive) || has(PathClass::guarded)) {
@@ -676,6 +681,7 @@ void Policy::remember_locked(const Approval& approval, const Decision& decision)
         return;
     }
     switch (approval.intent.kind) {
+    case ToolKind::memory:
     case ToolKind::network: return;
     case ToolKind::write: session_edits_ = true; return;
     case ToolKind::read:
