@@ -1,6 +1,5 @@
 #pragma once
 
-#include <algorithm>
 #include <filesystem>
 #include <utility>
 
@@ -21,11 +20,7 @@ struct HomePaths {
           themes(root / "themes"), memory(root / "memory"), database(root / "data/dagent.db"),
           decision_database(root / "data/decision.sqlite"), logs(root / "logs"),
           run(root / "run"), runtime(root / "runtime"), cache(root / "cache/packages") {}
-    std::filesystem::path project_memory(const std::filesystem::path& project_root) const {
-        auto key = std::filesystem::weakly_canonical(project_root).generic_string();
-        std::ranges::replace(key, '/', '-');
-        return memory / "projects" / key;
-    }
+    std::filesystem::path project_memory(const std::filesystem::path& project_root) const;
 };
 
 } // namespace dagent::app

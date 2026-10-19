@@ -83,6 +83,7 @@ protocol::SessionSnapshot to_protocol(const runtime::RuntimeSnapshot& snapshot) 
                                          {"status", mcp_status(state.status)},
                                          {"tools", state.tools},
                                          {"error", state.error},
+                                         {"protocol_version", state.protocol_version},
                                          {"boundary", mcp_boundary(state.boundary)}});
     }
     out.recording.broken = snapshot.recording_broken;

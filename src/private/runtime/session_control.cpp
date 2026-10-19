@@ -9,6 +9,7 @@
 #include "agent/run.hpp"
 #include "agent/turn_runner.hpp"
 #include "base/log.hpp"
+#include "base/text.hpp"
 
 namespace dagent::runtime {
 namespace {
@@ -21,6 +22,11 @@ struct Overloaded : Ts... {
 };
 template <class... Ts>
 Overloaded(Ts...) -> Overloaded<Ts...>;
+
+struct RunScope {
+    agent::Session& session;
+    ~RunScope() { session.end_run(); }
+};
 
 } // namespace
 
@@ -288,7 +294,8 @@ std::optional<QueuedInput> Runtime::recall_last() {
     return recalled;
 }
 
-std::expected<void, RuntimeError> Runtime::enqueue(Command command) {
+std::expected<void, RuntimeError> Runtime::enqueue(Command command, std::function<void()> accepted) {
+    command.ready = !accepted;
     {
         const std::lock_guard lock(mutex_);
         if (closed_ || state_ == State::closing || state_ == State::closed) {
@@ -303,6 +310,11 @@ std::expected<void, RuntimeError> Runtime::enqueue(Command command) {
         }
         commands_.push_back(std::move(command));
         command_pending_ = true;
+    }
+    if (accepted) {
+        accepted(); // 接受响应先入发送队列；此前命令不能出队。
+        const std::lock_guard lock(mutex_);
+        if (!commands_.empty()) commands_.front().ready = true;
     }
     cv_.notify_all();
     return {};
@@ -339,10 +351,10 @@ std::expected<void, RuntimeError> Runtime::add_model(agent::ModelInput input, Mo
     return enqueue(std::move(command));
 }
 
-std::expected<void, RuntimeError> Runtime::compact() {
+std::expected<void, RuntimeError> Runtime::compact(std::function<void()> accepted) {
     Command command;
     command.kind = Command::Kind::compact;
-    return enqueue(std::move(command));
+    return enqueue(std::move(command), std::move(accepted));
 }
 
 std::expected<void, RuntimeError> Runtime::revoke_grant(std::string grant_id, GrantRevoked done) {
@@ -743,8 +755,12 @@ void Runtime::run_input(const QueuedInput& input) {
     }
     const std::string session_id = instance->session().meta().id;
 
-    const agent::Sink sink = [this, session_id, generation](const agent::Event& event) {
-        if (std::holds_alternative<agent::TurnEnded>(event)) finalize_execution();
+    std::optional<agent::TurnEnded> ended;
+    const agent::Sink sink = [this, session_id, generation, &ended](const agent::Event& event) {
+        if (const auto* result = std::get_if<agent::TurnEnded>(&event)) {
+            ended = *result;
+            return;
+        }
         publish(EventPayload{event}, session_id, generation);
     };
     const agent::Approver approver =
@@ -768,11 +784,24 @@ void Runtime::run_input(const QueuedInput& input) {
                                 run.control->stop.get_token(), std::move(review_gate)};
     agent::Run agent_run;
     agent::Session& session = instance->session();
-    session.begin_run(services, agent_run);
     agent::TurnRunner runner;
-    runner.run(session, agent_run, services, input.text);
-    session.end_run();
+    {
+        const RunScope scope{session};
+        try {
+            session.begin_run(services, agent_run);
+            runner.run(session, agent_run, services, input.text);
+        } catch (const std::exception& error) {
+            log_runtime()->error("回合执行发生异常：{}", error.what());
+            runner.finish(session, agent_run, services, agent::TurnStatus::failed,
+                          base::to_valid_utf8(error.what()));
+        } catch (...) {
+            log_runtime()->error("回合执行发生未知异常");
+            runner.finish(session, agent_run, services, agent::TurnStatus::failed,
+                          "unknown exception during turn");
+        }
+    }
     finalize_execution();
+    if (ended) publish(EventPayload{agent::Event{*ended}}, session_id, generation);
 }
 
 void Runtime::run_compact() {
@@ -796,10 +825,13 @@ void Runtime::run_compact() {
                                 run.control->stop.get_token(), {}};
     agent::Run agent_run;
     agent::Session& session = instance->session();
-    session.begin_run(services, agent_run);
     agent::TurnRunner runner;
-    const agent::RunOutcome outcome = runner.compact(session, agent_run, services);
-    session.end_run();
+    agent::RunOutcome outcome;
+    {
+        const RunScope scope{session};
+        session.begin_run(services, agent_run);
+        outcome = runner.compact(session, agent_run, services);
+    }
     {
         const std::lock_guard lock(mutex_);
         if (state_ == State::executing) {
@@ -838,11 +870,11 @@ void Runtime::worker(std::stop_token stop) {
         {
             std::unique_lock lock(mutex_);
             cv_.wait(lock, stop, [&] {
-                return closed_ || !commands_.empty() ||
+                return closed_ || (!commands_.empty() && commands_.front().ready) ||
                        (state_ == State::ready && !pending_permission_ && front_ready_locked());
             });
             if (closed_ || stop.stop_requested()) break;
-            if (!commands_.empty()) {
+            if (!commands_.empty() && commands_.front().ready) {
                 command = std::move(commands_.front());
                 commands_.pop_front();
             } else {
@@ -867,16 +899,32 @@ void Runtime::worker(std::stop_token stop) {
                 state_ = State::ready;
                 run_.reset();
             }
+            sync_control_snapshot();
             ControlEvent failed;
             failed.kind = ControlEvent::Kind::failed;
             failed.operation = command ? "operation" : "turn";
             failed.error = error.what();
             publish_control(std::move(failed));
+            if (input) {
+                // 回合中途异常时补发失败的 TurnEnded，前端（包括 headless run）据此结束本回合。
+                std::string session_id;
+                std::uint64_t generation = 0;
+                {
+                    const std::lock_guard lock(mutex_);
+                    if (current_) session_id = current_->session().meta().id;
+                    generation = generation_;
+                }
+                publish(EventPayload{agent::Event{agent::TurnEnded{agent::TurnStatus::failed, error.what(), 0, 0, {}}}},
+                        session_id, generation);
+            }
         } catch (...) {
             log_runtime()->error("执行线程发生未知异常");
-            const std::lock_guard lock(mutex_);
-            state_ = State::ready;
-            run_.reset();
+            {
+                const std::lock_guard lock(mutex_);
+                state_ = State::ready;
+                run_.reset();
+            }
+            sync_control_snapshot();
         }
         if (command) {
             const std::lock_guard lock(mutex_);

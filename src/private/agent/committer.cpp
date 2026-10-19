@@ -1,5 +1,6 @@
 #include "agent/committer.hpp"
 
+#include <exception>
 #include <format>
 #include <utility>
 
@@ -19,7 +20,7 @@ void SessionCommitter::append(const Record& record) {
     if (broken_) return;
     try {
         journal_.append(record);
-    } catch (const RecordError& error) {
+    } catch (const std::exception& error) {
         fail_locked(error.what());
     }
 }
@@ -205,7 +206,7 @@ void SessionCommitter::sync() {
     if (broken_) return;
     try {
         journal_.sync();
-    } catch (const RecordError& error) {
+    } catch (const std::exception& error) {
         fail_locked(error.what());
     }
 }

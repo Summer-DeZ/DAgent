@@ -104,7 +104,7 @@ public:
         intent_.command = std::move(cmd);
         auto line = command_;
         if (const auto nl = line.find('\n'); nl != std::string::npos) line = line.substr(0, nl);
-        if (line.size() > 100) line = line.substr(0, 100);
+        if (line.size() > 100) line = line.substr(0, base::utf8_floor(line, 100));
         intent_.summary = std::format("Run [{}] {}", environment_name_, line);
     }
 

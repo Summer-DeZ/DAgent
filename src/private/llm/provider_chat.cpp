@@ -1,4 +1,5 @@
 #include "llm/provider_detail.hpp"
+#include "base/text.hpp"
 
 #include <algorithm>
 #include <cctype>
@@ -124,7 +125,9 @@ public:
 
         const json chunk = json::parse(data, nullptr, false);
         if (chunk.is_discarded()) {
-            fail(out, std::format("invalid JSON in SSE data: {}", std::string(data.substr(0, 120))));
+            std::string detail = base::to_valid_utf8(data);
+            detail.resize(base::utf8_floor(detail, 120));
+            fail(out, std::format("invalid JSON in SSE data: {}", detail));
             return;
         }
         if (const auto error = chunk.find("error"); error != chunk.end() && !error->is_null()) {

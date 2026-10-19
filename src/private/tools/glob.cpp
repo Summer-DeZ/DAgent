@@ -62,7 +62,7 @@ private:
             const std::filesystem::path absolute = root_.path / file;
             return !ctx_.can_read(grant, absolute);
         });
-        for (std::string& file : found) file = path_prefix_ + file;
+        for (std::string& file : found) file = base::to_valid_utf8(path_prefix_ + file);
 
         const bool truncated = found.size() >= max_files_;
         std::string text;

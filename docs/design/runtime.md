@@ -65,8 +65,13 @@ stateDiagram-v2
 - **普通输入**：`submit` 只加入内存 FIFO 并返回 `input_id`，不代表开始执行。`accepted` 回调在入队后、执行线程可取出前调用，
   backend 借此保证 `input.submit` 的响应先于该输入的 `turn_started` 进入发送队列。执行线程只取队首 `ready` 的输入，
   取出时才创建 Run（`run-N`）。
+- **回合收尾**：作用域退出时解除 Session 的 Run/Sink 绑定，包括执行异常和手动压缩异常。
+  普通回合逃出的异常经 `TurnRunner::finish` 补齐未闭合工具调用、记录并同步失败结束；先解除绑定、
+  清除当前 Run 并刷新快照，再发布 `TurnEnded`，前端重读快照时不再显示 busy。
 - **取回**：`recall_last` 原子移除最后一条仍排队的输入，空输入框按 ↑ 时使用（B04）。
 - **命令**：new/resume/select_model/add_model/compact 只在空闲时接受；命令从接受到结束占用空闲入口，普通输入不能越过它。`revoke_grant` 走即时路径，运行中也可用。
+  compact 使用与输入相同的接受屏障：入队时标记为未就绪，在锁外执行接受回调，然后才允许 worker 取走命令。
+  backend 在回调中登记 operation_id 并将接受响应入发送队列，保证压缩事件不会抢在接受响应之前发布。
   busy 时返回 `RuntimeError::busy`（B07）。
 - **即时操作**：`cycle_permission`（运行中也可，重新核对活跃执行并影响之后的决策）、`toggle_planning`（要求空闲）、`cancel`
   不进命令队列（B08）。`cancel(run_id)` 只取消身份仍匹配的当前 Run，旧 id 返回 false。取消句柄只由 `CurrentRun` 保存；cancel/shutdown 在锁内取得局部共享引用，在锁外触发停止。

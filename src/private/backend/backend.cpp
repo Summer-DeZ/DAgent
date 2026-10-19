@@ -734,18 +734,16 @@ void Backend::add_model(const std::string& id, const nlohmann::json& params) {
 
 void Backend::compact(const std::string& id, const nlohmann::json& params) {
     if (!check_target(id, params)) return;
-    const auto accepted = runtime_->compact();
-    if (!accepted) {
-        fail_target(id, accepted.error());
-        return;
-    }
-    std::string operation_id;
-    {
-        const std::lock_guard lock(state_mutex_);
-        operation_id = std::format("op-{}", ++compact_seq_);
-        pending_compact_id_ = operation_id;
-    }
-    respond(id, {{"operation_id", operation_id}, {"accepted", true}});
+    const auto accepted = runtime_->compact([this, id] {
+        std::string operation_id;
+        {
+            const std::lock_guard lock(state_mutex_);
+            operation_id = std::format("op-{}", ++compact_seq_);
+            pending_compact_id_ = operation_id;
+        }
+        respond(id, {{"operation_id", operation_id}, {"accepted", true}});
+    });
+    if (!accepted) fail_target(id, accepted.error());
 }
 
 // ---------------------------------------------------------------- 查询线程

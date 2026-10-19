@@ -66,7 +66,7 @@ public:
     std::expected<void, RuntimeError> resume(std::string session_id, CommandDone done = {});
     std::expected<void, RuntimeError> select_model(std::string name, CommandDone done = {});
     std::expected<void, RuntimeError> add_model(agent::ModelInput input, ModelAdded done = {});
-    std::expected<void, RuntimeError> compact();
+    std::expected<void, RuntimeError> compact(std::function<void()> accepted = {});
     std::expected<void, RuntimeError> revoke_grant(std::string grant_id, GrantRevoked done);
     std::expected<void, RuntimeError> cycle_permission();
     /// @brief 请求切换权限：目标为 unrestricted 且本会话尚未确认时只记录 pending，不升权。
@@ -104,6 +104,7 @@ private:
         agent::ModelInput model;
         CommandDone done;
         ModelAdded model_done;
+        bool ready = true; ///< 接受回调完成后才允许执行
     };
     struct PendingReplace {
         std::unique_ptr<SessionInstance> instance;
@@ -121,7 +122,7 @@ private:
     std::expected<PermissionChangeResult, RuntimeError> request_permission_impl(
         agent::PermissionMode target, bool confirmed, std::string entry);
 
-    std::expected<void, RuntimeError> enqueue(Command command);
+    std::expected<void, RuntimeError> enqueue(Command command, std::function<void()> accepted = {});
     PendingReplace prepare_new();
     PendingReplace prepare_resume(const std::string& session_id);
     PendingReplace prepare_switch(const std::string& model_name);

@@ -62,6 +62,7 @@ public:
     void validate() const;
     TextFile read(const FileOptions&) const;
     Stamp write(std::string_view, Eol, bool, const std::optional<Stamp>&, const FileOptions&);
+    void erase();
     std::filesystem::path directory_path() const;
 private:
     struct Impl;

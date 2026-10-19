@@ -4,6 +4,7 @@
 #include <format>
 
 #include "base/log.hpp"
+#include "base/text.hpp"
 
 namespace dagent::agent {
 
@@ -18,7 +19,7 @@ std::optional<ToolResult> PreparedTool::prepare_preview(const ExecutionGrant& gr
     catch (const std::exception& e) {
         ToolResult result;
         result.is_error = true;
-        result.model_text = std::format("preview failed: {}", e.what());
+        result.model_text = std::format("preview failed: {}", base::to_valid_utf8(e.what()));
         return result;
     }
 }
@@ -39,7 +40,7 @@ ToolResult PreparedTool::execute(const ExecutionGrant& grant,
     } catch (const std::exception& e) {
         base::logger("tools")->warn("tool call failed: {}", e.what());
         ToolResult result;
-        result.model_text = std::format("tool failed: {}", e.what());
+        result.model_text = std::format("tool failed: {}", base::to_valid_utf8(e.what()));
         result.is_error = true;
         return result;
     }

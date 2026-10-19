@@ -1,7 +1,8 @@
 /// @file client.hpp
 /// @brief MCP 客户端：一个 Client 连接一个外部 server，暴露它提供的工具。
 ///
-/// 仅支持 2026-07-28：连接时通过 server/discover 确认版本，每个请求自带 _meta。
+/// 优先通过 server/discover 使用 2026-07-28；仅在发现方法不受支持时回退 initialize，
+/// 支持 2025-11-25 / 2025-06-18 / 2025-03-26，并维护旧版 Streamable HTTP 会话。
 /// 支持 tools，不做 resources / prompts / sampling / elicitation / MRTR、
 /// HTTP OAuth、GET 监听流与 subscriptions/listen。
 #pragma once
@@ -130,6 +131,9 @@ public:
 
     /// @brief 传输类型；用于记录/界面区分远程服务与本机受限进程。
     Transport transport() const;
+
+    /// @brief 本连接协商确定的 MCP 协议版本。
+    const std::string& protocol_version() const;
 
     /// @brief 立即结束连接：挂起请求失败、后续请求拒绝（旧 lease 失效）。可重复调用。
     void shutdown();

@@ -21,7 +21,7 @@ public:
     /// @brief 手动压缩：不追加 user/turn_end，使用同一收尾约束。
     RunOutcome compact(Session&, Run&, const RunServices&);
 
-private:
+    /// @brief 正常或异常收尾：补齐工具批、记录结束并发出 TurnEnded。
     RunOutcome finish(Session&, Run&, const RunServices&, TurnStatus, std::string error);
 };
 

@@ -13,11 +13,13 @@ namespace {
 
 using Kind = HttpError::Kind;
 using DataFn = std::function<void(std::string_view)>;
+using HeadersFn = std::function<void(const HttpResponse&)>;
 
 // 一次传输的上下文，经 CURLOPT_HEADERDATA / WRITEDATA 交给回调。
 struct Transfer {
     CURL* easy = nullptr;
     const DataFn* on_data = nullptr; ///< 为空表示整包收取（send）
+    const HeadersFn* on_headers = nullptr;
     std::size_t limit = 0;           ///< send：响应体上限；stream：错误体截断长度
     HttpResponse resp;
     bool too_large = false;
@@ -37,6 +39,17 @@ std::size_t on_header(char* p, std::size_t size, std::size_t n, void* ud) {
     if (ln.starts_with("HTTP/")) { // 新一轮状态行（如 1xx 之后的最终响应），丢弃前一轮的头
         t.resp.headers.clear();
         return size * n;
+    }
+    if (trim(ln).empty() && t.on_headers && *t.on_headers) {
+        curl_easy_getinfo(t.easy, CURLINFO_RESPONSE_CODE, &t.resp.status);
+        if (t.resp.status >= 200) {
+            try {
+                (*t.on_headers)(t.resp);
+            } catch (...) {
+                t.error = std::current_exception();
+                return 0;
+            }
+        }
     }
     const std::size_t colon = ln.find(':');
     if (colon == std::string_view::npos) return size * n;
@@ -111,12 +124,14 @@ struct HttpClient::Impl {
     }
 
     HttpResponse run(const HttpOptions& opt, const HttpRequest& req, const DataFn* on_data,
-                     std::stop_token stop, std::optional<std::chrono::steady_clock::time_point> deadline);
+                     std::stop_token stop, std::optional<std::chrono::steady_clock::time_point> deadline,
+                     const HeadersFn* on_headers = nullptr);
 };
 
 HttpResponse HttpClient::Impl::run(const HttpOptions& opt, const HttpRequest& req,
                                    const DataFn* on_data, std::stop_token stop,
-                                   std::optional<std::chrono::steady_clock::time_point> deadline) {
+                                   std::optional<std::chrono::steady_clock::time_point> deadline,
+                                   const HeadersFn* on_headers) {
     std::optional<std::chrono::milliseconds> remaining;
     if (deadline) {
         const auto left = std::chrono::duration_cast<std::chrono::milliseconds>(
@@ -128,6 +143,7 @@ HttpResponse HttpClient::Impl::run(const HttpOptions& opt, const HttpRequest& re
     Transfer t;
     t.easy = easy;
     t.on_data = on_data;
+    t.on_headers = on_headers;
     t.limit = on_data ? opt.max_error_body_bytes : opt.max_body_bytes;
 
     curl_slist* hdrs = nullptr;
@@ -218,8 +234,8 @@ HttpResponse HttpClient::send(const HttpRequest& req, std::stop_token stop,
 }
 
 HttpResponse HttpClient::stream(const HttpRequest& req, const std::function<void(std::string_view)>& on_data,
-                                std::stop_token stop) {
-    return impl_->run(opt_, req, &on_data, std::move(stop), std::nullopt);
+                                std::stop_token stop, const HeadersFn& on_headers) {
+    return impl_->run(opt_, req, &on_data, std::move(stop), std::nullopt, &on_headers);
 }
 
 } // namespace dagent::net

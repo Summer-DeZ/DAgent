@@ -1,6 +1,7 @@
 #include "tools/tools.hpp"
 
 #include <algorithm>
+#include <exception>
 #include <format>
 #include <utility>
 
@@ -72,7 +73,13 @@ std::expected<std::unique_ptr<agent::PreparedTool>, agent::ToolResult> ToolSessi
     std::string_view name, std::string_view arguments) const {
     const Tool* tool = registry_.find(name);
     if (tool == nullptr) return std::unexpected(detail::error_result(std::format("unknown tool: {}", name)));
-    return tool->prepare(arguments, context_);
+    try {
+        return tool->prepare(arguments, context_);
+    } catch (const std::exception& error) {
+        return std::unexpected(detail::error_result(error.what()));
+    } catch (...) {
+        return std::unexpected(detail::error_result("unknown exception while preparing tool call"));
+    }
 }
 
 void add_mcp(Registry& registry, std::shared_ptr<mcp::Client> client) {

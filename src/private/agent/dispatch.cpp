@@ -22,6 +22,7 @@
 #include "agent/permission.hpp"
 #include "agent/parent_review.hpp"
 #include "base/log.hpp"
+#include "base/text.hpp"
 
 namespace dagent::agent {
 namespace {
@@ -37,13 +38,11 @@ ToolResult make_result(std::string text, bool is_error, bool interrupted) {
     return result;
 }
 
-// prepare 失败的调用没有 Intent：用「工具名 + 参数前 60 个字符」当摘要。
+// prepare 失败的调用没有 Intent：用「工具名 + 参数前 60 字节（退到 UTF-8 字符边界）」当摘要。
 std::string fallback_summary(const ToolCall& call) {
-    std::string args;
-    for (const char c : call.arguments) {
-        if (args.size() >= 60) break;
-        args += (c == '\n' || c == '\r') ? ' ' : c;
-    }
+    std::string args = call.arguments.substr(0, base::utf8_floor(call.arguments, 60));
+    std::ranges::replace(args, '\n', ' ');
+    std::ranges::replace(args, '\r', ' ');
     if (!call.name.empty() && !args.empty()) return call.name + " " + args;
     return call.name.empty() ? args : call.name;
 }

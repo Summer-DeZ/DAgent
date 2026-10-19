@@ -69,7 +69,8 @@ web 结果使用现有 tool 记录保存 `WebView` 和该次返回的正文，�
 - `sync` 调用 `sqlite3_db_cacheflush`；WAL/NORMAL 不承诺每条事件单独 fsync。
 
 进程被杀时已提交的事件是完整前缀。核心按 user / turn_end 记录判断回合是否闭合，为未闭合调用补「结果未知」并追加 crashed turn_end。
-写入失败时核心提交器进入 broken 状态、只提示一次，当前回合继续；存储层不重试旧 seq，下次续写重新读取 MAX(seq)。
+序列化、写入或同步失败时核心提交器进入 broken 状态、停用后续写入并只提示一次，当前回合继续；
+存储层不重试旧 seq，下次续写重新读取 MAX(seq)。
 
 父子会话各持独立的连接，并发写由 WAL + busy timeout 覆盖。整轮模型/工具执行不包在数据库事务里。
 

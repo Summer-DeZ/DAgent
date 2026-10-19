@@ -120,6 +120,7 @@ extended thinking 尚未开放；配置试图启用时明确拒绝。虽然保�
 共享分类支持 408、429、5xx 重试（含 529），解析 retry-after 秒数或 HTTP-date。
 400 的上下文超长措辞归 context_too_long，包括 `prompt is too long` 和 llama.cpp 的 available context size。
 错误文本移除当前配置的 API key。退避与重试上限由 Model 管理，强制压缩由核心 TurnRunner 管理。
+HTTP 错误正文摘要和非法 SSE data 的诊断先修复 UTF-8，再按字符边界截断，避免重试及结束事件无法序列化。
 
 预算使用模型的 context_window；为 0 时使用全局窗口。减去 safety_margin_tokens 和输出预留得到 limit，
 ContextUpdate 报告该可用预算。切换后重新建立估算器，首轮正常执行自动压缩。

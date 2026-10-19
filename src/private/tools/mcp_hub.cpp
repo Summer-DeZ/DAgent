@@ -7,6 +7,7 @@
 #include <utility>
 
 #include "agent/conversation.hpp"
+#include "base/log.hpp"
 
 namespace dagent::tools {
 namespace {
@@ -72,13 +73,16 @@ void McpHub::connect(Server& server) {
             const auto count = client->tools().size();
             std::lock_guard lock(mutex_);
             server.incoming = std::move(client);
+            server.state.protocol_version = server.incoming->protocol_version();
             server.state.status = agent::McpServerState::Status::ready;
             server.state.tools = count;
             server.state.error.clear();
         } catch (const std::exception& error) { // 不只 McpError：线程里漏掉的异常会直接 terminate
             if (stop.stop_requested()) return;
+            base::logger("mcp")->warn("MCP {} failed to connect: {}", server.config.name, error.what());
             std::lock_guard lock(mutex_);
             server.state.status = agent::McpServerState::Status::failed;
+            server.state.protocol_version.clear();
             server.state.tools = 0;
             server.state.error = error.what();
             notices_.push_back({agent::Notice::Level::warn,
@@ -112,6 +116,7 @@ std::string McpHub::mark_disconnected(std::string_view name, std::string reason)
         server->state.status = server->retried ? agent::McpServerState::Status::failed
                                                : agent::McpServerState::Status::disconnected;
         server->state.tools = 0;
+        server->state.protocol_version.clear();
         server->state.error = std::move(reason);
         notices_.push_back({agent::Notice::Level::warn,
                             std::format("MCP {} disconnected{}: {}", name,
@@ -145,6 +150,7 @@ void McpHub::revoke(std::string_view name) {
             if (server.state.status == agent::McpServerState::Status::ready) {
                 server.state.status = agent::McpServerState::Status::disconnected;
                 server.state.tools = 0;
+                server.state.protocol_version.clear();
                 server.state.error = "connection revoked by a permission change";
                 notices_.push_back({agent::Notice::Level::warn,
                                     std::format("MCP {} connection revoked by a permission change",
@@ -236,14 +242,11 @@ void McpHub::merge(Registry& registry, std::stop_token stop) {
         {
             std::lock_guard lock(mutex_);
             incoming = std::move(server.incoming);
+            if (incoming) server.client = incoming;
         }
         if (incoming) {
             registry.remove_prefix(prefix);
-            {
-                std::lock_guard lock(mutex_);
-                server.client = std::move(incoming);
-            }
-            add_mcp(registry, server.client);
+            add_mcp(registry, incoming);
         }
     }
 }

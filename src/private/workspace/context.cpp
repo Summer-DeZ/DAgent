@@ -84,7 +84,7 @@ GitStatus parse_git_status(const std::string& text) {
     if (head == "(detached)") {
         info.branch = oid.substr(0, std::min<std::size_t>(7, oid.size()));
     } else {
-        info.branch = head;
+        info.branch = base::to_valid_utf8(head);
     }
 
     std::vector<std::string> parts;
@@ -130,7 +130,7 @@ std::optional<GitInfo> collect_git(const fs::path& cwd, const ContextOptions& op
 
     std::istringstream commits(log.text);
     for (std::string line; std::getline(commits, line);) {
-        if (!line.empty()) info.recent_commits.push_back(line);
+        if (!line.empty()) info.recent_commits.push_back(base::to_valid_utf8(line));
     }
     return info;
 }
@@ -224,13 +224,13 @@ Environment collect_environment(const fs::path& cwd, const ContextOptions& opt, 
 
 nlohmann::json to_json(const Environment& env) {
     nlohmann::json json;
-    json["cwd"] = env.cwd.string();
+    json["cwd"] = base::to_valid_utf8(env.cwd.string());
     json["os"] = env.os;
     json["shell"] = env.shell;
     json["date"] = env.date;
     if (env.git) {
         json["git"] = {
-            {"root", env.git->root.string()},
+            {"root", base::to_valid_utf8(env.git->root.string())},
             {"branch", env.git->status.branch},
             {"status_summary", env.git->status.status_summary},
             {"recent_commits", env.git->recent_commits},
@@ -241,7 +241,7 @@ nlohmann::json to_json(const Environment& env) {
     json["instructions"] = nlohmann::json::array();
     for (const Instructions& instruction : env.instructions) {
         json["instructions"].push_back({
-            {"file", instruction.file.string()},
+            {"file", base::to_valid_utf8(instruction.file.string())},
             {"content", instruction.content},
             {"truncated", instruction.truncated},
         });

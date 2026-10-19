@@ -15,6 +15,7 @@
 #include <thread>
 
 #include "base/log.hpp"
+#include "base/text.hpp"
 #include "lib/nlohmann/json.hpp"
 
 namespace dagent::exec {
@@ -184,10 +185,53 @@ Result run_srt(const SrtRequest& request, const Options& options,
                      {"max_network_requests", request.max_network_requests},
                      {"kill_grace_ms", options.kill_grace.count()}};
         const std::string init_line = init.dump() + "\n";
-        if (::write(control[0], init_line.data(), init_line.size()) < 0)
-            throw ExecError{ExecError::Kind::sandbox, system_error("control init write")};
+
+        Command cmd;
+        cmd.inherit_fds = {control[1]};
+        cmd.argv = {request.runtime.node.string(), request.runtime.bridge.string(), "--mode=run",
+                    "--srt=" + request.runtime.entry.string(), "--bwrap=" + request.runtime.bwrap.string(),
+                    "--socat=" + request.runtime.socat.string(), "--rg=" + request.runtime.rg.string(),
+                    "--shell=" + request.runtime.shell.string(),
+                    "--control-fd=" + std::to_string(control[1])};
+        cmd.cwd = control_dir;
+        cmd.timeout = request.timeout;
+        cmd.inherit_env = false;
+        cmd.env_set = request.environment;
+        cmd.env_set.insert(cmd.env_set.end(),
+                           {{"HOME", private_home.string()},
+                            {"XDG_CONFIG_HOME", (private_home / "config").string()},
+                            {"XDG_CACHE_HOME", (private_home / "cache").string()},
+                            // 托管环境把包缓存指向 Home，沙箱内不可见也不可写；与 XDG 缓存一样落到私有 HOME。
+                            {"UV_CACHE_DIR", (private_home / "cache" / "uv").string()},
+                            {"NPM_CONFIG_CACHE", (private_home / "cache" / "npm").string()},
+                            {"XDG_RUNTIME_DIR", (private_home / "run").string()},
+                            {"TMPDIR", private_home.string()},
+                            {"TMP", private_home.string()},
+                            {"TEMP", private_home.string()}});
+        cmd.env_unset = {"BASH_ENV", "ENV", "BASHOPTS", "SHELLOPTS", "CDPATH", "GLOBIGNORE",
+                         "PROMPT_COMMAND", "LD_PRELOAD", "LD_LIBRARY_PATH", "PYTHONPATH", "PERL5LIB",
+                         "RUBYOPT", "NODE_OPTIONS", "NODE_PATH", "NODE_EXTRA_CA_CERTS",
+                         "http_proxy", "https_proxy", "all_proxy", "ftp_proxy",
+                         "HTTP_PROXY", "HTTPS_PROXY", "ALL_PROXY", "FTP_PROXY"};
+
 
         std::jthread reader([&](std::stop_token reader_stop) {
+            std::stop_callback cancel_control(stop, [&] { ::shutdown(channel, SHUT_RDWR); });
+            // init 可超过 socket 缓冲：在此发送，让主线程立即启动 bridge 和进程超时监控。
+            for (std::size_t offset = 0; offset < init_line.size();) {
+                const ssize_t written = ::send(channel, init_line.data() + offset,
+                                               init_line.size() - offset, MSG_NOSIGNAL);
+                if (written < 0 && errno == EINTR) continue;
+                if (written <= 0) {
+                    const std::string error = system_error("control init write");
+                    const std::lock_guard lock(state.mutex);
+                    if (!gates_stop.stop_requested() && state.bridge_error.empty())
+                        state.bridge_error = error;
+                    state.started_cv.notify_all();
+                    return;
+                }
+                offset += static_cast<std::size_t>(written);
+            }
             std::string buffer;
             char chunk[4096];
             while (!reader_stop.stop_requested()) {
@@ -266,7 +310,7 @@ Result run_srt(const SrtRequest& request, const Options& options,
             std::unique_lock lock(state.mutex);
             state.started_cv.wait_for(lock, watchdog_stop, request.startup_timeout,
                                       [&] { return state.started || state.exited || !state.bridge_error.empty(); });
-            if (state.started || state.exited) return;
+            if (watchdog_stop.stop_requested() || state.started || state.exited) return;
             if (state.bridge_error.empty())
                 state.bridge_error = std::format("sandbox bridge did not become ready within {} ms",
                                                  request.startup_timeout.count());
@@ -274,33 +318,6 @@ Result run_srt(const SrtRequest& request, const Options& options,
             ::shutdown(channel, SHUT_RDWR);
         });
 
-        Command cmd;
-        cmd.inherit_fds = {control[1]};
-        cmd.argv = {request.runtime.node.string(), request.runtime.bridge.string(), "--mode=run",
-                    "--srt=" + request.runtime.entry.string(), "--bwrap=" + request.runtime.bwrap.string(),
-                    "--socat=" + request.runtime.socat.string(), "--rg=" + request.runtime.rg.string(),
-                    "--shell=" + request.runtime.shell.string(),
-                    "--control-fd=" + std::to_string(control[1])};
-        cmd.cwd = control_dir;
-        cmd.timeout = request.timeout;
-        cmd.inherit_env = false;
-        cmd.env_set = request.environment;
-        cmd.env_set.insert(cmd.env_set.end(),
-                           {{"HOME", private_home.string()},
-                            {"XDG_CONFIG_HOME", (private_home / "config").string()},
-                            {"XDG_CACHE_HOME", (private_home / "cache").string()},
-                            // 托管环境把包缓存指向 Home，沙箱内不可见也不可写；与 XDG 缓存一样落到私有 HOME。
-                            {"UV_CACHE_DIR", (private_home / "cache" / "uv").string()},
-                            {"NPM_CONFIG_CACHE", (private_home / "cache" / "npm").string()},
-                            {"XDG_RUNTIME_DIR", (private_home / "run").string()},
-                            {"TMPDIR", private_home.string()},
-                            {"TMP", private_home.string()},
-                            {"TEMP", private_home.string()}});
-        cmd.env_unset = {"BASH_ENV", "ENV", "BASHOPTS", "SHELLOPTS", "CDPATH", "GLOBIGNORE",
-                         "PROMPT_COMMAND", "LD_PRELOAD", "LD_LIBRARY_PATH", "PYTHONPATH", "PERL5LIB",
-                         "RUBYOPT", "NODE_OPTIONS", "NODE_PATH", "NODE_EXTRA_CA_CERTS",
-                         "http_proxy", "https_proxy", "all_proxy", "ftp_proxy",
-                         "HTTP_PROXY", "HTTPS_PROXY", "ALL_PROXY", "FTP_PROXY"};
 
         Result result;
         try {
@@ -310,6 +327,8 @@ Result run_srt(const SrtRequest& request, const Options& options,
             reader.request_stop();
             ::shutdown(channel, SHUT_RDWR);
             reader.join();
+            watchdog.request_stop();
+            watchdog.join();
             gates.clear();
             cleanup_fds();
             throw;
@@ -318,6 +337,8 @@ Result run_srt(const SrtRequest& request, const Options& options,
         ::close(control[1]);
         control[1] = -1;
         reader.join(); // Drain the structured exit frame before releasing the control socket.
+        watchdog.request_stop();
+        watchdog.join();
         gates.clear();
         cleanup_fds();
 
@@ -330,9 +351,10 @@ Result run_srt(const SrtRequest& request, const Options& options,
             if (state.cancelled)
                 throw ExecError{ExecError::Kind::cancelled, "command cancelled by a runtime permission decision"};
         } else if (!result.timed_out && result.exit_code && *result.exit_code != 0) {
-            const std::string detail = result.err.empty() ? result.out : result.err;
+            std::string detail = base::to_valid_utf8(result.err.empty() ? result.out : result.err);
+            detail.resize(base::utf8_floor(detail, 500));
             throw ExecError{ExecError::Kind::sandbox,
-                            "sandbox bridge exited without a result: " + detail.substr(0, 500)};
+                            "sandbox bridge exited without a result: " + detail};
         }
         return result;
     } catch (...) {

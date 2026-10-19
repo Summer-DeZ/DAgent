@@ -190,6 +190,7 @@ run： --output <text|json|jsonl>
 - `run` 可从 stdin 追加提示词；交互模式要求 stdin 是终端。
 - `--continue` 选择当前 cwd 最近的会话，`--resume` 只接受当前 cwd 内的完整 ID 或唯一前缀。
 - 退出码：0 成功，1 运行失败，2 参数/配置错误，130 中断。
+- `run` 的 text/json 在最终写入并 flush 后检查 stdout；写入或刷新失败返回 1，即使模型已正常完成。
 
 - `sessions` 与 `--list-models` 也经独占后端查询（查询模式不创建会话、不启动 MCP、不收集 git 环境）；只有 `--help` / `--version`
   和参数错误不启动后端。

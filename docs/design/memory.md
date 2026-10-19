@@ -18,8 +18,9 @@ home/memory/
 ```
 
 `HomePaths::memory` 给出记忆根，`project_memory(project_root)` 给出项目目录。项目根与工作区指令使用同一来源：
-git 根，非仓库退回 cwd。project-key 将规范化绝对路径中的 `/` 替换为 `-`，例如 `-home-jyt-DAgent`。
-项目移动到另一个路径会使用另一个目录；不维护路径别名或迁移表。目录在第一次保存时创建。
+git 根，非仓库退回 cwd。project-key 为规范化项目根的目录名，加 `-` 和完整规范化绝对路径的 SHA-256 前 8 位小写十六进制字符，
+例如 `DAgent-3f9a1c2e`。项目移动到另一个路径会使用另一个目录；旧格式目录不再使用，不做迁移。
+目录在第一次保存时创建。
 dev Home 的 `/home/memory/` 已被 git 忽略，安装也不打包本机记忆。
 
 `config/config.json` 的独立配置段：
@@ -62,12 +63,17 @@ updated: 2026-10-18
 `max_entry_bytes` 限制含 frontmatter 的整个文件，而不只限制正文。
 
 `tools::MemoryStore` 位于 `src/public/tools/memory.hpp` 与 `src/private/tools/memory.cpp`，tools 私有链接 yaml-cpp。
-读取复用 workspace 的 UTF-8 文本读取，frontmatter 以 yaml-cpp 解析；扫描仅处理当前两个目录的 `.md` 文件，
-非法 frontmatter、文件名不符、非法类型或日期、超限和非法 UTF-8 条目跳过并记 warning。
+读取复用 `workspace::FileReference::read` 的普通文件校验、固定文件 FD 与 UTF-8 文本读取，frontmatter 以 yaml-cpp 解析；
+扫描经固定目录 FD 遍历当前两个目录，仅读取 `.md` 普通文件。符号链接、FIFO 等非普通文件，
+以及非法 frontmatter、文件名不符、非法类型或日期、超限和非法 UTF-8 条目跳过并记 warning。
 不存在的目录视为空目录，不因扫描创建目录。
 
-保存由程序生成 frontmatter，再调用 `workspace::write_text` 执行同目录临时文件、fsync 和 rename 的原子替换。
-同 scope 同 name 覆盖更新；删除移除对应文件。工具参数没有路径，存储层校验 scope 和 name，拒绝记忆路径中的符号链接跳转。
+保存由程序生成 frontmatter，再调用 `workspace::FileReference::write` 经固定目录 FD 创建父目录，执行同目录临时文件、fsync 和 rename 的原子替换。
+同 scope 同 name 覆盖更新；删除经 `FileReference::erase` 使用目录 FD 与 `unlinkat` 移除对应普通文件。
+工具参数没有路径，存储层校验 scope 和 name；保存、查看、删除与列表均不跟随记忆根及其下任意路径分量的符号链接，包括悬空链接。
+查看拒绝 FIFO 等非普通文件，不以阻塞方式打开它们。
+查看、保存、删除遇到已有符号链接或非普通文件时，明确提示记忆条目必须是普通文件、这些类型不被允许；
+后续实际操作仍由 `FileReference` 执行无符号链接解析和固定对象校验。
 不维护独立索引文件，因此手工增删改条目会反映到下一次扫描。
 
 ## 3. 索引与 system

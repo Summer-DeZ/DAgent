@@ -139,12 +139,13 @@ RunOutput::Summary RunOutput::finish(std::int64_t duration_ms) {
             {"duration_ms", duration_ms},
         };
         out_ << object.dump() << '\n';
-        out_.flush();
     } else if (!summary.result.empty()) {
         out_ << summary.result;
         if (summary.result.back() != '\n') out_ << '\n';
-        out_.flush();
     }
+    out_.flush();
+    if (!out_) output_failed_ = true;
+    summary.output_failed = output_failed_;
     return summary;
 }
 

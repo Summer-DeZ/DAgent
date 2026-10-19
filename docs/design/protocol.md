@@ -99,6 +99,9 @@ sequenceDiagram
 | `operation.finished` | 手动压缩结束 |
 | `interaction.requested` / `interaction.closed` | 审批/问答的激活（data 为 InteractionRequest：id、approval/question、载荷）与关闭 |
 
+`session.compact` 在任务可执行前登记 operation_id，并通过接受屏障保证成功响应先于该任务的事件入发送队列。
+`operation.finished.data.operation_id` 与接受响应一致，即使空历史压缩立即完成，前端也会先进入压缩状态再退出。
+
 Publisher 在捕获快照前后比较已发布 seq，并在同一短锁边界分配序号与入队；事件有 seq，快照带 state_seq。
 前端拒绝旧 generation 或低于已应用状态水位的快照；已被快照覆盖的状态事件不再覆盖快照。
 快照不包含正文，正文/工具展示仍按顺序投影到所属会话文档，与当前选中的页面无关。

@@ -552,7 +552,8 @@ permission_revoked（L11）；todo 在同一提交内更新 WorkPlan 并写 tool
 审阅 worker 不写子记录。两者只发审计 Notice，不修改正常消息 ordinal 或工具配对。
 每轮结束、手动压缩结束和会话销毁时同步，不对每条消息 fsync。
 
-第一次写入或同步失败后提交器进入 broken：停用后续写入、只发一次 error Notice，当前回合与内存状态继续（B23）。
+第一次序列化、写入或同步失败后提交器进入 broken：停用后续写入、只发一次 error Notice，当前回合与内存状态继续（B23）。
+序列化失败也不得跳过当前记录后继续写入，避免持久化历史的 ordinal 出现缺口。
 UI 显示完成不代表记录可靠保存；broken 状态进入会话快照。
 
 ### 恢复与崩溃闭合

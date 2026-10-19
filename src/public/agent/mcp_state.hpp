@@ -15,6 +15,7 @@ struct McpServerState {
     std::string error;
     /// 隔离边界："srt"（本机受限进程）或 "remote"（远端服务）；远程不受本机沙盒保护。
     std::string boundary;
+    std::string protocol_version; ///< 当前连接协商的版本；未连接时为空
 };
 
 } // namespace dagent::agent

@@ -1,4 +1,5 @@
 #include "llm/provider_detail.hpp"
+#include "base/text.hpp"
 
 #include <algorithm>
 #include <cctype>
@@ -37,13 +38,13 @@ int int_field(const json& object, const char* key) {
 }
 
 std::string snippet(std::string_view text, std::size_t limit) {
-    std::string out;
-    out.reserve(std::min(text.size(), limit));
-    for (const char c : text) {
-        if (out.size() >= limit) break;
-        out += (c == '\n' || c == '\r') ? ' ' : c;
+    std::string out = base::to_valid_utf8(text);
+    const bool truncated = out.size() > limit;
+    out.resize(base::utf8_floor(out, limit));
+    for (char& c : out) {
+        if (c == '\n' || c == '\r') c = ' ';
     }
-    if (text.size() > limit) out += "…";
+    if (truncated) out += "…";
     return out;
 }
 

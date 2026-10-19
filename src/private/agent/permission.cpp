@@ -7,6 +7,8 @@
 #include <optional>
 #include <string_view>
 
+#include "base/text.hpp"
+
 namespace dagent::agent {
 namespace {
 
@@ -720,7 +722,7 @@ std::vector<Policy::SessionGrant> Policy::session_grants() const {
     for (const auto& tool : external_rules_) grants.push_back({"external-" + tool, "External tool " + tool});
     for (const auto& rule : exec_rules_) {
         std::string command = rule.command;
-        if (command.size() > 80) command = command.substr(0, 77) + "...";
+        if (command.size() > 80) command = command.substr(0, base::utf8_floor(command, 77)) + "...";
         grants.push_back({rule.id, "Command: " + command});
     }
     return grants;

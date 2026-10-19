@@ -63,11 +63,14 @@ edit 和覆盖已有文件的 write 通过 `preview_request()` 声明读取需�
 完整的 shell 分析树（`exec::Analysis`）、MCP Client 与 workspace 解析结果留在具体 PreparedTool 内部；核心只看到上面的中立摘要。
 dangerous / known_readonly 仍由 exec 的原分析函数计算，核心不重写白名单。
 
+- **准备失败返回工具错误**：`ToolSession::prepare` 统一捕获 `tool->prepare` 抛出的标准及非标准异常，
+  包括路径解析和 PreparedTool 构造失败，通过 `detail::error_result` 修复 UTF-8 并返回 `is_error` 结果，
+  交给模型处理，不中断整个回合。Dispatcher 经 ActionCatalog 重新准备普通工具时也经过此边界。
 - **`execute` 不抛异常**：核心对每个调用只需要处理一种返回值。取消返回 `interrupted = true`，`text` 里是已有的
   部分输出；环境问题（rg 没装、沙箱准备失败、MCP 断连）模型修不了，但也应该知道，同样作为 `is_error` 的
   结果返回，同时记 warn 日志。`PreparedTool::execute` 统一包了一层 catch，各工具实现的是 `do_execute`。
 - **所有给模型的文本都是合法 UTF-8**：nlohmann 在 `dump()` 遇到非法 UTF-8 会抛 `type_error.316`，整条消息
-  就发不出去。rg 输出、bash 输出、MCP 文本都经过 `base::to_valid_utf8`。
+  就发不出去。rg 输出、bash 输出、MCP 文本和公共工具错误出口都经过 `base::to_valid_utf8`。
 - **Spec 的顺序稳定**：DeepSeek 等网关按前缀缓存 prompt，工具列表顺序一变缓存就失效。`Registry::add` 遇到
   同名工具时原位替换；`remove_prefix("mcp__<server>__")` 用于移除断开或失败的 MCP server 工具。
 - 工具说明直接写在各 `.cpp` 的原始字符串里，和 Schema 放在一起。
@@ -194,7 +197,7 @@ dangerous / known_readonly 仍由 exec 的原分析函数计算，核心不重�
 - rg 的 `--glob` 是 **gitignore 语义**，不是 shell glob：`*.cpp` 匹配任意深度。说明里写清楚了，并给出
   `src/**/*.hpp` 这样的例子。被 `.gitignore` 忽略的文件和隐藏文件不列出。
 - `path` 不存在或不是目录时在 prepare 里报错（文件请用 read）。
-- display：`GlobView`。
+- display：`GlobView`；权限过滤保留原始路径字节，过滤后的模型正文和 `files` 展示副本统一修复为合法 UTF-8。
 
 ### web_search / web_fetch
 

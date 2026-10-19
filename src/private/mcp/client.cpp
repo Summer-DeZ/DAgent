@@ -125,9 +125,61 @@ struct Response {
     long status = 0;          ///< 仅 HTTP
 };
 
+enum class DialectKind { stateless, session };
+
+struct Revision {
+    std::string_view version;
+    DialectKind dialect;
+    std::string_view handshake_method;
+    bool request_meta;
+    bool http_session;
+    bool version_header;
+    bool routing_headers;
+};
+
+// 同一 dialect 的条目按偏好排列；握手提议首选版本，服务端可协商到同组其他版本。
+constexpr Revision kRevisions[] = {
+    {"2026-07-28", DialectKind::stateless, "server/discover", true, false, true, true},
+    {"2025-11-25", DialectKind::session, "initialize", false, true, true, false},
+    {"2025-06-18", DialectKind::session, "initialize", false, true, true, false},
+    {"2025-03-26", DialectKind::session, "initialize", false, true, false, false},
+};
+
 } // namespace
 
 struct Client::Impl {
+    struct Dialect {
+        explicit Dialect(const Revision& revision) : revision_(&revision) {}
+        virtual ~Dialect() = default;
+        const Revision& revision() const { return *revision_; }
+        // false 只表示服务端明确不支持该握手；其他失败直接抛出。
+        virtual bool handshake(Impl& client, std::stop_token stop) = 0;
+        json decorate_params(json params) const;
+        virtual net::Headers headers(const Impl& client, std::string_view method, const json& params) const;
+        virtual void capture_session(std::string_view, const net::HttpResponse&) {}
+        virtual bool session_expired(const Response&) const { return false; }
+        virtual void close(Impl&) const {}
+
+    protected:
+        const Revision* revision_;
+    };
+
+    struct StatelessDialect final : Dialect {
+        using Dialect::Dialect;
+        bool handshake(Impl& client, std::stop_token stop) override;
+    };
+
+    struct SessionDialect final : Dialect {
+        using Dialect::Dialect;
+        bool handshake(Impl& client, std::stop_token stop) override;
+        net::Headers headers(const Impl& client, std::string_view method, const json& params) const override;
+        void capture_session(std::string_view method, const net::HttpResponse& response) override;
+        bool session_expired(const Response& response) const override;
+        void close(Impl& client) const override;
+
+        std::string session_id_; // 仅 HTTP，握手响应头提供
+    };
+
     Impl(ServerConfig config, Options opt) : config_(std::move(config)), opt_(std::move(opt)) {}
     ~Impl() { shutdown(); }
 
@@ -136,30 +188,33 @@ struct Client::Impl {
     void start_sandboxed();
     void on_bridge_line(std::string_view line);
     void shutdown();
-    void handshake(std::stop_token stop);
+    void negotiate(std::stop_token stop);
+    void close_http_session(const net::Headers& headers);
     void fetch_tools(milliseconds timeout, std::stop_token stop);
 
     // ---- 消息收发
-    Response exchange(std::string_view method, json params, milliseconds timeout, std::stop_token stop);
+    Response exchange(std::string_view method, json params, milliseconds timeout, std::stop_token stop,
+                      bool notification = false);
     Response stdio_exchange(std::int64_t id, std::string_view method, json params, milliseconds timeout,
                             std::stop_token stop);
-    Response http_exchange(std::int64_t id, std::string_view method, json params, milliseconds timeout,
+    Response http_exchange(std::optional<std::int64_t> id, std::string_view method, json params, milliseconds timeout,
                            std::stop_token stop);
-    json request(std::string_view method, json params, milliseconds timeout, std::stop_token stop);
+    json request(std::string_view method, json params, milliseconds timeout, std::stop_token stop,
+                 bool notification = false);
     void send_cancel(std::int64_t id, std::string_view reason);
     void stdio_send(std::string_view line);
     void on_line(std::string_view line);
     void on_exit(std::optional<int> code, std::optional<int> signal);
 
-    json build_params(json params) const;
-    net::Headers build_headers(std::string_view method, const json& params) const;
-
     ServerConfig config_;
     Options opt_;
     bool http_ = false;
+    std::unique_ptr<Dialect> dialect_;
+    std::string protocol_version_; ///< 握手完成后不再改变
 
     std::unique_ptr<exec::Child> child_;
     std::filesystem::path state_dir_; ///< 受限 stdio 的每次连接私有目录
+    std::filesystem::path private_home_; ///< SRT Unix sockets 使用的短路径私有 HOME
 
     std::mutex bridge_mu_;
     std::condition_variable_any bridge_cv_;
@@ -205,7 +260,12 @@ void Client::Impl::start_sandboxed() {
     if (::mkdtemp(pattern.data()) == nullptr)
         throw McpError{McpError::Kind::spawn, config_.name + ": cannot create the sandbox state directory"};
     state_dir_ = pattern;
-    const std::filesystem::path private_home = state_dir_ / "home";
+    // SRT 在 TMPDIR 下创建 Unix sockets；固定短路径避免 Home 或 server 名过长。
+    pattern = "/tmp/dagent-home-XXXXXX";
+    if (::mkdtemp(pattern.data()) == nullptr)
+        throw McpError{McpError::Kind::spawn, config_.name + ": cannot create the sandbox private home"};
+    private_home_ = pattern;
+    const auto& private_home = private_home_;
     std::filesystem::create_directories(private_home / "config", error);
     std::filesystem::create_directories(private_home / "cache", error);
     std::filesystem::create_directories(private_home / "run", error);
@@ -261,8 +321,8 @@ void Client::Impl::start_sandboxed() {
     child_->on_line([this](std::string_view line) { on_line(line); });
     child_->on_exit([this](std::optional<int> code, std::optional<int> signal) { on_exit(code, signal); });
 
-    std::unique_lock<std::mutex> lock(bridge_mu_);
     child_->on_stderr([this](std::string_view line) { on_bridge_line(line); });
+    std::unique_lock<std::mutex> lock(bridge_mu_);
     const bool settled = bridge_cv_.wait_for(lock, sandbox.startup_timeout,
                                              [this] { return bridge_ready_ || bridge_failed_; });
     if (!settled) throw McpError{McpError::Kind::handshake, config_.name + ": sandbox bridge did not become ready"};
@@ -301,10 +361,12 @@ void Client::Impl::on_bridge_line(std::string_view line) {
 }
 
 void Client::Impl::shutdown() {
+    std::unique_ptr<exec::Child> child;
     {
         std::lock_guard lock(mu_);
         if (closing_) return;
         closing_ = true;
+        child = std::move(child_);
         disconnected_ = true;
         for (auto& [id, pending] : pending_) {
             if (pending->done) continue;
@@ -314,21 +376,43 @@ void Client::Impl::shutdown() {
         }
     }
     cv_.notify_all();
-    if (child_) child_->terminate(); // 等读取线程退出，之后不会再回调
-    child_.reset();
+    if (dialect_) dialect_->close(*this);
+    if (child) child->terminate(); // 锁外等读取线程退出，之后不会再回调
+    child.reset();
     if (!state_dir_.empty()) {
         std::error_code error;
         std::filesystem::remove_all(state_dir_, error);
         state_dir_.clear();
+    }
+    if (!private_home_.empty()) {
+        std::error_code error;
+        std::filesystem::remove_all(private_home_, error);
+        private_home_.clear();
+    }
+}
+
+void Client::Impl::close_http_session(const net::Headers& headers) {
+    try {
+        net::HttpOptions options = opt_.http;
+        options.timeout = std::chrono::seconds{5}; // 关闭会话不能无限等待远端
+        net::HttpClient client(options);
+        const auto response = client.send({.method = "DELETE", .url = config_.url,
+                                           .headers = headers, .body = {}});
+        if ((response.status < 200 || response.status >= 300) &&
+            response.status != 404 && response.status != 405)
+            log_mcp()->warn("{}: 关闭 HTTP 会话失败 (HTTP {})", config_.name, response.status);
+    } catch (const std::exception& error) {
+        log_mcp()->warn("{}: 关闭 HTTP 会话失败：{}", config_.name, error.what());
     }
 }
 
 // ---- stdio 读写 ----
 
 void Client::Impl::stdio_send(std::string_view line) {
-    if (!child_) return;
     std::string data(line);
     data.push_back('\n');
+    const std::lock_guard lock(mu_);
+    if (!child_) return;
     child_->write(data);
 }
 
@@ -382,26 +466,30 @@ void Client::Impl::on_exit(std::optional<int> code, std::optional<int> signal) {
     log_mcp()->warn("{}", disconnect_reason_);
 }
 
-// ---- 请求 ----
+// ---- Dialect 的请求装饰与会话 ----
 
-json Client::Impl::build_params(json params) const {
+json Client::Impl::Dialect::decorate_params(json params) const {
     if (!params.is_object()) params = json::object();
-    params["_meta"] = detail::modern_meta();
+    if (revision().request_meta) params["_meta"] = detail::modern_meta(revision().version);
     return params;
 }
 
-net::Headers Client::Impl::build_headers(std::string_view method, const json& params) const {
-    net::Headers headers = config_.headers;
+net::Headers Client::Impl::Dialect::headers(const Impl& client, std::string_view method, const json& params) const {
+    net::Headers headers = client.config_.headers;
     set_header(headers, "Accept", "application/json, text/event-stream");
     set_header(headers, "Content-Type", "application/json");
-    set_header(headers, "MCP-Protocol-Version", std::string(detail::kModernVersion));
+    if (revision().version_header)
+        set_header(headers, "MCP-Protocol-Version", std::string(revision().version));
+    else
+        std::erase_if(headers, [](const auto& header) { return iequals(header.first, "MCP-Protocol-Version"); });
+    if (!revision().routing_headers) return headers;
     set_header(headers, "Mcp-Method", std::string(method));
     if (method == "tools/call" && params.is_object()) {
         const std::string name = string_or(params, "name");
         set_header(headers, "Mcp-Name", detail::encode_header_value(name));
-        std::lock_guard lock(data_mu_);
-        const auto it = header_params_.find(name);
-        if (it != header_params_.end()) {
+        std::lock_guard lock(client.data_mu_);
+        const auto it = client.header_params_.find(name);
+        if (it != client.header_params_.end()) {
             const json arguments = params.contains("arguments") ? params["arguments"] : json::object();
             for (auto& [header, value] : detail::header_param_values(it->second, arguments))
                 set_header(headers, header, std::move(value));
@@ -410,22 +498,56 @@ net::Headers Client::Impl::build_headers(std::string_view method, const json& pa
     return headers;
 }
 
+net::Headers Client::Impl::SessionDialect::headers(const Impl& client, std::string_view method,
+                                                  const json& params) const {
+    auto headers = Dialect::headers(client, method, params);
+    if (revision().http_session && !session_id_.empty()) set_header(headers, "Mcp-Session-Id", session_id_);
+    return headers;
+}
+
+void Client::Impl::SessionDialect::capture_session(std::string_view method, const net::HttpResponse& response) {
+    if (revision().http_session && method == revision().handshake_method &&
+        response.status >= 200 && response.status < 300) {
+        if (const auto session = response.header("mcp-session-id")) session_id_ = *session;
+    }
+}
+
+bool Client::Impl::SessionDialect::session_expired(const Response& response) const {
+    return revision().http_session && response.status == 404 && !session_id_.empty();
+}
+
+void Client::Impl::SessionDialect::close(Impl& client) const {
+    if (client.http_ && revision().http_session && !session_id_.empty())
+        client.close_http_session(headers(client, {}, json::object()));
+}
+
+// ---- 共享传输与请求 ----
+
 Response Client::Impl::exchange(std::string_view method, json params, milliseconds timeout,
-                                std::stop_token stop) {
+                                std::stop_token stop, bool notification) {
     {
         // 被显式撤销后，旧 lease 不能再发请求。
         const std::lock_guard lock(mu_);
         if (closing_ || disconnected_)
             throw McpError{McpError::Kind::disconnected, config_.name + ": client is closed"};
     }
-    const std::int64_t id = next_id_.fetch_add(1);
+    const std::optional<std::int64_t> id = notification ? std::nullopt
+                                                       : std::optional{next_id_.fetch_add(1)};
     if (http_) return http_exchange(id, method, std::move(params), timeout, stop);
-    return stdio_exchange(id, method, std::move(params), timeout, stop);
+    if (notification) {
+        if (stop.stop_requested())
+            throw McpError{McpError::Kind::cancelled, config_.name + ": connection interrupted"};
+        stdio_send(detail::make_notification(method, std::move(params)).dump());
+        Response response;
+        response.ok = true;
+        return response;
+    }
+    return stdio_exchange(*id, method, std::move(params), timeout, stop);
 }
 
 Response Client::Impl::stdio_exchange(std::int64_t id, std::string_view method, json params,
                                       milliseconds timeout, std::stop_token stop) {
-    std::string line = detail::make_request(id, method, build_params(std::move(params))).dump();
+    std::string line = detail::make_request(id, method, dialect_->decorate_params(std::move(params))).dump();
     auto pending = std::make_shared<Pending>();
     {
         std::lock_guard lock(mu_);
@@ -467,15 +589,16 @@ Response Client::Impl::stdio_exchange(std::int64_t id, std::string_view method, 
     return out;
 }
 
-Response Client::Impl::http_exchange(std::int64_t id, std::string_view method, json params,
+Response Client::Impl::http_exchange(std::optional<std::int64_t> id, std::string_view method, json params,
                                      milliseconds timeout, std::stop_token stop) {
-    const json message = detail::make_request(id, method, build_params(std::move(params)));
+    const json message = id ? detail::make_request(*id, method, dialect_->decorate_params(std::move(params)))
+                            : detail::make_notification(method, std::move(params));
     net::HttpOptions options = opt_.http;
     options.timeout = std::chrono::seconds{0}; // 总时长交给下面自己的计时器
     // 每次调用独占一个 HttpClient：并发调用互不排队，取消和超时立刻生效（代价是连接不复用）。
     net::HttpClient client(options);
     net::HttpRequest req{.method = "POST", .url = config_.url, .headers = {}, .body = message.dump()};
-    req.headers = build_headers(method, message["params"]);
+    req.headers = dialect_->headers(*this, method, message["params"]);
 
     std::stop_source cancel;
     std::stop_callback relay(stop, [&cancel] { cancel.request_stop(); });
@@ -502,8 +625,8 @@ Response Client::Impl::http_exchange(std::int64_t id, std::string_view method, j
 
     const auto take = [&](const json& msg) {
         const auto msg_id = msg.find("id");
-        if (!msg.contains("method") && msg_id != msg.end() && msg_id->is_number_integer() &&
-            msg_id->get<std::int64_t>() == id) {
+        if (id && !msg.contains("method") && msg_id != msg.end() && msg_id->is_number_integer() &&
+            msg_id->get<std::int64_t>() == *id) {
             response_message = msg;
             got = true;
             cancel.request_stop(); // 拿到响应就不用等 server 关闭流了
@@ -531,7 +654,11 @@ Response Client::Impl::http_exchange(std::int64_t id, std::string_view method, j
                     if (!msg.is_discarded() && msg.is_object()) take(msg);
                 });
             },
-            cancel.get_token());
+            cancel.get_token(),
+            [&](const net::HttpResponse& headers) {
+                out.status = headers.status;
+                dialect_->capture_session(method, headers);
+            });
         out.status = resp.status;
         if (resp.status < 200 || resp.status >= 300) {
             const json msg = json::parse(resp.body, nullptr, false);
@@ -541,6 +668,10 @@ Response Client::Impl::http_exchange(std::int64_t id, std::string_view method, j
                     out.error = msg["error"];
                 }
             }
+            return out;
+        }
+        if (!id) {
+            out.ok = true; // 通知没有 JSON-RPC 响应，通常返回 HTTP 202
             return out;
         }
         if (!got) {
@@ -574,11 +705,11 @@ Response Client::Impl::http_exchange(std::int64_t id, std::string_view method, j
             return out;
         }
         if (stop.stop_requested()) {
-            send_cancel(id, "cancelled by caller");
+            if (id) send_cancel(*id, "cancelled by caller");
             throw McpError{McpError::Kind::cancelled, std::format("{}: {} interrupted", config_.name, method)};
         }
         if (deadline_hit) {
-            send_cancel(id, "timeout");
+            if (id) send_cancel(*id, "timeout");
             throw McpError{McpError::Kind::timeout,
                            std::format("{}: {} timed out ({}ms)", config_.name, method, timeout.count())};
         }
@@ -604,8 +735,15 @@ Response Client::Impl::http_exchange(std::int64_t id, std::string_view method, j
     }
 }
 
-json Client::Impl::request(std::string_view method, json params, milliseconds timeout, std::stop_token stop) {
-    Response response = exchange(method, std::move(params), timeout, stop);
+json Client::Impl::request(std::string_view method, json params, milliseconds timeout, std::stop_token stop,
+                           bool notification) {
+    Response response = exchange(method, std::move(params), timeout, stop, notification);
+    if (dialect_->session_expired(response)) {
+        const std::lock_guard lock(mu_);
+        disconnected_ = true;
+        disconnect_reason_ = config_.name + ": HTTP session expired (HTTP 404)";
+        throw McpError{McpError::Kind::disconnected, disconnect_reason_};
+    }
     // 鉴权和 server 侧错误按状态码分类，哪怕 body 里带着 JSON-RPC error。
     if (response.status == 401 || response.status == 403 || response.status >= 500)
         throw_http_status(config_.name, method, response.status, response.error);
@@ -630,25 +768,75 @@ void Client::Impl::send_cancel(std::int64_t id, std::string_view reason) {
     }
 }
 
-// ---- 协议发现 ----
+// ---- Dialect 握手与协商 ----
 
-void Client::Impl::handshake(std::stop_token stop) {
-    const Response response = exchange("server/discover", json::object(),
-                                       http_ ? opt_.connect_timeout : opt_.probe_timeout, stop);
+bool Client::Impl::StatelessDialect::handshake(Impl& client, std::stop_token stop) {
+    const auto method = revision().handshake_method;
+    const Response response = client.exchange(method, json::object(),
+                                               client.http_ ? client.opt_.connect_timeout : client.opt_.probe_timeout,
+                                               stop);
     if (response.status == 401 || response.status == 403 || response.status >= 500)
-        throw_http_status(config_.name, "server/discover", response.status, response.error);
+        throw_http_status(client.config_.name, method, response.status, response.error);
+    if ((response.rpc_error && int_or(response.error, "code") == -32601) ||
+        (client.http_ && (response.status == 404 || response.status == 405)))
+        return false;
     if (response.rpc_error)
-        throw McpError{McpError::Kind::handshake, config_.name + ": " + rpc_text("server/discover", response.error)};
+        throw McpError{McpError::Kind::handshake, client.config_.name + ": " + rpc_text(method, response.error)};
     if (!response.ok) {
-        if (response.status >= 400) throw_http_status(config_.name, "server/discover", response.status);
-        throw McpError{McpError::Kind::handshake, config_.name + ": server/discover returned no result"};
+        if (response.status >= 400) throw_http_status(client.config_.name, method, response.status);
+        throw McpError{McpError::Kind::handshake,
+                       std::format("{}: {} returned no result", client.config_.name, method)};
     }
     const json supported = member_or(response.result, "supportedVersions", json::array());
-    if (!detail::supports_protocol(supported))
+    const auto selected = std::ranges::find_if(kRevisions, [&](const Revision& candidate) {
+        return candidate.dialect == revision().dialect && detail::supports_protocol(supported, candidate.version);
+    });
+    if (selected == std::end(kRevisions))
         throw McpError{McpError::Kind::handshake,
-                       std::format("{}: server must support MCP {}; advertised versions: {}", config_.name,
-                                   detail::kModernVersion, supported.dump())};
-    log_mcp()->info("{}: 已连接，协议 {}", config_.name, detail::kModernVersion);
+                       std::format("{}: server must support MCP {}; advertised versions: {}", client.config_.name,
+                                   revision().version, supported.dump())};
+    revision_ = selected;
+    return true;
+}
+
+bool Client::Impl::SessionDialect::handshake(Impl& client, std::stop_token stop) {
+    const auto timeout = client.http_ ? client.opt_.connect_timeout : client.opt_.probe_timeout;
+    json result;
+    try {
+        result = client.request(revision().handshake_method, {{"protocolVersion", revision().version},
+                                                             {"capabilities", json::object()},
+                                                             {"clientInfo", detail::client_info()}}, timeout, stop);
+    } catch (const McpError& error) {
+        if (error.kind() == McpError::Kind::rpc || error.kind() == McpError::Kind::protocol)
+            throw McpError{McpError::Kind::handshake, error.what()};
+        throw;
+    }
+    const std::string version = string_or(result, "protocolVersion");
+    const auto selected = std::ranges::find_if(kRevisions, [&](const Revision& candidate) {
+        return candidate.dialect == revision().dialect && candidate.version == version;
+    });
+    if (selected == std::end(kRevisions))
+        throw McpError{McpError::Kind::handshake,
+                       std::format("{}: {} returned unsupported MCP protocolVersion: {}", client.config_.name,
+                                   revision().handshake_method, member_or(result, "protocolVersion", nullptr).dump())};
+    revision_ = selected;
+    (void)client.request("notifications/initialized", json::object(), timeout, stop, true);
+    return true;
+}
+
+void Client::Impl::negotiate(std::stop_token stop) {
+    constexpr DialectKind preference[] = {DialectKind::stateless, DialectKind::session};
+    for (const auto kind : preference) {
+        const auto preferred = std::ranges::find(kRevisions, kind, &Revision::dialect);
+        switch (kind) {
+        case DialectKind::stateless: dialect_ = std::make_unique<StatelessDialect>(*preferred); break;
+        case DialectKind::session: dialect_ = std::make_unique<SessionDialect>(*preferred); break;
+        }
+        if (!dialect_->handshake(*this, stop)) continue;
+        protocol_version_ = dialect_->revision().version;
+        log_mcp()->info("{}: 已连接，协议 {}", config_.name, protocol_version_);
+        return;
+    }
 }
 
 void Client::Impl::fetch_tools(milliseconds timeout, std::stop_token stop) {
@@ -686,7 +874,7 @@ void Client::Impl::fetch_tools(milliseconds timeout, std::stop_token stop) {
             else
                 tool.input_schema = json::object();
             std::vector<detail::HeaderParam> params;
-            if (http_) {
+            if (http_ && dialect_->revision().routing_headers) {
                 std::string reason;
                 if (!detail::collect_header_params(tool.input_schema, params, reason)) {
                     log_mcp()->warn("{}: 剔除工具 {}：{}", config_.name, tool.name, reason);
@@ -733,7 +921,7 @@ std::unique_ptr<Client> Client::connect(const ServerConfig& config, const Option
         client->impl_->start();
         if (stop.stop_requested())
             throw McpError{McpError::Kind::cancelled, config.name + ": connection interrupted"};
-        client->impl_->handshake(stop);
+        client->impl_->negotiate(stop);
         client->impl_->fetch_tools(opt.connect_timeout, stop);
     } catch (...) {
         client.reset(); // 走 Impl::shutdown：结束子进程、唤醒等待者
@@ -745,6 +933,8 @@ std::unique_ptr<Client> Client::connect(const ServerConfig& config, const Option
 const std::vector<Tool>& Client::tools() const { return impl_->tools_; }
 
 Transport Client::transport() const { return impl_->http_ ? Transport::http : Transport::stdio; }
+
+const std::string& Client::protocol_version() const { return impl_->protocol_version_; }
 
 void Client::shutdown() { impl_->shutdown(); }
 

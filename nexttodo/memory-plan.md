@@ -20,7 +20,7 @@ home/memory/
 ```
 
 - 项目根与 `AGENTS.md` 收集使用同一来源：git 根，不是仓库时为 cwd。
-- `project-key` 为项目根的规范化绝对路径，把 `/` 替换为 `-`，例如 `-home-jyt-DAgent`。
+- `project-key` 为规范化项目根的目录名，加 `-` 和完整规范化绝对路径的 SHA-256 前 8 位小写十六进制字符，例如 `DAgent-3f9a1c2e`。
 - 项目目录在第一次写入时创建。
 - dev 构建的 Home 位于源码树内，`.gitignore` 增加 `/home/memory/`。
 

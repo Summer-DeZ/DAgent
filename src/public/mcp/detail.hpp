@@ -12,13 +12,11 @@
 
 namespace dagent::mcp::detail {
 
-/// @brief 当前实现的现代协议版本。
-inline constexpr std::string_view kModernVersion = "2026-07-28";
-/// @brief server 声明的版本数组是否包含当前协议。
-bool supports_protocol(const nlohmann::json& supported);
+/// @brief server 声明的版本数组是否包含指定协议。
+bool supports_protocol(const nlohmann::json& supported, std::string_view revision);
 
 /// @brief 组装现代协议每个请求都要带的 params._meta。
-nlohmann::json modern_meta();
+nlohmann::json modern_meta(std::string_view revision);
 
 nlohmann::json client_info();
 

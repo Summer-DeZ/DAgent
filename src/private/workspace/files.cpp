@@ -374,6 +374,17 @@ TextFile FileReference::read(const FileOptions& options) const {
     if (fd.value < 0) fail(WorkspaceError::Kind::io, "read", r.path, errno_text(errno));
     return read_fd(fd.value, r.path, options);
 }
+void FileReference::erase() {
+    validate();
+    const auto& r = *impl_;
+    if (r.target < 0 || !S_ISREG(r.target_stat.st_mode))
+        fail(WorkspaceError::Kind::io, "delete", r.path, "not a regular file");
+    Fd parent(constrained_open(r.anchor, r.relative.parent_path() / ".", O_PATH | O_DIRECTORY));
+    if (parent.value < 0)
+        fail(WorkspaceError::Kind::stale, "delete", r.path, "parent changed; prepare again");
+    if (::unlinkat(parent.value, r.relative.filename().c_str(), 0) != 0)
+        fail(WorkspaceError::Kind::io, "delete", r.path, errno_text(errno));
+}
 fs::path FileReference::directory_path() const {
     validate();
     if (kind() != FileKind::directory)

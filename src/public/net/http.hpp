@@ -82,9 +82,11 @@ public:
 
     /// @brief 发送请求并流式接收：状态码为 2xx 时每到一段数据就在调用线程上回调 on_data，
     /// 否则把错误体收进返回值的 body。on_data 抛出的异常会中止传输并原样重新抛出。
+    /// on_headers 在最终响应头收齐时调用，便于在提前关闭响应流前保存会话等元数据。
     HttpResponse stream(const HttpRequest& req,
                         const std::function<void(std::string_view)>& on_data,
-                        std::stop_token stop = {});
+                        std::stop_token stop = {},
+                        const std::function<void(const HttpResponse&)>& on_headers = {});
 
     const HttpOptions& options() const noexcept { return opt_; }
 

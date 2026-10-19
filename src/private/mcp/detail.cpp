@@ -137,15 +137,15 @@ const json* dig(const json& root, const std::vector<std::string>& path) {
 
 } // namespace
 
-bool supports_protocol(const json& supported) {
+bool supports_protocol(const json& supported, std::string_view revision) {
     if (!supported.is_array()) return false;
-    return std::ranges::any_of(supported, [](const json& version) {
-        return version.is_string() && version.get<std::string>() == kModernVersion;
+    return std::ranges::any_of(supported, [revision](const json& version) {
+        return version.is_string() && version.get<std::string>() == revision;
     });
 }
 
-json modern_meta() {
-    return {{"io.modelcontextprotocol/protocolVersion", std::string(kModernVersion)},
+json modern_meta(std::string_view revision) {
+    return {{"io.modelcontextprotocol/protocolVersion", std::string(revision)},
             {"io.modelcontextprotocol/clientInfo", client_info()},
             {"io.modelcontextprotocol/clientCapabilities", json::object()}};
 }

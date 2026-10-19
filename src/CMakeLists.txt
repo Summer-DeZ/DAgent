@@ -287,6 +287,8 @@ target_link_libraries(dagent_runtime PUBLIC dagent_agent)
 
 # 后端配置与具体适配对象装配：SessionFactory/ConfigurationGateway/QueryGateway 的实现。
 add_library(dagent_app_config STATIC
+    private/app/hash.cpp
+    private/app/home.cpp
     private/app/skills.cpp
     private/app/toolchain.cpp
     private/app/searxng.cpp

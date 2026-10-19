@@ -35,11 +35,6 @@ void validate(std::string_view type, std::string_view description) {
         throw std::runtime_error("description must be a non-empty single line");
 }
 
-void contained(const fs::path& path) {
-    if (fs::weakly_canonical(path) != path)
-        throw std::runtime_error("memory paths must not traverse symbolic links");
-}
-
 std::string scalar(const YAML::Node& node, const char* key) {
     const auto value = node[key];
     if (!value || !value.IsScalar()) throw std::runtime_error(std::string(key) + " must be a string");
@@ -67,19 +62,20 @@ fs::path MemoryStore::directory(std::string_view scope) const {
     if (scope == "global") path = root_ / "global";
     else if (scope == "project") path = project_;
     else throw std::runtime_error("scope must be global or project");
-    contained(path);
     return path;
 }
 
 fs::path MemoryStore::file(std::string_view scope, std::string_view name) const {
     if (!valid_name(name)) throw std::runtime_error("name must use kebab-case lowercase letters and digits");
-    auto path = directory(scope) / (std::string(name) + ".md");
-    contained(path);
+    const auto path = directory(scope) / (std::string(name) + ".md");
+    const auto status = fs::symlink_status(path);
+    if (fs::exists(status) && !fs::is_regular_file(status))
+        throw std::runtime_error("memory entry must be a regular file; symbolic links and other file types are not allowed");
     return path;
 }
 
 MemoryEntry MemoryStore::view(std::string_view scope, std::string_view name) const {
-    const auto input = workspace::read_text(file(scope, name), {.max_read_bytes = options_.max_entry_bytes});
+    const auto input = workspace::FileReference(file(scope, name)).read({.max_read_bytes = options_.max_entry_bytes});
     if (input.truncated || input.lossy) throw std::runtime_error("memory entry exceeds max_entry_bytes or is not valid UTF-8");
     const auto& text = input.content;
     if (!text.starts_with("---\n")) throw std::runtime_error("missing YAML frontmatter");
@@ -110,12 +106,13 @@ std::vector<MemoryEntry> MemoryStore::list() const {
     for (const auto scope : {"global", "project"}) {
         try {
             const auto dir = directory(scope);
-            if (!fs::exists(dir)) continue;
-            for (const auto& candidate : fs::directory_iterator(dir)) {
+            const workspace::FileReference reference(dir);
+            if (reference.kind() == workspace::FileKind::missing) continue;
+            for (const auto& candidate : fs::directory_iterator(reference.directory_path())) {
                 if (candidate.path().extension() != ".md") continue;
                 try { entries.push_back(view(scope, candidate.path().stem().string())); }
                 catch (const std::exception& error) {
-                    base::logger("tools")->warn("Memory {}: {}", candidate.path().string(), error.what());
+                    base::logger("tools")->warn("Memory {}: {}", (dir / candidate.path().filename()).string(), error.what());
                 }
             }
         } catch (const std::exception& error) {
@@ -187,13 +184,13 @@ MemoryEntry MemoryStore::save(std::string_view scope, std::string_view name, std
            << YAML::Key << "type" << YAML::Value << entry.type
            << YAML::Key << "updated" << YAML::Value << entry.updated << YAML::EndMap;
     const auto text = std::string("---\n") + header.c_str() + "\n---\n" + entry.content;
-    workspace::write_text(path, text, workspace::Eol::lf, false, {},
-                          {.max_write_bytes = options_.max_entry_bytes});
+    workspace::FileReference(path).write(text, workspace::Eol::lf, false, {},
+                                         {.max_write_bytes = options_.max_entry_bytes});
     return entry;
 }
 
 void MemoryStore::erase(std::string_view scope, std::string_view name) const {
-    if (!fs::remove(file(scope, name))) throw std::runtime_error("memory entry not found");
+    workspace::FileReference(file(scope, name)).erase();
 }
 
 namespace {

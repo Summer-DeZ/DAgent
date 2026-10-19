@@ -1,16 +1,15 @@
 #include "app/toolchain.hpp"
 
+#include "app/hash.hpp"
+
 #include <algorithm>
 #include <cctype>
-#include <array>
 #include <fstream>
-#include <iomanip>
 #include <iostream>
 #include <sstream>
 #include <stdexcept>
 
 #include <curl/curl.h>
-#include <openssl/evp.h>
 #include <fcntl.h>
 #include <sys/file.h>
 #include <sys/utsname.h>
@@ -28,16 +27,6 @@ std::string read(const fs::path& file) {
 }
 
 json read_json(const fs::path& file) { return json::parse(read(file), nullptr, true, true); }
-
-std::string digest(std::string_view data) {
-    std::array<unsigned char, EVP_MAX_MD_SIZE> bytes{};
-    unsigned int length = 0;
-    if (EVP_Digest(data.data(), data.size(), bytes.data(), &length, EVP_sha256(), nullptr) != 1)
-        throw std::runtime_error("SHA-256 failed");
-    std::ostringstream out;
-    for (unsigned int i = 0; i < length; ++i) out << std::hex << std::setw(2) << std::setfill('0') << unsigned(bytes[i]);
-    return out.str();
-}
 
 void write_json(const fs::path& file, const json& value) {
     fs::create_directories(file.parent_path());
@@ -134,10 +123,10 @@ void unpack_archive(const json& asset, const HomePaths& paths, const fs::path& d
                 if (!fs::exists(archive)) {
                     const fs::path partial = archive.string() + ".part";
                     download(asset.at("url").get<std::string>(), partial);
-                    if (digest(read(partial)) != hash) throw std::runtime_error("runtime archive checksum mismatch");
+                    if (sha256(read(partial)) != hash) throw std::runtime_error("runtime archive checksum mismatch");
                     fs::rename(partial, archive);
                 }
-                if (digest(read(archive)) != hash) throw std::runtime_error("cached runtime archive checksum mismatch");
+                if (sha256(read(archive)) != hash) throw std::runtime_error("cached runtime archive checksum mismatch");
                 execute({"/usr/bin/tar", "-xf", archive.string(), "--strip-components=1", "-C", directory.string()}, paths.root);
 }
 
@@ -193,7 +182,7 @@ static std::string configuration_id(const HomePaths& paths, const json& config) 
         if (spec.value("kind", "") == "node")
             content += read(within(paths.root, spec.at("package_json").get<std::string>()));
     }
-    return digest(content);
+    return sha256(content);
 }
 
 json Toolchain::status() const {
@@ -243,7 +232,7 @@ json Toolchain::sync() {
         const auto version = package.at("version").get<std::string>();
         if (!identifier(name) || !identifier(version)) throw std::runtime_error("invalid runtime package name/version");
         const auto kind = package.value("kind", "archive");
-        const fs::path directory = paths_.runtime / name / (version + "-" + digest(package.dump() + platform()).substr(0, 16));
+        const fs::path directory = paths_.runtime / name / (version + "-" + sha256(package.dump() + platform()).substr(0, 16));
         json entry;
         if (fs::exists(directory / ".ready.json")) entry = read_json(directory / ".ready.json");
         else {
@@ -285,7 +274,7 @@ json Toolchain::sync() {
                 const auto file = within(directory, relative.get<std::string>());
                 if (::access(file.c_str(), X_OK) != 0) throw std::runtime_error("installed program is not executable: " + file.string());
                 entry["programs"][program] = file.string();
-                entry["checksums"][program] = digest(read(file));
+                entry["checksums"][program] = sha256(read(file));
             }
             const json variables = package.value("env", json::object());
             for (const auto& [key, value] : variables.items()) {
@@ -316,7 +305,7 @@ json Toolchain::sync() {
         std::string identity = spec.dump() + read(lockfile) + next["packages"].dump();
         fs::path package_json;
         if (kind == "node") { package_json = within(paths_.root, spec.at("package_json").get<std::string>()); identity += read(package_json); }
-        const auto directory = paths_.runtime / "envs" / name / digest(identity).substr(0, 16);
+        const auto directory = paths_.runtime / "envs" / name / sha256(identity).substr(0, 16);
         if (!fs::exists(directory / ".ready.json")) {
             if (fs::exists(directory)) fs::remove_all(directory);
             fs::create_directories(directory);

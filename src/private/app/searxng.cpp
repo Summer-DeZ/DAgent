@@ -5,6 +5,7 @@
 #include <mutex>
 #include <openssl/rand.h>
 #include <unistd.h>
+#include "base/text.hpp"
 #include "exec/child.hpp"
 #include "lib/nlohmann/json.hpp"
 #include "net/http.hpp"
@@ -93,7 +94,8 @@ struct Searxng::Impl {
         });
         child->on_stderr([current](std::string_view line) {
             const std::lock_guard lock(current->mutex);
-            current->error = std::string(line.substr(0, 2048));
+            current->error = base::to_valid_utf8(line);
+            current->error.resize(base::utf8_floor(current->error, 2048));
         });
         child->on_exit([current](auto, auto) {
             const std::lock_guard lock(current->mutex);

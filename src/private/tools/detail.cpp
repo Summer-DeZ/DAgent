@@ -15,7 +15,7 @@ namespace dagent::tools::detail {
 namespace fs = std::filesystem;
 Result error_result(std::string text, agent::View display) {
     Result result;
-    result.model_text = std::move(text);
+    result.model_text = base::to_valid_utf8(text);
     result.is_error = true;
     result.display = std::move(display);
     return result;

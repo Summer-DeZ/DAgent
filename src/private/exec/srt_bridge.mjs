@@ -138,10 +138,11 @@ async function probe(args) {
 // ---------------------------------------------------------------------------
 function make_control(fd) {
   const socket = new net.Socket({ fd, readable: true, writable: true });
+  socket.setEncoding('utf8');
   let buffer = '';
   const handlers = new Set();
   socket.on('data', (chunk) => {
-    buffer += chunk.toString('utf8');
+    buffer += chunk;
     for (;;) {
       const index = buffer.indexOf('\n');
       if (index < 0) break;

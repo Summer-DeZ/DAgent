@@ -117,6 +117,8 @@ sh/bash。它只向 agent Policy 提供判定，不执行命令。
 受限命令由 SRT 后端执行：每次 `run_srt` 调用（包括受限 bash 和 web 请求）启动一个 Node bridge，bridge 初始化
 `@anthropic-ai/sandbox-runtime`、生成 bubblewrap 包装命令并管理代理出口；命令的
 stdin/stdout/stderr 保持独立，网络判定经独立控制 FD 交回核心权限层（见 [agent 权限契约](agent.md#7-权限与沙箱)）。
+控制 socket 按 UTF-8 流解码，跨数据块保留未完成字符，避免 init 中的命令或路径被分块边界改写。
+bridge 非零退出且未报告结果时，诊断输出先修复 UTF-8，再按字符边界保留最多 500 字节。
 
 `exec::srt_config` 把中立 `Policy` 编译为 SRT 配置：`denyRead` 从 `/` 开始，只显式重开系统路径、
 工作区、实例私有 HOME 与工具链目录；`denyWrite` 在可写树内以启动时快照拒绝工作区里已有的
@@ -143,6 +145,8 @@ unrestricted 的 bash 使用 host；web 仍强制进入只读 SRT，由运行中
   私有 cwd 落在可写根内时该 profile 直接拒绝，不静默继续。
 - bridge 启动握手报告协议版本、SRT 版本与准备环境身份；不匹配或超过 `startup_timeout_ms` 时受限
   启动失败并给出阶段。
+- init 帧在控制线程中循环发送并处理短写，主线程可同时启动 bridge；大命令不会阻塞进程启动路径。
+  发送期间取消和启动超时会关闭控制 socket，命令超时仍由进程执行器处理；清理时先等待控制线程和 watchdog 退出，再关闭 FD。
 - 控制 socketpair 使用 `SOCK_CLOEXEC`，bridge 端通过 `Command::inherit_fds` 显式保留；
   不在父进程清除 CLOEXEC，避免并发启动时将通道泄漏给其他进程，也不依赖启动器偶然保留描述符。
 - 工作区保护遵循启动快照语义：运行中新建的同名敏感文件不在保护承诺内。
