@@ -11,10 +11,10 @@
   },
   "http": {
     "connect_timeout_seconds": 30,
-    "idle_timeout_seconds": 120,
+    "idle_timeout_seconds": 300,
     "max_body_bytes": 2097152,
     "max_error_body_bytes": 4096,
-    "timeout_seconds": 300,
+    "timeout_seconds": 0,
     "verify_host": true,
     "verify_peer": true
   },

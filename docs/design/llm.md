@@ -151,8 +151,8 @@ HttpClient 在同一执行线程上复用。工具调用按 index 归集参数�
 不写入历史，重试期间取消不会保存已作废尝试的半截内容。
 
 装配直接使用 `http.timeout_seconds`、`http.idle_timeout_seconds`、连接超时与 TLS 配置，不强制改写。
-随附总超时为 300 秒、空闲超时为 120 秒；0 的语义见 [HTTP 选项](net.md#选项httpoptions)。
-idle timeout 看收到的字节，包括 SSE 注释；大上下文预填充期间没有字节时仍可能超时，需按实际模型调整配置。
+随附总超时为 0（不限）、空闲超时为 300 秒：流式回复只要持续收到字节就不判超时，长时间的思考与输出不会被总时长截断；0 的语义见 [HTTP 选项](net.md#选项httpoptions)。
+idle timeout 看收到的字节，包括 SSE 注释；预填充期间服务端通常不发字节，300 秒覆盖单卡上约 15 万 token 的冷预填充，更长的上下文或更慢的服务需按实际模型调整配置。
 
 `ModelAttemptHooks` 在每次实际尝试前后调用，包括重试。核心的 `BudgetedModel` 在发送前检查共享预算，
 收窄 `max_tokens` 并计数，结束后累计已报告 usage 或估算未报告消耗；重试等待本身不计下一次尝试。
