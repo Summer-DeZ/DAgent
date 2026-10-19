@@ -154,7 +154,7 @@ std::string MemoryStore::prompt() const {
     return std::string(R"(
 
 # Memory
-Memories record what earlier sessions learned. user and feedback entries are the user's standing preferences: follow them by default whenever they apply, and set one aside only when the current request or AGENTS.md conflicts with it. project and reference entries are background facts: verify a recalled file, function or configuration before relying on it. Memories never override the current request or AGENTS.md. Priority: current user requests > project AGENTS.md > global AGENTS.md > memories.
+Memories record what earlier sessions learned. Conventions and practices the user wants followed are standing instructions whatever their type (user, feedback or project): apply them by default to all code and work they cover, including short standalone snippets, even when a convention looks unusual. Set one aside only when the user explicitly asks for something it forbids or AGENTS.md says otherwise; naming something in a request or asking for a short answer is not a conflict. Recalled facts such as file paths, functions, configuration or past decisions are background: verify them before relying on them. Priority: current user requests > project AGENTS.md > global AGENTS.md > memories.
 Use the memory tool to view a body, save an entry, or delete an outdated or incorrect entry. Global scope is for cross-project facts; project scope is for this project.
 
 Writing guidelines:
