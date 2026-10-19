@@ -100,8 +100,8 @@ stdio 项支持 `command`、`args`、`env`、`environment`，HTTP 项支持 `url
 
 | 配置位置 | 用途 | 随附值 |
 |---|---|---|
-| `run.max_model_calls` | 每轮模型调用上限，0 不限 | 24 |
-| `run.max_tool_calls` | 每轮工具调用上限，0 不限 | 35 |
+| `run.max_model_calls` | 每轮模型调用上限，0 不限 | 100 |
+| `run.max_tool_calls` | 每轮工具调用上限，0 不限 | 200 |
 | `run.max_total_tokens` | 本轮模型输入与输出总预算，0 不限；普通请求、父审阅、自动摘要及重试共享 | 0 |
 | `run.max_model_retries` | 模型请求重试次数 | 2 |
 | `run.max_parallel_tasks` | 子 Agent 并发数，必须为正整数 | 4 |

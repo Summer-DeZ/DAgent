@@ -199,7 +199,7 @@ TurnEnded
 执行工具看 `tool_calls` 是否为空，不依赖服务端的 finish reason。正文因 `length` 或 `content_filter` 截断时提示后
 结束，不自动续写；空正文且没有调用（包括仅有思考）不加入历史，警告后结束。
 
-运行限制来自 `home/config/config.json` 的 `run` 段。随附必填配置为 `max_model_calls=24`、`max_tool_calls=35`、`max_model_retries=2`、`max_parallel_tasks=4`、`max_parallel_tools=8`；可选 `max_total_tokens` 缺省及随附值均为 0。调用和 token 上限为 0 表示不限；并发数必须大于 0。未知工具、参数失败和策略拒绝
+运行限制来自 `home/config/config.json` 的 `run` 段。随附必填配置为 `max_model_calls=100`、`max_tool_calls=200`、`max_model_retries=2`、`max_parallel_tasks=4`、`max_parallel_tools=8`；可选 `max_total_tokens` 缺省及随附值均为 0。调用和 token 上限为 0 表示不限；并发数必须大于 0。未知工具、参数失败和策略拒绝
 也消耗已处理调用预算；因中断、同批拒绝或超额而跳过的调用不消耗执行预算。超额调用回填 T8，若还有模型步数，
 给予一次不提供工具定义的总结机会；总结回合仍以 `limit` 收尾，模型若继续返回工具调用也不再执行。
 这次总结、父审批、自动压缩摘要和每次实际模型重试均计入本轮 steps 与共享 token 预算；steps 是实际尝试次数，

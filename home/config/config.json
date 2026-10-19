@@ -50,11 +50,11 @@
     "system": "prompts/system.md"
   },
   "run": {
-    "max_model_calls": 24,
+    "max_model_calls": 100,
     "max_model_retries": 2,
     "max_parallel_tasks": 4,
     "max_parallel_tools": 8,
-    "max_tool_calls": 35,
+    "max_tool_calls": 200,
     "max_total_tokens": 0
   },
   "sandbox": {

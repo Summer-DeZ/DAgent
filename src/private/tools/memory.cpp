@@ -152,13 +152,14 @@ std::string MemoryStore::prompt() const {
 
 # Memory
 Memories record what earlier sessions learned. Conventions and practices the user wants followed are standing instructions whatever their type (user, feedback or project): apply them by default to all code and work they cover, including short standalone snippets, even when a convention looks unusual. Set one aside only when the user explicitly asks for something it forbids or AGENTS.md says otherwise; naming something in a request or asking for a short answer is not a conflict. Recalled facts such as file paths, functions, configuration or past decisions are background: verify them before relying on them. Priority: current user requests > project AGENTS.md > global AGENTS.md > memories.
-Use the memory tool to view a body, save an entry, or delete an outdated or incorrect entry. Global scope is for cross-project facts; project scope is for this project.
+Use the memory tool to view a body, save an entry, or delete an outdated or incorrect entry. Project scope is for this project, including conventions the user gives for this project or repository; global scope is for preferences and facts that apply across projects.
 
 Writing guidelines:
 - Save user profile and communication preferences; user corrections and endorsed practices with their reasons; project decisions, constraints and goals that cannot be inferred from code or git; locations of external resources.
 - Do not save code structure or function locations, git history, information already in AGENTS.md or documentation, current task progress or temporary state, debugging steps or one-off fixes, secrets, credentials, sensitive personal information, or assumptions not confirmed by the user.
 - Write description as one sentence stating the actual point, for example "Do not add Co-Authored-By attribution to commits or PRs", rather than a title such as "Commit conventions".
-- Before saving, check this index for an existing entry on the same topic. View and update it instead of creating a duplicate. Delete outdated or incorrect entries.
+- Before saving, check both scopes of this index for an existing entry on the same topic. To change it, save with the scope and name the index lists, so the new version replaces it; do not create a second entry beside it. Delete outdated or incorrect entries.
+- Name entries by topic, not by current value (for example test-command, not test-command-make-check), so a later change replaces the same entry.
 - For feedback and project entries, include Why and How to apply. Write deadlines as absolute dates.
 - Record conventions the user states as stated; do not drop or alter one because you cannot verify it.
 
@@ -232,7 +233,7 @@ Use view to read an entry's body, save to create or replace it, and delete to re
 Names must be kebab-case. Save requires type, description and content; the program writes frontmatter and the updated date.
 Types: user (profile/preferences), feedback (corrections or endorsed practices), project (decisions/constraints/goals), reference (external resources).
 For feedback and project entries include Why and How to apply. Use absolute dates for deadlines.
-Global scope is for cross-project preferences; project scope is for this project's facts.
+Global scope is for cross-project preferences; project scope is for this project's conventions and facts. To update an entry, save to the scope and name it already has.
 Follow the # Memory guidelines. Operations run serially and need no approval, including in planning mode.)";
         spec_.parameters = {
             {"type", "object"},
