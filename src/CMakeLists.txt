@@ -15,6 +15,7 @@ target_link_libraries(dagent_base PUBLIC spdlog::spdlog)
 
 add_library(dagent_tui STATIC
     private/tui/terminal.cpp
+    private/tui/terminal_${DAGENT_PLATFORM}.cpp
     private/tui/grapheme.cpp
     private/tui/surface.cpp
     private/tui/present.cpp
@@ -33,6 +34,7 @@ add_library(dagent_tui STATIC
 target_include_directories(dagent_tui PUBLIC ${CMAKE_SOURCE_DIR}/src/public)
 target_compile_features(dagent_tui PUBLIC cxx_std_23)
 target_compile_options(dagent_tui PRIVATE -Wall -Wextra)
+target_link_libraries(dagent_tui PRIVATE dagent_base)
 
 # 应用层：在 TUI 框架之上构建的界面（只持 Client、协议 DTO 与页面状态）。
 add_library(dagent_ui STATIC

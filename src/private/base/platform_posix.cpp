@@ -18,6 +18,7 @@ std::filesystem::path executable_path(std::error_code& error) {
 const char* home_directory() noexcept { return std::getenv("HOME"); }
 std::int64_t process_id() noexcept { return ::getpid(); }
 bool stdin_is_terminal() noexcept { return ::isatty(STDIN_FILENO) != 0; }
+bool stdout_is_terminal() noexcept { return ::isatty(STDOUT_FILENO) != 0; }
 
 bool local_time(std::time_t value, std::tm& result) noexcept {
     return ::localtime_r(&value, &result) != nullptr;

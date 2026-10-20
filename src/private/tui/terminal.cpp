@@ -1,57 +1,12 @@
-// pipe2 / cfmakeraw 属 GNU/BSD 扩展，-std=c++23（严格 ANSI）下 glibc 不予暴露。
-#ifndef _GNU_SOURCE
-#define _GNU_SOURCE
-#endif
-
 #include "tui/terminal.hpp"
+#include "base/platform.hpp"
 
-#include <cerrno>
 #include <cstdlib>
-#include <cstring>
-#include <iterator>
-#include <mutex>
 #include <string>
-
-#include <fcntl.h>
-#include <signal.h>
-#include <sys/ioctl.h>
-#include <unistd.h>
 
 namespace dagent::tui {
 
 namespace {
-
-// atexit 兜底与信号处理器（无 this 可用）所需的全局锚点。
-std::atomic<Terminal*> g_instance{nullptr};
-std::atomic<int> g_signal_write_fd{-1};
-std::once_flag g_atexit_once;
-
-// 被接管的信号：卸载时还原调用方原装的处理器，而非 SIG_DFL。
-constexpr int kSignals[] = {SIGINT, SIGTERM, SIGHUP, SIGWINCH};
-
-// 管道字节区分信号类别。
-constexpr char kQuitByte   = 'q'; ///< 退出类
-constexpr char kResizeByte = 'w'; ///< 尺寸变化
-struct sigaction g_saved_handlers[std::size(kSignals)] = {};
-
-// 异步信号处理器：只 write self-pipe，逻辑留在主循环正常路径。
-void terminal_on_signal(int sig) noexcept {
-    const int saved_errno = errno; // 处理器不得改动被打断代码看到的 errno
-    const int fd = g_signal_write_fd.load(std::memory_order_relaxed);
-    if (fd >= 0) {
-        const char b = sig == SIGWINCH ? kResizeByte : kQuitByte;
-        ssize_t n = ::write(fd, &b, 1); // 管道满（EAGAIN）= 唤醒已挂起
-        (void)n;
-    }
-    errno = saved_errno;
-}
-
-// atexit 兜底：进程退出前还原。
-void terminal_atexit_restore() noexcept {
-    if (Terminal* t = g_instance.load(std::memory_order_acquire)) {
-        t->restore();
-    }
-}
 
 bool env_has(std::string_view value, std::string_view key) noexcept {
     return value.find(key) != std::string_view::npos;
@@ -73,46 +28,9 @@ std::string leave_screen_seq(bool mouse, bool paste, bool kitty,
 
 } // namespace
 
-Terminal::Terminal() {
-    probe_caps();
-
-    // self-pipe 失败只失去信号唤醒能力，不影响其余功能。
-    if (::pipe2(signal_pipe_, O_CLOEXEC | O_NONBLOCK) == 0) {
-        g_signal_write_fd.store(signal_pipe_[1], std::memory_order_release);
-        install_signal_handlers();
-    }
-
-    // raw 模式：关行缓冲与回显，逐字节拿到输入；stdin 非 tty 时跳过。
-    if (::isatty(STDIN_FILENO) && ::tcgetattr(STDIN_FILENO, &saved_) == 0) {
-        raw_saved_ = true;
-        termios raw = saved_;
-        ::cfmakeraw(&raw);
-        ::tcsetattr(STDIN_FILENO, TCSANOW, &raw);
-    }
-
-    enter();
-
-    g_instance.store(this, std::memory_order_release);
-    std::call_once(g_atexit_once, [] { std::atexit(&terminal_atexit_restore); });
-}
-
-Terminal::~Terminal() {
-    restore();
-    uninstall_signal_handlers();
-    if (signal_pipe_[0] >= 0) {
-        ::close(signal_pipe_[0]);
-        ::close(signal_pipe_[1]);
-        signal_pipe_[0] = -1;
-        signal_pipe_[1] = -1;
-    }
-    if (g_instance.load(std::memory_order_acquire) == this) {
-        g_instance.store(nullptr, std::memory_order_release);
-    }
-}
-
 // 进入界面模式：顺序即栈序，还原时严格逆序弹出；stdout 非 tty 时不发任何序列。
 void Terminal::enter() {
-    if (!::isatty(STDOUT_FILENO)) {
+    if (!base::stdout_is_terminal()) {
         return;
     }
 
@@ -151,29 +69,6 @@ void Terminal::probe_caps() noexcept {
 
     caps_.sgr_mouse       = modern;
     caps_.bracketed_paste = modern;
-}
-
-Size Terminal::size() const noexcept {
-    winsize ws{};
-    if (::ioctl(STDOUT_FILENO, TIOCGWINSZ, &ws) == 0 && ws.ws_col > 0 &&
-        ws.ws_row > 0) {
-        return {static_cast<int>(ws.ws_col), static_cast<int>(ws.ws_row)};
-    }
-    return {80, 24};
-}
-
-// 阻塞式写满。
-void Terminal::write(std::string_view bytes) noexcept {
-    while (!bytes.empty()) {
-        ssize_t n = ::write(STDOUT_FILENO, bytes.data(), bytes.size());
-        if (n < 0) {
-            if (errno == EINTR) {
-                continue;
-            }
-            break;
-        }
-        bytes.remove_prefix(static_cast<size_t>(n));
-    }
 }
 
 // 开关鼠标上报；exchange 去重。
@@ -261,54 +156,7 @@ void Terminal::restore() noexcept {
         screen_active_.store(false, std::memory_order_release);
     }
 
-    if (raw_saved_) {
-        ::tcsetattr(STDIN_FILENO, TCSANOW, &saved_);
-        raw_saved_ = false;
-    }
-}
-
-// 读尽 self-pipe 即止（O_NONBLOCK，EAGAIN 退出循环）。
-Terminal::Signals Terminal::drain_signal() noexcept {
-    Signals got;
-    if (signal_pipe_[0] < 0) {
-        return got;
-    }
-    char buf[64];
-    ssize_t n;
-    while ((n = ::read(signal_pipe_[0], buf, sizeof buf)) > 0) {
-        for (ssize_t i = 0; i < n; ++i) {
-            if (buf[i] == kResizeByte) {
-                got.resize = true;
-            } else {
-                got.quit = true;
-            }
-        }
-    }
-    return got;
-}
-
-void Terminal::install_signal_handlers() noexcept {
-    struct sigaction sa {};
-    sa.sa_handler = &terminal_on_signal;
-    sa.sa_flags   = SA_RESTART; // 渲染线程的 write 不被信号打断
-    ::sigemptyset(&sa.sa_mask);
-    // 保存原有处理器供卸载时还原。
-    for (std::size_t i = 0; i < std::size(kSignals); ++i) {
-        ::sigaction(kSignals[i], &sa, &g_saved_handlers[i]);
-    }
-    handlers_installed_ = true;
-}
-
-void Terminal::uninstall_signal_handlers() noexcept {
-    if (!handlers_installed_) {
-        return;
-    }
-    // 先摘写端再撤处理器，避免竞态窗口内写已关闭的 fd。
-    g_signal_write_fd.store(-1, std::memory_order_release);
-    for (std::size_t i = 0; i < std::size(kSignals); ++i) {
-        ::sigaction(kSignals[i], &g_saved_handlers[i], nullptr);
-    }
-    handlers_installed_ = false;
+    restore_input();
 }
 
 } // namespace dagent::tui

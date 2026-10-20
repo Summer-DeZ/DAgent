@@ -15,15 +15,15 @@
   termios、sigset_t 等原生类型；资源状态用不透明类型表示。标准库类型可用于中立接口。
 - 平台提取保留原操作、标志、顺序、错误和日志文本、超时、权限与参数；格式化和业务失败策略留在调用方。
 
-这是逐步落实的源码边界约定。当前已提取跨模块小原语、workspace 的 OS 描述、入口与宿主辅助和 IPC，尚未完成全仓 I1/I2：
-TUI、exec、工作区文件操作、配置/凭据/会话锁与监听等仍有共享实现中的平台代码；Terminal、Runtime、
+这是逐步落实的源码边界约定。当前已提取跨模块小原语、workspace 的 OS 描述、入口与宿主辅助、IPC 和 TUI，尚未完成全仓 I1/I2：
+exec、工作区文件操作、配置/凭据/会话锁与监听等仍有共享实现中的平台代码；
 Command、PipeFds 和 ModelWriteLock 仍含原生状态。下面只列已落地的平台文件。
 
 ## 当前平台文件与接口
 
 | 平台文件 | 中立声明 | 实现 |
 | --- | --- | --- |
-| `src/private/base/platform_posix.cpp` | `src/public/base/platform.hpp` | `executable_path`、`home_directory`、`process_id`、`stdin_is_terminal`、`local_time`、`utc_time`、`utc_timestamp`、`can_execute`、`create_unique_directory` |
+| `src/private/base/platform_posix.cpp` | `src/public/base/platform.hpp` | `executable_path`、`home_directory`、`process_id`、`stdin_is_terminal`、`stdout_is_terminal`、`local_time`、`utc_time`、`utc_timestamp`、`can_execute`、`create_unique_directory` |
 | `src/private/workspace/context_posix.cpp` | `src/public/workspace/context.hpp` | `detail::os_description` |
 | `src/private/app/cli_posix.cpp` | `src/public/app/cli.hpp` | `detail::read_stdin_all` |
 | `src/private/app/paths_posix.cpp` | `src/public/app/paths.hpp` | `detail::executable_home_directory`、`detail::probe_home_writable` |
@@ -33,6 +33,7 @@ Command、PipeFds 和 ModelWriteLock 仍含原生状态。下面只列已落地�
 | `src/private/ui/browser_posix.cpp` | `src/public/ui/browser.hpp` | `open_browser` |
 | `src/private/web/document_posix.cpp` | `src/public/web/detail.hpp` | `detail::convert_charset` |
 | `src/private/ipc/channel_posix.cpp` | `src/public/ipc/channel.hpp` | `InheritedEndpoint` 参数解析、`Channel` 原生状态与传输、`BackendProcess` 不透明进程标识、`spawn_backend`、`wait_or_terminate` |
+| `src/private/tui/terminal_posix.cpp` | `src/public/tui/terminal.hpp`、`src/public/tui/event_wait.hpp` | Terminal 生命周期、原生状态、尺寸、字节写入、输入恢复与信号；EventWait 的等待、输入读取、唤醒及排空 |
 
 `executable_path` 的两个重载分别保留 filesystem 的抛异常和 error_code 行为，供 IPC、sandbox status、
 SearXNG 定位程序资源。安装根的固定缓冲区 readlink 和 InstallError 在 `app/paths_posix.cpp` 中保持独立；
@@ -51,7 +52,7 @@ local/UTC 转换返回是否成功，UTC 时间戳转换保留原返回值和对
 锁范围仍覆盖原 sync 流程；文件锁未合并为 base 原语。
 
 CLI 用 `stdin_is_terminal` 判断输入来源，用 `read_stdin_all` 读取管道输入，保留 EINTR 重试与其他错误时停止读取。
-Terminal 仍使用原终端实现。前端先安装中断处理，再忽略断管信号；后端参数校验后恢复信号屏蔽并忽略断管信号，
+Terminal 也通过 base 判断 stdin/stdout 是否终端。前端先安装中断处理，再忽略断管信号；后端参数校验后恢复信号屏蔽并忽略断管信号，
 随后接管 Channel。后端 `--ipc-fd` 保留原参数格式，参数值经不透明的 `InheritedEndpoint` 解析和接管。
 
 浏览器启动完整实现在 `browser_posix.cpp`，保留原 posix_spawn 属性与回收线程。
@@ -61,3 +62,8 @@ IPC 的共享文件只保留分帧、缓冲、错误状态与后端路径。Chan
 参数解析与替换不取得连接所有权，adopt 移交已有状态而不重新分配。socketpair 的端点状态和后端进程状态
 分别在创建连接、fork 前分配。BackendProcess 移动时保留源对象的进程标识，各对象的回收标记独立，
 析构只关闭 channel；原生调用、flags、继承顺序和回收节奏见 [protocol](protocol.md#1-进程与传输)。
+
+Terminal 的 Native 与 EventWait 的 Impl 都只在 `terminal_posix.cpp` 定义，公共头不包含终端类型或原生句柄。
+EventWait 只报告就绪状态，Runtime 仍按信号、wake、stdin 的顺序消费，再执行 inbox、尺寸、定时器、Esc、握手和渲染。
+`wake_pending_` 留在 Runtime，清除后才排空 wake pipe；self-pipe 创建失败降级，wake pipe 创建失败 terminate。
+Terminal 的恢复与信号卸载顺序见 [tui-framework](tui-framework.md#41-终端l1)，构造所需状态在对应管道创建前分配。

@@ -18,6 +18,7 @@ std::filesystem::path executable_path(std::error_code& error);
 const char* home_directory() noexcept;
 std::int64_t process_id() noexcept;
 bool stdin_is_terminal() noexcept;
+bool stdout_is_terminal() noexcept;
 
 /// @brief 写入调用方的 tm，返回转换是否成功；不改变调用方的失败处理。
 bool local_time(std::time_t value, std::tm& result) noexcept;

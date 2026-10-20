@@ -1,14 +1,10 @@
 #include "tui/runtime.hpp"
+#include "tui/event_wait.hpp"
 
 #include <algorithm>
-#include <cerrno>
 #include <climits>
-#include <csignal>
+#include <exception>
 #include <string_view>
-#include <unistd.h>
-
-#include <fcntl.h>
-#include <poll.h>
 
 namespace dagent::tui {
 
@@ -102,13 +98,7 @@ bool within(const Widget* w, const Widget* root) noexcept {
 Runtime::Runtime(Terminal& term, Widget& root, Options opt)
     : term_(term), root_(root), opt_(opt),
       stack_(dynamic_cast<LayerStack*>(&root)) {
-    int pipes[2];
-    if (::pipe2(pipes, O_NONBLOCK | O_CLOEXEC) != 0) {
-        // 唤醒管道：创建失败直接终止。
-        std::terminate();
-    }
-    wake_pipe_[0] = pipes[0];
-    wake_pipe_[1] = pipes[1];
+    wait_ = std::make_unique<EventWait>(term_);
 }
 
 Runtime::Runtime(Terminal& term, Widget& root) : Runtime(term, root, Options{}) {}
@@ -119,8 +109,7 @@ Runtime::~Runtime() {
         delete node;
         node = next;
     }
-    if (wake_pipe_[0] >= 0) ::close(wake_pipe_[0]);
-    if (wake_pipe_[1] >= 0) ::close(wake_pipe_[1]);
+    wait_.reset();
 }
 
 // ---- 定时器 ----
@@ -535,22 +524,12 @@ int Runtime::poll_timeout(Clock::time_point now) const noexcept {
 /// @brief 写唤醒字节；已有未消费字节则跳过。
 void Runtime::wake() noexcept {
     if (wake_pending_.exchange(true, std::memory_order_acq_rel)) return;
-    const char b = 0;
-    ssize_t n;
-    do {
-        n = ::write(wake_pipe_[1], &b, 1);
-    } while (n < 0 && errno == EINTR);
-    // 管道满：唤醒已挂起。
+    wait_->wake();
 }
 
 void Runtime::drain_wake() noexcept {
     wake_pending_.store(false, std::memory_order_release);
-    char buf[64];
-    for (;;) {
-        const ssize_t n = ::read(wake_pipe_[0], buf, sizeof buf);
-        if (n > 0 || (n < 0 && errno == EINTR)) continue;
-        break; // EAGAIN = 已读尽
-    }
+    wait_->drain_wake();
 }
 
 void Runtime::run() {
@@ -569,41 +548,32 @@ void Runtime::run() {
     if (!handshake_active_) report_caps(); // 不握手：初始值即最终值
 
     while (!quit_.load(std::memory_order_acquire)) {
-        pollfd fds[3] = {
-            {STDIN_FILENO, POLLIN, 0},
-            {term_.signal_fd(), POLLIN, 0},
-            {wake_pipe_[0], POLLIN, 0},
-        };
         prune_timers();
         const int timeout = poll_timeout(Clock::now());
-        const int rc = ::poll(fds, 3, timeout);
-        if (rc < 0) {
-            if (errno == EINTR) continue;
-            quit_.store(true, std::memory_order_release); // poll 失败：收摊
+        const EventWait::Ready ready = wait_->wait(timeout);
+        if (ready.status == EventWait::Ready::Status::interrupted) continue;
+        if (ready.status == EventWait::Ready::Status::failed) {
+            quit_.store(true, std::memory_order_release); // 等待失败：收摊
             break;
         }
 
         bool resized = false;
-        if ((fds[1].revents & POLLIN) != 0) {
+        if (ready.signal) {
             const Terminal::Signals sig = term_.drain_signal();
             // SIGINT/SIGTERM/SIGHUP → 退出；SIGWINCH → 查尺寸。
             if (sig.quit) quit_.store(true, std::memory_order_release);
             resized = sig.resize;
         }
-        if ((fds[2].revents & POLLIN) != 0) drain_wake();
+        if (ready.wake) drain_wake();
 
-        // POLLNVAL：不消费会使 poll 立即返回空转。
-        if ((fds[0].revents & (POLLIN | POLLHUP | POLLERR | POLLNVAL)) != 0) {
+        if (ready.input) {
             char buf[4096];
-            ssize_t nread;
-            do {
-                nread = ::read(STDIN_FILENO, buf, sizeof buf);
-            } while (nread < 0 && errno == EINTR);
-            if (nread == 0 || (nread < 0 && errno != EAGAIN)) {
+            const EventWait::Input input = wait_->read_input(buf);
+            if (input.closed) {
                 // stdin 关闭/失效：无可交互，正常退出。
                 quit_.store(true, std::memory_order_release);
-            } else if (nread > 0) {
-                decoder_.feed(std::string_view{buf, static_cast<std::size_t>(nread)},
+            } else if (input.size > 0) {
+                decoder_.feed(std::string_view{buf, input.size},
                               events_);
                 route_events();
                 esc_due_ = decoder_.pending_escape()

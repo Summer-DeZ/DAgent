@@ -205,7 +205,7 @@ private:
     Surface front_;
     std::string out_; ///< 输出缓冲（复用容量）
     std::optional<Point> cursor_;
-    int wake_pipe_[2] = {-1, -1}; ///< 唤醒 poll 的管道
+    std::unique_ptr<EventWait> wait_; ///< 输入、信号与跨线程唤醒的等待
 };
 
 /// @brief 滚动区鼠标处理：左键拖拽选择、双击选词、三击选行、滚轮滚动；

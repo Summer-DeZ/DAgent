@@ -4,11 +4,13 @@
 
 #include <atomic>
 #include <cstdint>
+#include <memory>
 #include <optional>
 #include <string_view>
-#include <termios.h>
 
 namespace dagent::tui {
+
+class EventWait;
 
 /// @brief 视口尺寸（列 × 行）。
 struct Size {
@@ -72,9 +74,7 @@ public:
     void set_grapheme_width(bool on);
 
     /// @brief 终端查询是否可用（需要 stdout 在界面模式且 stdin 是 raw tty）。
-    bool can_query() const noexcept {
-        return raw_saved_ && screen_active_.load(std::memory_order_acquire);
-    }
+    bool can_query() const noexcept;
 
     /// @brief 读取终端尺寸；非 tty 时返回 80×24。
     Size size() const noexcept;
@@ -87,9 +87,6 @@ public:
 
     /// @brief 还原进入前的终端状态；幂等。
     void restore() noexcept;
-
-    /// @brief 信号 self-pipe 读端（poll 用）。
-    int signal_fd() const noexcept { return signal_pipe_[0]; }
 
     /// @brief 已收到的信号类别。
     struct Signals {
@@ -105,15 +102,14 @@ private:
     void probe_caps() noexcept;
     void install_signal_handlers() noexcept;
     void uninstall_signal_handlers() noexcept;
+    void restore_input() noexcept;
 
     Caps caps_;
 
-    termios saved_{};
-    bool raw_saved_ = false; ///< stdin 是 tty 且已保存 termios
+    struct Native;
+    std::unique_ptr<Native> native_;
     std::atomic<bool> screen_active_{false}; ///< stdout 已进入界面模式
-    bool handlers_installed_ = false;
-
-    int signal_pipe_[2] = {-1, -1};
+    friend class EventWait;
 
     std::atomic<bool> restored_{false}; ///< restore() 已执行
     std::atomic<bool> mouse_{false};

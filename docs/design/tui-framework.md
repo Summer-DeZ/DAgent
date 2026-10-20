@@ -1,7 +1,7 @@
 # 终端 UI 框架
 
 DAgent 自带的终端 UI 框架。头文件在 `src/public/tui/`，实现在 `src/private/tui/`，构建为静态库
-`dagent_tui`。源码注释中的 `§N` 指本文章节。
+`dagent_tui`，私有链接 `dagent_base` 的终端判断原语。源码注释中的 `§N` 指本文章节。
 
 框架于 2026-09-18 冻结；2026-10-20 的 TUI 改版 phase 4 解冻，扩展通用超链接和文档定位接口。
 DAgent 在这些原语上搭建的实际界面见 [ui：应用层交互界面](ui.md)。
@@ -62,13 +62,13 @@ L1 终端     Terminal
 
 | 层 | 头文件 | 实现 |
 | --- | --- | --- |
-| L1 终端 | `terminal.hpp` | `terminal.cpp` |
+| L1 终端 | `terminal.hpp` | `terminal.cpp`、`terminal_posix.cpp` |
 | L2 网格 | `surface.hpp`、`grapheme.hpp` | `surface.cpp`、`present.cpp`、`grapheme.cpp` |
 | L3 布局 | `layout.hpp` | `layout.cpp` |
 | L4 控件 | `widget.hpp` | `widget.cpp`、`theme.cpp` |
 | L5 文档层 | `document.hpp` | `document.cpp`、`wrap.cpp`、`markdown.cpp`、`syntax.cpp` |
 | L6 输入 | `input.hpp` | `input.cpp` |
-| L7 运行时 | `runtime.hpp` | `runtime.cpp`、`keymap.cpp` |
+| L7 运行时 | `runtime.hpp`、`event_wait.hpp` | `runtime.cpp`、`keymap.cpp`；原生事件等待在 `terminal_posix.cpp` |
 
 ### 对象关系
 
@@ -162,6 +162,16 @@ SIGTERM、SIGHUP 退出时同样会还原。stdout 不是终端时不进入界�
 它还提供：查询尺寸、写字节、开关鼠标上报、写系统剪贴板（OSC 52）。
 当前终端的能力记录在 `Terminal::Caps`：真彩色、同步输出、鼠标、括号粘贴、
 kitty 键盘协议、字素宽度模式、背景色。
+
+`terminal.cpp` 保留能力判断、ANSI 序列与模式状态；`terminal_posix.cpp` 实现原生终端操作。
+公共头只持有不透明的 `Native`，不暴露 termios、信号管道或其 fd。stdin/stdout 的终端判断分别调用
+`base::stdin_is_terminal` / `base::stdout_is_terminal`。
+
+构造先探测能力，再分配 Native、创建 self-pipe；成功时发布写端并安装处理器，失败仍降级运行。
+随后在 stdin 为终端且 tcgetattr 成功时保存原设置、进入 raw 模式，再进入界面模式，最后登记全局实例和 atexit。
+`restore` 先用原子标记去重，退出已开启的界面模式，再恢复 termios；它不卸载处理器或关闭管道。
+析构先 restore，再摘除信号写端并还原调用方的处理器，随后关闭 self-pipe 两端、清除全局实例，最后释放 Native。
+信号处理器仍只写 self-pipe，并保存/恢复 errno；安装时保留 SA_RESTART。
 
 ### 4.2 网格与出帧（L2）
 
@@ -309,6 +319,16 @@ Document 仍只物化可见块、保留增量计数和窗口外驱逐，Surface 
 ### 4.8 运行时（L7）
 
 `Runtime` 把以上各层串起来，是应用直接打交道的对象。
+
+Runtime 用 `unique_ptr<EventWait>` 持有等待对象，原生实现与 Terminal 位于同一个 `terminal_posix.cpp`，
+不通过公共接口传递 fd。EventWait 借用 Terminal，只负责 poll、输入读取及 wake pipe；超时计算、事件消费与渲染仍由 Runtime 控制。
+wake pipe 仍使用 NONBLOCK/CLOEXEC，创建失败 terminate。Runtime 析构先删除 inbox 节点，再销毁 EventWait、关闭 wake pipe 两端。
+
+每轮先清理已取消的定时器条目并计算超时，再等待；EINTR 回到外层循环，其他等待错误设置退出标记并结束循环。
+正常返回（含超时）依次处理信号、wake、输入，再 apply_inbox、resize、定时器、Esc、握手与渲染。
+signal/wake 只响应 POLLIN；stdin 响应 POLLIN/HUP/ERR/NVAL，每次仍读 4096 字节，EINTR 重试，
+EOF 或非 EAGAIN 错误请求退出，EAGAIN 不产生输入。已设置退出标记时仍按原位置执行本轮后续处理。
+跨线程 wake 仍先 exchange `wake_pending_` 去重，再写唤醒字节；排空时先清标记，再循环读取，保留 EINTR 重试。
 
 | 接口 | 作用 |
 | --- | --- |
