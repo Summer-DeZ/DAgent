@@ -14,6 +14,8 @@ namespace {
 constexpr Cell k_blank_cell{};
 
 // 超长字素 intern 表：进程级、渲染线程专用。
+std::deque<std::string> g_links;
+std::unordered_map<std::string_view, uint32_t> g_link_lookup;
 std::deque<std::string> g_interned;
 std::unordered_map<std::string_view, uint32_t> g_intern_lookup;
 std::atomic<bool> g_intern_overflow{false};
@@ -49,6 +51,28 @@ Cell make_cell(std::string_view g, int width, const Style& s) noexcept {
 }
 
 } // namespace
+
+uint32_t intern_hyperlink(std::string_view uri) {
+    const auto colon = uri.find(':');
+    std::string scheme(uri.substr(0, colon));
+    for (auto& c : scheme) if (c >= 'A' && c <= 'Z') c += 'a' - 'A';
+    if (colon == std::string_view::npos || (scheme != "http" && scheme != "https" && scheme != "file") ||
+        uri.size() > 2048) return 0;
+    std::string_view rest = uri;
+    while (!rest.empty()) {
+        const auto cp = unicode::decode_utf8(rest);
+        if (cp < 0x20 || (cp >= 0x7f && cp <= 0x9f)) return 0;
+    }
+    if (const auto it = g_link_lookup.find(uri); it != g_link_lookup.end()) return it->second;
+    g_links.emplace_back(uri);
+    const auto id = static_cast<uint32_t>(g_links.size());
+    g_link_lookup.emplace(g_links.back(), id);
+    return id;
+}
+
+std::string_view hyperlink_uri(uint32_t id) noexcept {
+    return id > 0 && id <= g_links.size() ? std::string_view(g_links[id - 1]) : std::string_view{};
+}
 
 std::string_view Cell::grapheme() const noexcept {
     if (static_cast<unsigned char>(text[0]) == 0xFF) {

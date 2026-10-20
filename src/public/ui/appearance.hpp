@@ -10,6 +10,7 @@ namespace dagent::ui {
 struct Appearance {
     std::string theme = "dagent", mode = "auto", background = "solid", accent;
     std::string panels = "filled", density = "comfortable", icons = "unicode", sidebar = "right";
+    std::string diff = "auto", links = "on";
     static Appearance from_json(const nlohmann::json&);
     nlohmann::json json() const;
 };

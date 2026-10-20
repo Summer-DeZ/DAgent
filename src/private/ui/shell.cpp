@@ -212,17 +212,23 @@ public:
     void layout(tui::Rect area) override {
         tui::Widget::layout(area);
         if (current_ != nullptr) current_->layout({0, 0, area.w, area.h});
-        welcome.layout({0, 0, area.w, area.h});
+        const int width = reading_width(area.w);
+        welcome.layout({(area.w - width) / 2, 0, width, area.h});
     }
     void render(tui::Surface& surface) override {
-        if (welcome.visible) { welcome.render(surface); welcome.clear_dirty(); clear_dirty(); return; }
+        if (welcome.visible) {
+            if (current_) surface.fill({0, 0, surface.cols(), surface.rows()}, U' ', current_->theme().background);
+            auto view = surface.view(welcome.rect());
+            welcome.render(view); welcome.clear_dirty(); clear_dirty(); return;
+        }
         if (current_ == nullptr) return;
         if (current_->dirty_tree()) {
             current_->render(surface); current_->clear_dirty();
         }
         if (!current_->pinned() && current_->unseen_rows() > 0 && surface.rows() > 0) {
             const std::string text = format_text(ui::text().card_unseen, current_->unseen_rows());
-            const int x = std::max(0, surface.cols() - display_width(text));
+            const int width = reading_width(surface.cols());
+            const int x = (surface.cols() - width) / 2 + std::max(0, width - display_width(text));
             surface.text(x, surface.rows() - 1, text, current_->theme().text_muted);
         }
         clear_dirty();
@@ -984,7 +990,7 @@ private:
             main->add(constraint, centered(std::move(widget), 88, theme_));
         };
         auto frame = std::make_unique<ScrollFrame>(); frame_ = frame.get();
-        main->add({tui::Sizing::flex, 1}, centered(std::move(frame), 88, theme_));
+        main->add({tui::Sizing::flex, 1}, std::move(frame));
         add_centered(activity_, {tui::Sizing::content});
         add_centered(queue_label_, {tui::Sizing::content});
         add_centered(input_, {tui::Sizing::content, 0, 2, PromptBox::k_max_rows + 4});
@@ -1025,6 +1031,11 @@ private:
         add_command("permission.list", "Session permissions", std::string(ui::text().cmd_permission_group), {}, "/permissions", [this] { permissions_panel(); });
         add_command("mode.plan", "Toggle planning mode", std::string(ui::text().cmd_permission_group), "ctrl+g", "/plan", [this] { toggle_plan(); });
         add_command("tools.expand", std::string(ui::text().cmd_tools), std::string(ui::text().cmd_transcript), "ctrl+o", {}, [this] { active_transcript().toggle_tools(); });
+        add_command("diff.toggle", std::string(ui::text().cmd_diff), std::string(ui::text().cmd_transcript), "ctrl+d", {}, [this] {
+            unified_diff_ = !unified_diff_;
+            for (auto& pane : panes_)
+                pane.transcript->set_render_options(appearance_.diff == "auto", unified_diff_, appearance_.links == "on", project_root_);
+        }, [this] { return active_transcript().can_switch_diff(active_scroll(), false); });
         add_command("thoughts.toggle", std::string(ui::text().cmd_thoughts), std::string(ui::text().cmd_transcript), "ctrl+r", {}, [this] { active_transcript().toggle_thoughts(); });
         add_command("todo.toggle", std::string(ui::text().cmd_todo), std::string(ui::text().cmd_view), "ctrl+t", {}, [this] { toggle_todo(); });
         add_command("scroll.up", std::string(ui::text().cmd_page_up), std::string(ui::text().cmd_transcript), "pageup", {}, [this] { active_scroll().scroll_pages(-1); });
@@ -1109,6 +1120,7 @@ private:
                 if (index != 0) return;
                 side_->user_turn(input); header_->title = side_->title(); header_->invalidate();
             });
+        transcript->set_render_options(appearance_.diff == "auto", unified_diff_, appearance_.links == "on", project_root_);
         transcript->set_compact(appearance_.density == "compact");
         transcript->set_session(mode_label(), model_label_);
         scroll.set_theme(theme_);
@@ -1493,6 +1505,7 @@ private:
             queue_label_->outline = value.panels == "outline";
             frame_->welcome.appearance = value; frame_->welcome.invalidate();
             for (auto& pane : panes_) {
+                pane.transcript->set_render_options(value.diff == "auto", unified_diff_, value.links == "on", project_root_);
                 pane.transcript->set_compact(value.density == "compact");
                 if (icons_changed) pane.transcript->refresh_icons();
             }
@@ -1542,7 +1555,10 @@ private:
         }
         if (welcome_navigation()) return {hint(std::string(icons().up) + std::string(icons().down), ui::text().welcome_pick),
             hint("ctrl+p", ui::text().hint_commands), hint("ctrl+c", ui::text().welcome_quit)};
-        return {hint("ctrl+p", ui::text().hint_commands), hint("ctrl+t", ui::text().hint_sidebar), hint("shift+tab", ui::text().hint_mode)};
+        std::vector<KeyHint> out{hint("ctrl+p", ui::text().hint_commands), hint("ctrl+t", ui::text().hint_sidebar), hint("shift+tab", ui::text().hint_mode)};
+        if (!panes_.empty() && panes_[active_].transcript->can_switch_diff(*panes_[active_].scroll))
+            out.push_back(hint("ctrl+d", unified_diff_ ? ui::text().hint_diff_split : ui::text().hint_diff_unified));
+        return out;
     }
 
     void prompt_changed() { frame_->welcome.selected = -1; frame_->welcome.invalidate(); update_completion(); }
@@ -1747,6 +1763,7 @@ private:
     FrontendBridge& bridge_;
     std::shared_ptr<CallbackGate> gate_ = std::make_shared<CallbackGate>();
     Appearance appearance_;
+    bool unified_diff_ = false;
     std::filesystem::path themes_directory_;
     std::optional<bool> sidebar_override_;
     Workspace* workspace_ = nullptr;

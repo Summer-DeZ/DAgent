@@ -25,9 +25,9 @@ public:
         const int end = preview ? w - 29 : w - 2;
         const int row_width = std::max(1, end - nav);
         const std::string_view names[] = {text().settings_theme, text().settings_mode, text().settings_background,
-            text().settings_accent, text().settings_panels, text().settings_density, text().settings_icons, text().settings_sidebar};
+            text().settings_accent, text().settings_panels, text().settings_density, text().settings_icons, text().settings_sidebar, text().settings_diff, text().settings_links};
         const int room = std::max(1, h - 6), first = std::max(0, d.row_ - room + 1);
-        for (int i = first; i < 8 && i - first < room; ++i) {
+        for (int i = first; i < 10 && i - first < room; ++i) {
             const int y = 2 + i - first;
             auto normal = style(t.text), muted = style(t.text_muted);
             if (i == d.row_) {
@@ -54,7 +54,19 @@ public:
                    d.current_.panels == "outline" ? t.background.bg : t.background_panel.bg);
             sample(6, text().settings_sample_user, t.text, t.background_element.bg);
             sample(8, std::string(icons().check) + " " + std::string(text().settings_sample_tool), t.success, t.background.bg);
-            sample(9, text().settings_sample_added, t.diff_added, t.background.bg);
+            if (d.row_ == 8) {
+                const int half = (width - 1) / 2;
+                for (int y = 9; y <= 10 && y < h - 3; ++y) {
+                    for (int side = 0; side < 2; ++side) {
+                        auto tone = y == 9 ? (side ? t.diff_added : t.diff_removed) : t.text_muted;
+                        tone.bg = y == 9 ? diff_background(t, side != 0) : t.background.bg;
+                        const int left = x + side * (half + 1), cols = side ? width - half - 1 : half;
+                        s.fill({left, y, cols, 1}, U' ', tone);
+                        s.text(left, y, fit_columns(y == 9 ? (side ? "1 + new" : "1 − old") : "2   code", cols), tone);
+                    }
+                    s.text(x + half, y, "│", style(t.text_muted));
+                }
+            } else sample(9, text().settings_sample_added, t.diff_added, t.background.bg);
             sample(11, text().settings_sample_assistant, t.text, t.background.bg);
             sample(13, text().settings_sample_prompt, t.text_muted,
                    d.current_.panels == "outline" ? t.background.bg : t.background_panel.bg);
@@ -101,7 +113,9 @@ std::string SettingsDialog::value(int row) const {
     case 4: return current_.panels;
     case 5: return current_.density;
     case 6: return current_.icons;
-    default: return current_.sidebar;
+    case 7: return current_.sidebar;
+    case 8: return current_.diff;
+    default: return current_.links;
     }
 }
 void SettingsDialog::cycle(int delta) {
@@ -136,6 +150,8 @@ void SettingsDialog::cycle(int delta) {
     case 5: cycle_value(current_.density, {"comfortable", "compact"}); break;
     case 6: cycle_value(current_.icons, {"unicode", "nerd", "ascii"}); break;
     case 7: cycle_value(current_.sidebar, {"right", "left", "hidden"}); break;
+    case 8: cycle_value(current_.diff, {"auto", "unified"}); break;
+    case 9: cycle_value(current_.links, {"on", "off"}); break;
     }
     if (!preview_(current_)) current_ = previous;
     refresh();
@@ -162,7 +178,7 @@ bool SettingsDialog::on_event(const tui::Event& e) {
         refresh(); return true;
     }
     if (e.key == tui::Key::up || e.key == tui::Key::down) {
-        row_ = (row_ + (e.key == tui::Key::up ? 7 : 1)) % 8;
+        row_ = (row_ + (e.key == tui::Key::up ? 9 : 1)) % 10;
         color_accepted_ = invalid_ = false; refresh();
     } else if (e.key == tui::Key::left || e.key == tui::Key::right) {
         cycle(e.key == tui::Key::left ? -1 : 1);

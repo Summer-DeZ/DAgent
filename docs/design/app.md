@@ -148,6 +148,8 @@ stdio 项支持 `command`、`args`、`env`、`environment`，HTTP 项支持 `url
 | `ui.appearance.density` | comfortable / compact | comfortable |
 | `ui.appearance.icons` | unicode / nerd / ascii | unicode |
 | `ui.appearance.sidebar` | right / left / hidden | right |
+| `ui.appearance.diff` | auto / unified | auto |
+| `ui.appearance.links` | on / off | on |
 | `ui.completion_max_files` | 每次文件补全扫描上限；每次查询读取当前目录 | 5000 |
 | `session.history_scan_limit` | 每页历史最多扫描的记录数 | 100 |
 

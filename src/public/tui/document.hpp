@@ -35,6 +35,7 @@ struct Line {
     std::vector<Span> spans;
     int width = 0;     ///< 显示宽度（列）
     size_t offset = 0; ///< 行首在 source 中的字节偏移
+    bool reordered = false; ///< 源片段顺序不同于显示行序时，锚点按 span 查找
     uint8_t lex = 0;   ///< 逻辑行末的跨行词法状态（仅语法渲染器解释）
 };
 
@@ -230,6 +231,9 @@ public:
     /// @brief 驱逐可见窗口 ± count 行以外块的 rows（open 块除外）。
     void evict_outside(size_t first, size_t count) noexcept;
 
+    /// @brief 块内容（不含上边距）是否与行窗口相交；使用最近 begin_frame 的计数。
+    bool block_visible(uint64_t id, size_t first, size_t count) const noexcept;
+
     // ---- 选择 ----
 
     /// @brief 屏幕行列 → 内容位置。
@@ -338,6 +342,11 @@ public:
     }
     /// @brief 视口下方的行数（不贴底时 > 0）。
     [[nodiscard]] size_t unseen_rows() const noexcept { return unseen_; }
+
+    /// @brief 块内容是否出现在最近绘制的视口。
+    bool block_visible(uint64_t id) const noexcept {
+        return doc_.block_visible(id, top_, static_cast<size_t>(view_));
+    }
 
     // ---- 选择 ----
 

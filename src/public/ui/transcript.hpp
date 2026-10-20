@@ -6,6 +6,7 @@
 #include <string>
 #include <functional>
 #include <chrono>
+#include <filesystem>
 
 #include "protocol/dto.hpp"
 #include "tui/document.hpp"
@@ -35,6 +36,9 @@ public:
     void set_compact(bool);
     void refresh_icons();
     void tick();
+    void set_render_options(bool auto_diff, bool unified, bool links, std::filesystem::path project);
+    bool can_switch_diff(const tui::Scrollback&, bool visible_only = true) const;
+
     void apply_child(const std::string& call_id, const Event&, const Transcript& child);
     void toggle_tools();
     void toggle_thoughts();
@@ -51,6 +55,7 @@ private:
         uint64_t title = 0, body = 0, fold = 0;
         uint32_t rows = 3;
         uint32_t group = 0;
+        int diff_width = 0;
         bool finished = false;
         bool task = false;
         std::string label;
@@ -75,6 +80,9 @@ private:
     void update_todo_block();
 
     void refresh_density();
+    void install_renderers();
+    bool auto_diff_ = true, unified_ = false, links_ = true;
+    std::filesystem::path project_;
     int frame_ = 0;
     tui::Document& doc_;
     std::map<uint64_t, uint8_t> margins_;

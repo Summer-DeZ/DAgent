@@ -195,6 +195,7 @@ private:
 
 struct TableCell {
     std::string text; ///< 原文（tab 已展开、已去首尾空白）
+    std::vector<size_t> source; ///< 每个规范化字节对应的原文字节
 };
 
 struct TableRow {
@@ -241,29 +242,46 @@ void parse_table_row(std::string_view line, size_t offset,
     TableRow row;
     row.offset = offset;
     std::string cell;
+    std::vector<size_t> source;
     bool escaped = false;
     auto push_cell = [&] {
         TableCell tc;
-        expand_row(tc.text, cell, 0, cell.size());
-        tc.text = std::string(trim_spaces(tc.text));
+        std::string_view remaining = cell;
+        unicode::Grapheme g;
+        int col = 0;
+        while (!remaining.empty()) {
+            const size_t at = cell.size() - remaining.size();
+            if (!unicode::next_grapheme(remaining, g)) break;
+            if (g.bytes == "\t") {
+                const int spaces = 8 - col % 8;
+                tc.text.append(static_cast<size_t>(spaces), ' ');
+                tc.source.insert(tc.source.end(), static_cast<size_t>(spaces), source[at]);
+                col += spaces;
+            } else {
+                tc.text += g.bytes;
+                tc.source.insert(tc.source.end(), source.begin() + static_cast<std::ptrdiff_t>(at),
+                                 source.begin() + static_cast<std::ptrdiff_t>(at + g.bytes.size()));
+                col += g.width;
+            }
+        }
+        const auto trimmed = trim_spaces(tc.text);
+        const auto begin = static_cast<size_t>(trimmed.data() - tc.text.data());
+        tc.source = std::vector<size_t>(tc.source.begin() + static_cast<std::ptrdiff_t>(begin),
+            tc.source.begin() + static_cast<std::ptrdiff_t>(begin + trimmed.size()));
+        tc.text = std::string(trimmed);
         row.cells.push_back(std::move(tc));
-        cell.clear();
+        cell.clear(); source.clear();
     };
-    for (char c : line) {
+    for (size_t i = 0; i < line.size(); ++i) {
+        const char c = line[i];
         if (escaped) {
-            cell += c;
+            cell += c; source.push_back(offset + i);
             escaped = false;
             continue;
         }
-        if (c == '\\') {
-            escaped = true;
-            continue;
-        }
-        if (c == '|') {
-            push_cell();
-            continue;
-        }
-        cell += c;
+        if (c == '\\') { escaped = true; continue; }
+        if (c == '|') { push_cell(); continue; }
+        cell += c; source.push_back(offset + i);
     }
     push_cell();
     if (!row.cells.empty() && row.cells.front().text.empty()) {
@@ -291,9 +309,10 @@ std::vector<TableRow> parse_table(std::string_view src) {
         std::string_view line =
             nl == std::string_view::npos ? src.substr(pos) : src.substr(pos, nl - pos);
         pos = nl == std::string_view::npos ? src.size() : nl + 1;
+        const auto raw = line;
         line = trim_spaces(drop_cr(line));
         if (line.empty()) continue;
-        parse_table_row(line, start, rows);
+        parse_table_row(line, start + static_cast<size_t>(line.data() - raw.data()), rows);
     }
     return rows;
 }
@@ -1042,6 +1061,7 @@ void MarkdownStream::finish() {
 struct CellPiece {
     std::string text;
     Style style;
+    size_t src;
 };
 struct CellView {
     std::vector<CellPiece> pieces;
@@ -1049,17 +1069,27 @@ struct CellView {
 };
 
 /// @brief 解析单元格行内标记，返回显示片段与显示宽度。
-CellView layout_cell(const std::string& text, const Style& base,
+CellView layout_cell(const TableCell& cell, const Style& base,
                      const ThemeTokens& theme, MdSegment& seg) {
     seg.reset(0);
     seg.base = base;
-    seg.add_piece(0, text);
+    seg.add_piece(0, cell.text);
     InlineParser(seg, theme).parse(0, seg.comb.size(), base, 0);
     CellView v;
     for (size_t i = 0; i < seg.runs.size(); ++i) {
         const size_t b = seg.runs[i].disp;
         const size_t e = i + 1 < seg.runs.size() ? seg.runs[i + 1].disp : seg.disp.size();
-        v.pieces.push_back({seg.disp.substr(b, e - b), seg.runs[i].style});
+        std::string_view rest = std::string_view(seg.disp).substr(b, e - b);
+        unicode::Grapheme g;
+        size_t at = b;
+        while (unicode::next_grapheme(rest, g)) {
+            const size_t src = cell.source[seg.src_of(at)];
+            const auto style = seg.runs[i].style;
+            if (!v.pieces.empty() && v.pieces.back().style == style &&
+                v.pieces.back().src + v.pieces.back().text.size() == src) v.pieces.back().text += g.bytes;
+            else v.pieces.push_back({std::string(g.bytes), style, src});
+            at += g.bytes.size();
+        }
     }
     v.width = display_width(seg.disp);
     return v;
@@ -1069,14 +1099,14 @@ CellView layout_cell(const std::string& text, const Style& base,
 void emit_cell(SpanBuilder& w, const CellView& v, int cols, const Style& base) {
     int used = 0;
     if (v.width <= cols) {
-        for (const CellPiece& p : v.pieces) w.add(p.text, p.style);
+        for (const CellPiece& p : v.pieces) w.add(p.text, p.style, p.src);
         used = v.width;
     } else {
         int room = cols - 1;
         for (const CellPiece& p : v.pieces) {
             if (room <= 0) break;
             const std::string_view part = take_cols(p.text, room);
-            w.add(part, p.style);
+            w.add(part, p.style, p.src);
             const int pw = display_width(part);
             room -= pw;
             used += pw;
@@ -1183,7 +1213,7 @@ size_t TableRenderer::render(const Block& block, int width, const ThemeTokens& t
         const Style& base = first_row ? header : body;
         first_row = false;
         for (const TableCell& c : rows[i].cells) {
-            views[i].push_back(layout_cell(c.text, base, theme, seg));
+            views[i].push_back(layout_cell(c, base, theme, seg));
             const size_t j = views[i].size() - 1;
             natural[j] = std::max(natural[j], views[i][j].width);
         }

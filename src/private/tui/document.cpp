@@ -338,6 +338,16 @@ std::optional<size_t> Document::row_of(uint64_t block_id, size_t byte_in_block,
     Block& b = blocks_[*idx];
     ensure_rows(b, theme);
     const size_t base = prefix_[*idx] + margin_rows(b);
+    if (!b.rows.empty() && b.rows.front().reordered) {
+        for (size_t row = 0; row < b.rows_valid; ++row) {
+            bool found = false;
+            walk_line(b.rows[row], b.source,
+                [&](int, int, size_t byte, bool content, std::string_view, const Span&) {
+                    if (content && byte == byte_in_block) found = true;
+                });
+            if (found) return base + row;
+        }
+    }
     const auto first = b.rows.begin();
     const auto last = first + static_cast<std::ptrdiff_t>(b.rows_valid);
     const auto it = std::upper_bound(
@@ -415,6 +425,12 @@ void Document::evict_outside(size_t first, size_t count) noexcept {
             b.rows_bytes = 0;
         }
     }
+}
+
+bool Document::block_visible(uint64_t id, size_t first, size_t count) const noexcept {
+    const auto i = index_of(id);
+    return i && content_rows(blocks_[*i]) > 0 && count > 0 &&
+        prefix_[*i] + margin_rows(blocks_[*i]) < first + count && prefix_[*i + 1] > first;
 }
 
 // ---- 选择 ----

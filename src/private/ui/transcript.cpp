@@ -2,6 +2,7 @@
 #include "ui/display.hpp"
 #include "ui/strings.hpp"
 #include "ui/appearance.hpp"
+#include "ui/center.hpp"
 
 #include <algorithm>
 #include <cctype>
@@ -307,14 +308,15 @@ class DiffBodyRenderer final : public tui::BlockRenderer {
         int number = 0;
         char sign = ' ';
         bool hunk = false;
+        int old_number = 0;
     };
     struct Diff {
         std::vector<Row> rows;
-        int digits = 1;
+        int digits = 1, side_digits = 1;
     };
     static Diff parse(std::string_view source) {
         Diff diff;
-        int old_line = 0, new_line = 0, largest = 0, hunks = 0;
+        int old_line = 0, new_line = 0, largest = 0, largest_old = 0, hunks = 0;
         bool starts_at_one = false;
         for (size_t at = 0; at < source.size();) {
             const auto end = std::min(source.find('\n', at), source.size());
@@ -337,10 +339,12 @@ class DiffBodyRenderer final : public tui::BlockRenderer {
                        (line.front() == '+' || line.front() == '-' || line.front() == ' ')) {
                 const char sign = line.front();
                 const int number = sign == '-' ? old_line : new_line;
+                const int old_number = old_line;
                 if (sign != '+') ++old_line;
                 if (sign != '-') ++new_line;
                 largest = std::max(largest, number);
-                diff.rows.push_back({line.substr(1), at + 1, number, sign});
+                if (sign != '+') largest_old = std::max(largest_old, old_number);
+                diff.rows.push_back({line.substr(1), at + 1, number, sign, false, old_number});
             } else {
                 diff.rows.push_back({line, at});
             }
@@ -349,22 +353,84 @@ class DiffBodyRenderer final : public tui::BlockRenderer {
         if (hunks == 1 && starts_at_one)
             std::erase_if(diff.rows, [](const Row& row) { return row.hunk; });
         diff.digits = static_cast<int>(std::to_string(largest).size());
+        diff.side_digits = static_cast<int>(std::to_string(std::max(largest, largest_old)).size());
         return diff;
     }
+    struct Pair { const Row* left; const Row* right; };
+    static std::vector<Pair> pair_rows(const Diff& diff) {
+        std::vector<Pair> result;
+        for (size_t i = 0; i < diff.rows.size();) {
+            const auto& row = diff.rows[i];
+            if (row.sign == '-' || row.sign == '+') {
+                const auto begin = i;
+                while (i < diff.rows.size() && diff.rows[i].sign == '-') ++i;
+                const auto added = i;
+                while (i < diff.rows.size() && diff.rows[i].sign == '+') ++i;
+                for (size_t n = 0; n < std::max(added - begin, i - added); ++n)
+                    result.push_back({n < added - begin ? &diff.rows[begin + n] : nullptr,
+                                      n < i - added ? &diff.rows[added + n] : nullptr});
+            } else { result.push_back({&row, &row}); ++i; }
+        }
+        return result;
+    }
+    size_t render_split(const tui::Block& block, int width, const tui::ThemeTokens& theme,
+                        const Diff& diff, std::vector<tui::Line>& out) const {
+        const int left_width = (width - 1) / 2;
+        const auto side = [&](tui::Line& line, const Row* row, bool right, int cols) {
+            if (!row) { line.spans.push_back({std::string(static_cast<size_t>(cols), ' '), theme.text, tui::k_no_src}); return; }
+            auto code = row->sign == '+' ? theme.diff_added : row->sign == '-' ? theme.diff_removed : theme.text;
+            auto muted = theme.text_muted;
+            if (row->sign != ' ') code.bg = muted.bg = diff_background(theme, row->sign == '+');
+            const int number = right ? row->number : row->old_number;
+            line.spans.push_back({number ? std::format("{:>{}} ", number, diff.side_digits)
+                                        : std::string(static_cast<size_t>(diff.side_digits + 1), ' '), muted, tui::k_no_src});
+            line.spans.push_back({row->sign == '-' ? std::string(icons().minus) + " " : row->sign == '+' ? "+ " : "  ", code, tui::k_no_src});
+            const int room = cols - diff.side_digits - 3;
+            std::string value;
+            tui::expand_row(value, row->code, 0, row->code.size());
+            const bool clipped = display_width(value) > room;
+            if (clipped) value = fit(value, room - 1);
+            const int used = display_width(value) + (clipped ? 1 : 0);
+            line.spans.push_back({std::move(value), code, row->offset});
+            if (clipped) line.spans.push_back({"…", code, tui::k_no_src});
+            line.spans.push_back({std::string(static_cast<size_t>(room - used), ' '), code, tui::k_no_src});
+        };
+        for (const auto& pair : pair_rows(diff)) {
+            tui::Line line;
+            const auto* row = pair.left ? pair.left : pair.right;
+            line.offset = row->offset; line.reordered = true;
+            if (row->hunk) {
+                line.spans.push_back({fit_columns("⋯" + (row->code.empty() ? std::string{} : " " + std::string(row->code)), width),
+                                      theme.text_muted, tui::k_no_src});
+            } else {
+                side(line, pair.left, false, left_width);
+                line.spans.push_back({"│", theme.text_muted, tui::k_no_src});
+                side(line, pair.right, true, width - left_width - 1);
+            }
+            line.width = width;
+            out.push_back(std::move(line));
+        }
+        if (block.collapsed && out.size() > block.collapsed_rows) out.resize(block.collapsed_rows);
+        return out.size();
+    }
 public:
+    static int available_width(int width) { return std::clamp(width - 4, 0, 176); }
+    static int required_width(std::string_view source) { return 2 * (parse(source).side_digits + 63) + 1; }
     tui::WrapResult measure(std::string_view source, size_t from, int width) const override {
         if (from >= source.size()) return {};
         const auto diff = parse(source);
+        if ((width - 1) / 2 - diff.side_digits - 3 >= 60) return {pair_rows(diff).size(), 0, 0};
         size_t rows = 0;
         for (const auto& row : diff.rows)
             rows += row.hunk ? 1 : std::max(size_t{1}, tui::wrap_measure_from(
-                row.code, 0, std::max(1, width - 2 - (row.number ? diff.digits + 3 : 0))).rows);
+                row.code, 0, std::max(1, width - 2 - (row.number ? diff.side_digits + 3 : 0))).rows);
         return {rows, 0, 0};
     }
     size_t render(const tui::Block& block, int width, const tui::ThemeTokens& theme,
                   size_t, size_t, std::vector<tui::Line>& out) const override {
         out.clear();
         const auto diff = parse(block.source);
+        if ((width - 1) / 2 - diff.side_digits - 3 >= 60) return render_split(block, width, theme, diff, out);
         for (const auto& row : diff.rows) {
             const int prefix = 2 + (row.number ? diff.digits + 3 : 0);
             const int room = std::max(1, width - prefix);
@@ -390,7 +456,9 @@ public:
                     const auto number = at == 0 ? std::format("{:>{}}", row.number, diff.digits)
                                                : std::string(static_cast<size_t>(diff.digits), ' ');
                     line.spans.push_back({number + " ", muted, tui::k_no_src});
-                    line.spans.push_back({std::string(1, at == 0 ? row.sign : ' ') + " ", code, tui::k_no_src});
+                    const auto sign = at == 0 && row.sign == '-' ? std::string(icons().minus)
+                                                                 : std::string(1, at == 0 ? row.sign : ' ');
+                    line.spans.push_back({sign + " ", code, tui::k_no_src});
                 }
                 const auto edge = tui::wrap_next_row(row.code, at, room);
                 std::string value;
@@ -432,6 +500,170 @@ private:
     std::unique_ptr<tui::BlockRenderer> inner_;
 };
 
+struct LinkRange {
+    size_t begin, end;
+    uint32_t id;
+    bool underline;
+};
+
+uint32_t file_link(std::string_view name, const std::filesystem::path& project) {
+    if (name.empty() || project.empty()) return 0;
+    std::error_code ec;
+    const auto path = std::filesystem::canonical(project / std::filesystem::path(name), ec);
+    if (ec || !std::filesystem::is_regular_file(path, ec)) return 0;
+    const auto relative = path.lexically_relative(project);
+    if (relative.empty() || *relative.begin() == "..") return 0;
+    std::string uri = "file://";
+    constexpr char hex[] = "0123456789ABCDEF";
+    for (const unsigned char c : path.generic_string()) {
+        if (std::isalnum(c) || c == '/' || c == '-' || c == '_' || c == '.' || c == '~') uri += static_cast<char>(c);
+        else { uri += '%'; uri += hex[c >> 4]; uri += hex[c & 15]; }
+    }
+    return tui::intern_hyperlink(uri);
+}
+
+std::vector<LinkRange> find_links(const tui::Block& block, const std::filesystem::path& project) {
+    const std::string_view source = block.source;
+    std::vector<LinkRange> links;
+    const auto add = [&](size_t begin, size_t end, uint32_t id, bool underline) {
+        if (id && begin < end) links.push_back({begin, end, id, underline});
+    };
+    // 与 Markdown 渲染器的行内链接语法一致；工具原文也可链接其 label。
+    for (size_t at = 0; (at = source.find('[', at)) != std::string_view::npos; ++at) {
+        const auto close = source.find(']', at + 1);
+        if (close == std::string_view::npos || close + 1 >= source.size() || source[close + 1] != '(') continue;
+        const auto end = source.find(')', close + 2);
+        if (end == std::string_view::npos) continue;
+        auto target = source.substr(close + 2, end - close - 2);
+        if (target.starts_with('<') && target.ends_with('>')) target = target.substr(1, target.size() - 2);
+        auto id = tui::intern_hyperlink(target);
+        if (!id) id = file_link(target, project);
+        add(at + 1, close, id, true);
+        at = end;
+    }
+    // 卡片参数可为含空格的完整文件名。
+    if (block.meta.starts_with("tool.") && source.starts_with('\x1e')) {
+        const auto begin = source.find('\t'), end = source.find('\t', begin + 1);
+        if (begin != std::string_view::npos && end != std::string_view::npos)
+            add(begin + 1, end, file_link(source.substr(begin + 1, end - begin - 1), project), false);
+    }
+    const auto delimiter = [](unsigned char c) {
+        return c <= 0x20 || c == 0x7f || c == '`' || c == '"' || c == '\'' || c == '<' || c == '>' ||
+               c == '[' || c == ']' || c == '(' || c == ')' || c == '{' || c == '}' || c == '=' || c == ',' || c == ';';
+    };
+    for (size_t at = 0; at < source.size();) {
+        if (delimiter(static_cast<unsigned char>(source[at]))) { ++at; continue; }
+        const size_t begin = at;
+        const bool url = source.substr(at).starts_with("https://") || source.substr(at).starts_with("http://");
+        if (url) {
+            int parentheses = 0;
+            while (at < source.size()) {
+                const auto c = static_cast<unsigned char>(source[at]);
+                if (c <= 0x20 || c == 0x7f || c == '`' || c == '"' || c == '\'' || c == '<' || c == '>' || c == '[' || c == ']') break;
+                if (c >= 0x80) {
+                    auto rest = source.substr(at);
+                    const auto cp = tui::unicode::decode_utf8(rest);
+                    if ((cp >= 0x3000 && cp <= 0x303f) || (cp >= 0xff01 && cp <= 0xff65)) break;
+                }
+                if (c == '(') ++parentheses;
+                if (c == ')' && --parentheses < 0) break;
+                ++at;
+            }
+        } else while (at < source.size() && !delimiter(static_cast<unsigned char>(source[at]))) ++at;
+        size_t end = at;
+        while (end > begin && (source[end - 1] == '.' || source[end - 1] == ':' || source[end - 1] == '!' || source[end - 1] == '?' || source[end - 1] == ',' || source[end - 1] == ';')) --end;
+        if (url) add(begin, end, tui::intern_hyperlink(source.substr(begin, end - begin)), true);
+        else {
+            const auto colon = source.substr(begin, end - begin).find(':');
+            if (colon != std::string_view::npos) end = begin + colon;
+            const auto name = source.substr(begin, end - begin);
+            if (name.find('.') != std::string_view::npos || name.find('/') != std::string_view::npos)
+                add(begin, end, file_link(name, project), false);
+        }
+    }
+    std::stable_sort(links.begin(), links.end(), [](const auto& a, const auto& b) { return a.begin < b.begin; });
+    return links;
+}
+
+void link_line(tui::Line& line, std::string_view source, const std::vector<LinkRange>& links) {
+    std::vector<tui::Span> spans;
+    for (auto& span : line.spans) {
+        if (span.src == tui::k_no_src) { spans.push_back(std::move(span)); continue; }
+        size_t pos = span.src;
+        int tab_left = 0;
+        std::string_view remaining = span.text;
+        tui::unicode::Grapheme g;
+        while (tui::unicode::next_grapheme(remaining, g)) {
+            auto style = span.style;
+            for (const auto& link : links) {
+                if (link.begin > pos) break;
+                if (pos < link.end) {
+                    style.hyperlink = link.id;
+                    if (link.underline) style.attrs = style.attrs | tui::Attr::underline;
+                    break;
+                }
+            }
+            if (!spans.empty() && spans.back().style == style && spans.back().src != tui::k_no_src &&
+                spans.back().src + spans.back().text.size() == pos) spans.back().text += g.bytes;
+            else spans.push_back({std::string(g.bytes), style, pos});
+            if (pos < source.size() && source[pos] == '\t') {
+                if (!tab_left) {
+                    const auto start = source.rfind('\n', pos);
+                    auto prefix = source.substr(start == std::string_view::npos ? 0 : start + 1,
+                        pos - (start == std::string_view::npos ? 0 : start + 1));
+                    int col = 0;
+                    tui::unicode::Grapheme before;
+                    while (tui::unicode::next_grapheme(prefix, before))
+                        col += before.bytes == "\t" ? 8 - col % 8 : before.width;
+                    tab_left = 8 - col % 8;
+                }
+                if (!--tab_left) ++pos;
+            } else if (pos < source.size()) {
+                auto rest = source.substr(pos);
+                tui::unicode::Grapheme original;
+                if (tui::unicode::next_grapheme(rest, original)) pos += original.bytes.size();
+            }
+        }
+    }
+    line.spans = std::move(spans);
+}
+
+// 普通块仍使用原阅读栏；双栏 diff body 在主区两侧留白，限宽并同轴居中。
+class TranscriptRenderer final : public tui::BlockRenderer {
+public:
+    TranscriptRenderer(std::unique_ptr<tui::BlockRenderer> inner, bool wide, bool links,
+                       const std::filesystem::path& project)
+        : inner_(std::move(inner)), wide_(wide), links_(links), project_(project) {}
+    int columns(std::string_view source, int width) const {
+        const int diff_width = DiffBodyRenderer::available_width(width);
+        return wide_ && diff_width >= DiffBodyRenderer::required_width(source) ? diff_width : reading_width(width);
+    }
+    tui::WrapResult measure(std::string_view source, size_t from, int width) const override {
+        auto result = inner_->measure(source, from, columns(source, width));
+        // URL 可能跨增量片段增长；变化的块重新物化链接，其他块仍走缓存。
+        if (links_) result.stable_rows = result.stable_bytes = 0;
+        return result;
+    }
+    size_t render(const tui::Block& block, int width, const tui::ThemeTokens& theme,
+                  size_t from, size_t valid, std::vector<tui::Line>& out) const override {
+        const int cols = columns(block.source, width);
+        const auto count = inner_->render(block, cols, theme, from, valid, out);
+        const auto links = links_ ? find_links(block, project_) : std::vector<LinkRange>{};
+        for (size_t i = valid; i < count; ++i) {
+            if (!links.empty()) link_line(out[i], block.source, links);
+            const int inset = (width - cols) / 2;
+            if (inset) out[i].spans.insert(out[i].spans.begin(),
+                {std::string(static_cast<size_t>(inset), ' '), theme.background, tui::k_no_src});
+            out[i].width += inset;
+        }
+        return count;
+    }
+private:
+    std::unique_ptr<tui::BlockRenderer> inner_;
+    bool wide_, links_;
+    const std::filesystem::path& project_;
+};
+
 bool not_executed(std::string_view text) {
     constexpr std::string_view skipped[] = {kDenied, kDeniedWithFeedback, kPolicyDenied,
                                             kApprovalUnavailable, kPriorDenied, kToolLimit};
@@ -457,17 +689,39 @@ Transcript::Transcript(tui::Document& doc, std::function<void(const TodoList&)> 
                        std::function<void(const FileChangeView&)> changed,
                        std::function<void(const std::string&)> user)
     : doc_(doc), on_changed_(std::move(changed)), on_user_(std::move(user)), on_todo_(std::move(todo)) {
-    doc_.set_renderer(tui::BlockKind::text, std::make_unique<ChatRenderer>(frame_, doc_));
-    doc_.set_renderer(tui::BlockKind::output,
-                      std::make_unique<UserRenderer>());
-    doc_.set_renderer(tui::BlockKind::diff,
-                      std::make_unique<DiffBodyRenderer>());
-    doc_.set_renderer(tui::BlockKind::code,
-                      std::make_unique<GutterRenderer>(std::make_unique<tui::SyntaxRenderer>()));
-    doc_.set_renderer(tui::BlockKind::markdown,
-                      std::make_unique<GutterRenderer>(std::make_unique<tui::MarkdownRenderer>()));
-    doc_.set_renderer(tui::BlockKind::table,
-                      std::make_unique<GutterRenderer>(std::make_unique<tui::TableRenderer>()));
+    install_renderers();
+}
+
+void Transcript::install_renderers() {
+    const auto install = [&](tui::BlockKind kind, std::unique_ptr<tui::BlockRenderer> renderer) {
+        doc_.set_renderer(kind, std::make_unique<TranscriptRenderer>(std::move(renderer),
+            kind == tui::BlockKind::diff && auto_diff_ && !unified_,
+            links_ && kind != tui::BlockKind::output && kind != tui::BlockKind::diff, project_));
+    };
+    install(tui::BlockKind::text, std::make_unique<ChatRenderer>(frame_, doc_));
+    install(tui::BlockKind::output, std::make_unique<UserRenderer>());
+    install(tui::BlockKind::diff, std::make_unique<DiffBodyRenderer>());
+    install(tui::BlockKind::code, std::make_unique<GutterRenderer>(std::make_unique<tui::SyntaxRenderer>()));
+    install(tui::BlockKind::markdown, std::make_unique<GutterRenderer>(std::make_unique<tui::MarkdownRenderer>()));
+    install(tui::BlockKind::table, std::make_unique<GutterRenderer>(std::make_unique<tui::TableRenderer>()));
+}
+
+void Transcript::set_render_options(bool auto_diff, bool unified, bool links, std::filesystem::path project) {
+    if (auto_diff_ == auto_diff && unified_ == unified && links_ == links && project_ == project) return;
+    auto_diff_ = auto_diff; unified_ = unified; links_ = links;
+    std::error_code ec;
+    project_ = std::filesystem::canonical(project, ec);
+    if (ec) project_.clear();
+    install_renderers();
+}
+
+bool Transcript::can_switch_diff(const tui::Scrollback& scroll, bool visible_only) const {
+    if (!auto_diff_) return false;
+    const int width = DiffBodyRenderer::available_width(scroll.rect().w);
+    return std::ranges::any_of(tools_, [&](const auto& entry) {
+        const auto& tool = entry.second;
+        return tool.diff_width > 0 && width >= tool.diff_width && (!visible_only || scroll.block_visible(tool.body));
+    });
 }
 
 void Transcript::refresh_icons() {
@@ -571,6 +825,7 @@ Transcript::ToolBlocks& Transcript::tool(const std::string& id, const std::strin
         body_block.kind = body_kind(name); body_block.open = true;
         body_block.meta = "tool.body"; body_block.group = blocks.group;
         blocks.body = doc_.append_block(std::move(body_block));
+        if (body_kind(name) == tui::BlockKind::diff) blocks.diff_width = 129;
         tui::Block fold_block;
         fold_block.meta = "tool.fold"; fold_block.group = blocks.group;
         blocks.fold = doc_.append_block(std::move(fold_block));
@@ -705,6 +960,7 @@ void Transcript::finished(const ToolFinished& event) {
     if (blocks.task) refresh_task_body(blocks);
     else doc_.replace(blocks.body, base::to_valid_utf8(body));
     doc_.close_block(blocks.body);
+    if (blocks.diff_width) blocks.diff_width = DiffBodyRenderer::required_width(doc_.find(blocks.body)->source);
     if (icon_source) icon_sources_[blocks.body] = std::move(icon_source);
     blocks.rows = rows; blocks.finished = true;
     collapse(blocks);
@@ -845,7 +1101,11 @@ void Transcript::apply(const Event& event) {
         },
         [&](const ToolStarted& e) { finish_message(); tool(e.id, e.name, e.summary); },
         [&](const ToolOutput& e) {
-            if (auto it = tools_.find(e.id); it != tools_.end()) doc_.append(it->second.body, e.chunk);
+            if (auto it = tools_.find(e.id); it != tools_.end()) {
+                doc_.append(it->second.body, e.chunk);
+                if (it->second.diff_width)
+                    it->second.diff_width = DiffBodyRenderer::required_width(doc_.find(it->second.body)->source);
+            }
         },
         [&](const ToolFinished& e) { finished(e); },
         [&](const Compacted& e) {

@@ -45,11 +45,12 @@ Appearance Appearance::from_json(const nlohmann::json& j) {
     a.background = j.value("background", a.background); a.accent = j.value("accent", a.accent);
     a.panels = j.value("panels", a.panels); a.density = j.value("density", a.density);
     a.icons = j.value("icons", a.icons); a.sidebar = j.value("sidebar", a.sidebar);
+    a.diff = j.value("diff", a.diff); a.links = j.value("links", a.links);
     return a;
 }
 nlohmann::json Appearance::json() const {
     nlohmann::json j{{"theme", theme}, {"mode", mode}, {"background", background},
-                     {"panels", panels}, {"density", density}, {"icons", icons}, {"sidebar", sidebar}};
+                     {"panels", panels}, {"density", density}, {"icons", icons}, {"sidebar", sidebar}, {"diff", diff}, {"links", links}};
     if (!accent.empty()) j["accent"] = accent;
     return j;
 }

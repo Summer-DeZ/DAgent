@@ -22,6 +22,8 @@ struct Strings {
     std::string_view changed_more;
     std::string_view hint_commands;
     std::string_view hint_sidebar;
+    std::string_view hint_diff_unified;
+    std::string_view hint_diff_split;
     std::string_view hint_mode;
     std::string_view hint_interrupt;
     std::string_view hint_recall;
@@ -44,6 +46,8 @@ struct Strings {
     std::string_view settings_density;
     std::string_view settings_icons;
     std::string_view settings_sidebar;
+    std::string_view settings_diff;
+    std::string_view settings_links;
     std::string_view settings_custom;
     std::string_view settings_default;
     std::string_view settings_invalid;
@@ -181,6 +185,7 @@ struct Strings {
     std::string_view cmd_cancel;
     std::string_view cmd_permission;
     std::string_view cmd_tools;
+    std::string_view cmd_diff;
     std::string_view cmd_todo;
     std::string_view cmd_page_up;
     std::string_view cmd_page_down;

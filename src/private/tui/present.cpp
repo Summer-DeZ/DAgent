@@ -106,6 +106,7 @@ void render_frame(std::string& out, const Surface& back, const Surface& front,
 
     // 帧首样式处于默认态
     Style current{};
+    uint32_t link = 0;
     const int cols = back.cols();
     const int rows = back.rows();
     // 尺寸错位或强制全量时逐行整行写出
@@ -139,12 +140,19 @@ void render_frame(std::string& out, const Surface& back, const Surface& front,
             if (c.width == 0) {
                 continue; // 宽字符右半不单独输出
             }
+            if (c.style.hyperlink != link) {
+                if (link) out += "\x1b]8;;\x1b\\";
+                link = c.style.hyperlink;
+                const auto uri = hyperlink_uri(link);
+                if (!uri.empty()) { out += "\x1b]8;;"; out += uri; out += "\x1b\\"; }
+            }
             if (!(c.style == current)) {
                 append_sgr(out, current, c.style, opt.truecolor);
                 current = c.style;
             }
             out += c.grapheme();
         }
+        if (link) { out += "\x1b]8;;\x1b\\"; link = 0; }
     }
 
     // 帧末归零样式

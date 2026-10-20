@@ -3,7 +3,8 @@
 `dagent` 不带子命令时进入全屏终端界面。公开头文件在 `src/public/ui/`，实现在 `src/private/ui/`，
 库为 `dagent_ui`，只依赖 client、protocol、tui 与 base。界面运行在前端进程，只持有 `client::Client`、协议 DTO
 与页面状态：业务操作都经 [私有协议](protocol.md) 发给自己的后端，执行状态、队列、模式与模型的真值都在后端 runtime。
-它只使用冻结的 [TUI 框架](tui-framework.md)，没有为应用视觉增加框架原语。
+它使用 [TUI 框架](tui-framework.md)；phase 4 解冻框架，新增通用超链接样式和块可见性查询，
+双栏 diff、文件解析与阅读栏宽度策略仍放在应用层。
 
 界面 chrome 使用英文，统一来自 `ui/strings.hpp` 的 `Strings` 和 `ui/strings.cpp` 的常量表。
 `text()` 只返回英文表的常量引用；字段全为 `string_view`，格式串使用显式参数索引，由 `format_text()` 格式化。
@@ -44,7 +45,7 @@ LayerStack
    ├─ AgentTabs                         content，有子 Pane 时 2 行（标签 + primary 下划线）
    ├─ Workspace(horizontal)             主区 + SidePanel（可左右交换）
    │  ├─ Container(vertical)            主区
-   │  │  ├─ Center(ScrollFrame)         flex 1，WelcomeView / Scrollback，内容栏最大 88 列
+   │  │  ├─ ScrollFrame                 flex 1，主区全宽；WelcomeView / Scrollback
    │  │  ├─ Center(Activity)            content，空闲高度 0
    │  │  ├─ Center(QueueLabel)          content，有排队输入时 1 行，最多 3 个 Chip + 余数
    │  │  └─ Center(PromptBox)           content，1–8 行正文；密度/面板样式决定留白与边框
@@ -54,7 +55,10 @@ LayerStack
 ```
 
 `centered()` 在主区至少留四列边距，内容栏最大 88 列；主区窄于 44 列时取消边距。
-对话、活动、排队和输入使用同一宽度与左缘。侧栏被收起或终端少于 80 列时宽度为 0；
+普通对话块、欢迎页、活动、排队和输入使用同一宽度与左缘。ScrollFrame 占满主区，
+TranscriptRenderer 在每种块的测量与物化阶段保留该阅读宽度，并用无源空白 span 居中；
+只有满足阈值的双栏 diff 主体可超出阅读栏：主区两侧各至少留 2 列，主体总宽度最多 176 列，与 88 列阅读栏同轴居中。
+工具标题、统一 diff 与折叠 footer 仍为原宽度。侧栏被收起或终端少于 80 列时宽度为 0；
 80–99 列占 26 列，至少 100 列占 30 列。HeaderBar、AgentTabs 与 HintBar 始终铺满终端；Sidebar 左右交换不影响主区的居中规则。
 
 新建且尚未发送消息的会话由 ScrollFrame 显示独立 WelcomeView，不向 Transcript 写欢迎 Banner；
@@ -66,7 +70,7 @@ LayerStack
 
 ## 2. 外观与设置
 
-`ui.appearance` 的八个可选字段为 theme、mode、background、accent、panels、density、icons、sidebar，
+`ui.appearance` 的十个可选字段为 theme、mode、background、accent、panels、density、icons、sidebar、diff、links，
 默认值与校验见 [app 配置](app.md)。当 theme 缺省时继续使用 `ui.theme_file`；两者都没有时使用 dagent。
 预设 dagent、midnight、paper 从 Home 的 `themes/<name>.json` 加载；自定义路径相对 Home。
 文件格式保留 name、defs、dark、light，缺失令牌由应用层 `builtin_theme()` 补足。
@@ -89,7 +93,9 @@ compact 取消 Transcript 块间距和侧栏分节空行，PromptBox 去掉两�
 Ctrl+T 只改变本次会话的侧栏显示状态，不写配置；设置 Esc 撤回也恢复打开前的临时显示状态。
 
 `/settings` 和命令面板的 Settings 打开居中圆角浮层（最大 100×24）。左侧只有 Appearance，
-中间八行选项，右侧是静态 token 预览；终端少于 80 列时不画预览，短终端滚动选项。
+中间十行选项（新增 Diff 与 Links），右侧是 token 预览；终端少于 80 列时不画预览，短终端滚动选项。
+Diff 行循环 auto / unified，Links 行循环 on / off，均即时预览并走同一保存/撤回路径。
+选中 Diff 时，预览区显示两行双栏样例（增删行与上下文），不受样例窄宽度的实际 diff 阈值限制。
 上下选择，左右循环；背景支持 solid / transparent / custom，强调色向右依次为 theme default →
 orange → blue → violet → green → custom，向左反向；预设显示名称，custom 显示十六进制值。
 选中 custom 后 Enter 编辑十六进制字段；不合法的输入以 error 显示且不应用。
@@ -100,7 +106,7 @@ Esc / Ctrl+C 还原打开前外观，不写文件。保存请求已发出时锁�
 
 应用图标集中在 `ui/appearance` 的一张表：Unicode 为默认，Nerd 使用品牌、分支、勾、叉、点和文件夹
 专用字体码位；ASCII 品牌使用 `*`、分支使用 `|/`，其余使用 `v x - > o # | +` 与 ASCII spinner。应用自己的活动行与框线使用该表，
-框架接口保持冻结。正文与工具输出本身不做字体转换。
+正文与工具输出本身不做字体转换。
 
 默认 dagent 的中性黑灰/暖白与橙色来源见 [OpenCode 主题分析](opencode-theme.md)；midnight 为冷紫，
 paper 为暖纸色，均提供明暗变体。层次通过亮度、间距、字重和 Chip 表达。
@@ -172,6 +178,7 @@ token 数为零时只显示阶段与耗时（如 `Working · 0.1s`）；有输�
 | Shift+Tab | 按 ask → workspace → unrestricted → ask 循环权限模式；unrestricted 用 error 色警示 |
 | Ctrl+G | 进入或退出 plan 模式 |
 | Ctrl+O | Expand tool output（已完成工具输出展开/折叠） |
+| Ctrl+D | Toggle side-by-side diff（auto 且有宽度足够的 diff 卡片时，本次会话切换双栏/统一） |
 | Ctrl+R | Expand thoughts（全部思考展开/折叠） |
 | Ctrl+T | 收起或展开信息栏 |
 | Ctrl+A | Switch agent view（主会话与子 Agent Pane 切换） |
@@ -236,7 +243,30 @@ hunk 标题独占一行，以 muted 的 `⋯` 加第二个 `@@` 后的函数上�
 muted 数字列右对齐，列宽取整张卡片最大行号的位数；折行续行保留列宽但不重复行号与符号。
 新增、删除行在 gutter 之后从数字列到行末空白铺满底色，
 分别将 success / error 前景色以 15% 混入 background；transparent 用 background_panel 作混色基底。
-混色读取当前主题令牌，indexed 颜色先转 RGB，再由原终端输出路径量化为 256 色；不改框架。
+混色读取当前主题令牌，indexed 颜色先转 RGB，再由原终端输出路径量化为 256 色。
+
+`ui.appearance.diff` 默认 `auto`：先取主区宽度减 4 列与 176 列的较小值，再扣除各侧右对齐行号、空格、符号列和中央分隔符后，
+两侧各至少 60 个代码列才使用双栏；`unified` 或空间不足时继续使用上述统一视图。
+双栏左为旧文件、右为新文件，中间 muted `│`；上下文在两边显示各自行号，
+连续删除与紧随其后的连续新增按行配对，较短侧以无底色的空白补齐。
+删除侧使用 `−` 和 15% 删除底色，新增侧使用 `+` 和 15% 新增底色，底色仅覆盖自身一侧。
+双栏与统一视图的删除符号均取图标表的 minus：Unicode / Nerd 为 `−`，ASCII 为 `-`。
+长行按字素列宽裁剪并以 `…` 收尾，不折行。hunk 行横跨两侧，以 muted `⋯` 加函数上下文显示，
+省略首 hunk 的规则与统一视图相同。折叠阈值与 footer 剩余数使用双栏配对后的显示行数。
+Ctrl+D 在本次前端会话切换，主/子 Pane 共用临时状态，不改保存的 diff 值；窄宽度或 unified 配置下无效。
+命令面板 Transcript 分组登记 `Toggle side-by-side diff`。空闲 HintBar 仅在当前视口有可切换 diff 主体时
+增加 `ctrl+d unified` / `ctrl+d side by side`，滚动、切 Pane、侧栏移动和终端缩放后随可见性更新。
+
+`ui.appearance.links` 默认 `on`，`off` 禁用对话中的 OSC 8 链接。assistant 与工具文本中的裸 http(s) URL、
+Markdown 链接文本可点击；Markdown 表格也保留源偏移，因此同样支持链接与原文复制。
+assistant 文件引用、工具标题/参数中的文件引用，以及 edit/write 的文件名，仅在解析为项目内现存普通文件时
+链接到 `file://<绝对路径>`。规范化路径后检查项目边界，指向项目外的符号链接不生成文件链接；
+路径中需要转义的字节使用百分号编码，`:42` 等行号后缀只保留显示，不放进文件链接。
+链接保持原有颜色，仅 Markdown 链接文本和裸 URL 加下划线，文件名不额外加下划线。
+链接识别在块物化时进行，流式文本变化会刷新当前块的链接；用户消息、diff 代码不额外识别链接。
+工具原始输出继续保留原有排版，行内 Markdown 链接的 label 可点击；assistant Markdown 仍隐藏链接标记。
+OSC 8 的协议白名单、控制字符与长度限制由框架统一执行。
+
 Task 运行中与结束后共用标题：状态符、粗体 `Task`、两空格、text 色的 Agent 名、
 两空格、muted 任务描述，最右为 `N steps · M tools · S.Ss`；数量为 1 时分别使用 `1 step` / `1 tool`。
 描述按列省略并优先为统计让位。

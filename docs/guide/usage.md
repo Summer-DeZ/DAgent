@@ -136,7 +136,9 @@ DAgent 本身不加载背景图片。真彩终端显示精确颜色，256 色终
     "panels": "filled",
     "density": "compact",
     "icons": "unicode",
-    "sidebar": "left"
+    "sidebar": "left",
+    "diff": "auto",
+    "links": "on"
   }
 }
 ```
@@ -144,6 +146,19 @@ DAgent 本身不加载背景图片。真彩终端显示精确颜色，256 色终
 每个 appearance 字段均可省略；不写 appearance.theme 时继续使用旧 ui.theme_file。
 自定义主题文件路径相对 Home，格式见 [UI 设计](../design/ui.md#2-外观与设置)。
 直接编辑文件后重启生效；通过设置对话框保存无需重启。
+
+`ui.appearance.diff` 可选 `auto`（默认）或 `unified`，也可在 `/settings` 的 Diff 行切换。
+`auto` 在主区足够宽、每侧至少有 60 个代码列时，将 edit/write 卡片主体显示为左右对比；
+普通对话仍保持 88 列阅读宽度。窄屏自动回到统一 diff；Ctrl+D 临时切换两种视图，不改变保存值，
+Ctrl+O 仍负责展开/折叠。Diff 行右侧有两行双栏预览。
+
+`ui.appearance.links` 可选 `on`（默认）或 `off`，对应 `/settings` 的 Links 行。
+开启时 assistant 和工具文本中的网页链接，以及解析到项目内现存文件的引用/工具文件名，
+会输出终端可点击链接（OSC 8）；`:42` 等行号后缀仅作显示。
+网页链接和 Markdown 链接文字有下划线，文件名保持原样式。
+开启鼠标上报时，终端通常需要 **Ctrl+click 或 Cmd+click** 打开链接；具体取决于终端设置。
+不支持 OSC 8 的终端仍正常显示文本。Diff 和 Links 与其他外观项一样即时预览、Enter 保存、Esc 撤回。
+
 
 ## 网页调研
 

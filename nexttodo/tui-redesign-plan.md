@@ -1,6 +1,6 @@
 # TUI 改版计划
 
-设计日期：2026-10-20。状态：进行中。效果预览：[DAgent TUI 新界面设计](https://claude.ai/artifact/QVi4ezzk4oJpudJgZrESuB)（10 个画板）；OpenCode Go 登录与选模型见 [模型登录与请求头计划](model-auth-plan.md)。
+设计日期：2026-10-20。状态：已完成（第 1–4 期）。效果预览：[DAgent TUI 新界面设计](https://claude.ai/artifact/QVi4ezzk4oJpudJgZrESuB)（10 个画板）；OpenCode Go 登录与选模型见 [模型登录与请求头计划](model-auth-plan.md)。
 
 ## 1. 目标
 

@@ -3,6 +3,10 @@
 #include <algorithm>
 
 namespace dagent::ui {
+int reading_width(int available) noexcept {
+    return available < 44 ? std::max(0, available) : std::min(88, available - 4);
+}
+
 namespace {
 class CenterBox final : public tui::Widget {
 public:

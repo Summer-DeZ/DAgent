@@ -98,7 +98,9 @@
       "panels": "filled",
       "density": "comfortable",
       "icons": "unicode",
-      "sidebar": "right"
+      "sidebar": "right",
+      "diff": "auto",
+      "links": "on"
     },
     "completion_max_files": 5000,
     "theme_file": "themes/dagent.json"

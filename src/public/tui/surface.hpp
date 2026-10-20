@@ -72,8 +72,13 @@ struct Style {
     Color fg{};
     Color bg{};
     Attr attrs = Attr::none;
+    uint32_t hyperlink = 0; ///< intern_hyperlink() 返回的 id；0 = 无链接
     bool operator==(const Style&) const noexcept = default;
 };
+
+/// @brief 渲染线程专用的进程级 URI intern 表；非法 URI 返回 0，id 在进程内保持稳定。
+uint32_t intern_hyperlink(std::string_view uri);
+std::string_view hyperlink_uri(uint32_t id) noexcept;
 
 /// @brief 单元格。
 struct Cell {

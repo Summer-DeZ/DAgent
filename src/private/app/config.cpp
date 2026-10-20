@@ -256,7 +256,8 @@ const std::set<std::string>& known_keys() {
         "log.max_files", "log.level", "log.also_stderr", "progress.interval_ms",
         "permissions", "ui.theme_file", "ui.completion_max_files", "ui.appearance.theme", "ui.appearance.mode",
         "ui.appearance.background", "ui.appearance.accent", "ui.appearance.panels",
-        "ui.appearance.density", "ui.appearance.icons", "ui.appearance.sidebar", "sandbox.version", "sandbox.backend",
+        "ui.appearance.density", "ui.appearance.icons", "ui.appearance.sidebar",
+        "ui.appearance.diff", "ui.appearance.links", "sandbox.version", "sandbox.backend",
         "sandbox.host_access", "sandbox.startup_timeout_ms", "sandbox.network_approval_timeout_ms",
         "sandbox.max_network_requests_per_execution", "sandbox.allowed_targets", "sandbox.denied_targets",
         "mcp.connect_timeout_ms", "mcp.probe_timeout_ms",
@@ -946,7 +947,7 @@ nlohmann::json resolve_appearance(const nlohmann::json& input, const fs::path& r
     if (!input.is_object()) fail(ConfigError::Kind::type, "/ui/appearance must be an object");
     json result{{"theme", legacy_theme.empty() ? "dagent" : legacy_theme.string()},
                 {"mode", "auto"}, {"background", "solid"}, {"panels", "filled"},
-                {"density", "comfortable"}, {"icons", "unicode"}, {"sidebar", "right"}};
+                {"density", "comfortable"}, {"icons", "unicode"}, {"sidebar", "right"}, {"diff", "auto"}, {"links", "on"}};
     const auto hex = [](const std::string& value) {
         return value.size() == 7 && value[0] == '#' &&
             std::ranges::all_of(value.substr(1), [](unsigned char c) { return std::isxdigit(c); });
@@ -954,7 +955,7 @@ nlohmann::json resolve_appearance(const nlohmann::json& input, const fs::path& r
     const std::map<std::string, std::vector<std::string>> choices{
         {"mode", {"auto", "dark", "light"}}, {"panels", {"filled", "outline"}},
         {"density", {"comfortable", "compact"}}, {"icons", {"unicode", "nerd", "ascii"}},
-        {"sidebar", {"right", "left", "hidden"}}};
+        {"sidebar", {"right", "left", "hidden"}}, {"diff", {"auto", "unified"}}, {"links", {"on", "off"}}};
     for (auto it = input.begin(); it != input.end(); ++it) {
         const auto path = "/ui/appearance/" + it.key();
         if (!it->is_string()) fail(ConfigError::Kind::type, path + " must be a string");
