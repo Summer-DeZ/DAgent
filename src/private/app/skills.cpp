@@ -6,6 +6,7 @@
 
 #include <yaml-cpp/yaml.h>
 
+#include "base/frontmatter.hpp"
 #include "base/log.hpp"
 
 namespace dagent::app {
@@ -31,25 +32,13 @@ std::size_t characters(std::string_view value) {
 agent::SkillDefinition parse(const fs::path& file, const workspace::FileOptions& options) {
     const auto input = workspace::read_text(file, options);
     if (input.truncated || input.lossy) throw std::runtime_error("SKILL.md must fit the file read limit and contain valid UTF-8");
-    const std::string& text = input.content;
-    auto line = [&](std::size_t start, std::size_t end) {
-        auto value = std::string_view(text).substr(start, end - start);
-        if (value.ends_with('\r')) value.remove_suffix(1);
-        return value;
-    };
-    const auto first = text.find('\n');
-    if (first == std::string::npos || line(0, first) != "---")
-        throw std::runtime_error("SKILL.md must begin with YAML frontmatter (---)");
-    std::size_t end = first + 1, body = std::string::npos;
-    while (end < text.size()) {
-        const auto newline = text.find('\n', end);
-        const auto last = newline == std::string::npos ? text.size() : newline;
-        if (line(end, last) == "---") { body = newline == std::string::npos ? last : newline + 1; break; }
-        if (newline == std::string::npos) break;
-        end = newline + 1;
+    const auto parts = base::split_frontmatter(input.content);
+    if (!parts) {
+        throw std::runtime_error(parts.error() == base::FrontmatterError::missing_opening
+                                     ? "SKILL.md must begin with YAML frontmatter (---)"
+                                     : "missing closing YAML delimiter");
     }
-    if (body == std::string::npos) throw std::runtime_error("missing closing YAML delimiter");
-    const auto header = YAML::Load(text.substr(first + 1, end - first - 1));
+    const auto header = YAML::Load(std::string(parts->header));
     if (!header.IsMap()) throw std::runtime_error("frontmatter must be a mapping");
     agent::SkillDefinition skill;
     skill.file = file;
@@ -59,7 +48,7 @@ agent::SkillDefinition parse(const fs::path& file, const workspace::FileOptions&
         throw std::runtime_error("name must match the directory and use 1-64 lowercase letters, digits or single hyphens");
     if (skill.description.find_first_not_of(" \t\r\n") == std::string::npos || characters(skill.description) > 1024)
         throw std::runtime_error("description must contain 1-1024 characters");
-    skill.body = text.substr(body);
+    skill.body = parts->body;
     if (skill.body.find_first_not_of(" \t\r\n") == std::string::npos)
         throw std::runtime_error("skill instructions must not be empty");
     skill.license = scalar(header, "license");

@@ -8,6 +8,7 @@
 
 #include <yaml-cpp/yaml.h>
 
+#include "base/frontmatter.hpp"
 #include "base/log.hpp"
 #include "workspace/files.hpp"
 #include "tools/detail.hpp"
@@ -77,24 +78,16 @@ fs::path MemoryStore::file(std::string_view scope, std::string_view name) const 
 MemoryEntry MemoryStore::view(std::string_view scope, std::string_view name) const {
     const auto input = workspace::FileReference(file(scope, name)).read({.max_read_bytes = options_.max_entry_bytes});
     if (input.truncated || input.lossy) throw std::runtime_error("memory entry exceeds max_entry_bytes or is not valid UTF-8");
-    const auto& text = input.content;
-    if (!text.starts_with("---\n")) throw std::runtime_error("missing YAML frontmatter");
-    std::size_t end = 4, body = std::string::npos;
-    while (end < text.size()) {
-        const auto newline = text.find('\n', end);
-        const auto last = newline == std::string::npos ? text.size() : newline;
-        if (std::string_view(text).substr(end, last - end) == "---") {
-            body = newline == std::string::npos ? last : newline + 1;
-            break;
-        }
-        if (newline == std::string::npos) break;
-        end = newline + 1;
+    const auto parts = base::split_frontmatter(input.content);
+    if (!parts) {
+        throw std::runtime_error(parts.error() == base::FrontmatterError::missing_opening
+                                     ? "missing YAML frontmatter"
+                                     : "missing closing YAML delimiter");
     }
-    if (body == std::string::npos) throw std::runtime_error("missing closing YAML delimiter");
-    const auto header = YAML::Load(text.substr(4, end - 4));
+    const auto header = YAML::Load(std::string(parts->header));
     if (!header.IsMap()) throw std::runtime_error("frontmatter must be a mapping");
     MemoryEntry entry{std::string(scope), scalar(header, "name"), scalar(header, "type"),
-                      scalar(header, "updated"), scalar(header, "description"), text.substr(body)};
+                      scalar(header, "updated"), scalar(header, "description"), std::string(parts->body)};
     if (entry.name != name) throw std::runtime_error("name must match the filename");
     validate(entry.type, entry.description);
     if (!valid_date(entry.updated)) throw std::runtime_error("updated must be an absolute YYYY-MM-DD date");

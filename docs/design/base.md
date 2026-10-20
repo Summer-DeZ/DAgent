@@ -15,9 +15,15 @@ DAgent 外围模块的最底层。头文件在 `src/public/base/`，实现在 `s
 | 日志：全局初始化、按模块命名的 logger、滚动文件、崩溃时刷盘 | `base/log.hpp` | `init_log`、`logger`、`shutdown_log` |
 | 文本处理：UTF-8 校验与修复、按字符边界截断、清理 ANSI 转义、base64 解码 | `base/text.hpp` | `to_valid_utf8`、`truncate_middle`、`strip_ansi`、`base64_decode` |
 | 路径规范化：解析符号链接，失败时逐级回退 | `base/path.hpp` | `canonical_or_absolute_or_lexical` |
+| frontmatter 文本切分：返回 header/body 视图，区分缺少开头与结尾分隔符 | `base/frontmatter.hpp` | `split_frontmatter` |
 | JSON 参数解析与脱敏 | `base/json.hpp` | `parse_arguments`、`require_string`、`get_string`、`get_int`、`get_bool`、`redact` |
 
 核心控制动作和普通工具共用 JSON 参数解析规则，业务 Schema 校验仍由各自模块负责。
+
+skills 与 memory 共用 `split_frontmatter`，输入为 workspace 读取后已规范化为 LF 的文本。
+开头必须是 `---\n`，首个内容恰为 `---` 的后续行结束 header，结尾分隔符无需末尾换行；
+header/body 视图借用输入存储，排除分隔符及其换行，其余文本原样保留。
+该函数不依赖 yaml-cpp；错误文案、YAML 解析和字段校验仍由调用方负责。子 Agent 保留自己的分行解析与诊断。
 
 app 配置、workspace 上下文与 storage 会话路径共用 `canonical_or_absolute_or_lexical`：
 先用 `weakly_canonical` 解析已存在部分的符号链接并规范化剩余路径；失败后使用
