@@ -326,6 +326,7 @@ add_library(dagent_app_config STATIC
     private/app/toolchain_${DAGENT_PLATFORM}.cpp
     private/app/searxng.cpp
     private/app/sandbox_status.cpp
+    private/app/sandbox_status_${DAGENT_PLATFORM}.cpp
     private/app/config.cpp
     private/app/config_detail.cpp
     private/app/config_detail_${DAGENT_PLATFORM}.cpp
@@ -340,6 +341,7 @@ add_library(dagent_app_config STATIC
     private/app/configuration.cpp
     private/app/login.cpp
     private/app/queries.cpp
+    private/app/queries_${DAGENT_PLATFORM}.cpp
     private/app/prompt.cpp
     private/app/history.cpp
 )

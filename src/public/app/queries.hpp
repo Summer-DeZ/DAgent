@@ -41,6 +41,8 @@ public:
     std::vector<backend::FileCandidate> complete(std::string_view query, std::size_t limit) override;
 
 private:
+    bool should_watch_directory(const std::filesystem::path& path) const;
+
     std::shared_ptr<const agent::SkillCatalog> skills_;
     std::shared_ptr<const tools::MemoryStore> memory_;
     std::vector<agent::SubagentDef> agents_;

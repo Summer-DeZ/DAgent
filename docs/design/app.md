@@ -214,6 +214,10 @@ QueryGateway 提供 `workspace.git_status` 与 `agents.list`。Git 查询使用�
 无网络、每条命令 2 秒、每路输出最多 1 MiB、结果最多 2048 个文件；numstat 合计暂存和未暂存改动，二进制计数为 0。
 交互模式由后端应用层 inotify 监听至多 4096 个工作区目录，跳过受保护路径和 git objects；事件只触发前端防抖查询。
 无可用监听时仍保留轮次、工具完成、终端重新聚焦和打开导航的刷新；退出先停止监听，再关闭 Publisher。
+`queries_posix.cpp` 实现 `watch_workspace`，`queries.cpp` 的共享私有成员 `should_watch_directory` 保留目录保护条件。
+根目录仍先直接加入监听，遍历时先检查保护条件，再检查目录且非符号链接；保留 `.git`、`.git/refs`、`.git/logs`
+的原例外以及 `.git/objects` 排除。取消通过 eventfd 唤醒，poll 失败仍退出；重扫先于 changed 回调。
+线程内取消回调销毁后才关闭 inotify/eventfd，重新设置监听仍先停止并等待旧 jthread。
 Agent 清单使用启动时加载的定义，不返回 system prompt。
 
 上下文预算、工具结果与文件大小限制、HTTP/进程超时、日志大小及进度间隔也显式读取对应配置段。
@@ -281,6 +285,13 @@ dagent sandbox status
       --permissions <ask|workspace|unrestricted>  --read-only  --plan
 run： --output <text|json|jsonl>
 ```
+
+`sandbox_status.cpp` 保留 runtime 装配、静态检查与真实 probe；`sandbox_status_posix.cpp` 提供
+`detail::host_bwrap`、`detail::host_socat` 与 `detail::append_host_diagnostics`。
+宿主查找仍先用 exec::which，再检查 `/usr/bin/bwrap`、`/usr/bin/socat` 的执行权限；后备检查不增加普通文件校验。
+真实 probe 后才按原错误关键词追加 namespace 前置提示，读取两处 AppArmor `/proc` 信息；
+保留单行读取、空限制值不写字段、非空时直接 stoi 的行为与原错误文本。runtime 缺失时仍提前返回。
+监听和宿主诊断源文件均由 `DAGENT_PLATFORM` 在 CMake 中选择。
 
 - `--read-only` 与权限三档正交；`--plan` 进入只读规划模式。
 - `run` 可从 stdin 追加提示词；交互模式要求 stdin 是终端。

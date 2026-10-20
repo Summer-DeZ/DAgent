@@ -181,6 +181,7 @@ files 的 path 相对项目根，status 归一化为 M / A / D / ?（冲突和�
 
 交互模式新增事件 `workspace.changed`，无会话身份/generation 依赖，用于提示重查当前工作区。
 应用层 inotify 有界监听（最多 4096 目录），前端收到后用 120ms 防抖调用 workspace.git_status。
+监听实现在 `app/queries_posix.cpp`，目录保护条件留在共享 `QueryGatewayImpl::should_watch_directory`。
 该通知不携带文件内容，不改变会话/执行状态；轮次和工具完成事件仍是刷新来源。
 
 `session.history` 首次调用捕获高水位，返回不透明游标；每页最多扫描 `session.history_scan_limit` 条记录（随附值 100），读完、`history_close` 或连接关闭时释放，

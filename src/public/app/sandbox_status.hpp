@@ -23,4 +23,10 @@ nlohmann::json sandbox_probe(const exec::SrtRuntime& runtime, const std::filesys
 /// @brief `dagent sandbox status` 的结果。运行前不要求 runtime 已同步。
 nlohmann::json sandbox_status(const HomePaths& paths);
 
+namespace detail {
+std::optional<std::filesystem::path> host_bwrap();
+std::optional<std::filesystem::path> host_socat();
+void append_host_diagnostics(nlohmann::json& out);
+} // namespace detail
+
 } // namespace dagent::app

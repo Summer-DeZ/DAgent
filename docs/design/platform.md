@@ -15,10 +15,7 @@
   termios、sigset_t 等原生类型；资源状态用不透明类型表示。标准库类型可用于中立接口。
 - 平台提取保留原操作、标志、顺序、错误和日志文本、超时、权限与参数；格式化和业务失败策略留在调用方。
 
-这是逐步落实的源码边界约定。当前已提取跨模块小原语、workspace 文件操作与 OS 描述、入口与宿主辅助、IPC、TUI、exec/SRT、存储以及配置/登录平台操作。
-监听与 sandbox status 仍有共享实现中的平台代码，尚未完成全仓 I1。下面只列已落地的平台文件。
-
-## 当前平台文件与接口
+## 平台文件与接口
 
 | 平台文件 | 中立声明 | 实现 |
 | --- | --- | --- |
@@ -40,6 +37,10 @@
 | `src/private/app/config_detail_posix.cpp` | `src/public/app/config_detail.hpp` | `detail::require_private_file` |
 | `src/private/app/models_posix.cpp` | `src/public/app/config_detail.hpp` | `detail::ModelWriteLock` |
 | `src/private/llm/auth_posix.cpp` | `src/public/llm/auth.hpp`、`src/public/llm/auth_detail.hpp` | `read_credentials`、`detail::CredentialLock`、`detail::write_credentials`、`detail::remove_credentials` |
+| `src/private/app/queries_posix.cpp` | `src/public/app/queries.hpp` | `QueryGatewayImpl::watch_workspace` |
+| `src/private/app/sandbox_status_posix.cpp` | `src/public/app/sandbox_status.hpp` | `detail::host_bwrap`、`detail::host_socat`、`detail::append_host_diagnostics` |
+
+## 接口语义与资源所有权
 
 `executable_path` 的两个重载分别保留 filesystem 的抛异常和 error_code 行为，供 IPC、sandbox status、
 SearXNG 定位程序资源。安装根的固定缓冲区 readlink 和 InstallError 在 `app/paths_posix.cpp` 中保持独立；
@@ -97,3 +98,13 @@ CredentialLock 同样用 pimpl，但保留非阻塞 flock 的 30 秒期限与 50
 两种 Impl 都在原目录操作前分配，不合并锁策略。公共头不再暴露 ModelWriteLock 的 fd。
 凭据 JSON 编解码在共享 auth.cpp，读写的平台函数在原 try 位置调用，转换期间保持原 fd 持有期；
 刷新仍在同一锁范围内重读、记录 refresh_pending、发送 HTTP 和保存新凭据，详见 [llm](llm.md#7-登录提供方与凭据阶段-3a)。
+
+QueryGatewayImpl 持有 watcher jthread，重新设置监听先停止并等待旧线程；空回调只停止监听。
+线程内部持有 inotify/eventfd，取消回调写 eventfd 唤醒 poll；取消回调销毁后才按原顺序关闭两个 fd。
+目录保护判断由共享私有成员 `should_watch_directory` 提供，原生实现保留根目录加入、4096 上限、事件掩码、重扫与通知顺序。
+
+宿主 bwrap/socat 查找先走 exec::which，再按原规则检查固定后备路径；返回路径值，不持有进程或文件资源。
+AppArmor 诊断保持在真实 sandbox probe 之后追加，缺少 runtime 的提前返回不读取宿主诊断。
+资源脚本的 Unix socket、信号和文件操作仍在 SRT bridge/wrapper 内；这些脚本与第三方代码属于 I1 的明确例外。
+Git 命令参数及 unified diff 中的 `/dev/null` 是外部命令配置或文本格式，bash 分析中的设备路径是待分析命令的语义，
+均不是共享 C++ 对本机原生 API 的调用。中立封装、标准流或跨平台库的 read/write/close 等同名方法也不等同于 fd 系统调用。
