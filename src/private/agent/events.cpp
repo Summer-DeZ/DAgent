@@ -2,19 +2,13 @@
 
 #include <string>
 
+#include "base/overloaded.hpp"
 #include "base/text.hpp"
 
 namespace dagent::agent {
 namespace {
 
 using nlohmann::json;
-
-template <class... Ts>
-struct Overloaded : Ts... {
-    using Ts::operator()...;
-};
-template <class... Ts>
-Overloaded(Ts...) -> Overloaded<Ts...>;
 
 json usage_json(const Usage& usage) {
     return json{{"prompt", usage.prompt}, {"completion", usage.completion}, {"cached", usage.cached}};
@@ -70,7 +64,7 @@ std::string_view to_string(TurnStatus status) {
 // 字段名与文法见 docs/design/agent.md §2。
 json to_json(const Event& event) {
     return std::visit(
-        Overloaded{
+        base::Overloaded{
             [](const TurnStarted& e) { return json{{"type", "turn_started"}, {"input", e.input}}; },
             [](const StepStarted& e) { return json{{"type", "step_started"}, {"step", e.step}}; },
             [](const TextDelta& e) { return json{{"type", "text"}, {"text", e.text}}; },

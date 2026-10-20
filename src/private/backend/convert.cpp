@@ -5,13 +5,6 @@
 namespace dagent::backend {
 namespace {
 
-template <class... Ts>
-struct Overloaded : Ts... {
-    using Ts::operator()...;
-};
-template <class... Ts>
-Overloaded(Ts...) -> Overloaded<Ts...>;
-
 const char* mcp_status(agent::McpServerState::Status status) {
     switch (status) {
     case agent::McpServerState::Status::connecting: return "connecting";

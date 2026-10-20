@@ -9,19 +9,13 @@
 #include "agent/run.hpp"
 #include "agent/turn_runner.hpp"
 #include "base/log.hpp"
+#include "base/overloaded.hpp"
 #include "base/text.hpp"
 
 namespace dagent::runtime {
 namespace {
 
 std::shared_ptr<spdlog::logger> log_runtime() { return base::logger("runtime"); }
-
-template <class... Ts>
-struct Overloaded : Ts... {
-    using Ts::operator()...;
-};
-template <class... Ts>
-Overloaded(Ts...) -> Overloaded<Ts...>;
 
 struct RunScope {
     agent::Session& session;
@@ -205,7 +199,7 @@ void Runtime::apply_to_snapshot(const Event& event) {
     // 否则快照字段不会随实时事件更新（前端按快照显示标签，必须保持一致）。
     const auto* core = std::get_if<agent::Event>(&event.payload);
     if (core == nullptr) return;
-    std::visit(Overloaded{
+    std::visit(base::Overloaded{
                    [&](const agent::ContextUpdate& update) {
                        snapshot_.used_tokens = update.used;
                        snapshot_.token_limit = update.limit;

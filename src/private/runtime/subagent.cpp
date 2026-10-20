@@ -12,16 +12,10 @@
 #include "agent/run.hpp"
 #include "agent/turn_runner.hpp"
 #include "base/log.hpp"
+#include "base/overloaded.hpp"
 
 namespace dagent::runtime {
 namespace {
-
-template <class... Ts>
-struct Overloaded : Ts... {
-    using Ts::operator()...;
-};
-template <class... Ts>
-Overloaded(Ts...) -> Overloaded<Ts...>;
 
 agent::ToolResult error_result(std::string text) {
     agent::ToolResult result;
@@ -169,7 +163,7 @@ private:
     void on_child_event(const agent::Event& event) {
         {
             const std::lock_guard lock(mutex_);
-            std::visit(Overloaded{
+            std::visit(base::Overloaded{
                            [&](const agent::StepStarted&) { current_text_.clear(); },
                            [&](const agent::TextDelta& delta) { current_text_ += delta.text; },
                            [&](const agent::StreamReset&) { current_text_.clear(); },

@@ -9,13 +9,12 @@
 #include <charconv>
 #include <format>
 
+#include "base/overloaded.hpp"
 #include "base/text.hpp"
 #include "tui/grapheme.hpp"
 
 namespace dagent::ui {
 namespace {
-template<class... T> struct Overloaded : T... { using T::operator()...; };
-
 // 核心生成的“未执行/被拒绝”结果文本前缀（agent/conversation.hpp 的 texts）：
 // UI 只据此决定卡片显示为 stopped，不改变结果本身。
 constexpr std::string_view kDenied =
@@ -993,7 +992,7 @@ void Transcript::finished(const ToolFinished& event) {
     uint32_t rows = 3;
     const auto elapsed = std::chrono::duration<double>(std::chrono::steady_clock::now() - blocks.began).count();
     stat = format_text(ui::text().card_elapsed, elapsed);
-    std::visit(Overloaded{
+    std::visit(base::Overloaded{
         [&](std::monostate) { body = event.text; },
         [&](const ReadView& v) {
             name = std::string(ui::text().card_read); param = v.path + (v.directory ? "/" : "");
@@ -1228,7 +1227,7 @@ void Transcript::append_history(const protocol::HistoryItem& item) {
 }
 
 void Transcript::apply(const Event& event) {
-    std::visit(Overloaded{
+    std::visit(base::Overloaded{
         [&](const TurnStarted& e) {
             if (on_user_) on_user_(e.input);
             finish_message(); live_step_ = false; turn_began_ = std::chrono::steady_clock::now();

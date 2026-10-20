@@ -17,13 +17,6 @@ namespace {
 
 std::shared_ptr<spdlog::logger> log_backend() { return base::logger("backend"); }
 
-template <class... Ts>
-struct Overloaded : Ts... {
-    using Ts::operator()...;
-};
-template <class... Ts>
-Overloaded(Ts...) -> Overloaded<Ts...>;
-
 // 末尾不完整的 UTF-8 序列从哪里开始；单个 bash 调用的块之间保留边界。
 std::size_t complete_prefix(std::string_view text) {
     std::size_t index = text.size();

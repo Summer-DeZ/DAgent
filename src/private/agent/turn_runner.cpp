@@ -8,6 +8,7 @@
 #include "agent/dispatch.hpp"
 #include "agent/model_budget.hpp"
 #include "base/log.hpp"
+#include "base/overloaded.hpp"
 #include "base/text.hpp"
 
 namespace dagent::agent {
@@ -15,15 +16,8 @@ namespace {
 
 std::shared_ptr<spdlog::logger> log_agent() { return base::logger("agent"); }
 
-template <class... Ts>
-struct Overloaded : Ts... {
-    using Ts::operator()...;
-};
-template <class... Ts>
-Overloaded(Ts...) -> Overloaded<Ts...>;
-
 void report_stream(const StreamEvent& event, const Sink& sink) {
-    std::visit(Overloaded{
+    std::visit(base::Overloaded{
                    [&](const TextDelta& delta) { sink(TextDelta{delta.text}); },
                    [&](const ReasoningDelta& delta) { sink(ReasoningDelta{delta.text}); },
                    [&](const ToolCallBegin& begin) { sink(ToolPending{begin.id, begin.name}); },

@@ -3,18 +3,12 @@
 #include <utility>
 
 #include "agent/port_journal.hpp"
+#include "base/overloaded.hpp"
 
 namespace dagent::agent {
 namespace {
 
 using json = nlohmann::json;
-
-template <class... Ts>
-struct Overloaded : Ts... {
-    using Ts::operator()...;
-};
-template <class... Ts>
-Overloaded(Ts...) -> Overloaded<Ts...>;
 
 constexpr std::string_view kRead = "read";
 constexpr std::string_view kChange = "change";
@@ -117,7 +111,7 @@ inline void from_json(const nlohmann::json& j, BashView& v) {
 
 json to_json(const View& view) {
     json out;
-    std::visit(Overloaded{
+    std::visit(base::Overloaded{
                    [&](std::monostate) { out = json{{"kind", nullptr}}; },
                    [&](const ReadView& v) { out = json{{"kind", kRead}}; out.update(json(v)); },
                    [&](const FileChangeView& v) { out = json{{"kind", kChange}}; out.update(json(v)); },

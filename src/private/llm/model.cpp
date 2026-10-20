@@ -15,6 +15,7 @@
 #include <vector>
 
 #include "base/log.hpp"
+#include "base/overloaded.hpp"
 #include "net/sse.hpp"
 
 namespace dagent::llm {
@@ -43,13 +44,6 @@ std::mt19937& rng() {
     static thread_local std::mt19937 engine(std::random_device{}());
     return engine;
 }
-
-template <class... Ts>
-struct Overloaded : Ts... {
-    using Ts::operator()...;
-};
-template <class... Ts>
-Overloaded(Ts...) -> Overloaded<Ts...>;
 
 struct AttemptState {
     Reply reply;
@@ -105,7 +99,7 @@ Model::AttemptOutcome Model::attempt(const Request& request, const ProviderConfi
     std::string pending_line;
 
     const auto handle = [&](const StreamEvent& event) {
-        std::visit(Overloaded{
+        std::visit(base::Overloaded{
                        [&](const TextDelta& e) {
                            state.reply.message.content += e.text;
                            state.had_output = true;

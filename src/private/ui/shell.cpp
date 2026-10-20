@@ -23,6 +23,7 @@
 #include <vector>
 
 #include "base/log.hpp"
+#include "base/overloaded.hpp"
 #include "tui/document.hpp"
 #include "ui/approval.hpp"
 #include "ui/center.hpp"
@@ -48,7 +49,6 @@ namespace dagent::ui {
 namespace {
 using Clock = std::chrono::steady_clock;
 using namespace std::chrono_literals;
-template<class... T> struct Overloaded : T... { using T::operator()...; };
 
 /// @brief 异步回调的寿命闸门：Shell 析构后回调直接丢弃，不再触碰页面或 Runtime。
 struct CallbackGate {
@@ -611,8 +611,6 @@ private:
     }
 
     void update_context(std::size_t used, std::size_t limit) {
-        worked_tokens_ = used;
-        token_limit_ = limit;
         header_->used = used; header_->limit = limit; header_->invalidate();
         side_->set_context(used, limit);
     }
@@ -735,7 +733,7 @@ private:
     void apply_live(const Event& event, bool update_state) {
         if (std::holds_alternative<TurnStarted>(event.payload)) hide_welcome();
         panes_.front().transcript->apply_live(event);
-        std::visit(Overloaded{
+        std::visit(base::Overloaded{
                        [&](const TurnStarted&) {
                            turn_begin_ = Clock::now(); output_ = estimated_ = stream_chars_ = 0;
                            streaming_.reset(); stream_seconds_ = 0;
@@ -1994,7 +1992,7 @@ private:
     std::string mode_ = "ask";
     std::uint64_t generation_ = 0, state_seq_ = 0;
     bool planning_ = false, read_only_ = false;
-    std::size_t worked_tokens_ = 0, token_limit_ = 0, window_tokens_ = 0;
+    std::size_t window_tokens_ = 0;
     std::vector<McpStatus> mcp_states_;
     std::vector<CommandUi> command_ui_;
     Clock::time_point turn_begin_{};

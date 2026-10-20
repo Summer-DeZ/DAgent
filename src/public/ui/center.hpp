@@ -7,20 +7,10 @@
 
 namespace dagent::ui {
 
-/// 空占位；由 Container 的 flex 约束吸收内容栏两侧空间。
-class Spacer final : public tui::Widget {
-public:
-    tui::Size measure(tui::Size) const override { return {}; }
-    void render(tui::Surface&) override;
-};
-
-/// 把控件放进最多 max_cols 列的居中栏。max_cols == 0 表示不限宽。
-void set_reading_width(int maximum) noexcept; // 0 = auto
+/// 正文阅读栏宽度：maximum 为配置上限，0 表示自动。
+void set_reading_width(int maximum) noexcept;
 int reading_width(int available) noexcept;
 
-std::unique_ptr<tui::Widget> centered(std::unique_ptr<tui::Widget> child,
-                                      int max_cols = 0,
-                                      const tui::ThemeTokens& theme = tui::dark_theme());
 /// 横跨整个主区域，左右各留 margin 列（输入框、活动行、排队行使用）。
 std::unique_ptr<tui::Widget> spanning(std::unique_ptr<tui::Widget> child, int margin,
                                       const tui::ThemeTokens& theme = tui::dark_theme());
