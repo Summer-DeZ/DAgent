@@ -1,7 +1,8 @@
-# 最底层公共库：日志、文本工具、JSON 脱敏。
+# 最底层公共库：日志、文本与路径工具、JSON 脱敏。
 add_library(dagent_base STATIC
     private/base/log.cpp
     private/base/text.cpp
+    private/base/path.cpp
     private/base/json.cpp
 )
 

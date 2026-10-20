@@ -13,6 +13,7 @@
 #include <sys/utsname.h>
 
 #include "base/log.hpp"
+#include "base/path.hpp"
 #include "base/text.hpp"
 #include "exec/process.hpp"
 #include "inja/inja.hpp"
@@ -20,15 +21,6 @@
 namespace dagent::workspace {
 namespace fs = std::filesystem;
 namespace {
-
-fs::path canonical_or_absolute(const fs::path& p) {
-    std::error_code ec;
-    fs::path result = fs::weakly_canonical(p, ec);
-    if (!ec) return result;
-    ec.clear();
-    result = fs::absolute(p, ec);
-    return ec ? p.lexically_normal() : result.lexically_normal();
-}
 
 std::string trim(std::string text) {
     while (!text.empty() && (text.back() == '\n' || text.back() == '\r')) text.pop_back();
@@ -125,7 +117,7 @@ std::optional<GitInfo> collect_git(const fs::path& cwd, const ContextOptions& op
     }
 
     GitInfo info;
-    info.root = canonical_or_absolute(trim(root.text));
+    info.root = base::canonical_or_absolute_or_lexical(trim(root.text));
     info.status = parse_git_status(status.text);
 
     std::istringstream commits(log.text);
@@ -201,7 +193,7 @@ Environment collect_environment(const fs::path& cwd, const ContextOptions& opt, 
     if (stop.stop_requested()) throw WorkspaceError(WorkspaceError::Kind::cancelled, "context collection cancelled");
 
     Environment env;
-    env.cwd = canonical_or_absolute(cwd);
+    env.cwd = base::canonical_or_absolute_or_lexical(cwd);
 
     struct utsname name {};
     env.os = ::uname(&name) == 0 ? std::format("{} {}", name.sysname, name.release) : "unknown";

@@ -25,6 +25,7 @@
 #include <unistd.h>
 
 #include "base/log.hpp"
+#include "base/path.hpp"
 #include "exec/process.hpp"
 
 namespace dagent::app {
@@ -39,17 +40,9 @@ std::shared_ptr<spdlog::logger> log_app() { return base::logger("app"); }
     throw ConfigError(kind, what);
 }
 
-fs::path absolute_path(const fs::path& path) {
-    std::error_code ec;
-    fs::path result = fs::weakly_canonical(path, ec);
-    if (!ec) return result;
-    ec.clear();
-    result = fs::absolute(path, ec);
-    return ec ? path.lexically_normal() : result.lexically_normal();
-}
-
 fs::path absolute_under(const fs::path& base, const fs::path& path) {
-    return path.is_absolute() ? absolute_path(path) : absolute_path(base / path);
+    return path.is_absolute() ? base::canonical_or_absolute_or_lexical(path)
+                              : base::canonical_or_absolute_or_lexical(base / path);
 }
 
 class Node {
@@ -754,7 +747,7 @@ std::vector<mcp::ServerConfig> parse_mcp_servers(const json& root) {
 }
 
 ModelCatalog load_models(const fs::path& root, const std::vector<std::string>& overrides) {
-    const fs::path file = HomePaths(absolute_path(root)).models;
+    const fs::path file = HomePaths(base::canonical_or_absolute_or_lexical(root)).models;
     require_private_file(file);
     const json models_json = parse_file(file);
     std::vector<std::string> model_log;
@@ -794,8 +787,8 @@ ModelCatalog load_models(const fs::path& root, const std::vector<std::string>& o
 }
 
 Config load_config(const LoadOptions& options) {
-    const fs::path root = absolute_path(options.root);
-    const fs::path cwd = options.cwd.empty() ? fs::current_path() : absolute_path(options.cwd);
+    const fs::path root = base::canonical_or_absolute_or_lexical(options.root);
+    const fs::path cwd = options.cwd.empty() ? fs::current_path() : base::canonical_or_absolute_or_lexical(options.cwd);
     const HomePaths paths(root);
     const fs::path config_file = paths.config;
     json config_json = parse_file(config_file);
@@ -1171,7 +1164,7 @@ nlohmann::json save_appearance(const fs::path& root, const nlohmann::json& appea
 
 llm::ProviderConfig add_model(const fs::path& root_path,
                                 const llm::ProviderConfig& model, bool existing_ok) {
-    const fs::path root = absolute_path(root_path);
+    const fs::path root = base::canonical_or_absolute_or_lexical(root_path);
     const fs::path file = HomePaths(root).models;
     ModelWriteLock lock(root);
     require_private_file(file);

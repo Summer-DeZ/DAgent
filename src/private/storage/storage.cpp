@@ -21,6 +21,7 @@
 
 #include "agent/port_store.hpp"
 #include "base/json.hpp"
+#include "base/path.hpp"
 #include "storage/history_read.hpp"
 #include "base/text.hpp"
 #include "lib/sqlite/sqlite3.h"
@@ -50,15 +51,6 @@ std::string iso_from_ms(std::int64_t value) {
     return std::format("{:04}-{:02}-{:02}T{:02}:{:02}:{:02}.{:03}Z",
                        utc.tm_year + 1900, utc.tm_mon + 1, utc.tm_mday,
                        utc.tm_hour, utc.tm_min, utc.tm_sec, millis < 0 ? -millis : millis);
-}
-
-fs::path normalized(const fs::path& value) {
-    std::error_code ec;
-    fs::path path = fs::weakly_canonical(value, ec);
-    if (!ec) return path;
-    ec.clear();
-    path = fs::absolute(value, ec);
-    return ec ? value.lexically_normal() : path.lexically_normal();
 }
 
 std::string title_from(const json& payload) {
@@ -292,14 +284,14 @@ std::vector<Summary> list(const Options& options, const fs::path& cwd, std::size
     Statement query(db.get(),
                     "SELECT id,title,model,created,updated FROM sessions WHERE cwd=? "
                     "AND (parent_id IS NULL OR parent_id='') ORDER BY updated DESC LIMIT ?");
-    query.text(1, normalized(cwd).string());
+    query.text(1, base::canonical_or_absolute_or_lexical(cwd).string());
     query.integer(2, limit == 0 ? -1 : static_cast<std::int64_t>(limit));
     std::vector<Summary> out;
     while (query.row()) {
         Summary summary;
         summary.meta.id = query.string(0);
         summary.title = query.is_null(1) ? std::string{} : query.string(1);
-        summary.meta.cwd = normalized(cwd);
+        summary.meta.cwd = base::canonical_or_absolute_or_lexical(cwd);
         summary.meta.model = query.string(2);
         summary.meta.created = iso_from_ms(query.integer(3));
         summary.updated = std::chrono::system_clock::time_point{std::chrono::milliseconds{query.integer(4)}};
@@ -428,7 +420,7 @@ class SqliteJournal final : public agent::JournalWriter {
 public:
     static std::unique_ptr<SqliteJournal> create(const Options& options, agent::SessionMeta meta) {
         if (meta.id.empty()) meta.id = new_id();
-        meta.cwd = normalized(meta.cwd);
+        meta.cwd = base::canonical_or_absolute_or_lexical(meta.cwd);
         const auto timestamp = now_ms();
         meta.created = iso_from_ms(timestamp);
         auto journal = std::unique_ptr<SqliteJournal>(new SqliteJournal(options, std::move(meta)));

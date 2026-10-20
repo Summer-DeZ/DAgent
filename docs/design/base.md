@@ -14,9 +14,15 @@ DAgent 外围模块的最底层。头文件在 `src/public/base/`，实现在 `s
 | --- | --- | --- |
 | 日志：全局初始化、按模块命名的 logger、滚动文件、崩溃时刷盘 | `base/log.hpp` | `init_log`、`logger`、`shutdown_log` |
 | 文本处理：UTF-8 校验与修复、按字符边界截断、清理 ANSI 转义、base64 解码 | `base/text.hpp` | `to_valid_utf8`、`truncate_middle`、`strip_ansi`、`base64_decode` |
+| 路径规范化：解析符号链接，失败时逐级回退 | `base/path.hpp` | `canonical_or_absolute_or_lexical` |
 | JSON 参数解析与脱敏 | `base/json.hpp` | `parse_arguments`、`require_string`、`get_string`、`get_int`、`get_bool`、`redact` |
 
 核心控制动作和普通工具共用 JSON 参数解析规则，业务 Schema 校验仍由各自模块负责。
+
+app 配置、workspace 上下文与 storage 会话路径共用 `canonical_or_absolute_or_lexical`：
+先用 `weakly_canonical` 解析已存在部分的符号链接并规范化剩余路径；失败后使用
+`absolute(..., error_code).lexically_normal()`；若绝对化也失败，返回原路径的
+`lexically_normal()`，结果可能仍为相对路径。函数不捕获内存分配等异常。
 
 约定：
 
