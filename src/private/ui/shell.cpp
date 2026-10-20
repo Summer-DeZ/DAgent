@@ -1154,15 +1154,16 @@ private:
 
     std::unique_ptr<tui::Widget> layout() {
         auto main = std::make_unique<tui::Container>();
-        auto add_centered = [&]<class T>(T*& target, tui::Constraint constraint) {
+        // 输入区（活动行、排队行、输入框）横跨主区域，正文仍在阅读栏内。
+        auto add_spanning = [&]<class T>(T*& target, tui::Constraint constraint) {
             auto widget = std::make_unique<T>(); target = widget.get();
-            main->add(constraint, centered(std::move(widget), 0, theme_));
+            main->add(constraint, spanning(std::move(widget), 2, theme_));
         };
         auto frame = std::make_unique<ScrollFrame>(); frame_ = frame.get();
         main->add({tui::Sizing::flex, 1}, std::move(frame));
-        add_centered(activity_, {tui::Sizing::content});
-        add_centered(queue_label_, {tui::Sizing::content});
-        add_centered(input_, {tui::Sizing::content, 0, 2, PromptBox::k_max_rows + 5});
+        add_spanning(activity_, {tui::Sizing::content});
+        add_spanning(queue_label_, {tui::Sizing::content});
+        add_spanning(input_, {tui::Sizing::content, 0, 2, PromptBox::k_max_rows + 5});
 
         auto workspace = std::make_unique<Workspace>(); workspace_ = workspace.get();
         workspace->add({tui::Sizing::flex, 1}, std::move(main));

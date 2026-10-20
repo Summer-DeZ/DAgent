@@ -21,5 +21,8 @@ int reading_width(int available) noexcept;
 std::unique_ptr<tui::Widget> centered(std::unique_ptr<tui::Widget> child,
                                       int max_cols = 0,
                                       const tui::ThemeTokens& theme = tui::dark_theme());
+/// 横跨整个主区域，左右各留 margin 列（输入框、活动行、排队行使用）。
+std::unique_ptr<tui::Widget> spanning(std::unique_ptr<tui::Widget> child, int margin,
+                                      const tui::ThemeTokens& theme = tui::dark_theme());
 
 } // namespace dagent::ui

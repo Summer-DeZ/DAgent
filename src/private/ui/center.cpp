@@ -12,8 +12,8 @@ int reading_width(int available) noexcept {
 namespace {
 class CenterBox final : public tui::Widget {
 public:
-    CenterBox(std::unique_ptr<tui::Widget> child, int max_cols, const tui::ThemeTokens& theme)
-        : child_(std::move(child)), max_cols_(max_cols), theme_(&theme) { adopt(*this, *child_); }
+    CenterBox(std::unique_ptr<tui::Widget> child, int max_cols, int margin, const tui::ThemeTokens& theme)
+        : child_(std::move(child)), max_cols_(max_cols), margin_(margin), theme_(&theme) { adopt(*this, *child_); }
     ~CenterBox() override { disown(*child_); }
 
     tui::Size measure(tui::Size available) const override {
@@ -46,11 +46,13 @@ public:
     }
 private:
     int content_width(int available) const noexcept {
+        if (margin_ >= 0) return std::max(0, available - 2 * margin_);
         const int width = reading_width(available);
         return max_cols_ > 0 ? std::min(max_cols_, width) : width;
     }
     std::unique_ptr<tui::Widget> child_;
     int max_cols_ = 88;
+    int margin_ = -1; ///< < 0：阅读栏宽度；否则横跨可用宽度、两侧各留 margin_ 列
     const tui::ThemeTokens* theme_;
 };
 }
@@ -61,7 +63,12 @@ void Spacer::render(tui::Surface& surface) {
 
 std::unique_ptr<tui::Widget> centered(std::unique_ptr<tui::Widget> child, int max_cols,
                                       const tui::ThemeTokens& theme) {
-    return std::make_unique<CenterBox>(std::move(child), max_cols, theme);
+    return std::make_unique<CenterBox>(std::move(child), max_cols, -1, theme);
+}
+
+std::unique_ptr<tui::Widget> spanning(std::unique_ptr<tui::Widget> child, int margin,
+                                      const tui::ThemeTokens& theme) {
+    return std::make_unique<CenterBox>(std::move(child), 0, margin, theme);
 }
 
 } // namespace dagent::ui

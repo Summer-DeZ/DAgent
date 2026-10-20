@@ -48,9 +48,9 @@ LayerStack
    │  ├─ SidePanel (navigator)           默认左侧，自动/常显/隐藏
    │  ├─ Container(vertical)            主区
    │  │  ├─ ScrollFrame                 flex 1，主区全宽；WelcomeView / Scrollback；有未读时底部独占提示行
-   │  │  ├─ Center(Activity)            content，空闲高度 0
-   │  │  ├─ Center(QueueLabel)          content，有排队输入时 1 行，最多 3 个 Chip + 余数
-   │  │  └─ Center(PromptBox)           content，1–8 行正文；始终圆角边框，密度决定留白
+   │  │  ├─ Span(Activity)              content，空闲高度 0
+   │  │  ├─ Span(QueueLabel)            content，有排队输入时 1 行，最多 3 个 Chip + 余数
+   │  │  └─ Span(PromptBox)             content，1–8 行正文；始终圆角边框，密度决定留白
    │  └─ SidePanel (status)              默认右侧，两侧均为 26/30 列或宽 0
    └─ HintBar                           fixed 1，铺满终端
 浮层：Completion、Panel、ModelPicker（含 Sign-in）、ModelDialog、SettingsDialog、ApprovalDialog、ToastStack
@@ -58,7 +58,8 @@ LayerStack
 
 `ui.layout.width` 控制所有居中的正文：auto 在主区允许时随宽度从 88 增至 120 列，compact 最多 88，
 wide 最多 160，也接受 60–240 的整数。正常宽度每侧至少留 4 列；主区不足时收窄正文，少于 44 列时取消边距。
-Transcript、Activity、QueueLabel 和 PromptBox 共用同一宽度函数；WelcomeView 独立使用最多 76 列的居中块。
+Transcript 使用这一宽度函数；Activity、QueueLabel 和 PromptBox 组成输入区，横跨整个主区（两侧各留 2 列），
+侧栏隐藏时即为终端全宽；WelcomeView 独立使用最多 76 列的居中块。
 ScrollFrame 始终占满主区；
 只有双栏 diff 主体可独立突破正文栏，两侧至少留 2 列、最多 176 列，同轴居中，标题/footer 保持正文宽度。
 改宽度时提升 theme epoch，使 Document 的测量与物化缓存同时失效。
@@ -146,7 +147,7 @@ filled 使用主题填色，HeaderBar 与 HintBar 均为面板底色；PromptBox
 outline 的 HeaderBar、HintBar、SidePanel、Chip 使用页面底色，
 分别画底部分隔线、内侧竖线，Chip 只显示标签且相邻间隔两列。浮层始终使用面板填色。
 HeaderBar 的正文仍为一行，outline 另占一行画底线，避免把线画在标题文字上。
-compact 取消 Transcript 用户消息前的轮间空行和侧栏分节空行；PromptBox 在两种密度下均不加上下 padding，保留边框行。
+compact 取消 Transcript 用户消息前的轮间空行和侧栏分节空行，并去掉 PromptBox 输入与尾行之间的空行。
 Ctrl+T 只改变本次会话的侧栏显示状态，不写配置；设置 Esc 撤回也恢复打开前的临时显示状态。
 
 `/settings` 和命令面板的 Settings 打开居中圆角浮层（最大 100×24）。左侧有 Appearance 与其下方的 Layout，可用 Tab 或点击切换；Appearance
