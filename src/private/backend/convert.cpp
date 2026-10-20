@@ -52,6 +52,7 @@ protocol::PublicModel to_protocol(const agent::PublicModel& model) {
     out.temperature = model.temperature;
     out.context_window = model.context_window;
     out.has_key = model.has_key;
+    out.auth = model.auth;
     return out;
 }
 

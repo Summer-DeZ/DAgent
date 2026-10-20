@@ -68,6 +68,7 @@ add_library(dagent_net STATIC
 target_include_directories(dagent_net PUBLIC ${CMAKE_SOURCE_DIR}/src/public)
 target_compile_features(dagent_net PUBLIC cxx_std_23)
 target_compile_options(dagent_net PRIVATE -Wall -Wextra)
+target_compile_definitions(dagent_net PRIVATE DAGENT_VERSION="${PROJECT_VERSION}")
 target_link_libraries(dagent_net PRIVATE CURL::libcurl)
 
 # 子进程与沙箱：一次性命令、长期子进程、bash 命令分析、SRT 后端与敏感路径扫描。
@@ -228,6 +229,7 @@ target_link_libraries(dagent_agent PUBLIC dagent_base)
 
 # llm 适配：Model 实际请求、provider 编解码、HTTP/SSE；实现核心 ModelSession 端口。
 add_library(dagent_llm STATIC
+    private/llm/auth.cpp
     private/llm/model.cpp
     private/llm/provider.cpp
     private/llm/provider_chat.cpp
@@ -302,6 +304,7 @@ add_library(dagent_app_config STATIC
     private/app/bootstrap.cpp
     private/app/session_assembly.cpp
     private/app/configuration.cpp
+    private/app/login.cpp
     private/app/queries.cpp
     private/app/prompt.cpp
     private/app/history.cpp

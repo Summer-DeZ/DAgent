@@ -7,6 +7,7 @@
 #include <string>
 #include <string_view>
 #include "llm/codec.hpp"
+#include "llm/auth.hpp"
 
 namespace dagent::llm {
 
@@ -15,6 +16,8 @@ struct ProviderConfig {
     std::string name;
     std::string base_url;
     std::string model;
+    std::string login;
+    CredentialPaths credentials;
     std::string api_key; ///< app 解析密钥；不进入记录
     std::map<std::string, std::string> headers; ///< app 展开环境变量；值不进入公开信息或记录
     std::size_t max_tokens = 0;
@@ -36,6 +39,7 @@ struct ProviderInfo {
 
 std::span<const ProviderInfo> providers() noexcept;
 const ProviderInfo* find_provider(std::string_view kind) noexcept;
+void validate_headers(const std::map<std::string, std::string>&, std::string_view kind, bool managed_auth);
 std::unique_ptr<Codec> make_codec(const ProviderConfig&);
 
 } // namespace dagent::llm

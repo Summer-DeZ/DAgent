@@ -81,6 +81,7 @@ using DecisionScore = std::variant<double, DirectionScore>;
 
 /// @brief 一次决策请求；adapter 只负责把它编码成自己的协议。
 struct DecisionRequest {
+    std::string session_id;
     std::string state;
     std::vector<DecisionQuestion> questions;
 };

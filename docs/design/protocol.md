@@ -44,7 +44,7 @@ sequenceDiagram
 
 ## 2. 身份与版本
 
-业务协议版本 major=1、minor=1（与 JSON-RPC 的 `jsonrpc:"2.0"` 分开），两端不等直接返回 `version_mismatch`。
+业务协议版本 major=1、minor=4（与 JSON-RPC 的 `jsonrpc:"2.0"` 分开），两端不等直接返回 `version_mismatch`。
 
 | 身份 | 作用 |
 | --- | --- |
@@ -78,6 +78,36 @@ sequenceDiagram
 
 读线程只做校验与即时操作，不会被模型调用阻塞；耗时命令与只读查询各有一个工作线程，查询失败不影响执行中的 Run。
 请求字段类型不匹配返回 `invalid_params`（-32602），不会终止后端连接。
+
+### 登录与提供方模型（协议 minor 4，阶段 3a）
+
+所有提供方方法都要求 `provider: "opencode"`。仅公开状态、链接和模型元数据；device_code、token、头值不返回前端。
+`app.initialize` 新增 mode=login：不读 models.json/config.json，不建会话或工具环境，返回 `{mode:"login",session:null}`。
+普通 interactive/run/models/sessions 装配同样提供登录网关。
+
+| 方法 | 参数（除 provider） | 结果 | 执行位置 |
+| --- | --- | --- | --- |
+| `provider.login.start` | 无 | `{login_id,provider,verification_url,user_code,expires_at,subscription_url}` | 查询线程；只取设备码，不轮询 |
+| `provider.login.wait` | `login_id` | `{provider,state,workspace,expires_at}`，成功 state=signed_in | 查询线程；等待批准并保存凭据 |
+| `provider.login.cancel` | `login_id` | `{cancelled:bool}`，未知/已结束 ID 为 false | 读线程；请求取消轮询和等待 |
+| `provider.status` | 无 | `{provider,state,workspace?,expires_at?}` | 读线程；纯本地读取，不刷新、不联网 |
+| `provider.logout` | 无 | `{provider,state:"signed_out"}` | 查询线程；先在读线程取消本后端的待登录操作 |
+| `provider.models.list` | `refresh?:bool=false` | `{provider,models,cache_age_seconds,stale}` | 查询线程 |
+| `provider.model.add` | `model_id`（完整 opencode-go/<model>）与 SessionTarget | `{model,selected,selection_error}` | 命令线程；原子保存后交 runtime 切换 |
+
+所有 expires_at 使用 Unix 秒。状态为 signed_out / signed_in / needs_sign_in；过期、refresh_pending 或损坏内容为 needs_sign_in。
+workspace 是 org_id。模型清单行包含 `id,model,name,kind,base_url,context_window,max_tokens,send_reasoning_content,cost,
+available,unavailable_reason,added`；cost 保留 models.dev 的公开价格字段，input/output 单位为美元/百万 token，零价格可显示 free。
+cache_age_seconds 为缓存下载后的秒数；stale 表示刷新失败回退或缓存已超过 24 小时。
+Anthropic 行 available=false；地址超出允许范围的模型不返回。
+
+start 返回的 login_id 仅在当前后端有效，同时最多一个待登录操作；失败后可重新 start。
+wait 可阻塞至授权期限，取消用独立 cancel 请求，关闭连接同样取消；取消和失败返回 query_failed，文案不含 OAuth 原文。
+缺参/错类型返回 invalid_params；本地存储不安全、网络/授权失败为 query_failed。status 可在 wait 期间查询。
+model.add 的 SessionTarget 必须有效；保存失败为 config_error。保存成功但切换忙碌/失败时，selected=false、selection_error
+说明原因，已保存条目保留，可随后 session.select_model。成功切换沿用 session.changed 与 generation 更新。
+已存在模型不覆盖且不依赖公共清单下载。清单 added 按磁盘 models.json 计算，model.list 同样读取当前配置。
+公开模型 DTO 新增 auth（key / login:opencode / 空），保留 has_key 供旧界面使用。
 
 ### 外观初始化与保存（协议 minor 3）
 

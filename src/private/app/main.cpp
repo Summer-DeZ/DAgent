@@ -7,6 +7,12 @@
 #include <sstream>
 #include <string>
 #include <variant>
+#include <thread>
+#include <fcntl.h>
+#include <spawn.h>
+#include <sys/wait.h>
+
+extern char** environ;
 
 #include <signal.h>
 
@@ -69,6 +75,37 @@ void print_sessions(const nlohmann::json& sessions) {
     }
 }
 
+void open_browser(const std::string& url) {
+#ifdef __APPLE__
+    const char* program = "open";
+#else
+    const char* program = "xdg-open";
+#endif
+    posix_spawn_file_actions_t actions;
+    posix_spawn_file_actions_init(&actions);
+    for (int fd = 0; fd < 3; ++fd)
+        posix_spawn_file_actions_addopen(&actions, fd, "/dev/null", fd == 0 ? O_RDONLY : O_WRONLY, 0);
+    posix_spawnattr_t attributes;
+    posix_spawnattr_init(&attributes);
+    sigset_t mask;
+    sigemptyset(&mask);
+    posix_spawnattr_setsigmask(&attributes, &mask);
+    posix_spawnattr_setflags(&attributes, POSIX_SPAWN_SETSIGMASK);
+    char* argv[] = {const_cast<char*>(program), const_cast<char*>(url.c_str()), nullptr};
+    pid_t pid = 0;
+    const int result = posix_spawnp(&pid, program, &actions, &attributes, argv, environ);
+    posix_spawnattr_destroy(&attributes);
+    posix_spawn_file_actions_destroy(&actions);
+    if (result == 0) std::thread([pid] { while (::waitpid(pid, nullptr, 0) < 0 && errno == EINTR) {} }).detach();
+}
+void print_login_status(const nlohmann::json& status) {
+    std::cout << status.at("provider").get<std::string>() << ": " << status.at("state").get<std::string>();
+    if (status.contains("workspace")) std::cout << "  workspace=" << status.at("workspace").get<std::string>();
+    if (status.contains("expires_at"))
+        std::cout << "  expires=" << local_minute(std::chrono::system_clock::from_time_t(status.at("expires_at").get<std::int64_t>()));
+    std::cout << '\n';
+}
+
 } // namespace
 
 int main(int argc, char** argv) {
@@ -96,6 +133,41 @@ int main(int argc, char** argv) {
             return 0;
         }
 
+        if (args.mode == Mode::login || args.mode == Mode::logout) {
+            dagent::app::BackendLaunch launch;
+            launch.root = paths.root;
+            launch.cwd = args.cwd;
+            launch.mode = "login";
+            auto session = dagent::app::BackendSession::start(launch, {});
+            if (args.mode == Mode::logout) {
+                print_login_status(session.client().call("provider.logout", {{"provider", args.login_provider}}));
+                return 0;
+            }
+            if (args.login_provider.empty()) {
+                print_login_status(session.client().call("provider.status", {{"provider", "opencode"}}));
+                return 0;
+            }
+            interrupts.graceful = true;
+            const auto started = session.client().call("provider.login.start", {{"provider", args.login_provider}});
+            const auto url = started.at("verification_url").get<std::string>();
+            const auto id = started.at("login_id").get<std::string>();
+            std::cout << "Open: " << url << "\nCode: " << started.at("user_code").get<std::string>()
+                      << "\nGo subscription: " << started.at("subscription_url").get<std::string>()
+                      << "\nWaiting for approval (Ctrl+C cancels)...\n" << std::flush;
+            if (!interrupts.stop.stop_requested()) open_browser(url);
+            std::stop_callback cancel(interrupts.stop.get_token(), [&] {
+                session.client().call_async("provider.login.cancel", {{"provider", args.login_provider}, {"login_id", id}}, [](auto) {});
+            });
+            try {
+                print_login_status(session.client().call("provider.login.wait", {{"provider", args.login_provider}, {"login_id", id}}));
+            } catch (...) {
+                if (interrupts.stop.stop_requested()) return 130;
+                throw;
+            }
+            interrupts.graceful = false;
+            return interrupts.stop.stop_requested() ? 130 : 0;
+        }
+
         // 查询模式：启动本前端独占的后端，经私有协议完成初始化与查询。
         // 启动配置与密钥只在后端解析；前端不读配置文件。
         if (args.mode == Mode::models || args.mode == Mode::sessions) {
@@ -110,13 +182,13 @@ int main(int argc, char** argv) {
             if (args.mode == Mode::models) {
                 const nlohmann::json models = session.client().call("model.list");
                 const std::string default_name = models.value("default_name", "");
-                std::cout << "NAME\tKIND\tMODEL\tBASE_URL\tKEY\n";
+                std::cout << "NAME\tKIND\tMODEL\tBASE_URL\tAUTH\n";
                 for (const auto& model : models["models"]) {
                     const std::string name = model.value("name", "");
                     std::cout << name << (name == default_name ? " *" : "") << '\t'
                               << model.value("kind", "") << '\t' << model.value("model", "") << '\t'
                               << model.value("base_url", "") << '\t'
-                              << (model.value("has_key", false) ? "yes" : "no") << '\n';
+                              << model.value("auth", "") << '\n';
                 }
             } else {
                 const nlohmann::json sessions = session.client().call("session.list", {{"limit", 20}});

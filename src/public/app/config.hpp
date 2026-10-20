@@ -108,7 +108,7 @@ std::vector<agent::SubagentDef> load_subagents(const std::filesystem::path& dir,
 /// @brief 校验并追加一个模型配置，原子重写 models.json（保持 0600）；重名时拒绝。
 /// 返回值中的 env:KEY 已解析，供当前进程立即切换使用。
 llm::ProviderConfig add_model(const std::filesystem::path& root,
-                                const llm::ProviderConfig& model);
+                                const llm::ProviderConfig& model, bool existing_ok = false);
 
 nlohmann::json resolve_appearance(const nlohmann::json&, const std::filesystem::path& root,
                                    const std::filesystem::path& legacy_theme);

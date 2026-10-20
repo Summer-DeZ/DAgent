@@ -216,6 +216,9 @@ int Backend::run() {
 
 void Backend::quit() {
     closing_ = true;
+    if (login_) login_->cancel({});
+    command_thread_.request_stop();
+    query_thread_.request_stop();
     {
         const std::lock_guard lock(command_mutex_);
         command_closed_ = true;
@@ -311,6 +314,39 @@ void Backend::dispatch(const protocol::Request& request) {
         channel_.send_line(protocol::encode_result(id, {{"closed", true}}));
         channel_.close();
         closing_ = true;
+        return;
+    }
+    if (method == "provider.status" || method == "provider.login.start" || method == "provider.login.wait" ||
+        method == "provider.login.cancel" || method == "provider.logout" || method == "provider.models.list" ||
+        method == "provider.model.add") {
+        if (!login_) {
+            fail(id, to_rpc_error(runtime::RuntimeError{runtime::RuntimeError::Kind::invalid_state, "login gateway is not initialized"}));
+            return;
+        }
+        protocol::RpcError error;
+        const auto provider = require_string(params, "provider", error);
+        if (provider != "opencode") error = invalid_params("unknown login provider");
+        if (method == "provider.login.wait" || method == "provider.login.cancel") require_string(params, "login_id", error);
+        if (method == "provider.model.add") require_string(params, "model_id", error);
+        if (params.contains("refresh") && !params["refresh"].is_boolean()) error = invalid_params("refresh must be boolean");
+        if (!error.message.empty()) { fail(id, error); return; }
+        if (method == "provider.status") {
+            try { respond(id, login_->invoke(method, params, {})); }
+            catch (const std::exception& exception) {
+                protocol::RpcError rpc;
+                rpc.code = protocol::rpc_code::kBusinessError;
+                rpc.kind = protocol::error_kind::kQueryFailed;
+                rpc.message = exception.what();
+                fail(id, rpc);
+            }
+        } else if (method == "provider.login.cancel") {
+            respond(id, {{"cancelled", login_->cancel(params.at("login_id").get<std::string>())}});
+        } else if (method == "provider.model.add") {
+            push_command(Job{id, method, params});
+        } else {
+            if (method == "provider.logout") login_->cancel({});
+            push_query(Job{id, method, params});
+        }
         return;
     }
     if (method == "interaction.answer") {
@@ -432,8 +468,15 @@ void Backend::dispatch(const protocol::Request& request) {
             return;
         }
         nlohmann::json models = nlohmann::json::array();
-        for (const agent::PublicModel& model : configuration_->models()) {
-            models.push_back(to_protocol(model));
+        try {
+            for (const agent::PublicModel& model : configuration_->models()) models.push_back(to_protocol(model));
+        } catch (const std::exception& exception) {
+            protocol::RpcError rpc;
+            rpc.code = protocol::rpc_code::kBusinessError;
+            rpc.kind = protocol::error_kind::kConfigError;
+            rpc.message = exception.what();
+            fail(id, rpc);
+            return;
         }
         nlohmann::json kinds = nlohmann::json::array();
         for (const agent::ProviderKindInfo& kind : configuration_->provider_kinds()) {
@@ -531,6 +574,26 @@ void Backend::handle_command(Job job) {
             resume_session(job.id, job.params);
         } else if (job.method == "session.select_model") {
             select_model(job.id, job.params);
+        } else if (job.method == "provider.model.add") {
+            if (!check_target(job.id, job.params)) return;
+            try {
+                const auto saved = login_->invoke(job.method, job.params, command_thread_.get_stop_token());
+                const auto name = saved.at("name").get<std::string>();
+                nlohmann::json model;
+                for (const auto& item : configuration_->models()) if (item.name == name) model = to_protocol(item);
+                const auto done = [this, id = job.id, model](std::expected<void, runtime::RuntimeError> result) {
+                    respond(id, {{"model", model}, {"selected", result.has_value()},
+                                 {"selection_error", result ? nlohmann::json(nullptr) : nlohmann::json(result.error().message)}});
+                };
+                const auto accepted = runtime_->select_model(name, done);
+                if (!accepted) done(std::unexpected(accepted.error()));
+            } catch (const std::exception& error) {
+                protocol::RpcError rpc;
+                rpc.code = protocol::rpc_code::kBusinessError;
+                rpc.kind = protocol::error_kind::kConfigError;
+                rpc.message = error.what();
+                fail(job.id, rpc);
+            }
         } else if (job.method == "model.add") {
             add_model(job.id, job.params);
         } else if (job.method == "ui.appearance.save") {
@@ -606,6 +669,12 @@ void Backend::initialize(const std::string& id, const nlohmann::json& params) {
     if (!assembled.maintenance.is_null()) {
         initialized_ = true;
         respond(id, {{"maintenance", std::move(assembled.maintenance)}});
+        return;
+    }
+    login_ = assembled.login;
+    if (mode_ == "login") {
+        initialized_ = true;
+        respond(id, {{"mode", mode_}, {"session", nullptr}});
         return;
     }
     default_model_ = assembled.default_model;
@@ -762,7 +831,9 @@ void Backend::compact(const std::string& id, const nlohmann::json& params) {
 
 void Backend::handle_query(Job job) {
     try {
-        if (job.method == "session.list") {
+        if (job.method.starts_with("provider.")) {
+            respond(job.id, login_->invoke(job.method, job.params, query_thread_.get_stop_token()));
+        } else if (job.method == "session.list") {
             list_sessions(job.id, job.params);
         } else if (job.method == "session.children") {
             list_children(job.id, job.params);

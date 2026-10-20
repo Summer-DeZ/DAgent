@@ -35,9 +35,10 @@
 ├── skills/            全局 Skill
 ├── memory/            全局与项目记忆，首次保存时创建目录
 ├── data/dagent.db     首次写入会话时创建
-├── run/               runtime、模型与会话写锁，搜索实例的运行配置
+├── data/credentials/  登录凭据（0700；各 JSON 0600）
+├── run/               runtime、模型与会话写锁，credentials/ 下固定登录锁，搜索实例运行配置
 ├── runtime/           托管工具与消费者依赖环境
-├── cache/packages/    下载与包缓存
+├── cache/             opencode-go.json 公共模型清单；packages/ 下载与包缓存
 └── logs/              dagent-<pid>.log
 ```
 
@@ -69,27 +70,31 @@
       "context_window": 131072,
       "max_tokens": 8192
     },
-    "opencode-go": {
+    "opencode-go/your-opencode-model-id": {
       "kind": "openai-chat",
       "base_url": "https://opencode.ai/inference/go/openai/v1",
       "model": "your-opencode-model-id",
-      "api_key": "env:OPENCODE_API_KEY",
-      "max_tokens": 8192,
-      "headers": {"x-opencode-session": "{session_id}"}
+      "login": "opencode",
+      "max_tokens": 8192
     }
   }
 }
 ```
 
 模型的 `api_key` 可以直接保存，也可以写成 `env:VARIABLE_NAME`。启动时只从进程环境解析后一种形式。任何模型
-列表只显示 key 的有无，不输出值。`models.json` 不是严格 0600 时拒绝启动并给出 `chmod 600` 提示。
+列表只显示认证来源（key、login:opencode 或空），不输出值。`models.json` 不是严格 0600 时拒绝启动并给出 `chmod 600` 提示。
 
-每个 `models` 条目可选 `headers` 对象，缺省为空，所有值必须为字符串；其他类型（包括 null）使配置加载失败。
-值中的 `${ENV}` 复用 MCP 请求头的环境展开规则，在加载时解析；变量未设置或为空时报错。
-字面量 `{session_id}` 留到每次模型请求时替换为所属 DAgent 会话的既有 ID，同一会话的轮次、压缩与重试保持一致，
-子会话使用自己的 ID。上述 OpenCode Go 示例需将 model 替换成实际模型 ID，并设置 `OPENCODE_API_KEY`。
-请求头值仅存于内部 `ProviderConfig`，不会投影到公开模型信息、UI、日志、`workspace.info` 或会话记录。
-本字段适用于 openai-chat、anthropic 和 ollama，不适用于独立的 `decision_models`。
+每个模型可选 `login: "opencode"`，与 api_key 按字段存在性互斥（同时出现时 null/空串也报错）。
+加载只检查提供方、协议和允许的 base_url，不读凭据。OpenCode 默认头自动包含 `x-opencode-session: {session_id}`。
+未登录不影响其它模型。`login` 专用启动模式跳过模型与工具配置，支持配置损坏时重新登录或登出。
+
+`models` 与 `decision_models` 可选字符串映射 `headers`，显式 null、非字符串值、大小写重复键均报错。
+`${ENV}` 在加载时展开（变量未设置或为空报错）；`{session_id}` 在每次请求时替换，其它花括号原样保留。
+主回合与压缩用所属会话，父审阅用父会话，子 Agent 用自己的会话，d3 用被审阅动作的 ApprovalIdentity。
+缺少所需会话 ID 报错。合并顺序为协议内置、提供方默认、条目头，按 ASCII 大小写不敏感覆盖。
+头名须为合法 token，值不能含控制字符；传输头、Content-Type、Accept、User-Agent 与托管认证头保留，
+完整名单见 [llm](llm.md#1-接口与边界)。decision_models 禁止 login。
+头值只留在内部配置，不进入 UI、公开模型信息或会话记录。
 
 交互界面的 `/model` 面板可按 `a` 添加模型。表单收集 kind、配置名、base URL、模型 ID、密钥、输出上限和
 上下文窗口；支持 `openai-chat`、`anthropic`、`ollama`。后端在落盘前用与启动相同的解析器校验全部模型，拒绝
@@ -206,6 +211,8 @@ dagent [选项] [提示词…]
 dagent run [选项] <提示词…>
 dagent sessions
 dagent --list-models
+dagent login [opencode]
+dagent logout opencode
 dagent runtime sync
 dagent runtime list
 dagent sandbox status
@@ -223,6 +230,17 @@ run： --output <text|json|jsonl>
 
 - `sessions` 与 `--list-models` 也经独占后端查询（查询模式不创建会话、不启动 MCP、不收集 git 环境）；只有 `--help` / `--version`
   和参数错误不启动后端。
+
+`dagent login opencode` 显示授权 URL、用户码与 Go 订阅链接，以 argv 启动 xdg-open（macOS 为 open），
+等待批准，Ctrl+C 取消；成功显示 workspace 和到期时间。`dagent login` 只查本地状态，不联网、不刷新。
+`dagent logout opencode` 在共享锁内删除凭据；--list-models 的 AUTH 列为 key、login:opencode 或空。
+
+`app/login.cpp` 提供独立 LoginGateway，由后端装配到 runtime 的中立端口。models.dev/api.json 的 opencode-go
+清单缓存在 Home/cache/opencode-go.json；打开时超过 24 小时刷新，refresh=true 强制刷新，离线使用缓存。
+列表以 models.json 的实际条目计算 added；过滤允许地址之外的模型，Anthropic 项标为不可用。
+新增模型 ID 为 opencode-go/<model>，由接口类型生成 kind/base_url，context_window 取 context，
+max_tokens=min(output,32768)，send_reasoning_content 取 reasoning。沿用 add_model 的 models.lock、重读校验与原子保存，
+已存在项不覆盖并直接切换，default 不变。TUI 双栏选择器、登录框与 Go 清单留待 3b。
 
 ## 5. 装配
 

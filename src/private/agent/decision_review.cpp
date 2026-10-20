@@ -370,6 +370,7 @@ std::expected<DecisionReply, DecisionError> submit(const DecisionServices& servi
     attempt.scene = scene;
     attempt.target_id = std::move(target_id);
     attempt.request.state = state;
+    attempt.request.session_id = run.record.identity.child_session_id;
     attempt.request.questions = questions;
     const auto began = steady_clock::now();
     auto reply = services.model->evaluate(attempt.request, deadline, stop);
@@ -641,6 +642,7 @@ ScanResult DecisionReviewer::scan_web(std::string_view url, std::string_view res
     attempt.scene = ReviewScene::web_content;
     attempt.target_id = std::string(url);
     attempt.request.state = state;
+    attempt.request.session_id = identity.child_session_id;
     attempt.request.questions.push_back(question_for(ReviewScene::web_content, Dimension::injection));
     const auto began = steady_clock::now();
     auto reply = services_.model->evaluate(attempt.request, deadline, stop);

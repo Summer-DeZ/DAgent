@@ -10,11 +10,12 @@
 
 namespace dagent::app {
 
-enum class Mode { interactive, run, sessions, models, runtime_sync, runtime_list, sandbox_status };
+enum class Mode { interactive, run, sessions, models, runtime_sync, runtime_list, sandbox_status, login, logout };
 enum class OutputFormat { text, json, jsonl };
 
 struct Args {
     Mode mode = Mode::interactive;
+    std::string login_provider;
     std::string prompt; ///< 多个词用空格拼接；run 模式已经合并了 stdin 的内容
     std::filesystem::path cwd; ///< 工作区根：-C 指定的目录或启动目录。
                                ///< 不会 chdir，所有模块的路径都要基于它传入

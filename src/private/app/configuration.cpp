@@ -34,8 +34,9 @@ Configuration::Configuration(
 
 std::vector<agent::PublicModel> Configuration::models() const {
     std::vector<agent::PublicModel> out;
-    out.reserve(models_.size());
-    for (const auto& [name, model] : models_) out.push_back(llm::to_public(model));
+    const auto catalog = load_models(root_, overrides_);
+    out.reserve(catalog.models.size());
+    for (const auto& [name, model] : catalog.models) out.push_back(llm::to_public(model));
     return out;
 }
 

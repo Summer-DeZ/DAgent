@@ -1,5 +1,6 @@
 #include "app/searxng.hpp"
 #include "app/bootstrap.hpp"
+#include "app/login.hpp"
 
 #include <chrono>
 #include <functional>
@@ -30,9 +31,12 @@ using ModelFactory = std::function<std::shared_ptr<agent::ModelSession>(const ll
 
 /// @brief 后端共享的模型客户端工厂：HTTP 调整与重试参数来自配置。
 ModelFactory make_model_factory(const Config& config) {
-    return [http = config.http, retries = config.agent.run.max_model_retries](
+    return [http = config.http, retries = config.agent.run.max_model_retries, paths = HomePaths(config.root)](
                const llm::ProviderConfig& provider) {
-        return llm::make_session(provider, http, agent::RetryOptions{retries});
+        auto configured = provider;
+        if (!configured.login.empty()) configured.credentials = {
+            paths.credentials / (configured.login + ".json"), paths.credential_locks / (configured.login + ".lock")};
+        return llm::make_session(configured, http, agent::RetryOptions{retries});
     };
 }
 
@@ -160,6 +164,11 @@ runtime::Assembled assemble_backend(const runtime::BootstrapOptions& options) {
         out.maintenance = sandbox_status(paths);
         return out;
     }
+    if (options.mode == "login") {
+        runtime::Assembled out;
+        out.login = std::make_shared<Login>(paths);
+        return out;
+    }
     Config config;
     try {
         config = load_config({options.root, options.cwd, options.overrides});
@@ -185,6 +194,7 @@ runtime::Assembled assemble_backend(const runtime::BootstrapOptions& options) {
     auto memory = std::make_shared<tools::MemoryStore>(paths.memory, paths.project_memory(config.project_root), config.memory);
     runtime::Assembled out;
     out.configuration = configuration;
+    out.login = std::make_shared<Login>(paths);
 
     out.default_model = config.model;
     out.progress_interval_ms = static_cast<int>(config.agent.progress.interval.count());

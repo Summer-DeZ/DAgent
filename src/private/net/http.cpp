@@ -73,7 +73,9 @@ std::size_t on_write(char* p, std::size_t size, std::size_t n, void* ud) {
                 return len + 1; // 返回不同于输入的长度，以兼容 libcurl 7.68+ 的错误约定。
             }
         } else {
-            t.resp.body.append(p, std::min(len, t.limit - std::min(t.limit, t.resp.body.size())));
+            const auto remaining = t.limit - std::min(t.limit, t.resp.body.size());
+            if (len > remaining) t.resp.body_truncated = true;
+            t.resp.body.append(p, std::min(len, remaining));
         }
         return len;
     }
@@ -164,9 +166,10 @@ HttpResponse HttpClient::Impl::run(const HttpOptions& opt, const HttpRequest& re
         }
         if (req.method != "POST") curl_easy_setopt(easy, CURLOPT_CUSTOMREQUEST, req.method.c_str());
     }
+    curl_easy_setopt(easy, CURLOPT_FOLLOWLOCATION, 0L);
     curl_easy_setopt(easy, CURLOPT_NOSIGNAL, 1L);
     curl_easy_setopt(easy, CURLOPT_TCP_KEEPALIVE, 1L);
-    curl_easy_setopt(easy, CURLOPT_USERAGENT, "DAgent/0.1");
+    curl_easy_setopt(easy, CURLOPT_USERAGENT, "DAgent/" DAGENT_VERSION);
     curl_easy_setopt(easy, CURLOPT_ERRORBUFFER, errbuf);
     curl_easy_setopt(easy, CURLOPT_TIMEOUT, static_cast<long>(opt.timeout.count()));
     if (remaining) {

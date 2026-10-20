@@ -1,5 +1,7 @@
 #include "llm/model.hpp"
 #include "agent/public_model.hpp"
+#include "llm/provider_detail.hpp"
+#include "base/text.hpp"
 
 #include <algorithm>
 #include <condition_variable>
@@ -73,15 +75,30 @@ void append_arguments(AttemptState& state, const ToolCallDelta& event) {
 
 } // namespace
 
-Model::Model(std::function<std::unique_ptr<Codec>()> codec_factory, net::HttpOptions http,
+Model::Model(ProviderConfig provider, net::HttpOptions http,
              agent::RetryOptions retry, Framing framing)
-    : codec_factory_(std::move(codec_factory)), http_(http), retry_(retry), framing_(framing) {}
+    : provider_(std::move(provider)), http_(http), retry_(retry), framing_(framing) {}
 
-Model::AttemptOutcome Model::attempt(const Request& request,
+Model::AttemptOutcome Model::attempt(const Request& request, const ProviderConfig& config,
                                       const std::function<void(const StreamEvent&)>& on_event,
                                       std::stop_token stop) {
     AttemptOutcome out;
-    std::unique_ptr<Codec> codec = codec_factory_();
+    std::unique_ptr<Codec> codec = make_codec(config);
+    auto encoded = codec->encode(request);
+    if (!config.login.empty()) encoded.url = checked_login_url(login_provider(config.login), encoded.url);
+    std::vector<std::string> secrets{config.api_key};
+    for (const auto& [name, value] : config.headers) secrets.push_back(value);
+    // Include substituted header values and JSON-escaped spellings echoed by gateways.
+    for (const auto& [name, value] : encoded.headers) {
+        if (name == "Content-Type" || name == "Accept" || name == "anthropic-version") continue;
+        secrets.push_back(value);
+    }
+    const auto raw_secrets = secrets;
+    for (const auto& secret : raw_secrets) {
+        const auto escaped = nlohmann::json(secret).dump();
+        secrets.push_back(escaped.substr(1, escaped.size() - 2));
+    }
+    const auto redact = [&](std::string text) { return provider_detail::redact(std::move(text), secrets); };
     net::SseParser sse;
     AttemptState state;
     state.reply.message.role = Role::assistant;
@@ -120,7 +137,14 @@ Model::AttemptOutcome Model::attempt(const Request& request,
         state.any_sse = true;
         std::vector<StreamEvent> events;
         codec->decode(event, events);
-        for (const auto& stream_event : events) { handle(stream_event); on_event(stream_event); }
+        for (auto& stream_event : events) {
+            if (auto* finish = std::get_if<Finish>(&stream_event)) {
+                finish->raw = base::to_valid_utf8(redact(finish->raw));
+                finish->raw.resize(base::utf8_floor(finish->raw, 300));
+            }
+            handle(stream_event);
+            on_event(stream_event);
+        }
     };
     const auto decode_line = [&](std::string_view line) {
         if (!line.empty() && line.back() == '\r') line.remove_suffix(1);
@@ -140,7 +164,7 @@ Model::AttemptOutcome Model::attempt(const Request& request,
 
     const auto finish_outcome = [&](AttemptOutcome::Kind kind, std::string message) {
         out.kind = kind;
-        out.message = std::move(message);
+        out.message = redact(std::move(message));
         out.had_output = state.had_output;
         out.reply = std::move(state.reply);
         if (state.has_usage) out.reply.usage = state.usage;
@@ -149,7 +173,7 @@ Model::AttemptOutcome Model::attempt(const Request& request,
 
     net::HttpResponse response;
     try {
-        response = http_.stream(codec->encode(request), on_data, stop);
+        response = http_.stream(encoded, on_data, stop);
     } catch (const net::HttpError& e) {
         if (e.kind() == net::HttpError::Kind::cancelled || stop.stop_requested()) {
             return finish_outcome(AttemptOutcome::Kind::cancelled, "interrupted");
@@ -169,7 +193,27 @@ Model::AttemptOutcome Model::attempt(const Request& request,
 
     if (stop.stop_requested()) return finish_outcome(AttemptOutcome::Kind::cancelled, "interrupted");
 
+    if (response.status == 401 && !config.login.empty()) {
+        state.has_usage = true;
+        state.usage = Usage{}; // A rejected authentication request did not run inference.
+        return finish_outcome(AttemptOutcome::Kind::unauthorized, "OpenCode needs sign-in; use dagent login opencode or /model");
+    }
     if (response.status < 200 || response.status >= 300) {
+        if (response.body_truncated) {
+            // A transport cutoff can split a secret; never expose the retained prefix.
+            response.body = "provider error body exceeded the configured limit";
+        } else {
+            auto body = nlohmann::json::parse(response.body, nullptr, false);
+            if (!body.is_discarded()) {
+                const auto clean = [&](auto&& self, nlohmann::json& value) -> void {
+                    if (value.is_string()) value = redact(value.get<std::string>());
+                    else if (value.is_structured()) for (auto& child : value) self(self, child);
+                };
+                clean(clean, body);
+                response.body = body.dump();
+            }
+            response.body = redact(response.body);
+        }
         const Error error = codec->classify(response);
         out.retry_after = error.retry_after;
         if (error.context_too_long) return finish_outcome(AttemptOutcome::Kind::context_too_long, error.message);
@@ -209,12 +253,39 @@ agent::Reply Model::complete(const agent::Request& request,
                              const std::function<void(const agent::StreamEvent&)>& on_event,
                       const std::function<void(const RetryInfo&)>& on_retry, std::stop_token stop,
                       const agent::ModelAttemptHooks& attempts) {
-    for (int retries = 0;; ++retries) {
+    bool recovered = false;
+    std::string rejected_token;
+    std::optional<Request> resend;
+    for (int retries = 0;;) {
         if (stop.stop_requested()) throw ModelError(ModelError::Kind::cancelled, {}, "interrupted");
-        Request current = request;
+        ProviderConfig config = provider_;
+        if (!config.login.empty()) {
+            try {
+                config.api_key = request_credentials(login_provider(config.login), config.credentials, stop, rejected_token).access_token;
+            } catch (const std::exception& error) {
+                throw ModelError(stop.stop_requested() ? ModelError::Kind::cancelled : ModelError::Kind::rejected, {}, error.what());
+            }
+        }
+        Request current = resend.value_or(request);
+        const auto previous_limit = current.max_tokens;
         if (attempts.before) attempts.before(current);
+        if (resend && current.max_tokens != previous_limit) {
+            Reply unused;
+            unused.usage = Usage{};
+            if (attempts.after) attempts.after(unused);
+            throw ModelError(ModelError::Kind::budget_exhausted, {}, "insufficient budget to resend the authenticated request unchanged");
+        }
+        resend.reset();
+        rejected_token.clear();
         const auto started = std::chrono::steady_clock::now();
-        AttemptOutcome out = attempt(current, on_event, stop);
+        AttemptOutcome out;
+        try { out = attempt(current, config, on_event, stop); }
+        catch (const std::invalid_argument& error) {
+            throw ModelError(ModelError::Kind::rejected, {}, error.what());
+        } catch (const std::exception&) {
+            throw ModelError(stop.stop_requested() ? ModelError::Kind::cancelled : ModelError::Kind::rejected,
+                             {}, "model request encoding or stream decoding failed");
+        }
         if (attempts.after) attempts.after(out.reply);
         switch (out.kind) {
         case AttemptOutcome::Kind::success: {
@@ -232,6 +303,12 @@ agent::Reply Model::complete(const agent::Request& request,
             throw ModelError(ModelError::Kind::context_too_long, std::move(out.reply), out.message);
         case AttemptOutcome::Kind::rejected:
             throw ModelError(ModelError::Kind::rejected, std::move(out.reply), out.message);
+        case AttemptOutcome::Kind::unauthorized:
+            if (recovered) throw ModelError(ModelError::Kind::rejected, std::move(out.reply), out.message);
+            recovered = true;
+            rejected_token = config.api_key;
+            resend = current;
+            continue;
         case AttemptOutcome::Kind::retryable: break;
         }
 
@@ -252,7 +329,7 @@ agent::Reply Model::complete(const agent::Request& request,
             static_cast<std::int64_t>(static_cast<double>(wait.count()) * jitter(rng()))};
         if (out.retry_after > wait) wait = out.retry_after;
 
-        const int attempt_number = retries + 1;
+        const int attempt_number = ++retries;
         log_agent()->warn("模型调用失败（第 {}/{} 次重试，等待 {}ms{}）：{}", attempt_number,
                           retry_.max_retries, wait.count(), out.had_output ? "，丢弃已显示的内容" : "",
                           out.message);
@@ -271,7 +348,8 @@ agent::Reply Model::complete(const agent::Request& request,
 namespace dagent::llm {
 std::shared_ptr<agent::ModelSession> make_session(const ProviderConfig& provider, net::HttpOptions http,
                                                   agent::RetryOptions retry) {
-    return std::make_shared<Model>([provider] { return make_codec(provider); }, std::move(http),
+    if (!provider.login.empty()) { http.verify_peer = true; http.verify_host = true; }
+    return std::make_shared<Model>(provider, std::move(http),
                                    retry, find_provider(provider.kind)->framing);
 }
 
@@ -285,6 +363,7 @@ agent::PublicModel to_public(const ProviderConfig& provider) {
     out.temperature = provider.temperature;
     out.context_window = provider.context_window;
     out.has_key = !provider.api_key.empty();
+    out.auth = !provider.login.empty() ? "login:" + provider.login : out.has_key ? "key" : "";
     return out;
 }
 } // namespace dagent::llm

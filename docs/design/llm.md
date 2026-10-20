@@ -23,20 +23,22 @@ Request → encode → HTTP → SSE / NDJSON → decode → StreamEvent → Mode
 | `llm/llm.hpp` | `to_public`：ProviderConfig → 无凭据的 `agent::PublicModel` |
 | `provider.cpp` / `provider_chat.cpp` / `provider_ollama.cpp` / `provider_anthropic.cpp` | kind 注册表、工厂、通用 HTTP 错误分类；各协议的 encode、decode、classify |
 
-`ProviderConfig` 包括 kind、配置名字、base_url、model、api_key、headers、max_tokens、temperature、context_window、
-send_reasoning_content、include_usage 和 extra_body。它只存在于 app 装配与 llm 内部：app 解析 `env:` 密钥后调用
-`make_session` 得到已配置的 `ModelSession`，核心、runtime 和前端只见 `PublicModel`（has_key 表示是否有密钥）。
-Codec 有流状态，不能跨请求复用。
+`ProviderConfig` 包括 kind、配置名字、base_url、model、api_key、login、内部凭据路径、headers、max_tokens、temperature、
+context_window、send_reasoning_content、include_usage 和 extra_body。只存在于 app 装配与 llm 内部；
+`PublicModel.auth` 只公开认证来源（`key` / `login:opencode` / 空字符串），`has_key` 为旧前端保留。
+配置加载不读凭据，未登录的条目不会阻止其它模型使用。Codec 有流状态，不能跨请求复用。
 
-`headers` 是可选的字符串映射，默认空；app 使用 MCP 头相同的 `expand_env` 在加载时展开值中的 `${ENV}`，
-环境变量未设置或为空、headers 不是对象或任一值不是字符串时加载失败。header 值可能包含密钥，
-不进入 `to_public`、UI、模型列表、日志、`workspace.info` 或会话记录。
+`headers` 使用共用解析与校验，生成模型和 decision_models 都支持。加载时展开 `${ENV}`（未设置或空值报错），
+每次 encode 替换 `{session_id}`，其它花括号保持原样；没有会话身份却使用占位符时报错。
+头名必须是非空 HTTP token，展开与替换后的值都不得包含 CR/LF/NUL、其它 ASCII 控制字符或 DEL。
+协议内置头 → 登录提供方默认头 → 条目 headers，按 ASCII 大小写无关合并，后者覆盖前者；
+同一配置对象的大小写重复键报错，不支持删除与多值头。
 
-三个生成 provider 都先组装协议内置头，再通过公共 `append_headers` 追加配置头。
-每次 `encode` 将值中所有字面量 `{session_id}` 替换成当前 `Request::session_id`，不修改配置模板。
-例如 OpenCode Go 使用 `base_url: "https://opencode.ai/inference/go/openai/v1"`、`kind: "openai-chat"`
-和 `"headers": {"x-opencode-session": "{session_id}"}`；同样的机制可用于其他网关的会话或路由头。
-自定义头按配置追加，应避免与内置头同名；Ollama 也可通过它配置鉴权头。
+全局保留 Host、Content-Length、Transfer-Encoding、Connection、TE、Trailer、Upgrade、Expect、
+Proxy-Authorization、Proxy-Authenticate、Content-Type、Accept 和 User-Agent。
+Anthropic 下另保留 anthropic-version；有托管认证（api_key 字段或 login）时保留 Authorization 与 x-api-key。
+没有托管认证时可在 headers 中自行设置认证头。User-Agent 只在 HTTP 层设置为 `DAgent/<构建版本>`。
+请求头值不投影到 UI、公开清单、日志、workspace.info 或会话记录。
 
 `ProviderInfo` 声明默认端点、SSE/NDJSON 分帧、是否必须提供 key/max_tokens。
 `make_codec` 对未知 kind 抛 `invalid_argument`。不探测模型能力或上下文窗口。
@@ -52,7 +54,8 @@ Message 保留 role、content、reasoning_content、tool_calls、tool_call_id，
 主轮次经 `Session::request_shape` / `Conversation::build` 传递，压缩摘要沿用同一 RequestShape 的 ID，
 父级审阅使用执行审阅的父会话 ID；子 agent 的轮次和压缩使用自己的会话 ID。
 重试保留请求 ID，恢复会话沿用存储中的 ID，新会话使用装配层已有的 ID 生成流程。
-此字段仅用于请求头替换，不进入发给模型的消息或 JSON 正文；独立 `decision_models` 不支持本配置。
+此字段仅用于请求头替换，不进入发给模型的消息或 JSON 正文。d3 的 `DecisionRequest.session_id` 从被审阅动作的
+`ApprovalIdentity.child_session_id` 取得，包括网页内容扫描；decision_models 支持 headers，但禁止 login。
 
 StreamEvent 仍是 TextDelta、ReasoningDelta、ToolCallBegin/Delta/End、Usage 和 Finish。
 Finish 只分 stop、length、tool_calls、content_filter、error；未知原因保存原文到 raw，并归 error。
@@ -135,7 +138,9 @@ extended thinking 尚未开放；配置试图启用时明确拒绝。虽然保�
 
 共享分类支持 408、429、5xx 重试（含 529），解析 retry-after 秒数或 HTTP-date。
 400 的上下文超长措辞归 context_too_long，包括 `prompt is too long` 和 llama.cpp 的 available context size。
-错误文本移除当前配置的 API key。退避与重试上限由 Model 管理，强制压缩由核心 TurnRunner 管理。
+每次尝试收集实际 token、静态 key、环境展开和会话替换后的头值，统一脱敏。
+HTTP 错误正文（包括 JSON 转义值）在 classify 与诊断截断前脱敏，Finish.raw 在事件外发、记录和日志前脱敏、修复 UTF-8 并截断。
+HTTP 层已因上限截断的错误体整体替换为固定说明，避免暴露被截断的敏感值前缀。退避与重试上限由 Model 管理，强制压缩由核心 TurnRunner 管理。
 HTTP 错误正文摘要和非法 SSE data 的诊断先修复 UTF-8，再按字符边界截断，避免重试及结束事件无法序列化。
 
 预算使用模型的 context_window；为 0 时使用全局窗口。减去 safety_margin_tokens 和输出预留得到 limit，
@@ -166,10 +171,44 @@ HttpClient 在同一执行线程上复用。工具调用按 index 归集参数�
 服务端的 Retry-After 更长时采用它，超过 300 秒则直接失败。等待可取消；已输出过内容的失败尝试发 StreamReset 让前端清除，
 不写入历史，重试期间取消不会保存已作废尝试的半截内容。
 
-装配直接使用 `http.timeout_seconds`、`http.idle_timeout_seconds`、连接超时与 TLS 配置，不强制改写。
+普通模型使用配置的总超时、空闲超时、连接超时与 TLS 配置；login 模型强制 verify_peer/verify_host。
+HTTP 不跟随重定向。
 随附总超时为 0（不限）、空闲超时为 300 秒：流式回复只要持续收到字节就不判超时，长时间的思考与输出不会被总时长截断；0 的语义见 [HTTP 选项](net.md#选项httpoptions)。
 idle timeout 看收到的字节，包括 SSE 注释；预填充期间服务端通常不发字节，300 秒覆盖单卡上约 15 万 token 的冷预填充，更长的上下文或更慢的服务需按实际模型调整配置。
 
 `ModelAttemptHooks` 在每次实际尝试前后调用，包括重试。核心的 `BudgetedModel` 在发送前检查共享预算，
 收窄 `max_tokens` 并计数，结束后累计已报告 usage 或估算未报告消耗；重试等待本身不计下一次尝试。
 父模型审阅另受包含排队时间的 `subagents.approval.review_timeout_ms` 约束。
+
+## 7. 登录提供方与凭据（阶段 3a）
+
+`llm/auth.hpp` / `auth.cpp` 内置唯一提供方 opencode：设备码与令牌端点为
+`https://opencode.ai/console/auth/device/code`、`https://opencode.ai/console/auth/device/token`，
+client_id=dagent、supports_org_scope=true，默认头 `x-opencode-session: {session_id}`。
+当前只开放 openai-chat，base_url 必须匹配 `/inference/go/openai/v1`；Anthropic Go 地址仅用于清单中显示不可用项。
+用 libcurl URL API 检查最终编码 URL 的 HTTPS origin 和精确路径，禁止 userinfo；不按字符串前缀匹配主机。
+认证和带登录 token 的推理都强制 TLS 校验且不跟随重定向。
+
+RFC 8628 轮询缺省间隔 5 秒，slow_down 每次增加 5 秒，连接超时后指数降低轮询频率；
+authorization_pending 继续，拒绝、过期和其它 OAuth 错误终止。批准链接相对提供方 origin 解析并校验。
+设备等待按授权期限截止；认证 HTTP 总超时 30 秒、连接超时 10 秒、响应上限 64 KiB；锁等待上限 30 秒。
+以上等待与请求均可取消。OAuth 失败仅显示 HTTP 状态、白名单错误码与固定说明，不透传响应或 JSON 解析异常。
+
+HomePaths 提供 `data/credentials/opencode.json` 和 `run/credentials/opencode.lock`。
+凭据目录 0700、文件 0600；逐级拒绝 symlink，文件须属当前用户且为普通文件。
+临时文件从创建起 0600，写入后 fsync → rename → fsync 目录。
+字段 access_token、refresh_token、expires_at、org_id、client_id、state、updated；时间为 Unix 秒。
+登录保存、刷新与登出共享固定 flock 文件；登出保留锁文件。设备等待不持锁，推理不持锁。
+每次请求重读凭据，不设进程内 token 缓存。
+
+到期前 5 分钟或 HTTP 401 触发刷新：锁内重读，若 token 已变化则采用其它进程刷新的结果；
+否则先原子保存 refresh_pending，再用 refresh token 请求新令牌并保存 ready。
+残留 refresh_pending、invalid_grant 或不确定的刷新结果均要求重新登录，不再重发旧 refresh token。
+刷新收到有效结果后即使取消也先保存轮换结果。
+
+每次 complete 最多一次 401 恢复，在 classify 前按状态码识别，403 不恢复；额度不随网络重试重置。
+恢复重发保持正文与 session_id，每次真实发送均执行 ModelAttemptHooks，401 按零推理 usage 结算但计一次尝试。
+若下一次预算钩子要求缩小正文中的输出上限，则以 budget_exhausted 结束，避免改变重发正文或超预算。
+408/429/5xx、流中断沿用既有重试与退避。
+
+本阶段仅完成构建验证；浏览器登录、真实 Go 推理、并发刷新、目录权限攻击与错误脱敏仍须真实运行验收。

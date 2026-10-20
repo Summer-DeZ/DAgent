@@ -19,24 +19,46 @@ Home 必须可写；前后端二进制始终放在同一目录。配置文件各
 模型和 MCP 配置要求权限为 `0600`。不要把真实密钥放进示例文件。
 配置中的相对路径通常相对于 Home；沙箱额外路径相对于工作目录。详见 [配置契约](../design/app.md#2-配置与提示词)。
 
-每个模型条目可添加 `headers` 对象，值必须是字符串。例如在 `models` 下添加 OpenCode Go：
+通过 CLI 登录 OpenCode Go：
+
+```bash
+dagent login opencode     # 显示授权链接与用户码，尝试打开浏览器，等待批准
+dagent login              # 仅本地状态，不联网、不刷新
+dagent logout opencode    # 删除本地凭据，保留锁文件
+```
+
+在浏览器选择工作区并批准；需要 Go 订阅时使用命令打印的订阅链接。无法自动打开浏览器时手工打开链接并输入用户码。
+等待时 Ctrl+C 取消，成功后显示工作区和到期时间。凭据存在 Home/data/credentials/（目录 0700，JSON 0600）。
+不要复制或重用旧 refresh token；遇到 needs sign-in（含不确定的刷新结果）重新运行登录命令。
+本阶段尚未增加 TUI 登录框和 Go 选模型列表，CLI 登录后在 models.json 的 models 中添加条目，例如：
 
 ```json
-"opencode-go": {
+"opencode-go/deepseek-v4.1-flash": {
   "kind": "openai-chat",
   "base_url": "https://opencode.ai/inference/go/openai/v1",
-  "model": "your-opencode-model-id",
-  "api_key": "env:OPENCODE_API_KEY",
-  "max_tokens": 8192,
-  "headers": {"x-opencode-session": "{session_id}"}
+  "model": "deepseek-v4.1-flash",
+  "login": "opencode",
+  "context_window": 1000000,
+  "max_tokens": 32768,
+  "send_reasoning_content": true
 }
 ```
 
-将 `model` 改为实际模型 ID，并在启动前设置 `OPENCODE_API_KEY`，用 `--model opencode-go` 选择。
-请求头值支持 `${ENV}`（例如 `"x-routing-token": "${ROUTING_TOKEN}"`），加载配置时从进程环境展开，
-变量未设置或为空会报错。`{session_id}` 在每次请求时替换为当前 DAgent 会话 ID；恢复会话保持该 ID，
-子 agent 使用自己的 ID，父级审阅使用父会话 ID。此功能适用于全部生成模型协议；`decision_models` 不支持。
-自定义头追加在内置头之后，应避免同名；值可能包含凭据，不会显示在模型列表或写入会话记录。
+用 `--model opencode-go/deepseek-v4.1-flash` 选择；实际可用模型与限制以服务清单为准，推理标记仍需真实验证。
+`login` 与 `api_key` 不能同时出现，即使其中一个是 null 或空字符串也报错。
+OpenCode 自动添加会话头，不必手工复制令牌或配置认证头。未登录的条目不会影响其它模型或登录命令。
+`--list-models` 的 AUTH 列只显示 key、login:opencode 或空值。
+
+每个生成模型或 decision_models 条目都可配置字符串映射 `headers`，例如 `"headers":{"x-routing-token":"${ROUTING_TOKEN}"}`。
+`${ENV}` 在加载时展开，未设置或为空时报错；`{session_id}` 在每次请求时替换，缺少会话身份时报错。
+主回合和压缩用所属会话，父审阅用父会话，子 Agent 用自己的会话，d3 用被审阅动作所属会话；其它花括号不变。
+合并顺序是协议内置头、登录提供方默认头、条目 headers，按 ASCII 大小写无关覆盖；同一对象中的大小写重复键报错。
+头名必须是 HTTP token，值不允许 CR/LF/NUL 等控制字符，不支持删除或多值头。
+
+不能配置 Host、Content-Length、Transfer-Encoding、Connection、TE、Trailer、Upgrade、Expect、
+Proxy-Authorization、Proxy-Authenticate、Content-Type、Accept、User-Agent；Anthropic 还保留 anthropic-version。
+有 api_key 或 login 时禁止覆盖 Authorization/x-api-key；无托管认证的协议可自行配置认证头。
+头值不公开或保存到会话记录，错误输出在截断前脱敏。decision_models 支持 headers，但不支持 login。
 修改配置后重启后端生效。
 
 ```bash

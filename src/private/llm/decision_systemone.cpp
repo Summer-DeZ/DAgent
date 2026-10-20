@@ -1,4 +1,5 @@
 #include "llm/decision_systemone.hpp"
+#include "llm/provider_detail.hpp"
 
 #include <chrono>
 #include <cmath>
@@ -81,6 +82,12 @@ public:
         http_request.url = config_.endpoint;
         http_request.method = "POST";
         http_request.headers.emplace_back("Content-Type", "application/json");
+        ProviderConfig headers;
+        headers.headers = config_.headers;
+        try { provider_detail::append_headers(http_request.headers, headers, request.session_id); }
+        catch (const std::exception&) {
+            return std::unexpected(agent::DecisionError{agent::DecisionError::Kind::unavailable, "invalid decision request headers or missing session identity"});
+        }
         http_request.body = encode(request).dump();
 
         net::HttpResponse response;
@@ -92,7 +99,7 @@ public:
                               : error.kind() == net::HttpError::Kind::timeout
                                   ? agent::DecisionError::Kind::timeout
                                   : agent::DecisionError::Kind::unavailable;
-            return std::unexpected(agent::DecisionError{kind, error.what()});
+            return std::unexpected(agent::DecisionError{kind, "decision transport failed"});
         }
         if (response.status < 200 || response.status >= 300)
             return std::unexpected(agent::DecisionError{
@@ -104,7 +111,7 @@ public:
             body = json::parse(response.body);
         } catch (const json::exception& error) {
             return std::unexpected(agent::DecisionError{agent::DecisionError::Kind::invalid_response,
-                                                        std::format("invalid decision response: {}", error.what())});
+                                                        "invalid decision response"});
         }
         try {
             agent::DecisionReply reply;
@@ -172,7 +179,7 @@ public:
             return reply;
         } catch (const json::exception& error) {
             return std::unexpected(agent::DecisionError{agent::DecisionError::Kind::invalid_response,
-                                                        error.what()});
+                                                        "invalid decision response"});
         }
     }
 

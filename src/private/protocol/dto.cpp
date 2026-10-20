@@ -23,7 +23,7 @@ void to_json(nlohmann::json& json, const PublicModel& model) {
                           {"max_tokens", model.max_tokens},
                           {"temperature", model.temperature},
                           {"context_window", model.context_window},
-                          {"has_key", model.has_key}};
+                          {"auth", model.auth}, {"has_key", model.has_key}};
 }
 
 void from_json(const nlohmann::json& json, PublicModel& model) {
@@ -35,6 +35,7 @@ void from_json(const nlohmann::json& json, PublicModel& model) {
     model.temperature = json.value("temperature", -1.0);
     model.context_window = json.value("context_window", std::size_t{0});
     model.has_key = json.value("has_key", false);
+    model.auth = json.value("auth", "");
 }
 
 void to_json(nlohmann::json& json, const ProviderKind& kind) {

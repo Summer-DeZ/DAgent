@@ -138,11 +138,14 @@ json encode_tools(const std::vector<agent::ToolSpec>& tools) {
 
 Error classify_http(const net::HttpResponse& response, std::string_view api_key) {
         Error error;
+        const auto body = redact(response.body, {std::string(api_key)});
         std::string detail;
-        if (const json parsed = json::parse(response.body, nullptr, false); !parsed.is_discarded()) {
+        if (const json parsed = json::parse(body, nullptr, false); !parsed.is_discarded()) {
             if (const auto it = parsed.find("error"); it != parsed.end()) detail = error_message(*it);
         }
-        if (detail.empty()) detail = snippet(response.body, 300);
+        detail = redact(detail, {std::string(api_key)});
+        if (detail.empty()) detail = body;
+        detail = snippet(detail, 300);
         error.message = std::format("HTTP {}: {}", response.status, detail.empty() ? "no detail" : detail);
 
         switch (response.status) {
@@ -174,21 +177,71 @@ void merge_extra(json& body, const json& extra) {
         if (!body.contains(it.key())) body[it.key()] = it.value();
 }
 
+std::string lower_header(std::string_view name) {
+    std::string out(name);
+    for (char& c : out) if (c >= 'A' && c <= 'Z') c += 'a' - 'A';
+    return out;
+}
+void validate_header(std::string_view name, std::string_view value) {
+    constexpr std::string_view punctuation = "!#$%&'*+-.^_`|~";
+    if (name.empty() || !std::all_of(name.begin(), name.end(), [&](unsigned char c) {
+        return (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') || (c >= '0' && c <= '9') || punctuation.find(c) != std::string_view::npos;
+    })) throw std::invalid_argument("invalid request header name");
+    if (std::any_of(value.begin(), value.end(), [](unsigned char c) { return c < 32 || c == 127; }))
+        throw std::invalid_argument("request header value contains a control character");
+}
+std::string redact(std::string text, const std::vector<std::string>& secrets) {
+    // Mark against the original text so overlapping secrets cannot leave a suffix exposed.
+    std::vector<bool> hidden(text.size(), false);
+    for (const auto& secret : secrets) {
+        if (secret.empty()) continue;
+        for (std::size_t pos = 0; (pos = text.find(secret, pos)) != std::string::npos; ++pos)
+            std::fill(hidden.begin() + pos, hidden.begin() + pos + secret.size(), true);
+    }
+    std::string out;
+    for (std::size_t i = 0; i < text.size();) {
+        if (!hidden[i]) { out += text[i++]; continue; }
+        out += "[redacted]";
+        while (i < text.size() && hidden[i]) ++i;
+    }
+    return out;
+}
 void append_headers(net::Headers& headers, const ProviderConfig& config, std::string_view session_id) {
     constexpr std::string_view placeholder = "{session_id}";
-    for (const auto& [name, text] : config.headers) {
-        std::string value = text;
-        for (std::size_t pos = 0; (pos = value.find(placeholder, pos)) != std::string::npos;) {
-            value.replace(pos, placeholder.size(), session_id);
-            pos += session_id.size();
+    const auto merge = [&](const auto& source) {
+        for (const auto& [name, text] : source) {
+            std::string value = text;
+            for (std::size_t pos = 0; (pos = value.find(placeholder, pos)) != std::string::npos;) {
+                if (session_id.empty()) throw std::invalid_argument("request header requires a session identity");
+                value.replace(pos, placeholder.size(), session_id);
+                pos += session_id.size();
+            }
+            validate_header(name, value);
+            const auto key = lower_header(name);
+            std::erase_if(headers, [&](const auto& pair) { return lower_header(pair.first) == key; });
+            headers.emplace_back(name, std::move(value));
         }
-        headers.emplace_back(name, std::move(value));
-    }
+    };
+    if (!config.login.empty()) merge(login_provider(config.login).headers);
+    merge(config.headers);
+    for (const auto& [name, value] : headers) validate_header(name, value);
 }
 } // namespace provider_detail
 } // namespace dagent::llm
 
 namespace dagent::llm {
+void validate_headers(const std::map<std::string, std::string>& headers, std::string_view kind, bool managed_auth) {
+    std::set<std::string> names;
+    for (const auto& [name, value] : headers) {
+        provider_detail::validate_header(name, value);
+        const auto lower = provider_detail::lower_header(name);
+        if (!names.insert(lower).second) throw std::invalid_argument("case-insensitive duplicate request header");
+        static const std::set<std::string> reserved{"host", "content-length", "transfer-encoding", "connection", "te", "trailer", "upgrade", "expect", "proxy-authorization", "proxy-authenticate", "content-type", "accept", "user-agent"};
+        if (reserved.contains(lower) || (kind == "anthropic" && lower == "anthropic-version") ||
+            (managed_auth && (lower == "authorization" || lower == "x-api-key")))
+            throw std::invalid_argument("request header is reserved: " + name);
+    }
+}
 std::span<const ProviderInfo> providers() noexcept {
     static constexpr ProviderInfo entries[] = {
         {"openai-chat", "https://api.openai.com/v1", Framing::sse, false, false},

@@ -129,6 +129,12 @@ std::variant<Args, int> parse_args(int argc, char** argv) {
     CLI::App* sessions = app.add_subcommand("sessions", "list recent sessions");
     sessions->fallthrough();
 
+    std::string login_provider, logout_provider;
+    auto* login = app.add_subcommand("login", "show local login status, or sign in to a provider");
+    login->add_option("provider", login_provider)->check(CLI::IsMember({"opencode"}));
+    auto* logout = app.add_subcommand("logout", "remove local provider credentials");
+    logout->add_option("provider", logout_provider)->required()->check(CLI::IsMember({"opencode"}));
+
     auto* runtime = app.add_subcommand("runtime", "manage private tool environments");
     runtime->require_subcommand(1, 1);
     auto* runtime_sync = runtime->add_subcommand("sync", "prepare pinned runtimes and dependencies");
@@ -163,7 +169,9 @@ std::variant<Args, int> parse_args(int argc, char** argv) {
     }
 
     Args args;
-    if (runtime_sync->parsed()) args.mode = Mode::runtime_sync;
+    if (login->parsed()) { args.mode = Mode::login; args.login_provider = login_provider; }
+    else if (logout->parsed()) { args.mode = Mode::logout; args.login_provider = logout_provider; }
+    else if (runtime_sync->parsed()) args.mode = Mode::runtime_sync;
     else if (runtime_list->parsed()) args.mode = Mode::runtime_list;
     else if (sandbox_status->parsed()) args.mode = Mode::sandbox_status;
     else if (run->parsed()) {
@@ -192,6 +200,10 @@ std::variant<Args, int> parse_args(int argc, char** argv) {
         return 2;
     }
 
+    if (list_models && (login->parsed() || logout->parsed())) {
+        std::cerr << "--list-models cannot be combined with login or logout\n";
+        return 2;
+    }
     if (list_models) { args.mode = Mode::models; return args; }
 
     const bool stdin_tty = ::isatty(STDIN_FILENO) != 0;

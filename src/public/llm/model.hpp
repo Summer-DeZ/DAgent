@@ -18,7 +18,7 @@ namespace dagent::llm {
 
 class Model final : public agent::ModelSession {
 public:
-    Model(std::function<std::unique_ptr<Codec>()> codec_factory, net::HttpOptions http,
+    Model(ProviderConfig provider, net::HttpOptions http,
           agent::RetryOptions retry, Framing framing = Framing::sse);
 
     /// @brief 阻塞到拿到完整回复。on_event 在调用线程上收到每个 StreamEvent（含 Usage、Finish）；
@@ -31,7 +31,7 @@ public:
 
 private:
     struct AttemptOutcome {
-        enum class Kind { success, retryable, cancelled, context_too_long, rejected };
+        enum class Kind { success, retryable, cancelled, context_too_long, rejected, unauthorized };
         Kind kind = Kind::success;
         agent::Reply reply;
         std::string message;
@@ -39,11 +39,11 @@ private:
         bool had_output = false;
     };
 
-    AttemptOutcome attempt(const agent::Request&,
+    AttemptOutcome attempt(const agent::Request&, const ProviderConfig&,
                            const std::function<void(const agent::StreamEvent&)>& on_event,
                            std::stop_token stop);
 
-    std::function<std::unique_ptr<Codec>()> codec_factory_;
+    ProviderConfig provider_;
     net::HttpClient http_;
     agent::RetryOptions retry_;
     Framing framing_;

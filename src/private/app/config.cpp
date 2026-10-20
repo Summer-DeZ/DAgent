@@ -313,6 +313,20 @@ std::string expand_env(const std::string& text, const std::string& where) {
     return out;
 }
 
+std::map<std::string, std::string> map_headers(const Node& value, std::string_view kind, bool managed_auth) {
+    std::map<std::string, std::string> out;
+    const Node headers = value.child("headers");
+    if (!headers.exists()) return out;
+    if (!headers.raw().is_object()) fail(ConfigError::Kind::type, headers.pointer() + " must be an object");
+    for (const auto& [name, text] : headers.raw().items()) {
+        if (!text.is_string()) fail(ConfigError::Kind::type, headers.pointer() + " values must be strings");
+        out.emplace(name, expand_env(text.get<std::string>(), headers.pointer()));
+    }
+    try { llm::validate_headers(out, kind, managed_auth); }
+    catch (const std::exception& error) { fail(ConfigError::Kind::invalid, headers.pointer() + ": " + error.what()); }
+    return out;
+}
+
 std::map<std::string, llm::ProviderConfig> map_models(const Node& node) {
     if (!node.has() || !node.raw().is_object() || node.raw().empty())
         fail(ConfigError::Kind::invalid, "models: at least one named model is required");
@@ -335,14 +349,6 @@ std::map<std::string, llm::ProviderConfig> map_models(const Node& node) {
         model.context_window = value.child("context_window").usize();
         model.send_reasoning_content = value.child("send_reasoning_content").flag();
         model.include_usage = value.child("include_usage").flag(true);
-        if (const Node headers = value.child("headers"); headers.exists()) {
-            if (!headers.raw().is_object()) fail(ConfigError::Kind::type, key + "/headers must be an object");
-            for (const auto& [header, text] : headers.raw().items()) {
-                const std::string field = key + "/headers/" + header;
-                if (!text.is_string()) fail(ConfigError::Kind::type, field + " must be a string");
-                model.headers.emplace(header, expand_env(text.get<std::string>(), field));
-            }
-        }
         if (const Node extra = value.child("extra_body"); extra.has()) {
             if (!extra.raw().is_object()) fail(ConfigError::Kind::type, key + "/extra_body must be an object");
             model.extra_body = extra.raw();
@@ -354,10 +360,20 @@ std::map<std::string, llm::ProviderConfig> map_models(const Node& node) {
             if (output_limit)
                 fail(ConfigError::Kind::invalid, key + "/extra_body: set the output budget with max_tokens");
         }
+        if (entry.contains("login") && entry.contains("api_key"))
+            fail(ConfigError::Kind::invalid, key + ": login and api_key are mutually exclusive");
+        if (entry.contains("login")) {
+            if (!entry["login"].is_string() || entry["login"].get_ref<const std::string&>().empty())
+                fail(ConfigError::Kind::invalid, key + "/login must name a provider");
+            model.login = entry["login"].get<std::string>();
+            try { llm::validate_login(model.login, model.kind, model.base_url); }
+            catch (const std::exception& error) { fail(ConfigError::Kind::invalid, key + "/login: " + error.what()); }
+        }
+        model.headers = map_headers(value, model.kind, entry.contains("api_key") || entry.contains("login"));
         const std::string api_key = value.child("api_key").str();
         model.api_key = api_key.starts_with("env:") ? env_value(std::string_view(api_key).substr(4), key + "/api_key")
                                                      : api_key;
-        if (info->needs_api_key && model.api_key.empty())
+        if (info->needs_api_key && model.api_key.empty() && model.login.empty())
             fail(ConfigError::Kind::invalid, key + "/api_key is required");
         if (info->needs_max_tokens && model.max_tokens == 0)
             fail(ConfigError::Kind::invalid, key + "/max_tokens must be greater than zero");
@@ -384,6 +400,8 @@ std::map<std::string, llm::DecisionProviderConfig> map_decision_models(const Nod
         model.model = value.required("model").str();
         if (model.model.empty()) fail(ConfigError::Kind::invalid, key + "/model must not be empty");
         model.model_revision = value.child("model_revision").str();
+        if (entry.contains("login")) fail(ConfigError::Kind::invalid, key + ": decision models do not support login");
+        model.headers = map_headers(value, model.kind, false);
         out.emplace(name, std::move(model));
     }
     return out;
@@ -975,7 +993,7 @@ nlohmann::json save_appearance(const fs::path& root, const nlohmann::json& appea
 }
 
 llm::ProviderConfig add_model(const fs::path& root_path,
-                                const llm::ProviderConfig& model) {
+                                const llm::ProviderConfig& model, bool existing_ok) {
     const fs::path root = absolute_path(root_path);
     const fs::path file = HomePaths(root).models;
     ModelWriteLock lock(root);
@@ -984,6 +1002,7 @@ llm::ProviderConfig add_model(const fs::path& root_path,
     json& models = document["models"];
     if (!models.is_object()) fail(ConfigError::Kind::type, "/models must be an object");
     if (model.name.empty()) fail(ConfigError::Kind::invalid, "model configuration name must not be empty");
+    if (models.contains(model.name) && existing_ok) return map_models(Node(models, "/models")).at(model.name);
     if (models.contains(model.name))
         fail(ConfigError::Kind::invalid, "model configuration already exists: " + model.name);
 
@@ -995,6 +1014,7 @@ llm::ProviderConfig add_model(const fs::path& root_path,
                {"send_reasoning_content", model.send_reasoning_content},
                {"include_usage", model.include_usage}};
     if (!model.api_key.empty()) entry["api_key"] = model.api_key;
+    if (!model.login.empty()) entry["login"] = model.login;
     if (model.temperature >= 0.0) entry["temperature"] = model.temperature;
     if (!model.extra_body.empty()) entry["extra_body"] = model.extra_body;
     if (!model.headers.empty()) entry["headers"] = model.headers;

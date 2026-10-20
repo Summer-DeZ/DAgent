@@ -10,6 +10,15 @@
       "max_tokens": 8192,
       "model": "MiniCPM-V-4.7-35B-A3B",
       "send_reasoning_content": false
+    },
+    "opencode-go/deepseek-v4.1-flash": {
+      "kind": "openai-chat",
+      "base_url": "https://opencode.ai/inference/go/openai/v1",
+      "model": "deepseek-v4.1-flash",
+      "login": "opencode",
+      "context_window": 1000000,
+      "max_tokens": 32768,
+      "send_reasoning_content": true
     }
   },
   "decision_models": {

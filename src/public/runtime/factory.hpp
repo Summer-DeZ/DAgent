@@ -174,9 +174,18 @@ struct BootstrapOptions {
     std::optional<std::string> log_level;
 };
 
+// Backend-only login operations; implementations never return credentials.
+class LoginGateway {
+public:
+    virtual ~LoginGateway() = default;
+    virtual nlohmann::json invoke(std::string_view method, const nlohmann::json&, std::stop_token) = 0;
+    virtual bool cancel(std::string_view login_id) = 0;
+};
+
 /// @brief 装配结果：backend 只经这些端口访问具体实现。
 struct Assembled {
     nlohmann::json maintenance;
+    std::shared_ptr<LoginGateway> login;
     std::shared_ptr<ConfigurationGateway> configuration;
     std::shared_ptr<QueryGateway> queries;
     std::unique_ptr<SessionFactory> factory; ///< 纯查询模式（sessions/models）为空

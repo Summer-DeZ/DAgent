@@ -83,6 +83,7 @@ private:
     std::unique_ptr<runtime::Runtime> runtime_;
     std::shared_ptr<runtime::QueryGateway> queries_;
     std::shared_ptr<ConfigurationGateway> configuration_;
+    std::shared_ptr<runtime::LoginGateway> login_;
     bool initialized_ = false;
     std::string mode_;
     std::string default_model_;

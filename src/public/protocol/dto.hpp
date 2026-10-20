@@ -17,13 +17,14 @@ namespace dagent::protocol {
 
 /// 业务协议版本（与 JSON-RPC 的 jsonrpc="2.0" 分开）。
 inline constexpr int kMajor = 1;
-inline constexpr int kMinor = 3;
+inline constexpr int kMinor = 4;
 
 struct PublicModel {
     std::string name, kind, model, base_url;
     std::size_t max_tokens = 0;
     double temperature = -1.0;
     std::size_t context_window = 0;
+    std::string auth; ///< key / login:opencode / empty
     bool has_key = false;
 };
 

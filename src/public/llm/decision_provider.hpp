@@ -7,6 +7,7 @@
 
 #include <chrono>
 #include <memory>
+#include <map>
 #include <string>
 #include <string_view>
 #include <vector>
@@ -19,6 +20,7 @@ namespace dagent::llm {
 
 /// @brief models.json 中 decision_models 的一个条目。
 struct DecisionProviderConfig {
+    std::map<std::string, std::string> headers;
     std::string name;           ///< 配置名，仅用于选择与展示
     std::string kind;           ///< 协议 kind，如 systemone
     std::string endpoint;       ///< 完整服务地址（System One 不再拼接 /v1）

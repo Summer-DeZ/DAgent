@@ -127,7 +127,7 @@ public:
         const json chunk = json::parse(data, nullptr, false);
         if (chunk.is_discarded()) {
             std::string detail = base::to_valid_utf8(data);
-            detail.resize(base::utf8_floor(detail, 120));
+            // Model redacts the full diagnostic before truncating or emitting it.
             fail(out, std::format("invalid JSON in SSE data: {}", detail));
             return;
         }

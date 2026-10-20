@@ -41,6 +41,8 @@ struct HttpResponse {
     Headers headers;  ///< 名字已转小写，保留重复项与出现顺序
     std::string body; ///< send()：完整响应体；stream()：仅非 2xx 时的错误体
 
+    bool body_truncated = false; ///< stream error body exceeded the configured cap
+
     /// @brief 取首个同名响应头（name 须小写）。
     std::optional<std::string_view> header(std::string_view name) const;
 };
