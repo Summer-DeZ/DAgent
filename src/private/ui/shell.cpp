@@ -29,6 +29,7 @@
 #include "ui/completion_controller.hpp"
 #include "ui/model_dialog.hpp"
 #include "ui/model_picker.hpp"
+#include "ui/memory_browser.hpp"
 #include "ui/panel.hpp"
 #include "ui/prompt_box.hpp"
 #include "ui/prompt_input.hpp"
@@ -421,7 +422,15 @@ public:
                   [this] { recall(); }, [this] { prompt_changed(); },
                   [this] { return completion_.visible(); }),
           dialog_(rt_, [this] { interrupt(); }), model_dialog_(rt_),
-          toasts_(rt_), panel_(rt_), settings_(rt_),
+          toasts_(rt_), panel_(rt_),
+          memory_browser_(panel_, {
+              [this](std::string method, nlohmann::json params, MemoryBrowser::Done done, MemoryBrowser::Failed failed) {
+                  request(std::move(method), std::move(params), std::move(done), std::move(failed));
+              },
+              [this](std::string message, tui::Notice::Severity severity) { toast(std::move(message), severity); },
+              [this] { return terminal_.size().cols; }
+          }),
+          settings_(rt_),
           model_picker_(rt_, {
               [this](std::string method, nlohmann::json params, ModelPicker::Done done, ModelPicker::Failed failed) {
                   request(std::move(method), std::move(params), std::move(done), std::move(failed));
@@ -1172,7 +1181,7 @@ private:
             throw std::logic_error("invalid key binding: " + shortcut);
     }
     void register_commands() {
-        add_command("memory.manage", "View and delete memories", std::string(ui::text().cmd_session), {}, "/memory", [this] { memory_panel(); });
+        add_command("memory.manage", "View and delete memories", std::string(ui::text().cmd_session), {}, "/memory", [this] { memory_browser_.open(); });
         add_command("skill.pick", std::string(ui::text().cmd_skills), std::string(ui::text().cmd_session), {}, "/skills", [this] { skill_panel(); });
         add_command("panel.commands", std::string(ui::text().cmd_palette), std::string(ui::text().cmd_view), "ctrl+p", {}, [this] { command_panel(); });
         add_command("session.interrupt", std::string(ui::text().cmd_interrupt), std::string(ui::text().cmd_session), "escape", {}, [this] { interrupt(); });
@@ -1545,55 +1554,6 @@ private:
             toast(std::string(ui::text().toast_skills_failed) + error.message, tui::Notice::Severity::error);
         });
     }
-    void memory_error(const protocol::RpcError& error) {
-        panel_.close();
-        toast("Memory: " + error.message, tui::Notice::Severity::error);
-    }
-    void memory_panel() {
-        panel_.open("Memory", {{std::string(ui::text().panel_loading), {}, {}, false, {}}},
-                    "Enter view · Esc close", false);
-        request("memory.list", {}, [this](const nlohmann::json& value) {
-            std::vector<Panel::Row> rows;
-            const auto entries = value.value("entries", nlohmann::json::array());
-            for (const auto scope : {"global", "project"}) {
-                bool found = false;
-                for (const auto& entry : entries) {
-                    if (entry.value("scope", "") != scope) continue;
-                    found = true;
-                    const std::string name = entry.value("name", "");
-                    rows.push_back({name, entry.value("description", ""),
-                        entry.value("type", "") + " " + entry.value("updated", ""), true,
-                        [this, scope = std::string(scope), name] { memory_entry(scope, name); }, scope});
-                }
-                if (!found) rows.push_back({"(no memories)", {}, {}, false, {}, scope});
-            }
-            panel_.open("Memory", std::move(rows), "Enter view · Esc close");
-        }, [this](const protocol::RpcError& error) { memory_error(error); });
-    }
-    void memory_entry(const std::string& scope, const std::string& name) {
-        request("memory.view", {{"scope", scope}, {"name", name}}, [this, scope, name](const nlohmann::json& value) {
-            const auto& entry = value.at("view");
-            std::vector<Panel::Row> rows;
-            rows.push_back({"Back to memories", {}, {}, true, [this] { memory_panel(); }});
-            rows.push_back({"Delete this memory", {}, {}, true, [this, scope, name] {
-                request("memory.delete", {{"scope", scope}, {"name", name}}, [this](const nlohmann::json&) {
-                    memory_panel();
-                }, [this](const protocol::RpcError& error) { memory_error(error); });
-            }});
-            const auto body = entry.value("type", "") + " / " + entry.value("updated", "") + "\n" +
-                              entry.value("description", "") + "\n\n" + entry.value("content", "");
-            const int width = std::max(1, std::min(76, terminal_.size().cols - 8) - 4);
-            for (std::size_t offset = 0; offset < body.size();) {
-                const auto edge = tui::wrap_next_row(body, offset, width);
-                std::string line;
-                tui::expand_row(line, body, offset, edge.end);
-                rows.push_back({std::move(line), {}, {}, true, {}});
-                offset = edge.next;
-            }
-            panel_.open("Memory · " + scope + "/" + name, std::move(rows),
-                        std::string(ui::text().panel_session_footer), false);
-        }, [this](const protocol::RpcError& error) { memory_error(error); });
-    }
     void session_panel() {
         panel_.open(std::string(ui::text().panel_sessions), {{std::string(ui::text().panel_loading), {}, {}, false, {}}}, std::string(ui::text().panel_session_footer), false);
         request("session.list", {{"limit", 0}}, [this](const nlohmann::json& value) {
@@ -1888,6 +1848,7 @@ private:
     ModelDialog model_dialog_;
     ToastStack toasts_;
     Panel panel_;
+    MemoryBrowser memory_browser_;
     SettingsDialog settings_;
     ModelPicker model_picker_;
     std::string interaction_kind_;

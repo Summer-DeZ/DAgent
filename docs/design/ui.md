@@ -33,6 +33,7 @@ phase 5c 的自适应阅读宽度、双侧分节栏、导航焦点与 Layout 设
 | `SettingsDialog` | Appearance / Layout、分节移动和排序、即时预览、后端保存与撤回 |
 | `Completion` | `/` 命令、`@` 文件和 `$` 技能的贴输入框补全浮层 |
 | `CompletionController` | 拥有 Completion、当前补全类型及文件防抖计时器，负责来源请求、筛选与选中后的输入替换 |
+| `MemoryBrowser` | 通过共享 Panel 展示记忆列表与详情、执行删除；依赖由 Shell 注入 |
 | `Panel` | 支持分组、匹配高亮、别名与快捷键列的居中列表浮层；可选详情栏、状态行、来源页脚与行颜色 |
 | `ModelPicker` | 两栏模型选择、OpenCode Go 设备登录和提供方模型清单；只经 RPC 操作 |
 | `WelcomeView` | 居中新会话起始页：字标、项目信息卡、可恢复的最近会话与快捷键 |

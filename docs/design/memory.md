@@ -124,6 +124,10 @@ TUI 卡片显示操作、作用域、名字、元数据和正文；run 的 text/
 
 ## 5. 用户管理
 
+界面流程位于 `ui/memory_browser.hpp` / `private/ui/memory_browser.cpp` 的 `MemoryBrowser`。
+Shell 注入共享 `Panel&`、带成功/错误回调的 RPC、toast 与终端列数读取；RPC 继续经 Shell 的
+CallbackGate 在 UI 线程交付，不增加独立寿命机制。命令注册调用 `MemoryBrowser::open()`。
+
 `/memory` 先按 Global / Project 两组列出 name、description、type、updated；Enter 查看完整元数据与正文，
 详情面板支持上下滚动，选择 Delete this memory 删除，成功后重新扫描列表；Back to memories 返回列表。
 这些操作不调用模型，当前 system 不随面板操作变化。
