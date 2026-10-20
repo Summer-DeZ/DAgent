@@ -10,6 +10,10 @@
 
 namespace dagent::app {
 
+namespace detail {
+std::string read_stdin_all();
+} // namespace detail
+
 enum class Mode { interactive, run, sessions, models, runtime_sync, runtime_list, sandbox_status, login, logout };
 enum class OutputFormat { text, json, jsonl };
 

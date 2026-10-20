@@ -1,6 +1,5 @@
 #include <array>
 #include <chrono>
-#include <csignal>
 #include <cstddef>
 #include <filesystem>
 #include <iomanip>
@@ -10,8 +9,6 @@
 #include <variant>
 #include <algorithm>
 #include <format>
-
-#include <signal.h>
 
 #include "base/platform.hpp"
 #include "app/cli.hpp"
@@ -30,10 +27,6 @@ namespace {
 
 namespace fs = std::filesystem;
 using dagent::app::Mode;
-
-// docs/design/app.md §6：整个进程忽略 SIGPIPE，写关闭的管道得到 EPIPE 而不是被信号杀死。
-// exec 层只会在 SIGPIPE 仍是默认处理时设置它，两者不冲突。
-void ignore_sigpipe() { ::signal(SIGPIPE, SIG_IGN); }
 
 std::pair<std::string, int> fit_title(std::string_view title, int columns) {
     std::string out;
@@ -108,7 +101,7 @@ void print_login_status(const nlohmann::json& status) {
 int main(int argc, char** argv) {
     // 必须在创建任何线程之前（spdlog、stdin 读取都会建线程）：之后创建的线程都继承这个屏蔽。
     dagent::app::Interrupts& interrupts = dagent::app::install_interrupts();
-    ignore_sigpipe();
+    dagent::app::ignore_broken_pipe();
 
     const std::variant<dagent::app::Args, int> parsed = dagent::app::parse_args(argc, argv);
     if (const int* code = std::get_if<int>(&parsed)) return *code;

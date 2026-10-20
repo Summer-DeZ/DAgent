@@ -16,7 +16,12 @@ public:
     using std::runtime_error::runtime_error;
 };
 
-/// @brief DAGENT_HOME、dev 默认 home 或 /proc/self/exe 的父目录；同时验证根存在、是目录且可写。
+namespace detail {
+std::filesystem::path executable_home_directory();
+void probe_home_writable(const std::filesystem::path& root);
+} // namespace detail
+
+/// @brief DAGENT_HOME、dev 默认 home 或可执行文件所在目录；同时验证根存在、是目录且可写。
 HomePaths home_paths();
 
 } // namespace dagent::app

@@ -19,4 +19,7 @@ struct Interrupts {
 /// 继承屏蔽）；只调用一次，返回的状态在进程内永久有效。子进程的屏蔽由 exec 清空。
 Interrupts& install_interrupts();
 
+void ignore_broken_pipe();
+void initialize_backend_signals();
+
 } // namespace dagent::app

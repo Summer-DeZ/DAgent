@@ -1,9 +1,8 @@
 #include "web/web.hpp"
+#include "web/detail.hpp"
 
 #include <algorithm>
-#include <cerrno>
 #include <cctype>
-#include <iconv.h>
 #include <memory>
 #include <regex>
 #include "base/text.hpp"
@@ -52,22 +51,7 @@ std::string utf8(std::string body, const std::string& type, bool html, bool trun
     else if (body.starts_with("\xfe\xff")) { body.erase(0, 2); charset = "utf-16be"; }
     if (charset.empty() || charset == "utf-8" || charset == "utf8") return base::to_valid_utf8(body);
     if (charset == "gb2312" || charset == "gbk") charset = "gb18030";
-    iconv_t converter = iconv_open("UTF-8", charset.c_str());
-    if (converter == reinterpret_cast<iconv_t>(-1)) throw std::runtime_error("unsupported page charset: " + charset);
-    std::string out(body.size() * 4 + 16, '\0');
-    char* input = body.data(); char* output = out.data();
-    size_t remaining = body.size(), available = out.size();
-    while (remaining) {
-        if (iconv(converter, &input, &remaining, &output, &available) != size_t(-1)) break;
-        if (errno == EINVAL && truncated) break;
-        if (errno != EILSEQ && errno != EINVAL) {
-            iconv_close(converter); throw std::runtime_error("page charset conversion failed");
-        }
-        *output++ = '?'; --available; ++input; --remaining;
-    }
-    iconv_close(converter);
-    out.resize(output - out.data());
-    return out;
+    return detail::convert_charset(std::move(body), charset, truncated);
 }
 
 class Markdown {

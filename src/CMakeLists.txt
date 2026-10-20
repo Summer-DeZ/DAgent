@@ -59,7 +59,7 @@ add_library(dagent_ui STATIC
     private/ui/panel.cpp
     private/ui/model_picker.cpp
     private/ui/memory_browser.cpp
-    private/ui/browser.cpp
+    private/ui/browser_${DAGENT_PLATFORM}.cpp
     private/ui/model_dialog.cpp
     private/ui/side_panel.cpp
 )
@@ -102,6 +102,7 @@ target_link_libraries(dagent_exec
 
 # Web transport and document decoding; authorization is supplied by tools.
 add_library(dagent_web STATIC private/web/http.cpp private/web/document.cpp)
+target_sources(dagent_web PRIVATE private/web/document_${DAGENT_PLATFORM}.cpp)
 target_include_directories(dagent_web PUBLIC ${CMAKE_SOURCE_DIR}/src/public)
 target_compile_options(dagent_web PRIVATE -Wall -Wextra)
 target_link_libraries(dagent_web PUBLIC dagent_exec PRIVATE lexbor_static)
@@ -191,10 +192,12 @@ target_link_libraries(tools
 # 前端入口层：命令行解析、安装根、前端启动与输出适配。其他模块都不依赖它。
 add_library(dagent_app_cli STATIC
     private/app/cli.cpp
-    private/app/interrupts.cpp
+    private/app/cli_${DAGENT_PLATFORM}.cpp
+    private/app/interrupts_${DAGENT_PLATFORM}.cpp
     private/app/launcher.cpp
     private/app/output.cpp
     private/app/paths.cpp
+    private/app/paths_${DAGENT_PLATFORM}.cpp
     private/app/run.cpp
 )
 
@@ -312,6 +315,7 @@ add_library(dagent_app_config STATIC
     private/app/home.cpp
     private/app/skills.cpp
     private/app/toolchain.cpp
+    private/app/toolchain_${DAGENT_PLATFORM}.cpp
     private/app/searxng.cpp
     private/app/sandbox_status.cpp
     private/app/config.cpp
@@ -362,6 +366,7 @@ target_link_libraries(dagent_backend
 
 # 后端可执行文件：与前端同安装目录，只接受 --ipc-fd；入口在 app，把配置装配注入 backend。
 add_executable(dagent-backend private/app/backend_main.cpp)
+target_sources(dagent-backend PRIVATE private/app/backend_main_${DAGENT_PLATFORM}.cpp)
 
 target_compile_features(dagent-backend PRIVATE cxx_std_23)
 target_compile_options(dagent-backend PRIVATE -Wall -Wextra)

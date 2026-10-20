@@ -3,6 +3,7 @@
 #include <csignal>
 #include <thread>
 
+#include <pthread.h>
 #include <signal.h>
 
 namespace dagent::app {
@@ -23,5 +24,9 @@ Interrupts& install_interrupts() {
     }).detach();
     return *state;
 }
+
+// docs/design/app.md §6：整个进程忽略 SIGPIPE，写关闭的管道得到 EPIPE 而不是被信号杀死。
+// exec 层只会在 SIGPIPE 仍是默认处理时设置它，两者不冲突。
+void ignore_broken_pipe() { ::signal(SIGPIPE, SIG_IGN); }
 
 } // namespace dagent::app

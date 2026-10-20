@@ -4,6 +4,9 @@
 它依赖 exec、base、lexbor v3.0.1 和 glibc iconv，不依赖 agent。工具参数、分页、缓存及给模型的措辞在 tools；
 权限决策在 agent；SearXNG 运行时准备和进程生命周期在 app。
 
+`web/document.cpp` 保留 charset/BOM 检测与文档解析，`web/detail.hpp` 的 `detail::convert_charset`
+由 `web/document_posix.cpp` 实现，只承接原 iconv 转换循环及其错误处理。
+
 ## 模块接口
 
 公开值与函数位于 [web/web.hpp](../../src/public/web/web.hpp)：

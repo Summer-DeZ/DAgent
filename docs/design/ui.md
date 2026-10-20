@@ -624,6 +624,7 @@ ModelDialog 仍为七步表单：协议、配置名、base URL、模型 ID、API
 
 未登录或失效时发 `provider.login.start`，显示 `Sign in to OpenCode Go`。收到授权链接后前端尝试打开浏览器；
 启动成功显示 `Your browser was opened to authorize DAgent.`，无法启动则显示 `Open this link to authorize DAgent:`。
+`ui/browser.hpp` 的 `open_browser` 由 `ui/browser_posix.cpp` 实现，保留原浏览器启动属性和后台回收线程。
 链接用 primary 并按列省略；用户码复用 Chip，遵循 filled/outline；等待行使用统一 spinner 与 Unix 秒 expires_at 倒计时，
 另有 `No Go subscription yet? https://opencode.ai/go`。c 经现有剪贴板复制完整链接并 toast；o 再次打开。
 

@@ -17,6 +17,7 @@ std::filesystem::path executable_path(std::error_code& error);
 /// @brief 借用 HOME 环境变量；保留未设置（nullptr）与空字符串的区别，不缓存。
 const char* home_directory() noexcept;
 std::int64_t process_id() noexcept;
+bool stdin_is_terminal() noexcept;
 
 /// @brief 写入调用方的 tm，返回转换是否成功；不改变调用方的失败处理。
 bool local_time(std::time_t value, std::tm& result) noexcept;

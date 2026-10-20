@@ -29,6 +29,10 @@ runtime/
 准备成功写 `.ready.json`；失败时不发布新 manifest，重试可重建未完成目录。
 已发布版本不在 sync 中修改或删除，运行中的后端继续使用启动时的路径，重启后使用新快照。
 
+`app/toolchain_detail.hpp` 声明内部平台标识与安装锁，实现在 `app/toolchain_posix.cpp`。
+`runtime_platform` 保留 uname 的 `sysname-machine` 格式与失败异常；`SyncLock` 以不透明状态持有
+`run/runtime.lock`，仍使用 0600/CLOEXEC、非阻塞独占锁，析构关闭文件，持有范围仍覆盖整个 sync 流程。
+
 `dagent runtime list` 返回期望配置、安装记录和 `current`（平台、配置及依赖文件是否匹配）。
 它不是磁盘完整性扫描；正常启动还检查程序是否可执行、依赖环境是否就绪。
 修改配置或锁文件后必须重新 sync；执行命令和 MCP 启动都不隐式安装。

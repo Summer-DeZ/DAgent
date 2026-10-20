@@ -28,6 +28,9 @@ app 同时实现 `backend/configuration.hpp`、`backend/queries.hpp`、`backend/
 启动会在根目录创建并删除一个 0600 临时文件以确认可写。失败以配置类错误退出，并提示通过 `DAGENT_HOME`
 选择可写目录；不会回落到 HOME 或 XDG 目录。
 
+安装根选择和目录验证在 `app/paths.cpp`；固定缓冲区 readlink 与可写探针位于 `app/paths_posix.cpp`，
+经 `detail::executable_home_directory`、`detail::probe_home_writable` 调用。
+
 ```text
 <root>/
 ├── dagent
@@ -274,6 +277,7 @@ run： --output <text|json|jsonl>
 
 - `--read-only` 与权限三档正交；`--plan` 进入只读规划模式。
 - `run` 可从 stdin 追加提示词；交互模式要求 stdin 是终端。
+  CLI 的终端判断使用 `base::stdin_is_terminal`，读取由 `app/cli_posix.cpp` 的 `detail::read_stdin_all` 完成。
 - `--continue` 选择当前 cwd 最近的会话，`--resume` 只接受当前 cwd 内的完整 ID 或唯一前缀。
 - 退出码：0 成功，1 运行失败，2 参数/配置错误，130 中断。
 - `run` 的 text/json 在最终写入并 flush 后检查 stdout；写入或刷新失败返回 1，即使模型已正常完成。
@@ -338,6 +342,10 @@ stdout 被关闭时 jsonl 请求取消本轮并返回 1，text / json 最终写�
 前端忽略 SIGPIPE，并在其他线程启动前屏蔽 SIGINT / SIGTERM，由 sigwait 线程处理。可优雅结束期间第一个信号经
 `session.snapshot` + `run.cancel` 只取消本前端的当前 Run，第二个信号直接 `_Exit(130)`；加载配置、读取 stdin 等轮外阶段直接退出。
 后端在独立进程组中运行，不接收终端信号。交互模式 raw 下的 Ctrl+C 是按键，行为由 ui 决定；全屏期间的进程信号走退出流程。
+
+前端的 `install_interrupts`、`ignore_broken_pipe` 位于 `app/interrupts_posix.cpp`，main 按此顺序调用。
+后端的 `initialize_backend_signals` 位于 `app/backend_main_posix.cpp`，仍在参数校验后、Channel 接管前调用；
+参数解析与 `--ipc-fd` 保持在共享入口中。
 
 | 情况 | 退出码 |
 | --- | --- |

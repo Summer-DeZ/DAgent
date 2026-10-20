@@ -1,6 +1,6 @@
 #include "app/cli.hpp"
+#include "base/platform.hpp"
 
-#include <cerrno>
 #include <cstdio>
 #include <iostream>
 #include <string>
@@ -8,28 +8,11 @@
 #include <system_error>
 #include <utility>
 
-#include <unistd.h>
-
 #include <CLI/CLI.hpp>
 
 namespace dagent::app {
 namespace fs = std::filesystem;
 namespace {
-
-std::string read_stdin_all() {
-    std::string data;
-    char buffer[8192];
-    for (;;) {
-        const ssize_t n = ::read(STDIN_FILENO, buffer, sizeof buffer);
-        if (n > 0) {
-            data.append(buffer, static_cast<std::size_t>(n));
-            continue;
-        }
-        if (n < 0 && errno == EINTR) continue;
-        break;
-    }
-    return data;
-}
 
 // 提示词没加引号时是多个位置参数：按空格拼回一句，而不是只取第一个词。
 std::string join_words(const std::vector<std::string>& words) {
@@ -206,7 +189,7 @@ std::variant<Args, int> parse_args(int argc, char** argv) {
     }
     if (list_models) { args.mode = Mode::models; return args; }
 
-    const bool stdin_tty = ::isatty(STDIN_FILENO) != 0;
+    const bool stdin_tty = base::stdin_is_terminal();
     if (args.mode == Mode::interactive) {
         if (!stdin_tty) {
             std::cerr << "interactive mode requires a terminal; use dagent run for non-interactive use\n";
@@ -214,7 +197,7 @@ std::variant<Args, int> parse_args(int argc, char** argv) {
         }
     } else if (args.mode == Mode::run && !stdin_tty) {
         // 支持 git diff | dagent run "审查这个改动"
-        const std::string from_stdin = trim_trailing_newlines(read_stdin_all());
+        const std::string from_stdin = trim_trailing_newlines(detail::read_stdin_all());
         if (!from_stdin.empty()) {
             if (!args.prompt.empty()) args.prompt += "\n\n";
             args.prompt += from_stdin;

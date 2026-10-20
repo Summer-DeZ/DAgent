@@ -1,4 +1,5 @@
 #include "app/toolchain.hpp"
+#include "app/toolchain_detail.hpp"
 #include "base/platform.hpp"
 
 #include "app/hash.hpp"
@@ -11,10 +12,6 @@
 #include <stdexcept>
 
 #include <curl/curl.h>
-#include <fcntl.h>
-#include <sys/file.h>
-#include <sys/utsname.h>
-#include <unistd.h>
 
 namespace dagent::app {
 namespace {
@@ -38,12 +35,6 @@ void write_json(const fs::path& file, const json& value) {
     out.close();
     fs::permissions(temporary, fs::perms::owner_read | fs::perms::owner_write);
     fs::rename(temporary, file);
-}
-
-std::string platform() {
-    utsname info{};
-    if (::uname(&info) != 0) throw std::runtime_error("cannot determine runtime platform");
-    return std::string(info.sysname) + "-" + info.machine;
 }
 
 bool identifier(std::string_view value) {
@@ -100,21 +91,6 @@ void download(const std::string& url, const fs::path& target) {
     const auto result = curl_easy_perform(curl);
     if (result != CURLE_OK) throw std::runtime_error("runtime download failed: " + std::string(curl_easy_strerror(result)));
 }
-
-class SyncLock {
-public:
-    explicit SyncLock(const fs::path& path) {
-        fs::create_directories(path.parent_path());
-        fd_ = ::open(path.c_str(), O_CREAT | O_RDWR | O_CLOEXEC, 0600);
-        if (fd_ < 0 || ::flock(fd_, LOCK_EX | LOCK_NB) != 0) {
-            if (fd_ >= 0) ::close(fd_);
-            throw std::runtime_error("another runtime preparation is active");
-        }
-    }
-    ~SyncLock() { ::close(fd_); }
-private:
-    int fd_;
-};
 
 void unpack_archive(const json& asset, const HomePaths& paths, const fs::path& directory) {
                 const auto hash = asset.at("sha256").get<std::string>();
@@ -187,14 +163,14 @@ static std::string configuration_id(const HomePaths& paths, const json& config) 
 }
 
 json Toolchain::status() const {
-    return {{"platform", platform()}, {"configured", config_}, {"installed", installed_},
-            {"current", installed_.is_object() && installed_.value("platform", "") == platform() &&
+    return {{"platform", detail::runtime_platform()}, {"configured", config_}, {"installed", installed_},
+            {"current", installed_.is_object() && installed_.value("platform", "") == detail::runtime_platform() &&
                         installed_.value("configuration", "") == configuration_id(paths_, config_)}};
 }
 
 std::map<std::string, exec::Environment> Toolchain::environments() const {
     if (!installed_.is_object() || installed_.value("configuration", "") != configuration_id(paths_, config_) ||
-        installed_.value("platform", "") != platform())
+        installed_.value("platform", "") != detail::runtime_platform())
         throw std::runtime_error("managed runtime is not prepared for this configuration; run dagent runtime sync");
     for (const auto& [name, file] : installed_.at("programs").items())
         if (!base::can_execute(file.get<std::string>()))
@@ -219,9 +195,9 @@ fs::path Toolchain::program(std::string_view name) const {
 }
 
 json Toolchain::sync() {
-    SyncLock lock(paths_.run / "runtime.lock");
+    detail::SyncLock lock(paths_.run / "runtime.lock");
     fs::create_directories(paths_.cache);
-    json next{{"platform", platform()}, {"configuration", configuration_id(paths_, config_)},
+    json next{{"platform", detail::runtime_platform()}, {"configuration", configuration_id(paths_, config_)},
               {"packages", json::object()}, {"programs", json::object()}, {"environments", json::object()}};
     const auto& packages = config_.at("packages");
     std::vector<std::string> order;
@@ -233,7 +209,7 @@ json Toolchain::sync() {
         const auto version = package.at("version").get<std::string>();
         if (!identifier(name) || !identifier(version)) throw std::runtime_error("invalid runtime package name/version");
         const auto kind = package.value("kind", "archive");
-        const fs::path directory = paths_.runtime / name / (version + "-" + sha256(package.dump() + platform()).substr(0, 16));
+        const fs::path directory = paths_.runtime / name / (version + "-" + sha256(package.dump() + detail::runtime_platform()).substr(0, 16));
         json entry;
         if (fs::exists(directory / ".ready.json")) entry = read_json(directory / ".ready.json");
         else {
@@ -241,7 +217,7 @@ json Toolchain::sync() {
             fs::create_directories(directory);
             entry = {{"version", version}, {"directory", directory.string()}, {"env", json::object()}};
             if (kind == "archive") {
-                const auto& asset = package.at("assets").at(platform());
+                const auto& asset = package.at("assets").at(detail::runtime_platform());
                 unpack_archive(asset, paths_, directory);
                 entry["sha256"] = asset.at("sha256");
             } else if (kind == "files") {
