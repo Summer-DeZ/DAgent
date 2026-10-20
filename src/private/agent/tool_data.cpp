@@ -22,6 +22,14 @@ constexpr std::string_view kTask = "task";
 
 } // namespace
 
+ToolResult make_result(std::string text, bool is_error, bool interrupted) {
+    ToolResult result;
+    result.model_text = std::move(text);
+    result.is_error = is_error;
+    result.interrupted = interrupted;
+    return result;
+}
+
 // 序列化函数放在 dagent::agent 名字空间供 ADL 查找；所有展示字段按当前格式读取。
 NLOHMANN_DEFINE_TYPE_NON_INTRUSIVE(WebView, operation, query, url, title, content_type, output, status,
     offset, next_offset, total_bytes, cached, truncated, network_targets, elapsed_ms)

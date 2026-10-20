@@ -7,14 +7,12 @@
 #include "agent/committer.hpp"
 #include "agent/dispatch.hpp"
 #include "agent/model_budget.hpp"
-#include "base/log.hpp"
+#include "agent/log.hpp"
 #include "base/overloaded.hpp"
 #include "base/text.hpp"
 
 namespace dagent::agent {
 namespace {
-
-std::shared_ptr<spdlog::logger> log_agent() { return base::logger("agent"); }
 
 void report_stream(const StreamEvent& event, const Sink& sink) {
     std::visit(base::Overloaded{

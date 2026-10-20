@@ -155,6 +155,9 @@ struct ToolResult {
     std::vector<ExecutionSignal> signals; ///< 执行信号（如 MCP 断连），不由 display 分支判定
 };
 
+/// 构造仅含模型文本与错误/中断标记的结果，其余字段保持默认值。
+ToolResult make_result(std::string text, bool is_error, bool interrupted);
+
 /// 序列化成 {"kind": "read", ...}，给会话记录与实时事件；kind 区分各分支。
 nlohmann::json to_json(const View&);
 

@@ -229,6 +229,12 @@ DecisionReviewer 与 ReviewContext 仍由批次按原顺序构造，Support 借�
 其方法经批次邮箱调用；web 连接检查回调沿用执行线程调用。协作者在 worker join、邮箱处理完成后、
 `finish_execution` 之前销毁，保持 `executions.end` 和槽位 reset 的时机。
 
+运行中审批由调用方填写场景字段，再经 `complete_runtime_approval` 补齐公共字段并分配身份；
+三条网络放行路径共用 `commit_network_grant`，授权来源及提交后的反馈/审阅步骤仍由各分支决定。
+`dispatch.cpp` 内的 `mailbox_roundtrip` 统一 post 与等待，异常兜底结果由各调用方提供，
+promise 交付保持在异常映射之外。调度与授权共用 `tool_data.hpp/.cpp` 的 `make_result`
+和 `agent/log.hpp` 的日志入口。
+
 ```text
 tool_calls → ActionCatalog.prepare → 普通 PreparedTool ── PreparedIntent → Policy
                                    │                                 ├─ 允许 → 串行执行或加入只读并行组

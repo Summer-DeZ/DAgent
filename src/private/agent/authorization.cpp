@@ -6,19 +6,15 @@
 #include "agent/committer.hpp"
 #include "agent/execution_registry.hpp"
 #include "agent/permission.hpp"
-#include "base/log.hpp"
+#include "agent/log.hpp"
 
 namespace dagent::agent {
 namespace {
 
-std::shared_ptr<spdlog::logger> log_agent() { return base::logger("agent"); }
-
-ToolResult make_result(std::string text, bool is_error, bool interrupted) {
-    ToolResult result;
-    result.model_text = std::move(text);
-    result.is_error = is_error;
-    result.interrupted = interrupted;
-    return result;
+void cancel_decision(Decision& decision, std::string_view feedback) {
+    decision.answer = Decision::Answer::deny_with_feedback;
+    decision.state = "cancelled";
+    decision.feedback = feedback;
 }
 
 } // namespace
@@ -182,9 +178,7 @@ ActionAuthorizer::authorize(const ToolCall& call, const PreparedIntent& intent) 
             decision.feedback = review_reason.empty() ? "auto-review approved this request" : review_reason;
             std::optional<ExecutionGrant> grant = support_.policy.consume_approval(verdict.approval, decision);
             if (!grant) {
-                decision.answer = Decision::Answer::deny_with_feedback;
-                decision.state = "cancelled";
-                decision.feedback = "Permission changed before authorization was consumed; prepare again.";
+                cancel_decision(decision, "Permission changed before authorization was consumed; prepare again.");
                 support_.committer.commit_permission(verdict.approval, decision);
                 support_.commit_auto_review(call.id, review_ids, "cancelled", decision.feedback);
                 return std::unexpected(Failure{make_result(decision.feedback, true, false)});
@@ -213,9 +207,7 @@ ActionAuthorizer::authorize(const ToolCall& call, const PreparedIntent& intent) 
         grant = support_.policy.consume_approval(verdict.approval, decision);
         if (grant) grant->execution_id = support_.execution_id(call.id);
         else {
-            decision.answer = Decision::Answer::deny_with_feedback;
-            decision.state = "cancelled";
-            decision.feedback = "Permission changed before authorization was consumed; prepare again.";
+            cancel_decision(decision, "Permission changed before authorization was consumed; prepare again.");
         }
     }
     support_.committer.commit_permission(verdict.approval, decision, grant ? &*grant : nullptr);
@@ -238,6 +230,30 @@ ActionAuthorizer::authorize(const ToolCall& call, const PreparedIntent& intent) 
 ExecutionAuthorizer::ExecutionAuthorizer(ApprovalSupport& support, const ToolCall& call,
                                         const PreparedTool& tool, std::shared_ptr<ActiveExecution> execution)
     : support_(support), call_(call), tool_(tool), execution_(std::move(execution)) {}
+
+void ExecutionAuthorizer::complete_runtime_approval(Approval& approval, std::uint64_t request_revision) {
+    approval.partially_executed = true;
+    approval.call_id = call_.id;
+    approval.tool = call_.name;
+    approval.cwd = support_.session.cwd.string();
+    approval.mode = support_.policy.planning() ? "plan" : std::string(to_string(support_.policy.mode()));
+    approval.arguments = call_.arguments;
+    support_.identify(approval);
+    approval.identity.child_revision = request_revision;
+}
+
+ExecutionGrant ExecutionAuthorizer::commit_network_grant(const Approval& approval, const Decision& decision,
+                                                        GrantSource source, const std::string& target) {
+    ExecutionGrant grant = execution_->grant;
+    grant.authority = approval.authority;
+    grant.approval = approval.identity;
+    grant.source = source;
+    grant.revision = support_.policy.revision();
+    grant.authority_stop = approval.authority_stop;
+    grant.network_targets.push_back(target);
+    support_.committer.commit_permission(approval, decision, &grant);
+    return grant;
+}
 
 // 运行中网络判定：先查配置/会话拒绝；需要时做脚本强制复审与 d3 代批；再走现有审批器。
 // Dispatcher consumes requests from the execution mailbox; authorization runs on that thread.
@@ -316,17 +332,10 @@ NetworkAction ExecutionAuthorizer::decide_network(const NetworkTarget& target, s
 
     // 审批身份在审阅前生成：审阅记录携带同一个 request_id，供后续阈值反馈关联。
     Approval approval;
-    approval.partially_executed = true;
-    approval.call_id = call_.id;
-    approval.tool = call_.name;
     approval.reason = std::format("{} wants to connect to {}", call_.name, key);
-    approval.cwd = support_.session.cwd.string();
-    approval.mode = support_.policy.planning() ? "plan" : std::string(to_string(support_.policy.mode()));
     approval.intent = intent;
     approval.requests.push_back({Approval::Request::Kind::network, key, "runtime network request"});
-    approval.arguments = call_.arguments;
-    support_.identify(approval);
-    approval.identity.child_revision = request_revision;
+    complete_runtime_approval(approval, request_revision);
     bool approved_by_review = false;
     std::string review_reason;
     std::vector<std::string> review_ids;
@@ -400,22 +409,13 @@ NetworkAction ExecutionAuthorizer::decide_network(const NetworkTarget& target, s
             decision.feedback = review_reason.empty() ? "auto-review approved this network request"
                                                       : review_reason;
             if (!support_.policy.consume_network_approval(target, approval, decision)) {
-                decision.answer = Decision::Answer::deny_with_feedback;
-                decision.state = "cancelled";
-                decision.feedback = "Permission changed before network authorization was consumed.";
+                cancel_decision(decision, "Permission changed before network authorization was consumed.");
                 support_.committer.commit_permission(approval, decision);
                 reason = decision.feedback;
                 return remember(NetworkAction::cancel);
             }
             execution_->note_authority(approval.authority_stop);
-            ExecutionGrant network_grant = execution_->grant;
-            network_grant.authority = approval.authority;
-            network_grant.approval = approval.identity;
-            network_grant.source = GrantSource::once;
-            network_grant.revision = support_.policy.revision();
-            network_grant.authority_stop = approval.authority_stop;
-            network_grant.network_targets.push_back(key);
-            support_.committer.commit_permission(approval, decision, &network_grant);
+            ExecutionGrant network_grant = commit_network_grant(approval, decision, GrantSource::once, key);
             support_.commit_auto_review(call_.id, review_ids, "approved", decision.feedback);
             if (execution_stop.stop_requested() || approval.authority_stop.stop_requested()) {
                 reason = "permission revoked before network approval was applied";
@@ -442,22 +442,14 @@ NetworkAction ExecutionAuthorizer::decide_network(const NetworkTarget& target, s
     support_.validate_decision(approval, decision, execution_stop);
     if (decision.answer == Decision::Answer::allow || decision.answer == Decision::Answer::allow_session) {
         if (!support_.policy.consume_network_approval(target, approval, decision)) {
-            decision.answer = Decision::Answer::deny_with_feedback;
-            decision.state = "cancelled";
-            decision.feedback = "Permission changed before network authorization was consumed.";
+            cancel_decision(decision, "Permission changed before network authorization was consumed.");
             support_.committer.commit_permission(approval, decision);
             reason = decision.feedback;
             return remember(NetworkAction::cancel);
         }
         execution_->note_authority(approval.authority_stop);
-        ExecutionGrant network_grant = execution_->grant;
-        network_grant.authority = approval.authority;
-        network_grant.approval = approval.identity;
-        network_grant.source = decision.answer == Decision::Answer::allow_session ? GrantSource::session : GrantSource::once;
-        network_grant.revision = support_.policy.revision();
-        network_grant.authority_stop = approval.authority_stop;
-        network_grant.network_targets.push_back(key);
-        support_.committer.commit_permission(approval, decision, &network_grant);
+        ExecutionGrant network_grant = commit_network_grant(approval, decision,
+            decision.answer == Decision::Answer::allow_session ? GrantSource::session : GrantSource::once, key);
         support_.commit_feedback(approval, decision);
         if (execution_stop.stop_requested() || approval.authority_stop.stop_requested()) {
             reason = "permission revoked before network approval was applied";
@@ -520,20 +512,13 @@ WebRequestAccess ExecutionAuthorizer::decide_web_request(const WebRequestIntent&
     }
 
     Approval approval;
-    approval.partially_executed = true;
-    approval.call_id = call_.id;
-    approval.tool = call_.name;
     approval.reason = "web_fetch wants to fetch " + request.url;
     approval.scope = support_.decision_allowed() ? Approval::Scope::web_request : Approval::Scope::network_target;
     if (!support_.decision_allowed())
         approval.session_rule = std::format("Allow connections to {} for this session", key);
-    approval.cwd = support_.session.cwd.string();
-    approval.mode = support_.policy.planning() ? "plan" : std::string(to_string(support_.policy.mode()));
     approval.intent = tool_.intent();
     approval.requests.push_back({Approval::Request::Kind::network, request.url, "runtime web request"});
-    approval.arguments = call_.arguments;
-    support_.identify(approval);
-    approval.identity.child_revision = request_revision;
+    complete_runtime_approval(approval, request_revision);
     std::optional<Decision> reviewed;
     if (support_.decision_allowed() && support_.gate_open() && support_.decision_reviewer) {
         ReviewOperation operation;
@@ -569,20 +554,11 @@ WebRequestAccess ExecutionAuthorizer::decide_web_request(const WebRequestIntent&
     support_.validate_decision(approval, decision, execution_stop);
     if (decision.answer == Decision::Answer::allow || decision.answer == Decision::Answer::allow_session) {
         if (!support_.policy.consume_network_approval(request.target, approval, decision)) {
-            decision.answer = Decision::Answer::deny_with_feedback;
-            decision.state = "cancelled";
-            decision.feedback = "Permission changed before the web request was consumed.";
+            cancel_decision(decision, "Permission changed before the web request was consumed.");
         } else {
             execution_->note_authority(approval.authority_stop);
-            ExecutionGrant grant = execution_->grant;
-            grant.authority = approval.authority;
-            grant.approval = approval.identity;
-            grant.source = decision.answer == Decision::Answer::allow_session ? GrantSource::session
-                                                                             : GrantSource::once;
-            grant.revision = support_.policy.revision();
-            grant.authority_stop = approval.authority_stop;
-            grant.network_targets.push_back(key);
-            support_.committer.commit_permission(approval, decision, &grant);
+            ExecutionGrant grant = commit_network_grant(approval, decision,
+                decision.answer == Decision::Answer::allow_session ? GrantSource::session : GrantSource::once, key);
             support_.commit_feedback(approval, decision);
             if (reviewed)
                 support_.commit_auto_review(approval.call_id, approval.review_ids, "approved", decision.feedback);

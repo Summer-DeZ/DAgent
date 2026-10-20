@@ -11,6 +11,7 @@
 #include <string>
 #include <string_view>
 #include <thread>
+#include <type_traits>
 #include <utility>
 #include <vector>
 
@@ -20,20 +21,25 @@
 #include "agent/decision_review.hpp"
 #include "agent/permission.hpp"
 #include "agent/parent_review.hpp"
-#include "base/log.hpp"
+#include "agent/log.hpp"
 #include "base/text.hpp"
 
 namespace dagent::agent {
 namespace {
 
-std::shared_ptr<spdlog::logger> log_agent() { return base::logger("agent"); }
-
-ToolResult make_result(std::string text, bool is_error, bool interrupted) {
-    ToolResult result;
-    result.model_text = std::move(text);
-    result.is_error = is_error;
-    result.interrupted = interrupted;
-    return result;
+// Worker 等待所属执行线程的答复；仅请求求值映射异常，promise 的交付仍在 catch 之外。
+template<class Request, class OnError>
+auto mailbox_roundtrip(ExecutionMailbox& mailbox, Request request, OnError on_error) {
+    using Result = std::invoke_result_t<Request&>;
+    auto promise = std::make_shared<std::promise<Result>>();
+    auto reply = promise->get_future();
+    mailbox.post([request = std::move(request), on_error = std::move(on_error), promise]() mutable {
+        Result result;
+        try { result = request(); }
+        catch (const std::exception& error) { result = on_error(error); }
+        promise->set_value(std::move(result));
+    });
+    return reply.get();
 }
 
 // prepare 失败的调用没有 Intent：用「工具名 + 参数前 60 字节（退到 UTF-8 字符边界）」当摘要。
@@ -277,45 +283,42 @@ private:
                 *std::get<std::unique_ptr<PreparedTool>>(*slot.action), slot.execution);
             ExecutionGrant scoped = grant;
             scoped.network_decider = [&](const NetworkTarget& target, std::string& reason, std::stop_token execution_stop) {
-                auto promise = std::make_shared<std::promise<std::pair<NetworkAction, std::string>>>();
-                auto reply = promise->get_future();
-                mailbox.post([&, target, execution_stop, promise] {
-                    std::string detail;
-                    NetworkAction action = NetworkAction::cancel;
-                    try { action = authorization.decide_network(target, detail, execution_stop); }
-                    catch (const std::exception& error) { detail = error.what(); }
-                    promise->set_value({action, std::move(detail)});
-                });
-                auto [action, detail] = reply.get();
+                auto [action, detail] = mailbox_roundtrip(mailbox,
+                    [&, target, execution_stop] {
+                        std::string detail;
+                        NetworkAction action = authorization.decide_network(target, detail, execution_stop);
+                        return std::pair{action, std::move(detail)};
+                    },
+                    [](const std::exception& error) {
+                        return std::pair{NetworkAction::cancel, std::string(error.what())};
+                    });
                 reason = std::move(detail);
                 return action;
             };
             if (approvals.decision_allowed()) {
                 scoped.web_request_decider = [&](const WebRequestIntent& request, std::stop_token execution_stop) {
-                    auto promise = std::make_shared<std::promise<WebRequestAccess>>();
-                    auto reply = promise->get_future();
-                    mailbox.post([&, request, execution_stop, promise] {
-                        WebRequestAccess access;
-                        access.action = NetworkAction::cancel;
-                        try { access = authorization.decide_web_request(request, execution_stop); }
-                        catch (const std::exception& error) { access.reason = error.what(); }
-                        promise->set_value(std::move(access));
-                    });
-                    return reply.get();
+                    return mailbox_roundtrip(mailbox,
+                        [&, request, execution_stop] {
+                            return authorization.decide_web_request(request, execution_stop);
+                        },
+                        [](const std::exception& error) {
+                            WebRequestAccess access;
+                            access.action = NetworkAction::cancel;
+                            access.reason = error.what();
+                            return access;
+                        });
                 };
                 scoped.web_result_scanner = [&](const WebScanInput& input, std::stop_token execution_stop) {
-                    auto promise = std::make_shared<std::promise<ScanResult>>();
-                    auto reply = promise->get_future();
-                    mailbox.post([&, input, execution_stop, promise] {
-                        ScanResult result;
-                        try { result = authorization.scan_web_result(input, execution_stop); }
-                        catch (const std::exception& error) {
+                    return mailbox_roundtrip(mailbox,
+                        [&, input, execution_stop] {
+                            return authorization.scan_web_result(input, execution_stop);
+                        },
+                        [](const std::exception& error) {
+                            ScanResult result;
                             result.kind = ScanResult::Kind::unavailable;
                             result.message = error.what();
-                        }
-                        promise->set_value(std::move(result));
-                    });
-                    return reply.get();
+                            return result;
+                        });
                 };
             }
             const std::stop_token execution_stop = slot.execution->stop.get_token();

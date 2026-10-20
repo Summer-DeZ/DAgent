@@ -96,6 +96,11 @@ public:
     ScanResult scan_web_result(const WebScanInput&, std::stop_token);
 
 private:
+    // 调用方先填好场景差异字段；补公共字段后再分配审批身份。
+    void complete_runtime_approval(Approval&, std::uint64_t request_revision);
+    ExecutionGrant commit_network_grant(const Approval&, const Decision&, GrantSource,
+                                       const std::string& target);
+
     ApprovalSupport& support_;
     const ToolCall& call_;
     const PreparedTool& tool_;

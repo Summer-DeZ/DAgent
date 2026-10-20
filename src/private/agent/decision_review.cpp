@@ -10,7 +10,7 @@
 #include <string>
 #include <utility>
 
-#include "base/log.hpp"
+#include "agent/log.hpp"
 #include "base/text.hpp"
 
 namespace dagent::agent {
@@ -60,8 +60,6 @@ constexpr std::string_view kMcpFetchCriteria = "只查询或读取信息";
 constexpr std::string_view kMcpModifyCriteria = "创建、修改或删除远端资源";
 constexpr std::string_view kMcpSendCriteria = "把本地数据发送到外部";
 constexpr std::string_view kMcpUnknownCriteria = "无法判断";
-
-std::shared_ptr<spdlog::logger> log_agent() { return base::logger("agent"); }
 
 std::size_t codepoint_count(std::string_view text) {
     std::size_t count = 0;

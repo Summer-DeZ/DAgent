@@ -6,14 +6,9 @@
 
 #include "agent/compaction.hpp"
 #include "agent/record_codec.hpp"
-#include "base/log.hpp"
+#include "agent/log.hpp"
 
 namespace dagent::agent {
-namespace {
-
-std::shared_ptr<spdlog::logger> log_agent() { return base::logger("agent"); }
-
-} // namespace
 
 void SessionCommitter::append(const Record& record) {
     const std::lock_guard lock(mutex_);
