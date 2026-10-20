@@ -1,20 +1,13 @@
 #include "exec/srt.hpp"
+#include "exec/platform.hpp"
 
-#include <fcntl.h>
-#include <sys/socket.h>
-#include <unistd.h>
-
-#include <cerrno>
 #include <algorithm>
 #include <condition_variable>
-#include <cstdlib>
-#include <cstring>
 #include <format>
 #include <mutex>
 #include <set>
 #include <thread>
 
-#include "base/log.hpp"
 #include "base/platform.hpp"
 #include "base/text.hpp"
 #include "lib/nlohmann/json.hpp"
@@ -24,8 +17,6 @@ namespace {
 
 namespace fs = std::filesystem;
 using json = nlohmann::json;
-
-std::string system_error(const char* what) { return std::string(what) + ": " + std::strerror(errno); }
 
 fs::path make_unique_dir(const fs::path& parent, std::string_view prefix) {
     std::error_code error;
@@ -55,11 +46,9 @@ json build_config(const SrtRequest& request, const fs::path& private_home) {
 
 struct ExecutionResources {
     fs::path control_dir, private_home;
-    int control[2] = {-1, -1};
+    std::optional<detail::SrtControl> control;
     void close() {
-        for (int& fd : control) {
-            if (fd >= 0) { ::shutdown(fd, SHUT_RDWR); ::close(fd); fd = -1; }
-        }
+        if (control) control->close();
     }
     ~ExecutionResources() {
         close();
@@ -81,22 +70,18 @@ struct ControlState {
     int network_requests = 0;
 };
 
-void append_decision(int fd, int request_id, bool allow, bool cancel) {
+void append_decision(detail::SrtControl& control, int request_id, bool allow, bool cancel) {
     const json frame = {{"type", "network_decision"}, {"request_id", request_id}, {"allow", allow},
                         {"cancel", cancel}};
     const std::string line = frame.dump() + "\n";
-    const ssize_t written = ::send(fd, line.data(), line.size(), MSG_NOSIGNAL);
-    if (written < 0 && errno != EPIPE)
-        base::logger("exec")->warn("srt control write failed: {}", std::strerror(errno));
+    control.send_decision(line);
 }
 
 } // namespace
 
 json srt_config(const SrtRuntime& runtime, const Policy& policy, const fs::path& private_home,
                 bool strict_network) {
-    std::vector<fs::path> readable = {
-        "/bin", "/sbin", "/usr", "/lib", "/lib64", "/etc", "/dev", "/proc", "/sys",
-    };
+    std::vector<fs::path> readable = detail::default_srt_readable_paths();
     readable.insert(readable.end(), policy.readable.begin(), policy.readable.end());
     readable.push_back(private_home);
     readable.push_back(runtime.entry.parent_path().parent_path()); // SRT 包（apply-seccomp 等）
@@ -165,15 +150,12 @@ Result run_srt(const SrtRequest& request, const Options& options,
     fs::create_directories(private_home / "cache", error);
     fs::create_directories(private_home / "run", error);
 
-    auto& control = resources.control;
-    if (::socketpair(AF_UNIX, SOCK_STREAM | SOCK_CLOEXEC, 0, control) != 0)
-        throw ExecError{ExecError::Kind::sandbox, system_error("socketpair")};
+    auto& control = resources.control.emplace();
     const auto cleanup_fds = [&] { resources.close(); };
     std::stop_source gates_stop;
     std::stop_callback cancel_gates(stop, [&] { gates_stop.request_stop(); });
     std::vector<std::jthread> gates;
     std::mutex control_write;
-    const int channel = control[0];
 
     try {
         ControlState state;
@@ -188,12 +170,12 @@ Result run_srt(const SrtRequest& request, const Options& options,
         const std::string init_line = init.dump() + "\n";
 
         Command cmd;
-        cmd.inherit_fds = {control[1]};
+        control.inherit_bridge_endpoint(cmd);
         cmd.argv = {request.runtime.node.string(), request.runtime.bridge.string(), "--mode=run",
                     "--srt=" + request.runtime.entry.string(), "--bwrap=" + request.runtime.bwrap.string(),
                     "--socat=" + request.runtime.socat.string(), "--rg=" + request.runtime.rg.string(),
                     "--shell=" + request.runtime.shell.string(),
-                    "--control-fd=" + std::to_string(control[1])};
+                    control.bridge_argument()};
         cmd.cwd = control_dir;
         cmd.timeout = request.timeout;
         cmd.inherit_env = false;
@@ -217,28 +199,21 @@ Result run_srt(const SrtRequest& request, const Options& options,
 
 
         std::jthread reader([&](std::stop_token reader_stop) {
-            std::stop_callback cancel_control(stop, [&] { ::shutdown(channel, SHUT_RDWR); });
+            std::stop_callback cancel_control(stop, [&] { control.shutdown_host(); });
             // init 可超过 socket 缓冲：在此发送，让主线程立即启动 bridge 和进程超时监控。
-            for (std::size_t offset = 0; offset < init_line.size();) {
-                const ssize_t written = ::send(channel, init_line.data() + offset,
-                                               init_line.size() - offset, MSG_NOSIGNAL);
-                if (written < 0 && errno == EINTR) continue;
-                if (written <= 0) {
-                    const std::string error = system_error("control init write");
-                    const std::lock_guard lock(state.mutex);
-                    if (!gates_stop.stop_requested() && state.bridge_error.empty())
-                        state.bridge_error = error;
-                    state.started_cv.notify_all();
-                    return;
-                }
-                offset += static_cast<std::size_t>(written);
+            if (const auto error = control.send_initial(init_line)) {
+                const std::lock_guard lock(state.mutex);
+                if (!gates_stop.stop_requested() && state.bridge_error.empty())
+                    state.bridge_error = *error;
+                state.started_cv.notify_all();
+                return;
             }
             std::string buffer;
             char chunk[4096];
             while (!reader_stop.stop_requested()) {
-                const ssize_t bytes = ::read(channel, chunk, sizeof(chunk));
-                if (bytes <= 0) break;
-                buffer.append(chunk, static_cast<std::size_t>(bytes));
+                const std::size_t bytes = control.read_chunk(chunk);
+                if (bytes == 0) break;
+                buffer.append(chunk, bytes);
                 for (;;) {
                     const std::size_t newline = buffer.find('\n');
                     if (newline == std::string::npos) break;
@@ -266,7 +241,7 @@ Result run_srt(const SrtRequest& request, const Options& options,
                             } catch (...) { action = NetworkGateResult::cancel; }
                             const std::lock_guard lock(control_write);
                             if (!gates_stop.stop_requested())
-                                append_decision(channel, frame.value("request_id", 0),
+                                append_decision(control, frame.value("request_id", 0),
                                                 action == NetworkGateResult::allow,
                                                 action == NetworkGateResult::cancel);
                         });
@@ -276,7 +251,7 @@ Result run_srt(const SrtRequest& request, const Options& options,
                             const std::lock_guard lock(state.mutex);
                             state.bridge_error = "SRT protocol, package version or environment identity mismatch";
                             state.started_cv.notify_all();
-                            ::shutdown(channel, SHUT_RDWR);
+                            control.shutdown_host();
                         } else {
                             {
                                 const std::lock_guard lock(state.mutex);
@@ -285,7 +260,7 @@ Result run_srt(const SrtRequest& request, const Options& options,
                             }
                             const std::lock_guard lock(control_write);
                             const std::string start = "{\"type\":\"start\"}\n";
-                            ::send(channel, start.data(), start.size(), MSG_NOSIGNAL);
+                            control.send_start(start);
                         }
                     } else if (type == "network_expired") {
                         gates_stop.request_stop();
@@ -316,7 +291,7 @@ Result run_srt(const SrtRequest& request, const Options& options,
                 state.bridge_error = std::format("sandbox bridge did not become ready within {} ms",
                                                  request.startup_timeout.count());
             lock.unlock();
-            ::shutdown(channel, SHUT_RDWR);
+            control.shutdown_host();
         });
 
 
@@ -326,7 +301,7 @@ Result run_srt(const SrtRequest& request, const Options& options,
         } catch (...) {
             gates_stop.request_stop();
             reader.request_stop();
-            ::shutdown(channel, SHUT_RDWR);
+            control.shutdown_host();
             reader.join();
             watchdog.request_stop();
             watchdog.join();
@@ -335,8 +310,7 @@ Result run_srt(const SrtRequest& request, const Options& options,
             throw;
         }
         gates_stop.request_stop();
-        ::close(control[1]);
-        control[1] = -1;
+        control.close_bridge();
         reader.join(); // Drain the structured exit frame before releasing the control socket.
         watchdog.request_stop();
         watchdog.join();

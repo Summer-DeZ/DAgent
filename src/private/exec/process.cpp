@@ -3,6 +3,7 @@
 #include "base/log.hpp"
 #include "base/text.hpp"
 #include "exec/detail.hpp"
+#include "exec/platform.hpp"
 
 #include <boost/asio/io_context.hpp>
 #include <boost/asio/post.hpp>
@@ -14,20 +15,13 @@
 
 #include <algorithm>
 #include <array>
-#include <cerrno>
 #include <chrono>
-#include <csignal>
-#include <cstring>
+#include <cstdlib>
 #include <exception>
-#include <span>
 #include <string>
 #include <system_error>
 #include <utility>
 #include <vector>
-
-#include <fcntl.h>
-#include <sys/wait.h>
-#include <unistd.h>
 
 namespace dagent::exec {
 namespace {
@@ -35,55 +29,6 @@ namespace {
 namespace asio = boost::asio;
 namespace bp = boost::process::v2;
 
-
-/// 默认 launcher 的 env 成员默认指向进程环境；这个 init 把它换成过滤后的环境。
-/// 不用 Boost.Process 的 process_environment：1.83 的 header-only 模式下它没有提供
-/// on_setup 的定义（需要单独编译的 libboost_process）。
-struct EnvSetup {
-    std::vector<const char*> entries;
-
-    explicit EnvSetup(const std::vector<std::string>& env) {
-        entries.reserve(env.size() + 1);
-        for (const auto& entry : env) entries.push_back(entry.c_str());
-        entries.push_back(nullptr);  // execve 要求以 nullptr 结尾
-    }
-
-    boost::system::error_code on_setup(bp::posix::default_launcher& launcher, const bp::filesystem::path&,
-                                       const char* const*) const {
-        launcher.env = entries.data();
-        return {};
-    }
-};
-
-/// fork 之后、exec 之前执行的钩子，具体步骤见 detail::setup_child（只做 async-signal-safe 调用）。
-struct ExecSetup {
-    const char* cwd = nullptr;
-    std::span<const int> inherit_fds;
-
-    boost::system::error_code on_setup(bp::posix::default_launcher& launcher, const bp::filesystem::path&,
-                                       const char* const*) const {
-        launcher.fd_whitelist.insert(launcher.fd_whitelist.end(), inherit_fds.begin(), inherit_fds.end());
-        return {};
-    }
-
-    boost::system::error_code on_exec_setup(bp::posix::default_launcher&, const bp::filesystem::path&,
-                                          const char* const*) const {
-        for (const int fd : inherit_fds)
-            if (::fcntl(fd, F_SETFD, 0) == -1) return {errno, boost::system::system_category()};
-        const int err = detail::setup_child(cwd);
-        if (err != 0) errno = err; // 失败时 launcher 把 errno（而不是返回的 ec）写回父进程
-        return {err, boost::system::system_category()};
-    }
-
-    /// exec 前失败（chdir、沙箱、execve）时 launcher 在子进程里调用 ::exit，它会执行父进程的
-    /// atexit 与静态析构，并把 fork 时复制来的 stdio 缓冲再刷一遍（父进程没 flush 的输出重复出现）。
-    /// 这里抢先 _exit；错误码此时已经写回父进程。Boost 1.83 探测这个钩子时用的参数表
-    /// (launcher, ec, exe, argv, ec) 和实际调用 (launcher, exe, argv, ec) 不一致，只能写成变参。
-    template <class... Args>
-    [[noreturn]] void on_exec_error(Args&&...) const noexcept {
-        ::_exit(127);
-    }
-};
 
 // 流式收集输出：head 保留前一半预算，tail 环形保留后一半，total 记录原始总量。
 // Result 里按 base::truncate_middle 的语义合成，on_output 回调不受影响。
@@ -147,7 +92,7 @@ public:
 
     // 所有退出路径（正常、超时、取消、回调异常）都保证清理整个进程组。
     ~Runner() {
-        if (spawned_) ::kill(-pid_, SIGKILL);
+        if (spawned_) group_.force_kill();
     }
 
     Result execute() {
@@ -167,7 +112,7 @@ public:
                 return;
             }
             process_exited_ = true;
-            raw_status_ = proc_.native_exit_code();
+            exit_status_ = detail::process_exit_status(proc_);
             if (!out_eof_ || !err_eof_) {
                 drain_timer_.expires_after(opt_.drain_after_exit);
                 drain_timer_.async_wait([this](boost::system::error_code timer_ec) {
@@ -213,66 +158,8 @@ private:
         const auto program = detail::resolve_program(cmd_.argv.front(), cmd_.cwd, detail::find_env(env, "PATH"));
         if (program.empty())
             throw ExecError{ExecError::Kind::spawn_failed, "command not found: " + cmd_.argv.front()};
-        const EnvSetup env_setup(env);
-
-        detail::PipeFds in, out, err, null_in;
-        if (cmd_.stdin_data) {
-            detail::make_pipe(in);
-        } else {
-            // 不给 stdin 数据时接 /dev/null，绝不继承调用方的 stdin。
-            null_in.read = ::open("/dev/null", O_RDONLY | O_CLOEXEC);
-            if (null_in.read == -1)
-                throw ExecError{ExecError::Kind::spawn_failed,
-                                std::string("open /dev/null: ") + std::strerror(errno)};
-        }
-        detail::make_pipe(out);
-        // merge 模式下 stderr 直接绑到 out.write（见下方 stdio），err 不持有任何 fd，
-        // 否则两个 PipeFds 析构时会对同一个 fd 关两次，第二次可能关掉别的线程刚打开的 fd。
-        if (!cmd_.merge_stderr) detail::make_pipe(err);
-
-        bp::process_stdio stdio{
-            .in = bp::detail::process_input_binding{cmd_.stdin_data ? in.read : null_in.read},
-            .out = bp::detail::process_output_binding{out.write},
-            .err = bp::detail::process_error_binding{cmd_.merge_stderr ? out.write : err.write},
-        };
-
-        std::vector<std::string> args(cmd_.argv.begin() + 1, cmd_.argv.end());
-        ExecSetup setup{cmd_.cwd.empty() ? nullptr : cmd_.cwd.c_str(), cmd_.inherit_fds};
-
-        try {
-            proc_ = bp::process(ctx_, program, args, env_setup, setup, stdio);
-        } catch (const boost::system::system_error& e) {
-            throw ExecError{ExecError::Kind::spawn_failed, e.what()};
-        }
-        spawned_ = true;
-        pid_ = proc_.id();
-
-        // 父进程不再需要子进程那一端。
-        if (null_in.read >= 0) {
-            ::close(null_in.read);
-            null_in.read = -1;
-        }
-        if (in.read >= 0) {
-            ::close(in.read);
-            in.read = -1;
-        }
-        ::close(out.write);
-        out.write = -1;
-        if (!cmd_.merge_stderr) {
-            ::close(err.write);
-            err.write = -1;
-        }
-
-        out_pipe_.assign(out.read);
-        out.read = -1;
-        if (!cmd_.merge_stderr) {
-            err_pipe_.assign(err.read);
-            err.read = -1;
-        }
-        if (cmd_.stdin_data) {
-            in_pipe_.assign(in.write);
-            in.write = -1;
-        }
+        detail::spawn_command(cmd_, program, env, ctx_, proc_, in_pipe_, out_pipe_, err_pipe_,
+                              group_, spawned_);
     }
 
     void start_read_out() {
@@ -328,21 +215,21 @@ private:
     void begin_terminate() {
         if (terminating_) return;
         terminating_ = true;
-        if (spawned_) ::kill(-pid_, SIGTERM);
+        if (spawned_) group_.terminate();
         if (opt_.kill_grace.count() > 0) {
             grace_timer_.expires_after(opt_.kill_grace);
             grace_timer_.async_wait([this](boost::system::error_code ec) {
-                if (!ec && spawned_) ::kill(-pid_, SIGKILL);
+                if (!ec && spawned_) group_.force_kill();
             });
         } else if (spawned_) {
-            ::kill(-pid_, SIGKILL);
+            group_.force_kill();
         }
     }
 
     // 主进程退出后仍然没有 EOF：后台进程还持有管道写端。
     // 杀掉整组、停止读取，不再等待。
     void on_drain_expired() {
-        if (spawned_) ::kill(-pid_, SIGKILL);
+        if (spawned_) group_.force_kill();
         stop_reads();
         check_done();
     }
@@ -368,8 +255,8 @@ private:
     Result build_result(std::chrono::steady_clock::time_point start) const {
         Result result;
         if (process_exited_) {
-            if (WIFEXITED(raw_status_)) result.exit_code = WEXITSTATUS(raw_status_);
-            else if (WIFSIGNALED(raw_status_)) result.signal = WTERMSIG(raw_status_);
+            result.exit_code = exit_status_.code;
+            result.signal = exit_status_.signal;
         }
         result.timed_out = timed_out_;
         result.out = out_.finish();
@@ -398,8 +285,8 @@ private:
     // 两路读取同时挂起：Asio 先把数据读进缓冲区、稍后才调回调，共用一块会互相覆盖。
     std::array<char, 64 << 10> out_buffer_{};
     std::array<char, 64 << 10> err_buffer_{};
-    int pid_ = -1;
-    int raw_status_ = 0;
+    detail::ProcessGroup group_;
+    detail::ExitStatus exit_status_;
     bool spawned_ = false;
     bool process_exited_ = false;
     bool out_eof_ = false;

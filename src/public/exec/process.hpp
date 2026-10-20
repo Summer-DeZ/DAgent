@@ -7,6 +7,7 @@
 #include <filesystem>
 #include <functional>
 #include <map>
+#include <memory>
 #include <optional>
 #include <stdexcept>
 #include <stop_token>
@@ -16,6 +17,10 @@
 #include <vector>
 
 namespace dagent::exec {
+
+namespace detail {
+struct InheritedResources;
+} // namespace detail
 
 struct Environment {
     std::filesystem::path shell;
@@ -43,7 +48,7 @@ struct Command {
     std::optional<std::chrono::milliseconds> timeout;  ///< 为空时用 Options::default_timeout
     bool merge_stderr = false;              ///< true 时 stderr 写进 stdout 管道，保持交错顺序
     bool inherit_env = true;                ///< false 时只使用默认项与 env_set，适合受限命令
-    std::vector<int> inherit_fds;            ///< Explicitly retained across exec; owned by the caller.
+    std::shared_ptr<const detail::InheritedResources> inherited_resources; ///< 仅保存继承清单，不拥有系统资源。
 };
 
 enum class Stream { out, err };

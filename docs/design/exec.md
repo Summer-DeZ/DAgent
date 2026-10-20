@@ -16,7 +16,10 @@ tree-sitter + tree-sitter-bash。
 | 受限执行的中立值：模式、路径/网络边界与能力快照 | `exec/sandbox.hpp` | `Policy`、`Support`、`sensitive_paths` |
 | SRT 后端：bridge 控制通道、运行中网络审批、只读搜索边界 | `exec/srt.hpp` | `run_srt`、`srt_config`、`ReadOnlySandbox` |
 
-`exec/detail.hpp` 放的是模块内部几个实现文件共用的代码，外部不要 include。
+`exec/detail.hpp` 与 `exec/platform.hpp` 是模块内部接口，外部不要 include。
+`platform_posix.cpp` 集中实现原生管道、两套启动钩子、进程组、退出状态与 SRT 控制连接；
+`process.cpp`、`child.cpp` 保留 Asio 调度、计时器、取消、输出处理和回调，`srt.cpp` 保留策略与协议编排。
+原生 PipeFds 只在平台实现内部定义，公共头不暴露 fd 或 PID。
 
 ---
 
@@ -41,17 +44,35 @@ exec::Result r = exec::run(cmd, options,
 | --- | --- |
 | 会话 | 子进程先 `setsid()`：成为新进程组的组长，**并且没有控制终端**。`sudo`、`ssh` 这类要打开 `/dev/tty` 的程序会直接失败，不会跟 TUI 抢键盘 |
 | stdin | 没有 `stdin_data` 时接 `/dev/null`，不继承 agent 的 stdin |
-| 额外描述符 | `Command::inherit_fds` 显式列出需要跨 exec 保留的 FD，所有权仍属于调用方；启动器登记白名单，仅在目标子进程中清除这些 FD 的 CLOEXEC |
+| 额外资源 | `Command::inherited_resources` 持有只读的不透明继承清单，不拥有 OS 资源；平台实现在 fork 前展开为 fd span 并登记白名单，仅在目标子进程中清除 CLOEXEC |
 | 环境变量 | `Command::inherit_env=true` 时继承 agent 环境并按 `env_deny` 过滤；false 时从空环境开始。两者随后注入非交互默认项、`Options::environment`，再应用 `env_unset` 和 `env_set`。托管命令使用 false 和托管 PATH；受限 bash 还把 HOME/XDG/TMP 及 uv/npm 缓存指向私有目录，宿主凭据及 BASH_ENV/加载器/语言注入变量不会进入命令 |
 | 查找程序 | argv[0] 带 `/` 时直接使用，相对路径**相对 `Command::cwd`**；否则按**子进程将看到的 PATH**（也就是叠加 `env_set` 之后的值）查找 |
 | 信号 | SIGPIPE 在子进程里恢复为默认行为，所以 `yes \| head` 这类管道能正常结束；信号屏蔽清空（父进程为 sigwait 屏蔽的 SIGINT/SIGTERM 不会带进子进程，`timeout` 与 SIGTERM 清理照常生效） |
 | exec 前失败 | fork 之后 chdir、应用沙箱或 `execve` 失败时，错误码经管道交回父进程，子进程直接 `_exit(127)`：不执行 agent 的 atexit 与静态析构，也不会把 fork 时复制来的 stdio 缓冲再写一遍 |
+
+`inherited_environment` 返回借用的环境条目 span，不复制变量值；共享 `make_environment` 继续过滤无名条目、
+按原顺序过滤和复制允许的变量，再覆盖默认项及显式设置。`environment_name_matches` 保留 fnmatch/FNM_CASEFOLD，
+`regular_executable` 保留 stat/普通文件判断后再检查执行权限。
+
+`spawn_command` 独立保留原启动路径：环境指针表→按需 stdin 管道或 /dev/null→stdout→按需独立 stderr→
+stdio 绑定→argv 与继承清单→Boost 启动→设置 spawned→保存进程号→关闭子端→按 stdout、stderr、stdin 顺序移交 Asio。
+每次 close/assign 后仍在原位置将相应原生 fd 置 -1；merge 模式不创建和重复持有 stderr 端点。
+管道创建及启动失败时由原 PipeFds 清理未移交端点；成功创建进程后的移交失败仍由 Runner 析构补发进程组 SIGKILL。
+
+`spawn_child` 保留另一条路径：环境指针表→忽略默认 SIGPIPE→固定三条管道→argv 与继承清单→stdio 绑定→
+Boost 启动→保存进程号→关闭 stdin 读端、stdout/stderr 写端→按 stdin、stdout、stderr 顺序移交 Asio。
+随后共享 Child::Impl 注册读取、退出回调并启动线程。构造失败仍由未移交的 PipeFds、已构造的 Asio/Boost 成员清理，
+不新增进程组终止步骤。两套钩子均保留继承端点清 CLOEXEC→setsid→SIGPIPE 复位→清信号屏蔽→chdir 的执行顺序。
 
 ### 进程组的清理
 
 - **超时或取消**：先对整个进程组发 SIGTERM，等 `kill_grace` 后再发 SIGKILL。
 - **后台进程占着管道**：主进程退出后，最多再读 `drain_after_exit` 这么久，然后 SIGKILL 整个进程组、停止读取。这样 `server &` 这类命令不会让调用方一直卡住。
 - **所有退出路径**（正常结束、超时、取消、回调抛异常）结束时，都会对整个进程组补发一次 SIGKILL。
+
+`ProcessGroup` 只保存不透明进程标识，terminate/force_kill 保留 kill(-pid)；析构只释放元数据，
+各调用点原来的 spawned 或有效 PID 判断、发送信号时机不变。退出状态仍在原等待成功位置读取，
+平台函数把该快照转换为中立的 code/signal，结果组装不再解析原生等待状态。
 
 ### 对整个进程的影响：忽略 SIGPIPE
 
@@ -147,11 +168,27 @@ unrestricted 的 bash 使用 host；web 仍强制进入只读 SRT，由运行中
   启动失败并给出阶段。
 - init 帧在控制线程中循环发送并处理短写，主线程可同时启动 bridge；大命令不会阻塞进程启动路径。
   发送期间取消和启动超时会关闭控制 socket，命令超时仍由进程执行器处理；清理时先等待控制线程和 watchdog 退出，再关闭 FD。
-- 控制 socketpair 使用 `SOCK_CLOEXEC`，bridge 端通过 `Command::inherit_fds` 显式保留；
+- 控制 socketpair 使用 `SOCK_CLOEXEC`，bridge 端通过 `Command::inherited_resources` 显式保留；
   不在父进程清除 CLOEXEC，避免并发启动时将通道泄漏给其他进程，也不依赖启动器偶然保留描述符。
 - 工作区保护遵循启动快照语义：运行中新建的同名敏感文件不在保护承诺内。
 - 受限命令的私有 HOME 使用短临时路径，避免深层 Home 导致 SRT Unix socket 路径过长；bridge 初始化异常按结构化错误报告。
   控制目录与私有 HOME 通过 `base::create_unique_directory` 创建，父目录处理、错误文本和清理仍由 SRT 管理。
+
+`SrtControl` 在原 socketpair 位置构造，仍晚于控制目录、私有 HOME 及其子目录创建。
+共享代码保留 JSON、网络审批、reader/watchdog/gates 的启停与 join 顺序；平台边界的 I/O 语义分别为：
+
+| 方法 | 行为 |
+| --- | --- |
+| `send_initial` | MSG_NOSIGNAL，循环处理短写与 EINTR；非正返回生成原 control init write 错误，由共享代码更新握手状态 |
+| `send_decision` | 单次 MSG_NOSIGNAL send；负返回且非 EPIPE 才记原日志，不补短写、不重试 EINTR |
+| `send_start` | 单次 MSG_NOSIGNAL send，忽略返回值 |
+| `read_chunk` | 单次 read；非正返回均结束读取，包括 EINTR，不新增重试 |
+| `shutdown_host` | 对宿主端执行 SHUT_RDWR，供取消、握手错误和 watchdog 使用 |
+| `close_bridge` | 只 close bridge 端，再置 -1；仍先于 reader.join |
+| `close` | 按宿主端、bridge 端顺序，对有效端点 shutdown、close、置 -1；仍在各原清理位置调用 |
+
+SrtControl 析构的 close 在显式清理后为空操作。继承清单不关闭端点，连接所有权始终在 SrtControl。
+`default_srt_readable_paths` 提供原宿主目录初值，策略合并、敏感路径处理和 SRT 配置 JSON 构造仍在共享文件。
 
 ### 宿主前置
 

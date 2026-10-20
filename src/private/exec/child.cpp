@@ -2,6 +2,7 @@
 
 #include "base/log.hpp"
 #include "exec/detail.hpp"
+#include "exec/platform.hpp"
 
 #include <boost/asio/io_context.hpp>
 #include <boost/asio/post.hpp>
@@ -14,24 +15,16 @@
 #include <boost/process/v2.hpp>
 
 #include <atomic>
-#include <cerrno>
 #include <chrono>
-#include <csignal>
-#include <cstring>
 #include <deque>
 #include <exception>
 #include <istream>
 #include <mutex>
-#include <span>
 #include <string>
 #include <system_error>
 #include <thread>
 #include <utility>
 #include <vector>
-
-#include <fcntl.h>
-#include <sys/wait.h>
-#include <unistd.h>
 
 namespace dagent::exec {
 namespace {
@@ -39,52 +32,6 @@ namespace {
 namespace asio = boost::asio;
 namespace bp = boost::process::v2;
 
-
-/// 默认 launcher 的 env 成员默认指向进程环境；这个 init 把它换成过滤后的环境。
-/// 不用 Boost.Process 的 process_environment：1.83 的 header-only 模式下它没有提供
-/// on_setup 的定义（需要单独编译的 libboost_process）。
-struct EnvSetup {
-    std::vector<const char*> entries;
-
-    explicit EnvSetup(const std::vector<std::string>& env) {
-        entries.reserve(env.size() + 1);
-        for (const auto& entry : env) entries.push_back(entry.c_str());
-        entries.push_back(nullptr);  // execve 要求以 nullptr 结尾
-    }
-
-    boost::system::error_code on_setup(bp::posix::default_launcher& launcher, const bp::filesystem::path&,
-                                       const char* const*) const {
-        launcher.env = entries.data();
-        return {};
-    }
-};
-
-/// fork 之后、exec 之前执行的钩子，和 process.cpp 共用 detail::setup_child。
-struct ExecSetup {
-    const char* cwd = nullptr;
-    std::span<const int> inherit_fds;
-
-    boost::system::error_code on_setup(bp::posix::default_launcher& launcher, const bp::filesystem::path&,
-                                       const char* const*) const {
-        launcher.fd_whitelist.insert(launcher.fd_whitelist.end(), inherit_fds.begin(), inherit_fds.end());
-        return {};
-    }
-
-    boost::system::error_code on_exec_setup(bp::posix::default_launcher&, const bp::filesystem::path&,
-                                          const char* const*) const {
-        for (const int fd : inherit_fds)
-            if (::fcntl(fd, F_SETFD, 0) == -1) return {errno, boost::system::system_category()};
-        const int err = detail::setup_child(cwd);
-        if (err != 0) errno = err; // 失败时 launcher 把 errno（而不是返回的 ec）写回父进程
-        return {err, boost::system::system_category()};
-    }
-
-    /// exec 前失败时抢先 _exit，不让 launcher 的 ::exit 重刷父进程的 stdio 缓冲（见 process.cpp）。
-    template <class... Args>
-    [[noreturn]] void on_exec_error(Args&&...) const noexcept {
-        ::_exit(127);
-    }
-};
 
 } // namespace
 
@@ -173,41 +120,7 @@ private:
         program_ = detail::resolve_program(cmd.argv.front(), cmd.cwd, detail::find_env(env, "PATH"));
         if (program_.empty())
             throw ExecError{ExecError::Kind::spawn_failed, "command not found: " + cmd.argv.front()};
-        const EnvSetup env_setup(env);
-        detail::ignore_sigpipe();  // MCP server 挂掉后再 write 应得到 EPIPE，而不是杀掉 agent
-
-        detail::PipeFds in, out, err;
-        detail::make_pipe(in);
-        detail::make_pipe(out);
-        detail::make_pipe(err);
-
-        std::vector<std::string> args(cmd.argv.begin() + 1, cmd.argv.end());
-        ExecSetup setup{cmd.cwd.empty() ? nullptr : cmd.cwd.c_str(), cmd.inherit_fds};
-        bp::process_stdio stdio{
-            .in = bp::detail::process_input_binding{in.read},
-            .out = bp::detail::process_output_binding{out.write},
-            .err = bp::detail::process_error_binding{err.write},
-        };
-
-        try {
-            proc_ = bp::process(ctx_, program_, args, env_setup, setup, stdio);
-        } catch (const boost::system::system_error& e) {
-            throw ExecError{ExecError::Kind::spawn_failed, e.what()};
-        }
-        pid_ = proc_.id();
-
-        ::close(in.read);
-        in.read = -1;
-        ::close(out.write);
-        out.write = -1;
-        ::close(err.write);
-        err.write = -1;
-        in_pipe_.assign(in.write);
-        in.write = -1;
-        out_pipe_.assign(out.read);
-        out.read = -1;
-        err_pipe_.assign(err.read);
-        err.read = -1;
+        detail::spawn_child(cmd, program_, env, ctx_, proc_, in_pipe_, out_pipe_, err_pipe_, group_);
 
         read_stdout();
         read_stderr();
@@ -340,7 +253,7 @@ private:
             base::logger("exec")->warn("wait for child failed: {}", ec.message());
         } else {
             process_exited_ = true;
-            raw_status_ = proc_.native_exit_code();
+            exit_status_ = detail::process_exit_status(proc_);
         }
         if (out_closed_ && err_closed_) {
             finish();
@@ -349,7 +262,7 @@ private:
         drain_timer_.expires_after(opt_.drain_after_exit);
         drain_timer_.async_wait([this](boost::system::error_code timer_ec) {
             if (timer_ec) return;
-            if (pid_ > 0) ::kill(-pid_, SIGKILL);  // 后台进程还占着管道
+            if (group_.valid()) group_.force_kill();  // 后台进程还占着管道
             stop_reads();
             finish();
         });
@@ -380,8 +293,8 @@ private:
 
         ExitResult result;
         if (process_exited_) {  // 等待失败时状态未知，两者都留空
-            if (WIFEXITED(raw_status_)) result.code = WEXITSTATUS(raw_status_);
-            else if (WIFSIGNALED(raw_status_)) result.signal = WTERMSIG(raw_status_);
+            result.code = exit_status_.code;
+            result.signal = exit_status_.signal;
         }
 
         ExitCallback deliver;
@@ -410,15 +323,15 @@ private:
     void request_terminate() {
         if (terminating_.exchange(true)) return;
         asio::post(ctx_, [this] {
-            if (pid_ <= 0) return;
-            ::kill(-pid_, SIGTERM);
+            if (!group_.valid()) return;
+            group_.terminate();
             if (opt_.kill_grace.count() > 0) {
                 grace_timer_.expires_after(opt_.kill_grace);
                 grace_timer_.async_wait([this](boost::system::error_code ec) {
-                    if (!ec && pid_ > 0) ::kill(-pid_, SIGKILL);
+                    if (!ec && group_.valid()) group_.force_kill();
                 });
             } else {
-                ::kill(-pid_, SIGKILL);
+                group_.force_kill();
             }
         });
     }
@@ -450,8 +363,8 @@ private:
     bool exit_delivered_ = false;
     ExitResult exit_result_;
 
-    int pid_ = -1;
-    int raw_status_ = 0;
+    detail::ProcessGroup group_;
+    detail::ExitStatus exit_status_;
     bool process_exited_ = false;
     bool out_closed_ = false;
     bool err_closed_ = false;

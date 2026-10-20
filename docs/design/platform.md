@@ -15,9 +15,9 @@
   termios、sigset_t 等原生类型；资源状态用不透明类型表示。标准库类型可用于中立接口。
 - 平台提取保留原操作、标志、顺序、错误和日志文本、超时、权限与参数；格式化和业务失败策略留在调用方。
 
-这是逐步落实的源码边界约定。当前已提取跨模块小原语、workspace 的 OS 描述、入口与宿主辅助、IPC 和 TUI，尚未完成全仓 I1/I2：
-exec、工作区文件操作、配置/凭据/会话锁与监听等仍有共享实现中的平台代码；
-Command、PipeFds 和 ModelWriteLock 仍含原生状态。下面只列已落地的平台文件。
+这是逐步落实的源码边界约定。当前已提取跨模块小原语、workspace 的 OS 描述、入口与宿主辅助、IPC、TUI 和 exec/SRT，尚未完成全仓 I1/I2：
+工作区文件操作、配置/凭据/会话锁与监听等仍有共享实现中的平台代码；
+ModelWriteLock 仍含原生状态。下面只列已落地的平台文件。
 
 ## 当前平台文件与接口
 
@@ -34,6 +34,7 @@ Command、PipeFds 和 ModelWriteLock 仍含原生状态。下面只列已落地�
 | `src/private/web/document_posix.cpp` | `src/public/web/detail.hpp` | `detail::convert_charset` |
 | `src/private/ipc/channel_posix.cpp` | `src/public/ipc/channel.hpp` | `InheritedEndpoint` 参数解析、`Channel` 原生状态与传输、`BackendProcess` 不透明进程标识、`spawn_backend`、`wait_or_terminate` |
 | `src/private/tui/terminal_posix.cpp` | `src/public/tui/terminal.hpp`、`src/public/tui/event_wait.hpp` | Terminal 生命周期、原生状态、尺寸、字节写入、输入恢复与信号；EventWait 的等待、输入读取、唤醒及排空 |
+| `src/private/exec/platform_posix.cpp` | `src/public/exec/detail.hpp`、`src/public/exec/platform.hpp`、`src/public/exec/process.hpp` | 环境枚举/匹配、执行权限、SIGPIPE、ProcessGroup、退出状态、spawn_command/spawn_child、InheritedResources、SrtControl、默认 SRT 可读目录 |
 
 `executable_path` 的两个重载分别保留 filesystem 的抛异常和 error_code 行为，供 IPC、sandbox status、
 SearXNG 定位程序资源。安装根的固定缓冲区 readlink 和 InstallError 在 `app/paths_posix.cpp` 中保持独立；
@@ -43,7 +44,7 @@ SearXNG 定位程序资源。安装根的固定缓冲区 readlink 和 InstallErr
 `process_id` 返回当前进程号，调用位置与十进制格式不变。时间转换写入调用方的 `std::tm`，
 local/UTC 转换返回是否成功，UTC 时间戳转换保留原返回值和对 tm 的修改；调用者维持各自的失败处理。
 
-`can_execute` 只检查执行权限，不附加普通文件判断；exec 的 stat 检查仍在原位置。
+`can_execute` 只检查执行权限，不附加普通文件判断；exec 的 stat 检查由 `regular_executable` 在平台实现中完成。
 `create_unique_directory` 接收完整 XXXXXX 模板，只调用 mkdtemp，成功返回目录，失败返回 strerror 文本。
 父目录创建、固定 `/tmp` 选择、业务异常及清理由 SRT、MCP、SearXNG 各自保留。
 
@@ -67,3 +68,12 @@ Terminal 的 Native 与 EventWait 的 Impl 都只在 `terminal_posix.cpp` 定义
 EventWait 只报告就绪状态，Runtime 仍按信号、wake、stdin 的顺序消费，再执行 inbox、尺寸、定时器、Esc、握手和渲染。
 `wake_pending_` 留在 Runtime，清除后才排空 wake pipe；self-pipe 创建失败降级，wake pipe 创建失败 terminate。
 Terminal 的恢复与信号卸载顺序见 [tui-framework](tui-framework.md#41-终端l1)，构造所需状态在对应管道创建前分配。
+
+exec 的跨平台 Asio/Boost.Process 对象和调度保留在共享文件，POSIX 启动钩子、原生管道与继承清单展开位于平台文件。
+两条 spawn 路径独立，原创建、标记、关闭、移交顺序见 [exec](exec.md)。ProcessGroup 状态在 Runner/Child::Impl
+构造阶段分配，早于创建子进程管道；其析构不发送信号。继承清单只保存元数据，不拥有资源，fork 前借用其中的 fd span。
+
+SrtControl 用 optional 延迟到原 socketpair 位置构造，不把连接创建提前到目录创建之前；其 Impl 在 socketpair 前分配。
+设置 Command 继承清单时，在已有控制连接上分配共享元数据及原有 fd 列表存储，均在 fork 前；失败走原资源清理路径。
+环境枚举使用借用 span，不新增值复制或容器分配。fork 后钩子不展开不透明对象、不新增分配。
+SRT 配置 JSON、控制帧和线程编排保持共享，各控制 I/O 方法保留原短写、EINTR、EPIPE 与关闭语义。

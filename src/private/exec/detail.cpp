@@ -1,34 +1,17 @@
 #include "exec/detail.hpp"
-#include "base/platform.hpp"
 
 
 #include <algorithm>
-#include <cerrno>
-#include <csignal>
-#include <cstdlib>
-#include <cstring>
-#include <mutex>
 #include <string>
-#include <sys/stat.h>
-#include <unistd.h>
-
-#include <fcntl.h>
-#include <fnmatch.h>
 
 namespace dagent::exec::detail {
 namespace {
 
 bool is_denied(std::string_view name, const std::vector<std::string>& patterns) {
     for (const auto& pattern : patterns) {
-        if (::fnmatch(pattern.c_str(), std::string(name).c_str(), FNM_CASEFOLD) == 0) return true;
+        if (environment_name_matches(name, pattern)) return true;
     }
     return false;
-}
-
-bool is_executable(const std::filesystem::path& path) {
-    struct stat st {};
-    if (::stat(path.c_str(), &st) != 0 || !S_ISREG(st.st_mode)) return false;
-    return base::can_execute(path);
 }
 
 // 环境条目形如 "名字=值"；名字为空或没有 '=' 的条目直接忽略。
@@ -64,8 +47,8 @@ constexpr std::pair<std::string_view, std::string_view> kDefaultEnv[] = {
 std::vector<std::string> make_environment(const Command& cmd, const Options& opt) {
     std::vector<std::string> env;
     if (cmd.inherit_env) {
-        for (char** entry = ::environ; entry != nullptr && *entry != nullptr; ++entry) {
-            const std::string_view view(*entry);
+        for (const char* entry : inherited_environment()) {
+            const std::string_view view(entry);
             const auto equals = view.find('=');
             if (equals == std::string_view::npos || equals == 0) continue;
             if (is_denied(view.substr(0, equals), opt.env_deny)) continue;
@@ -97,7 +80,7 @@ std::filesystem::path resolve_program(std::string_view name, const std::filesyst
     const std::filesystem::path path(name);
     if (path.has_parent_path()) {
         const auto candidate = path.is_absolute() ? path : base / path;
-        return is_executable(candidate) ? candidate : std::filesystem::path{};
+        return regular_executable(candidate) ? candidate : std::filesystem::path{};
     }
     if (path_env.empty()) return {};
 
@@ -106,47 +89,11 @@ std::filesystem::path resolve_program(std::string_view name, const std::filesyst
         const std::string_view dir = path_env.substr(0, colon);
         const std::filesystem::path dir_path = dir.empty() ? base : std::filesystem::path(dir);
         const auto candidate = (dir_path.is_absolute() ? dir_path : base / dir_path) / path;
-        if (is_executable(candidate)) return candidate;
+        if (regular_executable(candidate)) return candidate;
         if (colon == std::string_view::npos) break;
         path_env.remove_prefix(colon + 1);
     }
     return {};
-}
-
-void ignore_sigpipe() {
-    static std::once_flag once;
-    std::call_once(once, [] {
-        struct sigaction current {};
-        if (::sigaction(SIGPIPE, nullptr, &current) == 0 && current.sa_handler == SIG_DFL)
-            ::signal(SIGPIPE, SIG_IGN);
-    });
-}
-
-int setup_child(const char* cwd) noexcept {
-    if (::setsid() == -1) return errno;
-    struct sigaction dfl {};
-    dfl.sa_handler = SIG_DFL;
-    if (::sigaction(SIGPIPE, &dfl, nullptr) == -1) return errno;
-    // 信号屏蔽会经 fork、exec 原样继承：父进程为 sigwait 屏蔽的 SIGINT/SIGTERM 不能带进子进程，
-    // 否则 `timeout`、SIGTERM 清理都会失效。
-    sigset_t none;
-    sigemptyset(&none);
-    if (::sigprocmask(SIG_SETMASK, &none, nullptr) == -1) return errno;
-    if (cwd != nullptr && ::chdir(cwd) == -1) return errno;
-    return 0;
-}
-
-PipeFds::~PipeFds() {
-    if (read >= 0) ::close(read);
-    if (write >= 0) ::close(write);
-}
-
-void make_pipe(PipeFds& pipe) {
-    int fds[2] = {-1, -1};
-    if (::pipe2(fds, O_CLOEXEC) == -1)
-        throw ExecError{ExecError::Kind::spawn_failed, std::string("pipe2: ") + std::strerror(errno)};
-    pipe.read = fds[0];
-    pipe.write = fds[1];
 }
 
 } // namespace dagent::exec::detail

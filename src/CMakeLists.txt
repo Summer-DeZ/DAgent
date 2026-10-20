@@ -85,6 +85,7 @@ target_link_libraries(dagent_net PRIVATE CURL::libcurl)
 # 子进程与沙箱：一次性命令、长期子进程、bash 命令分析、SRT 后端与敏感路径扫描。
 add_library(dagent_exec STATIC
     private/exec/detail.cpp
+    private/exec/platform_${DAGENT_PLATFORM}.cpp
     private/exec/process.cpp
     private/exec/child.cpp
     private/exec/shell.cpp

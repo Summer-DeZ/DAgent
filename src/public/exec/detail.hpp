@@ -3,6 +3,7 @@
 #pragma once
 
 #include <filesystem>
+#include <span>
 #include <string>
 #include <string_view>
 #include <vector>
@@ -28,23 +29,9 @@ std::filesystem::path resolve_program(std::string_view name, const std::filesyst
 /// stdin 管道，应当得到 EPIPE，而不是整个 agent 被信号杀死。
 void ignore_sigpipe();
 
-/// @brief fork 之后、exec 之前在子进程里执行，只做 async-signal-safe 的调用：
-/// setsid（新会话、无控制终端）、SIGPIPE 恢复默认（SIG_IGN 会跨 exec 继承）、chdir。
-/// 返回 0 或 errno。
-int setup_child(const char* cwd) noexcept;
-
-/// @brief 一对管道 fd 的 RAII；转移所有权时把对应成员置 -1。
-struct PipeFds {
-    int read = -1;
-    int write = -1;
-
-    PipeFds() = default;
-    PipeFds(const PipeFds&) = delete;
-    PipeFds& operator=(const PipeFds&) = delete;
-    ~PipeFds();
-};
-
-/// @brief 创建带 O_CLOEXEC 的管道；失败抛 ExecError{spawn_failed}。
-void make_pipe(PipeFds& pipe);
+/// @brief 借用当前环境条目，不复制值；过滤与覆盖仍由 make_environment 完成。
+std::span<const char* const> inherited_environment() noexcept;
+bool environment_name_matches(std::string_view name, const std::string& pattern);
+bool regular_executable(const std::filesystem::path& path);
 
 } // namespace dagent::exec::detail
