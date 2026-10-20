@@ -125,6 +125,19 @@ struct Response {
     long status = 0;          ///< 仅 HTTP
 };
 
+// HTTP 已匹配响应的解包：随调用方值类别移动或复制字段，保留已有 HTTP status。
+template<class Json>
+void unpack_rpc_response(Response& out, Json&& message) {
+    if (message.contains("error")) {
+        out.rpc_error = true;
+        out.error = std::forward_like<Json>(message["error"]);
+    } else {
+        out.ok = true;
+        out.result = message.contains("result") ? std::forward_like<Json>(message["result"])
+                                                : json::object();
+    }
+}
+
 enum class DialectKind { stateless, session };
 
 struct Revision {
@@ -683,25 +696,12 @@ Response Client::Impl::http_exchange(std::optional<std::int64_t> id, std::string
             if (!msg.is_discarded() && msg.is_object()) take(msg);
         }
         if (got) {
-            if (response_message.contains("error")) {
-                out.rpc_error = true;
-                out.error = std::move(response_message["error"]);
-            } else {
-                out.ok = true;
-                out.result = response_message.contains("result") ? std::move(response_message["result"])
-                                                                 : json::object();
-            }
+            unpack_rpc_response(out, std::move(response_message));
         }
         return out;
     } catch (const net::HttpError& e) {
         if (got) {
-            if (response_message.contains("error")) {
-                out.rpc_error = true;
-                out.error = response_message["error"];
-            } else {
-                out.ok = true;
-                out.result = response_message.contains("result") ? response_message["result"] : json::object();
-            }
+            unpack_rpc_response(out, response_message);
             return out;
         }
         if (stop.stop_requested()) {
