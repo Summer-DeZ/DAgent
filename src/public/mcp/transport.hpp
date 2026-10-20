@@ -1,5 +1,5 @@
 /// @file transport.hpp
-/// @brief MCP 内部传输状态与 stdio 实现；不属于 Client 对外接口。
+/// @brief MCP 内部传输状态与 stdio/HTTP 实现；不属于 Client 对外接口。
 #pragma once
 
 #include <condition_variable>
@@ -80,6 +80,29 @@ private:
     std::string bridge_error_;
     std::condition_variable_any cv_;
     std::map<std::int64_t, std::shared_ptr<Pending>> pending_;
+};
+
+using HeaderFactory = std::function<net::Headers()>;
+using HeaderObserver = std::function<void(const net::HttpResponse&)>;
+
+/// 每次请求独占 HttpClient 与取消/计时状态；不持有 Impl 或 Dialect。
+class HttpTransport {
+public:
+    HttpTransport(const ServerConfig&, const Options&, ConnectionState&);
+
+    void start();
+    /// 两个协议回调仅在本次同步 exchange 内调用，不保存为成员。
+    Response exchange(std::optional<std::int64_t> id, std::string_view method,
+                      const nlohmann::json& message, std::chrono::milliseconds timeout,
+                      std::stop_token stop, const HeaderFactory&, const HeaderObserver&);
+    /// 在连接标记 closing 后仍可发送 DELETE，不经普通请求入口。
+    void close_session(const net::Headers&);
+    void shutdown(const CloseProtocol&);
+
+private:
+    const ServerConfig& config_;
+    const Options& opt_;
+    ConnectionState& connection_;
 };
 
 } // namespace dagent::mcp::detail

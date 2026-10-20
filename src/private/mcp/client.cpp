@@ -6,7 +6,6 @@
 #include <atomic>
 #include <chrono>
 #include <cmath>
-#include <condition_variable>
 #include <cstdint>
 #include <format>
 #include <map>
@@ -15,12 +14,10 @@
 #include <optional>
 #include <set>
 #include <string>
-#include <thread>
 #include <utility>
 #include <vector>
 
 #include "base/log.hpp"
-#include "net/sse.hpp"
 
 namespace dagent::mcp {
 namespace {
@@ -30,8 +27,6 @@ using std::chrono::milliseconds;
 using detail::Response;
 
 constexpr std::size_t kMaxQualifiedToolName = 64; ///< OpenAI 等协议对函数名的长度限制
-
-std::shared_ptr<spdlog::logger> log_mcp() { return base::logger("mcp"); }
 
 bool iequals(std::string_view a, std::string_view b) {
     if (a.size() != b.size()) return false;
@@ -102,19 +97,6 @@ std::string rpc_text(std::string_view method, const json& error) {
     throw McpError{McpError::Kind::protocol,
                    std::format("{}: {} failed (HTTP {}); response is not JSON-RPC{}", server, method, status,
                                detail)};
-}
-
-// HTTP 已匹配响应的解包：随调用方值类别移动或复制字段，保留已有 HTTP status。
-template<class Json>
-void unpack_rpc_response(Response& out, Json&& message) {
-    if (message.contains("error")) {
-        out.rpc_error = true;
-        out.error = std::forward_like<Json>(message["error"]);
-    } else {
-        out.ok = true;
-        out.result = message.contains("result") ? std::forward_like<Json>(message["result"])
-                                                : json::object();
-    }
 }
 
 enum class DialectKind { stateless, session };
@@ -192,13 +174,13 @@ struct Client::Impl {
 
     ServerConfig config_;
     Options opt_;
-    bool http_ = false;
     std::unique_ptr<Dialect> dialect_;
     std::string protocol_version_; ///< 握手完成后不再改变
 
     std::atomic<std::int64_t> next_id_{1};
     detail::ConnectionState connection_;
     std::unique_ptr<detail::StdioTransport> stdio_;
+    std::unique_ptr<detail::HttpTransport> http_transport_;
 
     mutable std::mutex data_mu_;
     std::vector<Tool> tools_;
@@ -209,9 +191,8 @@ struct Client::Impl {
 void Client::Impl::start() {
     if (config_.name.empty()) throw McpError{McpError::Kind::handshake, "server name is empty"};
     if (config_.transport == Transport::http) {
-        if (config_.url.empty())
-            throw McpError{McpError::Kind::handshake, config_.name + ": HTTP server is missing url"};
-        http_ = true;
+        http_transport_ = std::make_unique<detail::HttpTransport>(config_, opt_, connection_);
+        http_transport_->start();
         return;
     }
     stdio_ = std::make_unique<detail::StdioTransport>(config_, opt_, connection_);
@@ -221,30 +202,13 @@ void Client::Impl::start() {
 void Client::Impl::shutdown() {
     if (stdio_) {
         stdio_->shutdown([this] { if (dialect_) dialect_->close(*this); });
-        return;
+    } else if (http_transport_) {
+        http_transport_->shutdown([this] { if (dialect_) dialect_->close(*this); });
     }
-    {
-        std::lock_guard lock(connection_.mutex);
-        if (connection_.closing) return;
-        connection_.closing = true;
-        connection_.disconnected = true;
-    }
-    if (dialect_) dialect_->close(*this);
 }
 
 void Client::Impl::close_http_session(const net::Headers& headers) {
-    try {
-        net::HttpOptions options = opt_.http;
-        options.timeout = std::chrono::seconds{5}; // 关闭会话不能无限等待远端
-        net::HttpClient client(options);
-        const auto response = client.send({.method = "DELETE", .url = config_.url,
-                                           .headers = headers, .body = {}});
-        if ((response.status < 200 || response.status >= 300) &&
-            response.status != 404 && response.status != 405)
-            log_mcp()->warn("{}: 关闭 HTTP 会话失败 (HTTP {})", config_.name, response.status);
-    } catch (const std::exception& error) {
-        log_mcp()->warn("{}: 关闭 HTTP 会话失败：{}", config_.name, error.what());
-    }
+    http_transport_->close_session(headers);
 }
 
 // ---- Dialect 的请求装饰与会话 ----
@@ -298,7 +262,7 @@ bool Client::Impl::SessionDialect::session_expired(const Response& response) con
 }
 
 void Client::Impl::SessionDialect::close(Impl& client) const {
-    if (client.http_ && revision().http_session && !session_id_.empty())
+    if (client.config_.transport == Transport::http && revision().http_session && !session_id_.empty())
         client.close_http_session(headers(client, {}, json::object()));
 }
 
@@ -314,7 +278,7 @@ Response Client::Impl::exchange(std::string_view method, json params, millisecon
     }
     const std::optional<std::int64_t> id = notification ? std::nullopt
                                                        : std::optional{next_id_.fetch_add(1)};
-    if (http_) return http_exchange(id, method, std::move(params), timeout, stop);
+    if (config_.transport == Transport::http) return http_exchange(id, method, std::move(params), timeout, stop);
     if (notification) return stdio_->notify(method, std::move(params), stop);
     return stdio_->exchange(*id, method, dialect_->decorate_params(std::move(params)), timeout, stop);
 }
@@ -323,132 +287,9 @@ Response Client::Impl::http_exchange(std::optional<std::int64_t> id, std::string
                                      milliseconds timeout, std::stop_token stop) {
     const json message = id ? detail::make_request(*id, method, dialect_->decorate_params(std::move(params)))
                             : detail::make_notification(method, std::move(params));
-    net::HttpOptions options = opt_.http;
-    options.timeout = std::chrono::seconds{0}; // 总时长交给下面自己的计时器
-    // 每次调用独占一个 HttpClient：并发调用互不排队，取消和超时立刻生效（代价是连接不复用）。
-    net::HttpClient client(options);
-    net::HttpRequest req{.method = "POST", .url = config_.url, .headers = {}, .body = message.dump()};
-    req.headers = dialect_->headers(*this, method, message["params"]);
-
-    // HTTP：断开响应流本身就是取消信号，不发送 notifications/cancelled。
-    std::stop_source cancel;
-    std::stop_callback relay(stop, [&cancel] { cancel.request_stop(); });
-    std::atomic<bool> deadline_hit{false};
-    std::mutex timer_mutex;
-    std::condition_variable_any timer_cv;
-    std::jthread timer;
-    if (timeout.count() > 0) {
-        timer = std::jthread([&](std::stop_token token) {
-            std::unique_lock wait_lock(timer_mutex);
-            if (timer_cv.wait_for(wait_lock, token, timeout, [&] { return token.stop_requested(); })) return;
-            deadline_hit = true;
-            cancel.request_stop();
-        });
-    }
-
-    Response out;
-    bool got = false;
-    json response_message;
-    net::SseParser sse;
-    std::string body;
-    bool sse_seen = false;   // SSE 流只需要逐事件解析，不再留整包
-    bool body_overflow = false;
-
-    const auto take = [&](const json& msg) {
-        const auto msg_id = msg.find("id");
-        if (id && !msg.contains("method") && msg_id != msg.end() && msg_id->is_number_integer() &&
-            msg_id->get<std::int64_t>() == *id) {
-            response_message = msg;
-            got = true;
-            cancel.request_stop(); // 拿到响应就不用等 server 关闭流了
-            return;
-        }
-        log_mcp()->debug("{}: 忽略非本次请求的消息", config_.name);
-    };
-
-    try {
-        const net::HttpResponse resp = client.stream(
-            req,
-            [&](std::string_view chunk) {
-                if (!sse_seen) {
-                    if (body.size() + chunk.size() > opt_.http.max_body_bytes) {
-                        body_overflow = true;
-                        cancel.request_stop(); // 不再继续读这个过大的整包
-                    } else {
-                        body.append(chunk);
-                    }
-                }
-                sse.feed(chunk, [&](const net::SseEvent& event) {
-                    sse_seen = true;
-                    body.clear();
-                    const json msg = json::parse(event.data, nullptr, false);
-                    if (!msg.is_discarded() && msg.is_object()) take(msg);
-                });
-            },
-            cancel.get_token(),
-            [&](const net::HttpResponse& headers) {
-                out.status = headers.status;
-                dialect_->capture_session(method, headers);
-            });
-        out.status = resp.status;
-        if (resp.status < 200 || resp.status >= 300) {
-            const json msg = json::parse(resp.body, nullptr, false);
-            if (!msg.is_discarded() && msg.is_object()) {
-                if (msg.contains("error")) {
-                    out.rpc_error = true;
-                    out.error = msg["error"];
-                }
-            }
-            return out;
-        }
-        if (!id) {
-            out.ok = true; // 通知没有 JSON-RPC 响应，通常返回 HTTP 202
-            return out;
-        }
-        if (!got) {
-            if (body_overflow)
-                throw McpError{McpError::Kind::protocol,
-                               std::format("{}: {} response size limit reached ({} bytes)", config_.name, method,
-                                           opt_.http.max_body_bytes)};
-            const json msg = json::parse(body, nullptr, false);
-            if (!msg.is_discarded() && msg.is_object()) take(msg);
-        }
-        if (got) {
-            unpack_rpc_response(out, std::move(response_message));
-        }
-        return out;
-    } catch (const net::HttpError& e) {
-        if (got) {
-            unpack_rpc_response(out, response_message);
-            return out;
-        }
-        if (stop.stop_requested()) {
-            throw McpError{McpError::Kind::cancelled, std::format("{}: {} interrupted", config_.name, method)};
-        }
-        if (deadline_hit) {
-            throw McpError{McpError::Kind::timeout,
-                           std::format("{}: {} timed out ({}ms)", config_.name, method, timeout.count())};
-        }
-        if (body_overflow)
-            throw McpError{McpError::Kind::protocol,
-                           std::format("{}: {} response size limit reached ({} bytes)", config_.name, method,
-                                       opt_.http.max_body_bytes)};
-        switch (e.kind()) {
-        case net::HttpError::Kind::timeout:
-            throw McpError{McpError::Kind::timeout, std::format("{}: {} timed out: {}", config_.name, method, e.what())};
-        case net::HttpError::Kind::cancelled:
-            throw McpError{McpError::Kind::cancelled, std::format("{}: {} interrupted", config_.name, method)};
-        case net::HttpError::Kind::too_large:
-            throw McpError{McpError::Kind::protocol,
-                           std::format("{}: {} response size limit reached: {}", config_.name, method, e.what())};
-        case net::HttpError::Kind::connect:
-        case net::HttpError::Kind::tls:
-        case net::HttpError::Kind::transport:
-            throw McpError{McpError::Kind::disconnected,
-                           std::format("{}: {} transport failed: {}", config_.name, method, e.what())};
-        }
-        throw McpError{McpError::Kind::disconnected, e.what()}; // 枚举已经列全，这里到不了
-    }
+    return http_transport_->exchange(id, method, message, timeout, stop,
+        [this, method, &message] { return dialect_->headers(*this, method, message["params"]); },
+        [this, method](const net::HttpResponse& headers) { dialect_->capture_session(method, headers); });
 }
 
 json Client::Impl::request(std::string_view method, json params, milliseconds timeout, std::stop_token stop,
@@ -478,12 +319,13 @@ json Client::Impl::request(std::string_view method, json params, milliseconds ti
 bool Client::Impl::StatelessDialect::handshake(Impl& client, std::stop_token stop) {
     const auto method = revision().handshake_method;
     const Response response = client.exchange(method, json::object(),
-                                               client.http_ ? client.opt_.connect_timeout : client.opt_.probe_timeout,
+                                               client.config_.transport == Transport::http
+                                                   ? client.opt_.connect_timeout : client.opt_.probe_timeout,
                                                stop);
     if (response.status == 401 || response.status == 403 || response.status >= 500)
         throw_http_status(client.config_.name, method, response.status, response.error);
     if ((response.rpc_error && int_or(response.error, "code") == -32601) ||
-        (client.http_ && (response.status == 404 || response.status == 405)))
+        (client.config_.transport == Transport::http && (response.status == 404 || response.status == 405)))
         return false;
     if (response.rpc_error)
         throw McpError{McpError::Kind::handshake, client.config_.name + ": " + rpc_text(method, response.error)};
@@ -505,7 +347,8 @@ bool Client::Impl::StatelessDialect::handshake(Impl& client, std::stop_token sto
 }
 
 bool Client::Impl::SessionDialect::handshake(Impl& client, std::stop_token stop) {
-    const auto timeout = client.http_ ? client.opt_.connect_timeout : client.opt_.probe_timeout;
+    const auto timeout = client.config_.transport == Transport::http
+                             ? client.opt_.connect_timeout : client.opt_.probe_timeout;
     json result;
     try {
         result = client.request(revision().handshake_method, {{"protocolVersion", revision().version},
@@ -539,7 +382,7 @@ void Client::Impl::negotiate(std::stop_token stop) {
         }
         if (!dialect_->handshake(*this, stop)) continue;
         protocol_version_ = dialect_->revision().version;
-        log_mcp()->info("{}: 已连接，协议 {}", config_.name, protocol_version_);
+        base::logger("mcp")->info("{}: 已连接，协议 {}", config_.name, protocol_version_);
         return;
     }
 }
@@ -560,7 +403,7 @@ void Client::Impl::fetch_tools(milliseconds timeout, std::stop_token stop) {
             throw McpError{McpError::Kind::protocol, config_.name + ": tools/list is missing the tools array"};
         for (const auto& item : *list) {
             if (!item.is_object() || !item.contains("name") || !item["name"].is_string()) {
-                log_mcp()->warn("{}: 忽略没有名字的工具", config_.name);
+                base::logger("mcp")->warn("{}: 忽略没有名字的工具", config_.name);
                 continue;
             }
             Tool tool;
@@ -568,7 +411,7 @@ void Client::Impl::fetch_tools(milliseconds timeout, std::stop_token stop) {
             tool.name = item["name"].get<std::string>();
             tool.qualified_name = detail::qualified_name(tool.server, tool.name);
             if (tool.qualified_name.size() > kMaxQualifiedToolName) {
-                log_mcp()->warn("{}: 工具 {} 清理后的名字 {} 超过 {} 字符，已跳过", config_.name, tool.name,
+                base::logger("mcp")->warn("{}: 工具 {} 清理后的名字 {} 超过 {} 字符，已跳过", config_.name, tool.name,
                                 tool.qualified_name, kMaxQualifiedToolName);
                 continue;
             }
@@ -579,16 +422,16 @@ void Client::Impl::fetch_tools(milliseconds timeout, std::stop_token stop) {
             else
                 tool.input_schema = json::object();
             std::vector<detail::HeaderParam> params;
-            if (http_ && dialect_->revision().routing_headers) {
+            if (config_.transport == Transport::http && dialect_->revision().routing_headers) {
                 std::string reason;
                 if (!detail::collect_header_params(tool.input_schema, params, reason)) {
-                    log_mcp()->warn("{}: 剔除工具 {}：{}", config_.name, tool.name, reason);
+                    base::logger("mcp")->warn("{}: 剔除工具 {}：{}", config_.name, tool.name, reason);
                     continue;
                 }
             }
             // 放在 x-mcp-header 校验之后：被剔除的工具不占名字，同名的合法工具还能留下。
             if (!qualified_names.insert(tool.qualified_name).second) {
-                log_mcp()->warn("{}: 工具名清理后与前面的工具重复（{}），已跳过", config_.name,
+                base::logger("mcp")->warn("{}: 工具名清理后与前面的工具重复（{}），已跳过", config_.name,
                                 tool.qualified_name);
                 continue;
             }
@@ -599,16 +442,16 @@ void Client::Impl::fetch_tools(milliseconds timeout, std::stop_token stop) {
         if (next == result.end() || !next->is_string() || next->get<std::string>().empty()) break;
         cursor = next->get<std::string>();
         if (*cursor == last_cursor) {
-            log_mcp()->warn("{}: nextCursor 没有变化，停止分页", config_.name);
+            base::logger("mcp")->warn("{}: nextCursor 没有变化，停止分页", config_.name);
             break;
         }
         last_cursor = *cursor;
         if (++pages >= 100) {
-            log_mcp()->warn("{}: 分页超过 100 页，停止", config_.name);
+            base::logger("mcp")->warn("{}: 分页超过 100 页，停止", config_.name);
             break;
         }
     }
-    log_mcp()->info("{}: 发现 {} 个工具", config_.name, tools.size());
+    base::logger("mcp")->info("{}: 发现 {} 个工具", config_.name, tools.size());
     std::lock_guard lock(data_mu_);
     tools_ = std::move(tools);
     header_params_ = std::move(header_params);
@@ -637,7 +480,7 @@ std::unique_ptr<Client> Client::connect(const ServerConfig& config, const Option
 
 const std::vector<Tool>& Client::tools() const { return impl_->tools_; }
 
-Transport Client::transport() const { return impl_->http_ ? Transport::http : Transport::stdio; }
+Transport Client::transport() const { return impl_->config_.transport; }
 
 const std::string& Client::protocol_version() const { return impl_->protocol_version_; }
 

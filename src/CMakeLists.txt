@@ -147,6 +147,7 @@ target_link_libraries(dagent_storage
 add_library(dagent_mcp STATIC
     private/mcp/client.cpp
     private/mcp/stdio_transport.cpp
+    private/mcp/http_transport.cpp
     private/mcp/detail.cpp
 )
 

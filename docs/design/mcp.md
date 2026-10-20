@@ -5,7 +5,7 @@
 `HttpClient`、`SseParser`。
 
 `mcp/detail.hpp` 仅供模块内部共享 JSON-RPC 组装、协议元数据、工具命名和 HTTP 参数头处理。
-`mcp/transport.hpp` 定义内部 `Response`、`ConnectionState` 和 `StdioTransport`，
+`mcp/transport.hpp` 定义内部 `Response`、`ConnectionState`、`StdioTransport` 和 `HttpTransport`，
 同样不属于 Client 对外接口。
 
 ## 1. 接口与生命周期
@@ -72,9 +72,11 @@ stdio server 冷启动时间包含在发现超时内，调用方需要按真实�
 `Impl::negotiate` 按无状态、会话型顺序尝试；只有明确不支持握手的返回值才进入下一 dialect，
 其他失败直接传播。选定修订在 dialect 中保存，成功后记录版本并写日志。
 stdio/SRT 的收发、pending 请求匹配、超时及取消由 `stdio_transport.cpp` 中的 `StdioTransport` 负责；
-HTTP 收发、SSE 解析、超时及取消仍在 `client.cpp`。请求编号、Dialect、协议版本、工具目录及参数头映射留在 Impl。
+HTTP 请求构造、SSE 解析、计时/取消、响应匹配与解包及 DELETE 位于 `http_transport.cpp` 中的 `HttpTransport`。
+请求编号、参数装饰、Dialect、协议版本、工具目录、参数头映射及最终错误分类留在 Impl。
 Impl 持有共享 `ConnectionState`，传输借用它及不可变的配置/选项，不持有 Impl、不参与协议协商或重连。
-普通 stdio 请求的参数由 Dialect 装饰后交给传输，通知仍不作参数装饰。
+普通请求的参数由 Dialect 装饰后交给传输，通知仍不作参数装饰。
+客户端及两种传输统一直接使用 `base::logger("mcp")`。
 
 新增采用既有握手模型的修订时，在 `kRevisions` 中按偏好增加一条能力记录即可；版本匹配、
 元数据和 HTTP 头均读取该记录。只有握手模型改变时才增加 dialect 实现，并加入协商偏好顺序。
@@ -113,6 +115,13 @@ Hub 处理连接失败时，除向前端发送 notice 外，也将具体失败�
 每次调用独占 `HttpClient`，并发调用互不排队。连接超时、响应体上限和 TLS 校验来自 `Options::http`；
 总时长由调用的 `timeout` 参数控制，`http.timeout` 不生效。HTTP 连接不跨调用复用。
 
+Impl 先构造 JSON-RPC 消息，再同步调用 `HttpTransport::exchange`。传输在创建 HttpClient 与请求对象后
+调用 `HeaderFactory` 获取协议请求头，在响应头回调中记录 HTTP 状态后调用 `HeaderObserver`，
+由 Dialect 当场采集 session id；两个回调仅在本次 exchange 内使用，不保存为成员。
+HttpClient、计时器、stop relay、SSE parser、body 和响应匹配状态仍是每次请求的局部对象。
+正常返回分支仍按非 2xx、通知、正文解析与匹配结果处理；HttpError 分支依次检查已匹配响应、
+调用方取消、总时限、body 上限和底层错误种类。HTTP 取消不发送 `notifications/cancelled`。
+
 请求头包含 `Accept: application/json, text/event-stream`；除 `2025-03-26` 外，
 还包含 `MCP-Protocol-Version: <协商版本>`（该头自 `2025-06-18` 引入）。
 现代协议额外发送 `Mcp-Method`。整包 JSON 与 SSE 响应均可处理；收到对应 id 的 SSE 响应后立即关闭流。
@@ -122,6 +131,8 @@ Hub 处理连接失败时，除向前端发送 notice 外，也将具体失败�
 持有会话时收到 HTTP 404 会使 Client 断开，后续调用拒绝，由 Hub 沿用现有重连流程。
 关闭持有会话的连接时向原 endpoint 发送带会话头及该修订支持的版本头的 HTTP DELETE，最长等待 5 秒；
 服务端已清理会话（404）或不支持删除（405）不影响本地关闭。现代协议不创建或删除 HTTP 会话。
+关闭时先在连接状态锁内标记 closing/disconnected，再在锁外经 `CloseProtocol` 调用 Dialect 关闭；
+`SessionDialect::close` 经 Impl 直接调用 `HttpTransport::close_session`，DELETE 不经过普通 exchange 的关闭检查。
 
 现代协议的 `tools/call` 额外发送 `Mcp-Name`，并按照工具 schema 的 `x-mcp-header` 注解生成 `Mcp-Param-*`。
 非可见 ASCII、首尾空白或哨兵形式的头值使用 `=?base64?…?=` 编码。integer 参数必须在 ±(2^53−1)
