@@ -253,6 +253,7 @@ target_link_libraries(dagent_agent PUBLIC dagent_base)
 # llm 适配：Model 实际请求、provider 编解码、HTTP/SSE；实现核心 ModelSession 端口。
 add_library(dagent_llm STATIC
     private/llm/auth.cpp
+    private/llm/auth_${DAGENT_PLATFORM}.cpp
     private/llm/model.cpp
     private/llm/provider.cpp
     private/llm/provider_chat.cpp
@@ -327,8 +328,10 @@ add_library(dagent_app_config STATIC
     private/app/sandbox_status.cpp
     private/app/config.cpp
     private/app/config_detail.cpp
+    private/app/config_detail_${DAGENT_PLATFORM}.cpp
     private/app/config_document.cpp
     private/app/models.cpp
+    private/app/models_${DAGENT_PLATFORM}.cpp
     private/app/subagents.cpp
     private/app/appearance_config.cpp
     private/app/decision_profile.cpp

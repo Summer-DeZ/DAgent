@@ -15,9 +15,8 @@
   termios、sigset_t 等原生类型；资源状态用不透明类型表示。标准库类型可用于中立接口。
 - 平台提取保留原操作、标志、顺序、错误和日志文本、超时、权限与参数；格式化和业务失败策略留在调用方。
 
-这是逐步落实的源码边界约定。当前已提取跨模块小原语、workspace 文件操作与 OS 描述、入口与宿主辅助、IPC、TUI、exec/SRT 和存储平台操作，尚未完成全仓 I1/I2：
-配置/凭据锁、监听与 sandbox status 等仍有共享实现中的平台代码；
-ModelWriteLock 仍含原生状态。下面只列已落地的平台文件。
+这是逐步落实的源码边界约定。当前已提取跨模块小原语、workspace 文件操作与 OS 描述、入口与宿主辅助、IPC、TUI、exec/SRT、存储以及配置/登录平台操作。
+监听与 sandbox status 仍有共享实现中的平台代码，尚未完成全仓 I1。下面只列已落地的平台文件。
 
 ## 当前平台文件与接口
 
@@ -38,6 +37,9 @@ ModelWriteLock 仍含原生状态。下面只列已落地的平台文件。
 | `src/private/workspace/files_posix.cpp` | `src/public/workspace/files.hpp` | `probe`、`read_text`、`write_text`、`stamp_of`、FileReference 原生状态与操作 |
 | `src/private/storage/storage_posix.cpp` | `src/public/storage/platform.hpp` | `detail::SessionFileLock` |
 | `src/private/storage/decision_store_posix.cpp` | `src/public/storage/platform.hpp` | `detail::make_decision_file_private` |
+| `src/private/app/config_detail_posix.cpp` | `src/public/app/config_detail.hpp` | `detail::require_private_file` |
+| `src/private/app/models_posix.cpp` | `src/public/app/config_detail.hpp` | `detail::ModelWriteLock` |
+| `src/private/llm/auth_posix.cpp` | `src/public/llm/auth.hpp`、`src/public/llm/auth_detail.hpp` | `read_credentials`、`detail::CredentialLock`、`detail::write_credentials`、`detail::remove_credentials` |
 
 `executable_path` 的两个重载分别保留 filesystem 的抛异常和 error_code 行为，供 IPC、sandbox status、
 SearXNG 定位程序资源。安装根的固定缓冲区 readlink 和 InstallError 在 `app/paths_posix.cpp` 中保持独立；
@@ -89,3 +91,9 @@ workspace 的路径和文本编解码通过 `files_detail.hpp` 供平台文件�
 SessionFileLock 的 Impl 在保存会话 ID 后、open 锁文件前分配；同进程租约注册表与互斥范围仍在 storage.cpp。
 锁保持非阻塞、无 EINTR 重试，最后共享 State 销毁时 UNLOCK+close。决策库 chmod(0600) 仍忽略返回值，
 不与其他模块的锁或权限策略合并，详见 [storage](storage.md#4-写所有权)。
+
+配置的 stat 检查单独保留原规则；ModelWriteLock 用 pimpl 保存 fd，阻塞加锁仅 EINTR 重试，析构 UNLOCK 后 close。
+CredentialLock 同样用 pimpl，但保留非阻塞 flock 的 30 秒期限与 50ms 可取消等待，析构只关闭锁文件和目录。
+两种 Impl 都在原目录操作前分配，不合并锁策略。公共头不再暴露 ModelWriteLock 的 fd。
+凭据 JSON 编解码在共享 auth.cpp，读写的平台函数在原 try 位置调用，转换期间保持原 fd 持有期；
+刷新仍在同一锁范围内重读、记录 refresh_pending、发送 HTTP 和保存新凭据，详见 [llm](llm.md#7-登录提供方与凭据阶段-3a)。

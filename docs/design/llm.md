@@ -201,8 +201,35 @@ HomePaths 提供 `data/credentials/opencode.json` 和 `run/credentials/opencode.
 登录保存、刷新与登出共享固定 flock 文件；登出保留锁文件。设备等待不持锁，推理不持锁。
 每次请求重读凭据，不设进程内 token 缓存。
 
+`auth.cpp` 保留 OAuth、刷新流程、URL 校验、JSON 编解码、状态投影和可取消等待。
+`auth_posix.cpp` 实现目录遍历、文件验证、CredentialLock 及凭据文件读写/删除，
+由 CMake 的 `auth_${DAGENT_PLATFORM}.cpp` 选择。内部接口在 `llm/auth_detail.hpp`，不暴露原生句柄。
+
+目录遍历从 `/` 开始，逐级 openat 使用 `O_RDONLY | O_DIRECTORY | O_NOFOLLOW | O_CLOEXEC`；
+允许创建时，仅在 ENOENT 分支 mkdirat(0700) 后重开。每级取得新句柄后关闭前一级，最终目录才核对 uid 和 0700。
+文件验证保持 fstat、普通文件、当前有效 uid 和权限低 9 位为 0600 的检查。
+
+- 读取：不创建目录；目录或文件不存在返回空。openat 使用 `O_RDONLY | O_NOFOLLOW | O_NONBLOCK | O_CLOEXEC`，
+  验证后以 4096 字节块读取，EINTR 重试，上限 64 KiB。原 try 块中调用共享 `decode_credentials`，
+  JSON 异常仍返回 state=invalid；解析期间文件和目录句柄都保持打开，退出时先关闭文件再关闭目录。
+- 写入：打开/创建目录，打开并验证已有文件，再生成原临时名称，以
+  `O_WRONLY | O_CREAT | O_EXCL | O_NOFOLLOW | O_CLOEXEC`、0600 打开临时文件。
+  随后的原 try 块才调用共享 `credential_json` 并 dump、追加换行；EINTR 重试，零或其他负写入返回报错。
+  保留短路求值的 fsync(文件) → renameat → fsync(目录)；异常先 unlinkat 临时名称再重抛。
+  临时文件和已有文件句柄一直持有到写入函数退出，依次关闭临时文件、已有文件、目录。
+- 删除：logout 仍先加锁并 read_credentials；存在时调用 `remove_credentials`，不创建目录，
+  unlinkat 成功才 fsync。删除目录句柄在释放 CredentialLock 前关闭，不删除锁文件。
+- 加锁：CredentialLock 的 Impl 在目录操作前分配，先持有锁目录，再以
+  `O_CREAT | O_RDWR | O_NOFOLLOW | O_NONBLOCK | O_CLOEXEC`、0600 打开并验证锁文件。
+  验证后设 30 秒期限，每轮先检查取消，再尝试非阻塞 flock；仅 EWOULDBLOCK/EINTR 进入期限检查和 50ms 可取消等待。
+  失败和正常析构都先关闭锁文件、再关闭锁目录，通过 close 释放锁，不增加显式 UNLOCK。
+
+文件/目录/普通 I/O 错误仍为 `credential storage is unavailable or unsafe`；
+锁超时为 `credential lock wait timed out`，取消仍抛 HttpError(cancelled, `authentication cancelled`)。
+
 到期前 5 分钟或 HTTP 401 触发刷新：锁内重读，若 token 已变化则采用其它进程刷新的结果；
 否则先原子保存 refresh_pending，再用 refresh token 请求新令牌并保存 ready。
+CredentialLock 仍在共享流程的原作用域内，覆盖重读 → refresh_pending 写入 → HTTP → 新凭据写入。
 残留 refresh_pending、invalid_grant 或不确定的刷新结果均要求重新登录，不再重发旧 refresh token。
 刷新收到有效结果后即使取消也先保存轮换结果。
 

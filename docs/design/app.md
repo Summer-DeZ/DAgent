@@ -65,14 +65,21 @@ app 同时实现 `backend/configuration.hpp`、`backend/queries.hpp`、`backend/
 | 文件 | 职责 |
 | --- | --- |
 | `config.cpp` | config.json 主流程、选项映射、覆写与未知键告警、MCP 配置解析及工具环境装配 |
-| `models.cpp` | models.json 加载、生成/决策模型映射、模型添加，以及共享写锁的实现 |
+| `models.cpp` | models.json 加载、生成/决策模型映射、模型添加 |
+| `models_posix.cpp` | 模型与外观共用的 ModelWriteLock 原生实现 |
 | `subagents.cpp` | 子 Agent 文件加载、原有 frontmatter 字段解析与行号诊断 |
 | `appearance_config.cpp` | 外观与布局解析、外观配置保存 |
 | `config_document.cpp` | `detail::ConfigDocument`：保留原文格式的 JSON 文档编辑，供模型添加和外观保存共用 |
 | `config_detail.cpp` | 跨文件共用的配置读取、错误、路径、数值及环境变量辅助 |
+| `config_detail_posix.cpp` | require_private_file 的 stat、普通文件与 0600 权限检查 |
 
 内部共享声明位于 `src/public/app/config_detail.hpp` 的 `dagent::app::detail` 命名空间。
 模型添加与外观保存继续使用同一个 `ModelWriteLock` 和 `run/models.lock`；各入口的锁范围不变。
+ModelWriteLock 通过 pimpl 隐藏原生状态，构造/析构签名不变；Impl 在计算锁路径和创建目录前分配。
+仍以 `O_RDWR | O_CREAT | O_CLOEXEC`、0600 打开锁文件，阻塞 `LOCK_EX` 仅重试 EINTR；
+其他加锁错误先保存错误文本、close、置 -1，再抛原 ConfigError。析构显式 `LOCK_UN` 后 close。
+require_private_file 仍使用 stat，保留原检查顺序和错误文本，不增加 symlink 或 uid 检查。
+这两个平台源文件均由 `DAGENT_PLATFORM` 在 CMake 中选择。
 
 `config/config.json` 由用户维护，包含权限、UI、HTTP、网页搜索/抓取、记忆、上下文、工具、进程和日志策略；`config/models.json` 保存模型
 条目和默认模型。加载不做分层合并，不读项目配置、`.mcp.json`、`.env` 或 XDG 路径，也没有信任子系统。

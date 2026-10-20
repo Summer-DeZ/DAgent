@@ -4,6 +4,7 @@
 
 #include <cstdint>
 #include <format>
+#include <memory>
 #include <string_view>
 #include <utility>
 
@@ -102,7 +103,8 @@ public:
     ModelWriteLock& operator=(const ModelWriteLock&) = delete;
 
 private:
-    int fd_ = -1;
+    struct Impl;
+    std::unique_ptr<Impl> impl_;
 };
 
 // Parse with ordered_json, then patch only changed values into the original text.

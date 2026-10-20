@@ -1,33 +1,17 @@
 #include "llm/auth.hpp"
-#include "base/platform.hpp"
+#include "llm/auth_detail.hpp"
 
 #include <algorithm>
-#include <cerrno>
 #include <condition_variable>
-#include <cstring>
-#include <fcntl.h>
 #include <format>
 #include <mutex>
-#include <random>
 #include <utility>
-#include <sys/file.h>
-#include <sys/stat.h>
-#include <unistd.h>
 #include <curl/curl.h>
 
 namespace dagent::llm {
-namespace {
+namespace detail {
 using json = nlohmann::json;
-using namespace std::chrono_literals;
-struct Fd {
-    int value = -1;
-    explicit Fd(int fd) : value(fd) {}
-    ~Fd() { if (value >= 0) ::close(value); }
-    Fd(const Fd&) = delete;
-    Fd& operator=(const Fd&) = delete;
-};
-[[noreturn]] void io_error() { throw std::runtime_error("credential storage is unavailable or unsafe"); }
-[[noreturn]] void sign_in() { throw std::runtime_error("OpenCode needs sign-in; use dagent login opencode or /model"); }
+
 void check_stop(std::stop_token stop) {
     if (stop.stop_requested()) throw net::HttpError(net::HttpError::Kind::cancelled, "authentication cancelled");
 }
@@ -38,73 +22,27 @@ void pause(std::chrono::steady_clock::duration duration, std::stop_token stop) {
     cv.wait_for(lock, stop, duration, [] { return false; });
     check_stop(stop);
 }
-void check_file(int fd) {
-    struct stat st{};
-    if (::fstat(fd, &st) || !S_ISREG(st.st_mode) || st.st_uid != ::geteuid() || (st.st_mode & 0777) != 0600)
-        io_error();
-}
-int directory(const std::filesystem::path& path, bool create) {
-    Fd current(::open("/", O_RDONLY | O_DIRECTORY | O_CLOEXEC));
-    if (current.value < 0) io_error();
-    const auto absolute = std::filesystem::absolute(path).lexically_normal();
-    for (const auto& part : absolute.relative_path()) {
-        int next = ::openat(current.value, part.c_str(), O_RDONLY | O_DIRECTORY | O_NOFOLLOW | O_CLOEXEC);
-        if (next < 0 && errno == ENOENT) {
-            if (!create) return -1;
-            if (::mkdirat(current.value, part.c_str(), 0700) && errno != EEXIST) io_error();
-            next = ::openat(current.value, part.c_str(), O_RDONLY | O_DIRECTORY | O_NOFOLLOW | O_CLOEXEC);
-        }
-        if (next < 0) io_error();
-        ::close(current.value);
-        current.value = next;
-    }
-    struct stat st{};
-    if (::fstat(current.value, &st) || st.st_uid != ::geteuid() || (st.st_mode & 0777) != 0700) io_error();
-    return std::exchange(current.value, -1);
-}
-struct CredentialLock {
-    Fd dir, file;
-    CredentialLock(const CredentialPaths& paths, std::stop_token stop)
-        : dir(directory(paths.lock.parent_path(), true)),
-          file(::openat(dir.value, paths.lock.filename().c_str(), O_CREAT | O_RDWR | O_NOFOLLOW | O_NONBLOCK | O_CLOEXEC, 0600)) {
-        if (file.value < 0) io_error();
-        check_file(file.value);
-        const auto deadline = std::chrono::steady_clock::now() + 30s;
-        for (;;) {
-            check_stop(stop);
-            if (::flock(file.value, LOCK_EX | LOCK_NB) == 0) break;
-            if (errno != EWOULDBLOCK && errno != EINTR) io_error();
-            if (std::chrono::steady_clock::now() >= deadline)
-                throw std::runtime_error("credential lock wait timed out");
-            pause(50ms, stop);
-        }
-    }
-};
 json credential_json(const Credentials& c) {
     return {{"access_token", c.access_token}, {"refresh_token", c.refresh_token}, {"expires_at", c.expires_at},
             {"org_id", c.org_id}, {"client_id", c.client_id}, {"state", c.state}, {"updated", c.updated}};
 }
-void write_credentials(const CredentialPaths& paths, const Credentials& value) {
-    Fd dir(directory(paths.file.parent_path(), true));
-    const auto name = paths.file.filename().string();
-    Fd existing(::openat(dir.value, name.c_str(), O_RDONLY | O_NOFOLLOW | O_NONBLOCK | O_CLOEXEC));
-    if (existing.value >= 0) check_file(existing.value);
-    else if (errno != ENOENT) io_error();
-    const auto temp = std::format(".{}-{}-{}", name, base::process_id(), std::random_device{}());
-    Fd fd(::openat(dir.value, temp.c_str(), O_WRONLY | O_CREAT | O_EXCL | O_NOFOLLOW | O_CLOEXEC, 0600));
-    if (fd.value < 0) io_error();
-    try {
-        const auto data = credential_json(value).dump() + "\n";
-        std::size_t offset = 0;
-        while (offset < data.size()) {
-            const auto n = ::write(fd.value, data.data() + offset, data.size() - offset);
-            if (n < 0 && errno == EINTR) continue;
-            if (n <= 0) io_error();
-            offset += static_cast<std::size_t>(n);
-        }
-        if (::fsync(fd.value) || ::renameat(dir.value, temp.c_str(), dir.value, name.c_str()) || ::fsync(dir.value)) io_error();
-    } catch (...) { ::unlinkat(dir.value, temp.c_str(), 0); throw; }
+Credentials decode_credentials(const std::string& data) {
+    const auto j = json::parse(data);
+    Credentials c{j.at("access_token").get<std::string>(), j.at("refresh_token").get<std::string>(),
+                  j.at("org_id").get<std::string>(), j.at("client_id").get<std::string>(),
+                  j.at("state").get<std::string>(), j.at("expires_at").get<std::int64_t>(), j.at("updated").get<std::int64_t>()};
+    return c;
 }
+
+} // namespace detail
+namespace {
+using json = nlohmann::json;
+using namespace std::chrono_literals;
+using detail::CredentialLock;
+using detail::check_stop;
+using detail::pause;
+using detail::write_credentials;
+[[noreturn]] void sign_in() { throw std::runtime_error("OpenCode needs sign-in; use dagent login opencode or /model"); }
 struct Url {
     CURLU* value = curl_url();
     ~Url() { curl_url_cleanup(value); }
@@ -243,33 +181,6 @@ void validate_login(std::string_view id, std::string_view kind, std::string_view
     if (kind == "openai-chat" && path != "/inference/go/openai/v1")
         throw std::invalid_argument("base_url does not match the login protocol");
 }
-std::optional<Credentials> read_credentials(const CredentialPaths& paths) {
-    Fd dir(directory(paths.file.parent_path(), false));
-    if (dir.value < 0) return std::nullopt;
-    Fd fd(::openat(dir.value, paths.file.filename().c_str(), O_RDONLY | O_NOFOLLOW | O_NONBLOCK | O_CLOEXEC));
-    if (fd.value < 0) { if (errno == ENOENT) return std::nullopt; io_error(); }
-    check_file(fd.value);
-    std::string data;
-    char buffer[4096];
-    for (;;) {
-        const auto n = ::read(fd.value, buffer, sizeof buffer);
-        if (n < 0 && errno == EINTR) continue;
-        if (n < 0 || data.size() + static_cast<std::size_t>(n) > 64 * 1024) io_error();
-        if (n == 0) break;
-        data.append(buffer, static_cast<std::size_t>(n));
-    }
-    try {
-        const auto j = json::parse(data);
-        Credentials c{j.at("access_token").get<std::string>(), j.at("refresh_token").get<std::string>(),
-                      j.at("org_id").get<std::string>(), j.at("client_id").get<std::string>(),
-                      j.at("state").get<std::string>(), j.at("expires_at").get<std::int64_t>(), j.at("updated").get<std::int64_t>()};
-        return c;
-    } catch (const json::exception&) {
-        Credentials invalid;
-        invalid.state = "invalid";
-        return invalid;
-    }
-}
 json credential_status(const CredentialPaths& paths) {
     const auto c = read_credentials(paths);
     if (!c) return {{"provider", "opencode"}, {"state", "signed_out"}};
@@ -326,8 +237,7 @@ Credentials wait_device_login(const LoginProvider& p, const CredentialPaths& pat
 void logout(const CredentialPaths& paths, std::stop_token stop) {
     CredentialLock lock(paths, stop);
     if (!read_credentials(paths)) return;
-    Fd dir(directory(paths.file.parent_path(), false));
-    if (::unlinkat(dir.value, paths.file.filename().c_str(), 0) || ::fsync(dir.value)) io_error();
+    detail::remove_credentials(paths);
 }
 Credentials request_credentials(const LoginProvider& p, const CredentialPaths& paths, std::stop_token stop,
                                 std::string_view previous_token) {
