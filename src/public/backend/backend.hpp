@@ -41,15 +41,47 @@ public:
     void interaction_closed(const std::string& interaction_id) override;
 
 private:
+    using Handler = void (Backend::*)(const std::string&, const nlohmann::json&);
+
     struct Job {
         std::string id;
         std::string method;
         nlohmann::json params;
+        Handler handler = nullptr; ///< 入队前已解析，工作线程直接调用
     };
 
     void dispatch(const protocol::Request& request);
     void handle_command(Job job);
     void handle_query(Job job);
+
+    bool prepare_provider(const protocol::Request& request);
+    void hello(const std::string& id, const nlohmann::json& params);
+    void shutdown(const std::string& id, const nlohmann::json& params);
+    void answer_interaction(const std::string& id, const nlohmann::json& params);
+    void cancel_run(const std::string& id, const nlohmann::json& params);
+    void session_snapshot(const std::string& id, const nlohmann::json& params);
+    void list_grants(const std::string& id, const nlohmann::json& params);
+    void revoke_grant(const std::string& id, const nlohmann::json& params);
+    void cycle_permission(const std::string& id, const nlohmann::json& params);
+    void set_permission(const std::string& id, const nlohmann::json& params);
+    void toggle_planning(const std::string& id, const nlohmann::json& params);
+    void list_models(const std::string& id, const nlohmann::json& params);
+    void submit_input(const std::string& id, const nlohmann::json& params);
+    void recall_input(const std::string& id, const nlohmann::json& params);
+    void provider_status(const std::string& id, const nlohmann::json& params);
+    void cancel_login(const std::string& id, const nlohmann::json& params);
+    void start_login(const std::string& id, const nlohmann::json& params);
+    void wait_login(const std::string& id, const nlohmann::json& params);
+    void logout_provider(const std::string& id, const nlohmann::json& params);
+    void list_provider_models(const std::string& id, const nlohmann::json& params);
+    void add_provider_model(const std::string& id, const nlohmann::json& params);
+    void save_appearance(const std::string& id, const nlohmann::json& params);
+    void git_status(const std::string& id, const nlohmann::json& params);
+    void list_agents(const std::string& id, const nlohmann::json& params);
+    void list_skills(const std::string& id, const nlohmann::json& params);
+    void list_memory(const std::string& id, const nlohmann::json& params);
+    void view_memory(const std::string& id, const nlohmann::json& params);
+    void delete_memory(const std::string& id, const nlohmann::json& params);
 
     void initialize(const std::string& id, const nlohmann::json& params);
     void new_session(const std::string& id, const nlohmann::json& params);

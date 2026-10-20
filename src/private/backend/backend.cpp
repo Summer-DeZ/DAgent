@@ -1,6 +1,9 @@
 #include "backend/backend.hpp"
 
+#include <algorithm>
 #include <chrono>
+#include <iterator>
+#include <string_view>
 #include <format>
 #include <stdexcept>
 #include <utility>
@@ -51,10 +54,16 @@ std::string require_string(const nlohmann::json& params, const char* key, protoc
     return it->get<std::string>();
 }
 
+protocol::RpcError business_error(std::string kind, std::string message) {
+    protocol::RpcError error;
+    error.code = protocol::rpc_code::kBusinessError;
+    error.kind = std::move(kind);
+    error.message = std::move(message);
+    return error;
+}
+
 protocol::RpcError query_error(const runtime::QueryError& error) {
-    protocol::RpcError out;
-    out.code = protocol::rpc_code::kBusinessError;
-    out.message = error.what();
+    auto out = business_error({}, error.what());
     switch (error.kind()) {
     case runtime::QueryError::Kind::invalid_state:
         out.kind = protocol::error_kind::kInvalidState;
@@ -272,260 +281,309 @@ void Backend::push_query(Job job) {
 }
 
 void Backend::dispatch(const protocol::Request& request) {
-    const std::string& id = request.id;
-    const std::string& method = request.method;
-    const nlohmann::json& params = request.params;
+    enum class Channel { immediate, command, query };
+    struct Route {
+        std::string_view method;
+        Channel channel;
+        Handler handler;
+        // 在读线程执行，成功后才调用处理函数或入队。
+        bool (Backend::*prepare)(const protocol::Request&) = nullptr;
+    };
+    static constexpr Route routes[] = {
+        {"backend.hello", Channel::immediate, &Backend::hello},
+        {"backend.shutdown", Channel::immediate, &Backend::shutdown},
+        {"interaction.answer", Channel::immediate, &Backend::answer_interaction},
+        {"run.cancel", Channel::immediate, &Backend::cancel_run},
+        {"session.snapshot", Channel::immediate, &Backend::session_snapshot},
+        {"session.grants", Channel::immediate, &Backend::list_grants},
+        {"session.revoke_grant", Channel::immediate, &Backend::revoke_grant},
+        {"session.cycle_permission", Channel::immediate, &Backend::cycle_permission},
+        {"session.set_permission", Channel::immediate, &Backend::set_permission},
+        {"session.toggle_planning", Channel::immediate, &Backend::toggle_planning},
+        {"model.list", Channel::immediate, &Backend::list_models},
+        {"input.submit", Channel::immediate, &Backend::submit_input},
+        {"input.recall_last", Channel::immediate, &Backend::recall_input},
+        {"app.initialize", Channel::command, &Backend::initialize},
+        {"provider.status", Channel::immediate, &Backend::provider_status, &Backend::prepare_provider},
+        {"provider.login.cancel", Channel::immediate, &Backend::cancel_login, &Backend::prepare_provider},
+        {"provider.login.start", Channel::query, &Backend::start_login, &Backend::prepare_provider},
+        {"provider.login.wait", Channel::query, &Backend::wait_login, &Backend::prepare_provider},
+        {"provider.logout", Channel::query, &Backend::logout_provider, &Backend::prepare_provider},
+        {"provider.models.list", Channel::query, &Backend::list_provider_models, &Backend::prepare_provider},
+        {"provider.model.add", Channel::command, &Backend::add_provider_model, &Backend::prepare_provider},
+        {"session.new", Channel::command, &Backend::new_session},
+        {"session.resume", Channel::command, &Backend::resume_session},
+        {"session.select_model", Channel::command, &Backend::select_model},
+        {"model.add", Channel::command, &Backend::add_model},
+        {"ui.appearance.save", Channel::command, &Backend::save_appearance},
+        {"session.compact", Channel::command, &Backend::compact},
+        {"session.list", Channel::query, &Backend::list_sessions},
+        {"session.children", Channel::query, &Backend::list_children},
+        {"session.history", Channel::query, &Backend::history},
+        {"session.history_close", Channel::query, &Backend::history_close},
+        {"workspace.info", Channel::query, &Backend::workspace_info},
+        {"workspace.complete", Channel::query, &Backend::workspace_complete},
+        {"workspace.git_status", Channel::query, &Backend::git_status},
+        {"agents.list", Channel::query, &Backend::list_agents},
+        {"skills.list", Channel::query, &Backend::list_skills},
+        {"memory.list", Channel::query, &Backend::list_memory},
+        {"memory.view", Channel::query, &Backend::view_memory},
+        {"memory.delete", Channel::query, &Backend::delete_memory},
+    };
+    const auto route = std::ranges::find(routes, request.method, &Route::method);
+    if (route == std::end(routes)) {
+        protocol::RpcError error;
+        error.code = protocol::rpc_code::kMethodNotFound;
+        error.message = "unknown method: " + request.method;
+        fail(request.id, error);
+        return;
+    }
+    if (route->prepare && !(this->*route->prepare)(request)) return;
+    switch (route->channel) {
+    case Channel::immediate:
+        (this->*route->handler)(request.id, request.params);
+        break;
+    case Channel::command:
+        push_command(Job{request.id, request.method, request.params, route->handler});
+        break;
+    case Channel::query:
+        push_query(Job{request.id, request.method, request.params, route->handler});
+        break;
+    }
+}
 
-    if (method == "backend.hello") {
-        if (!params.contains("protocol_version") || !params["protocol_version"].is_object()) {
-            fail(id, invalid_params("protocol_version is required"));
-            return;
-        }
-        const int major = params["protocol_version"].value("major", 0);
-        const int minor = params["protocol_version"].value("minor", 0);
-        if (major != protocol::kMajor || minor != protocol::kMinor) {
-            protocol::RpcError mismatch;
-            mismatch.code = protocol::rpc_code::kBusinessError;
-            mismatch.kind = protocol::error_kind::kVersionMismatch;
-            mismatch.message = std::format("backend speaks {}.{}, frontend sent {}.{}", protocol::kMajor,
-                                           protocol::kMinor, major, minor);
-            fail(id, mismatch);
-            closing_ = true;
-            return;
-        }
-        respond(id, {{"protocol_version", {{"major", protocol::kMajor}, {"minor", protocol::kMinor}}},
-                     {"backend_version", DAGENT_VERSION},
-                     {"backend_instance_id", std::format("{}-{}", ::getpid(), epoch_ms(std::chrono::system_clock::now()))}});
+void Backend::hello(const std::string& id, const nlohmann::json& params) {
+    if (!params.contains("protocol_version") || !params["protocol_version"].is_object()) {
+        fail(id, invalid_params("protocol_version is required"));
         return;
     }
-    if (method == "app.initialize") {
-        push_command(Job{id, method, params});
-        return;
-    }
-    if (method == "backend.shutdown") {
-        quit();
-        // 收尾完成后直接写响应，随后关闭连接。
-        channel_.send_line(protocol::encode_result(id, {{"closed", true}}));
-        channel_.close();
+    const int major = params["protocol_version"].value("major", 0);
+    const int minor = params["protocol_version"].value("minor", 0);
+    if (major != protocol::kMajor || minor != protocol::kMinor) {
+        fail(id, business_error(
+            protocol::error_kind::kVersionMismatch,
+            std::format("backend speaks {}.{}, frontend sent {}.{}", protocol::kMajor,
+                        protocol::kMinor, major, minor)));
         closing_ = true;
         return;
     }
-    if (method == "provider.status" || method == "provider.login.start" || method == "provider.login.wait" ||
-        method == "provider.login.cancel" || method == "provider.logout" || method == "provider.models.list" ||
-        method == "provider.model.add") {
-        if (!login_) {
-            fail(id, to_rpc_error(runtime::RuntimeError{runtime::RuntimeError::Kind::invalid_state, "login gateway is not initialized"}));
-            return;
-        }
-        protocol::RpcError error;
-        const auto provider = require_string(params, "provider", error);
-        if (provider != "opencode") error = invalid_params("unknown login provider");
-        if (method == "provider.login.wait" || method == "provider.login.cancel") require_string(params, "login_id", error);
-        if (method == "provider.model.add") require_string(params, "model_id", error);
-        if (params.contains("refresh") && !params["refresh"].is_boolean()) error = invalid_params("refresh must be boolean");
-        if (!error.message.empty()) { fail(id, error); return; }
-        if (method == "provider.status") {
-            try { respond(id, login_->invoke(method, params, {})); }
-            catch (const std::exception& exception) {
-                protocol::RpcError rpc;
-                rpc.code = protocol::rpc_code::kBusinessError;
-                rpc.kind = protocol::error_kind::kQueryFailed;
-                rpc.message = exception.what();
-                fail(id, rpc);
-            }
-        } else if (method == "provider.login.cancel") {
-            respond(id, {{"cancelled", login_->cancel(params.at("login_id").get<std::string>())}});
-        } else if (method == "provider.model.add") {
-            push_command(Job{id, method, params});
-        } else {
-            if (method == "provider.logout") login_->cancel({});
-            push_query(Job{id, method, params});
-        }
+    respond(id, {{"protocol_version", {{"major", protocol::kMajor}, {"minor", protocol::kMinor}}},
+                 {"backend_version", DAGENT_VERSION},
+                 {"backend_instance_id", std::format("{}-{}", ::getpid(), epoch_ms(std::chrono::system_clock::now()))}});
+}
+
+void Backend::shutdown(const std::string& id, const nlohmann::json&) {
+    quit();
+    // 收尾完成后直接写响应，随后关闭连接。
+    channel_.send_line(protocol::encode_result(id, {{"closed", true}}));
+    channel_.close();
+    closing_ = true;
+}
+
+void Backend::answer_interaction(const std::string& id, const nlohmann::json& params) {
+    const std::string interaction_id = params.value("interaction_id", "");
+    if (!runtime_) {
+        fail(id, to_rpc_error(runtime::RuntimeError{runtime::RuntimeError::Kind::invalid_state,
+                                                    "the backend is not initialized"}));
         return;
     }
-    if (method == "interaction.answer") {
-        const std::string interaction_id = params.value("interaction_id", "");
-        if (!runtime_) {
-            fail(id, to_rpc_error(runtime::RuntimeError{runtime::RuntimeError::Kind::invalid_state,
-                                                        "the backend is not initialized"}));
-            return;
-        }
-        bool accepted = false;
-        const nlohmann::json answer = params.value("answer", nlohmann::json::object());
-        if (answer.contains("selected") || answer.contains("other") || answer.contains("cancelled")) {
-            agent::Answer parsed;
-            parsed.selected = answer.value("selected", std::vector<int>{});
-            parsed.other = answer.value("other", "");
-            parsed.cancelled = answer.value("cancelled", false);
-            accepted = runtime_->answer(interaction_id, std::move(parsed));
-        } else {
-            agent::Decision decision;
-            const std::string value = answer.value("decision", "deny");
-            decision.answer = value == "allow" ? agent::Decision::Answer::allow
-                              : value == "allow_session" ? agent::Decision::Answer::allow_session
-                              : value == "deny_with_feedback" ? agent::Decision::Answer::deny_with_feedback
-                                                              : agent::Decision::Answer::deny;
-            decision.feedback = answer.value("feedback", "");
-            decision.explicit_denial = value == "deny" || value == "deny_with_feedback";
-            accepted = runtime_->answer(interaction_id, std::move(decision));
-        }
-        if (!accepted) {
-            protocol::RpcError error;
-            error.code = protocol::rpc_code::kBusinessError;
-            error.kind = protocol::error_kind::kInteractionClosed;
-            error.message = "the interaction is already closed";
-            fail(id, error);
-            return;
-        }
-        respond(id, {{"interaction_id", interaction_id}, {"accepted", true}});
+    bool accepted = false;
+    const nlohmann::json answer = params.value("answer", nlohmann::json::object());
+    if (answer.contains("selected") || answer.contains("other") || answer.contains("cancelled")) {
+        agent::Answer parsed;
+        parsed.selected = answer.value("selected", std::vector<int>{});
+        parsed.other = answer.value("other", "");
+        parsed.cancelled = answer.value("cancelled", false);
+        accepted = runtime_->answer(interaction_id, std::move(parsed));
+    } else {
+        agent::Decision decision;
+        const std::string value = answer.value("decision", "deny");
+        decision.answer = value == "allow" ? agent::Decision::Answer::allow
+                          : value == "allow_session" ? agent::Decision::Answer::allow_session
+                          : value == "deny_with_feedback" ? agent::Decision::Answer::deny_with_feedback
+                                                          : agent::Decision::Answer::deny;
+        decision.feedback = answer.value("feedback", "");
+        decision.explicit_denial = value == "deny" || value == "deny_with_feedback";
+        accepted = runtime_->answer(interaction_id, std::move(decision));
+    }
+    if (!accepted) {
+        fail(id, business_error(protocol::error_kind::kInteractionClosed, "the interaction is already closed"));
         return;
     }
-    if (method == "run.cancel") {
-        if (!check_target(id, params)) return;
-        const std::string run_id = params.value("run_id", "");
-        const bool cancelled = runtime_->cancel(run_id);
-        respond(id, {{"run_id", run_id},
-                     {"result", cancelled ? "cancel_requested" : "already_finished"}});
-        return;
+    respond(id, {{"interaction_id", interaction_id}, {"accepted", true}});
+}
+
+void Backend::cancel_run(const std::string& id, const nlohmann::json& params) {
+    if (!check_target(id, params)) return;
+    const std::string run_id = params.value("run_id", "");
+    const bool cancelled = runtime_->cancel(run_id);
+    respond(id, {{"run_id", run_id},
+                 {"result", cancelled ? "cancel_requested" : "already_finished"}});
+}
+
+void Backend::session_snapshot(const std::string& id, const nlohmann::json& params) {
+    if (!check_target(id, params)) return;
+    respond_snapshot(id);
+}
+
+void Backend::list_grants(const std::string& id, const nlohmann::json& params) {
+    if (!check_target(id, params)) return;
+    nlohmann::json grants = nlohmann::json::array();
+    for (const agent::Policy::SessionGrant& grant : runtime_->snapshot().grants) {
+        grants.push_back({{"id", grant.id}, {"description", grant.description}});
     }
-    if (method == "session.snapshot") {
-        if (!check_target(id, params)) return;
-        respond_snapshot(id);
-        return;
-    }
-    if (method == "session.grants") {
-        if (!check_target(id, params)) return;
-        nlohmann::json grants = nlohmann::json::array();
-        for (const agent::Policy::SessionGrant& grant : runtime_->snapshot().grants) {
-            grants.push_back({{"id", grant.id}, {"description", grant.description}});
-        }
-        respond(id, {{"grants", std::move(grants)}});
-        return;
-    }
-    if (method == "session.revoke_grant") {
-        if (!check_target(id, params)) return;
-        const std::string grant_id = params.value("grant_id", "");
-        const auto accepted = runtime_->revoke_grant(
-            grant_id, [this, id, grant_id](std::expected<bool, runtime::RuntimeError> removed) {
-                if (!removed) fail_target(id, removed.error());
-                else respond(id, {{"grant_id", grant_id}, {"removed", *removed}});
-            });
-        if (!accepted) fail_target(id, accepted.error());
-        return;
-    }
-    if (method == "session.cycle_permission") {
-        if (!check_target(id, params)) return;
-        const auto result = runtime_->cycle_permission();
-        if (!result) {
-            fail_target(id, result.error());
-            return;
-        }
-        respond_snapshot(id);
-        return;
-    }
-    if (method == "session.set_permission") {
-        if (!check_target(id, params)) return;
-        const std::string target = params.value("target", "");
-        agent::PermissionMode mode = agent::PermissionMode::workspace;
-        if (target == "ask") mode = agent::PermissionMode::ask;
-        else if (target == "workspace") mode = agent::PermissionMode::workspace;
-        else if (target == "unrestricted") mode = agent::PermissionMode::unrestricted;
-        else {
-            fail(id, invalid_params("target must be ask, workspace or unrestricted"));
-            return;
-        }
-        // confirmed=false 表示用户取消待确认的升权；confirmed=true 才显式应用目标。
-        const bool confirmed = params.value("confirmed", false);
-        std::expected<runtime::PermissionChangeResult, runtime::RuntimeError> result =
-            confirmed ? runtime_->request_permission(mode, true) : runtime_->cancel_permission_change();
-        if (!result) {
-            fail_target(id, result.error());
-            return;
-        }
-        respond_snapshot(id);
-        return;
-    }
-    if (method == "session.toggle_planning") {
-        if (!check_target(id, params)) return;
-        const auto result = runtime_->toggle_planning();
-        if (!result) {
-            fail_target(id, result.error());
-            return;
-        }
-        respond_snapshot(id);
-        return;
-    }
-    if (method == "model.list") {
-        if (!configuration_) {
-            fail(id, to_rpc_error(runtime::RuntimeError{runtime::RuntimeError::Kind::invalid_state,
-                                                        "the backend is not initialized"}));
-            return;
-        }
-        nlohmann::json models = nlohmann::json::array();
-        try {
-            for (const agent::PublicModel& model : configuration_->models()) models.push_back(to_protocol(model));
-        } catch (const std::exception& exception) {
-            protocol::RpcError rpc;
-            rpc.code = protocol::rpc_code::kBusinessError;
-            rpc.kind = protocol::error_kind::kConfigError;
-            rpc.message = exception.what();
-            fail(id, rpc);
-            return;
-        }
-        nlohmann::json kinds = nlohmann::json::array();
-        for (const agent::ProviderKindInfo& kind : configuration_->provider_kinds()) {
-            protocol::ProviderKind dto;
-            dto.kind = kind.kind;
-            dto.default_base_url = kind.default_base_url;
-            dto.needs_credential = kind.needs_credential;
-            kinds.push_back(std::move(dto));
-        }
-        nlohmann::json selected = nullptr;
-        if (runtime_) {
-            const runtime::RuntimeSnapshot snapshot = runtime_->snapshot();
-            if (!snapshot.session_id.empty()) selected = snapshot.model.name;
-        }
-        respond(id, {{"models", std::move(models)},
-                     {"provider_kinds", std::move(kinds)},
-                     {"default_name", default_model_},
-                     {"selected_name", std::move(selected)}});
-        return;
-    }
-    if (method == "session.list" || method == "session.children" || method == "session.history" ||
-        method == "session.history_close" || method == "workspace.info" ||
-        method == "workspace.complete" || method == "skills.list" || method == "workspace.git_status" || method == "agents.list" ||
-        method == "memory.list" || method == "memory.view" || method == "memory.delete") {
-        push_query(Job{id, method, params});
-        return;
-    }
-    if (method == "input.submit") {
-        if (!check_target(id, params)) return;
-        const std::string text = params.value("text", "");
-        // 接受响应在 accepted 回调里先入发送队列；Runtime 在此之前不允许该输入出队，
-        // 保证对应 TurnStarted 不会先于本响应（协议 §4.2）。
-        const auto accepted = runtime_->submit(text, [this, id](const std::string& input_id) {
-            respond(id, {{"input_id", input_id}, {"accepted", true}});
+    respond(id, {{"grants", std::move(grants)}});
+}
+
+void Backend::revoke_grant(const std::string& id, const nlohmann::json& params) {
+    if (!check_target(id, params)) return;
+    const std::string grant_id = params.value("grant_id", "");
+    const auto accepted = runtime_->revoke_grant(
+        grant_id, [this, id, grant_id](std::expected<bool, runtime::RuntimeError> removed) {
+            if (!removed) fail_target(id, removed.error());
+            else respond(id, {{"grant_id", grant_id}, {"removed", *removed}});
         });
-        if (!accepted) fail_target(id, accepted.error());
+    if (!accepted) fail_target(id, accepted.error());
+}
+
+void Backend::cycle_permission(const std::string& id, const nlohmann::json& params) {
+    if (!check_target(id, params)) return;
+    const auto result = runtime_->cycle_permission();
+    if (!result) {
+        fail_target(id, result.error());
         return;
     }
-    if (method == "input.recall_last") {
-        if (!check_target(id, params)) return;
-        const auto recalled = runtime_->recall_last();
-        nlohmann::json input = nullptr;
-        if (recalled) input = nlohmann::json{{"input_id", recalled->id}, {"text", recalled->text}};
-        respond(id, {{"input", std::move(input)}});
+    respond_snapshot(id);
+}
+
+void Backend::set_permission(const std::string& id, const nlohmann::json& params) {
+    if (!check_target(id, params)) return;
+    const std::string target = params.value("target", "");
+    agent::PermissionMode mode = agent::PermissionMode::workspace;
+    if (target == "ask") mode = agent::PermissionMode::ask;
+    else if (target == "workspace") mode = agent::PermissionMode::workspace;
+    else if (target == "unrestricted") mode = agent::PermissionMode::unrestricted;
+    else {
+        fail(id, invalid_params("target must be ask, workspace or unrestricted"));
         return;
     }
-    if (method == "session.new" || method == "session.resume" || method == "session.select_model" ||
-        method == "model.add" || method == "ui.appearance.save" || method == "session.compact") {
-        push_command(Job{id, method, params});
+    // confirmed=false 表示用户取消待确认的升权；confirmed=true 才显式应用目标。
+    const bool confirmed = params.value("confirmed", false);
+    std::expected<runtime::PermissionChangeResult, runtime::RuntimeError> result =
+        confirmed ? runtime_->request_permission(mode, true) : runtime_->cancel_permission_change();
+    if (!result) {
+        fail_target(id, result.error());
         return;
+    }
+    respond_snapshot(id);
+}
+
+void Backend::toggle_planning(const std::string& id, const nlohmann::json& params) {
+    if (!check_target(id, params)) return;
+    const auto result = runtime_->toggle_planning();
+    if (!result) {
+        fail_target(id, result.error());
+        return;
+    }
+    respond_snapshot(id);
+}
+
+void Backend::list_models(const std::string& id, const nlohmann::json&) {
+    if (!configuration_) {
+        fail(id, to_rpc_error(runtime::RuntimeError{runtime::RuntimeError::Kind::invalid_state,
+                                                    "the backend is not initialized"}));
+        return;
+    }
+    nlohmann::json models = nlohmann::json::array();
+    try {
+        for (const agent::PublicModel& model : configuration_->models()) models.push_back(to_protocol(model));
+    } catch (const std::exception& exception) {
+        fail(id, business_error(protocol::error_kind::kConfigError, exception.what()));
+        return;
+    }
+    nlohmann::json kinds = nlohmann::json::array();
+    for (const agent::ProviderKindInfo& kind : configuration_->provider_kinds()) {
+        protocol::ProviderKind dto;
+        dto.kind = kind.kind;
+        dto.default_base_url = kind.default_base_url;
+        dto.needs_credential = kind.needs_credential;
+        kinds.push_back(std::move(dto));
+    }
+    nlohmann::json selected = nullptr;
+    if (runtime_) {
+        const runtime::RuntimeSnapshot snapshot = runtime_->snapshot();
+        if (!snapshot.session_id.empty()) selected = snapshot.model.name;
+    }
+    respond(id, {{"models", std::move(models)},
+                 {"provider_kinds", std::move(kinds)},
+                 {"default_name", default_model_},
+                 {"selected_name", std::move(selected)}});
+}
+
+void Backend::submit_input(const std::string& id, const nlohmann::json& params) {
+    if (!check_target(id, params)) return;
+    const std::string text = params.value("text", "");
+    // 接受响应在 accepted 回调里先入发送队列；Runtime 在此之前不允许该输入出队，
+    // 保证对应 TurnStarted 不会先于本响应（协议 §4.2）。
+    const auto accepted = runtime_->submit(text, [this, id](const std::string& input_id) {
+        respond(id, {{"input_id", input_id}, {"accepted", true}});
+    });
+    if (!accepted) fail_target(id, accepted.error());
+}
+
+void Backend::recall_input(const std::string& id, const nlohmann::json& params) {
+    if (!check_target(id, params)) return;
+    const auto recalled = runtime_->recall_last();
+    nlohmann::json input = nullptr;
+    if (recalled) input = nlohmann::json{{"input_id", recalled->id}, {"text", recalled->text}};
+    respond(id, {{"input", std::move(input)}});
+}
+
+bool Backend::prepare_provider(const protocol::Request& request) {
+    const auto& id = request.id;
+    const auto& method = request.method;
+    const auto& params = request.params;
+    if (!login_) {
+        fail(id, to_rpc_error(runtime::RuntimeError{runtime::RuntimeError::Kind::invalid_state, "login gateway is not initialized"}));
+        return false;
     }
     protocol::RpcError error;
-    error.code = protocol::rpc_code::kMethodNotFound;
-    error.message = "unknown method: " + method;
-    fail(id, error);
+    // 保留原校验顺序：后续字段错误可以覆盖前面的错误。
+    const auto provider = require_string(params, "provider", error);
+    if (provider != "opencode") error = invalid_params("unknown login provider");
+    if (method == "provider.login.wait" || method == "provider.login.cancel") require_string(params, "login_id", error);
+    if (method == "provider.model.add") require_string(params, "model_id", error);
+    if (params.contains("refresh") && !params["refresh"].is_boolean()) error = invalid_params("refresh must be boolean");
+    if (!error.message.empty()) { fail(id, error); return false; }
+    if (method == "provider.logout") login_->cancel({});
+    return true;
+}
+
+void Backend::provider_status(const std::string& id, const nlohmann::json& params) {
+    try { respond(id, login_->invoke("provider.status", params, {})); }
+    catch (const std::exception& exception) {
+        fail(id, business_error(protocol::error_kind::kQueryFailed, exception.what()));
+    }
+}
+
+void Backend::cancel_login(const std::string& id, const nlohmann::json& params) {
+    respond(id, {{"cancelled", login_->cancel(params.at("login_id").get<std::string>())}});
+}
+
+void Backend::start_login(const std::string& id, const nlohmann::json& params) {
+    respond(id, login_->invoke("provider.login.start", params, query_thread_.get_stop_token()));
+}
+
+void Backend::wait_login(const std::string& id, const nlohmann::json& params) {
+    respond(id, login_->invoke("provider.login.wait", params, query_thread_.get_stop_token()));
+}
+
+void Backend::logout_provider(const std::string& id, const nlohmann::json& params) {
+    respond(id, login_->invoke("provider.logout", params, query_thread_.get_stop_token()));
+}
+
+void Backend::list_provider_models(const std::string& id, const nlohmann::json& params) {
+    respond(id, login_->invoke("provider.models.list", params, query_thread_.get_stop_token()));
 }
 
 bool Backend::check_target(const std::string& id, const nlohmann::json& params) {
@@ -543,11 +601,7 @@ bool Backend::check_target(const std::string& id, const nlohmann::json& params) 
     const std::string session_id = params.value("session_id", "");
     const std::uint64_t generation = params.value("session_generation", std::uint64_t{0});
     if (session_id != snapshot.session_id || generation != snapshot.generation) {
-        protocol::RpcError error;
-        error.code = protocol::rpc_code::kBusinessError;
-        error.kind = protocol::error_kind::kStaleSession;
-        error.message = "the operation targets a stale session";
-        fail(id, error);
+        fail(id, business_error(protocol::error_kind::kStaleSession, "the operation targets a stale session"));
         return false;
     }
     return true;
@@ -557,52 +611,12 @@ bool Backend::check_target(const std::string& id, const nlohmann::json& params) 
 
 void Backend::handle_command(Job job) {
     try {
-        if (job.method == "app.initialize") {
-            initialize(job.id, job.params);
-        } else if (!initialized_) {
+        if (job.handler != &Backend::initialize && !initialized_) {
             fail(job.id, to_rpc_error(runtime::RuntimeError{runtime::RuntimeError::Kind::startup_failed,
                                                             "app.initialize has not completed"}));
-        } else if (job.method == "session.new") {
-            new_session(job.id, job.params);
-        } else if (job.method == "session.resume") {
-            resume_session(job.id, job.params);
-        } else if (job.method == "session.select_model") {
-            select_model(job.id, job.params);
-        } else if (job.method == "provider.model.add") {
-            if (!check_target(job.id, job.params)) return;
-            try {
-                const auto saved = login_->invoke(job.method, job.params, command_thread_.get_stop_token());
-                const auto name = saved.at("name").get<std::string>();
-                nlohmann::json model;
-                for (const auto& item : configuration_->models()) if (item.name == name) model = to_protocol(item);
-                const auto done = [this, id = job.id, model](std::expected<void, runtime::RuntimeError> result) {
-                    respond(id, {{"model", model}, {"selected", result.has_value()},
-                                 {"selection_error", result ? nlohmann::json(nullptr) : nlohmann::json(result.error().message)}});
-                };
-                const auto accepted = runtime_->select_model(name, done);
-                if (!accepted) done(std::unexpected(accepted.error()));
-            } catch (const std::exception& error) {
-                protocol::RpcError rpc;
-                rpc.code = protocol::rpc_code::kBusinessError;
-                rpc.kind = protocol::error_kind::kConfigError;
-                rpc.message = error.what();
-                fail(job.id, rpc);
-            }
-        } else if (job.method == "model.add") {
-            add_model(job.id, job.params);
-        } else if (job.method == "ui.appearance.save") {
-            try {
-                respond(job.id, {{"appearance", configuration_->save_appearance(job.params.at("appearance"), job.params.value("layout", nlohmann::json(nullptr)))}});
-            } catch (const std::exception& error) {
-                protocol::RpcError rpc;
-                rpc.code = protocol::rpc_code::kBusinessError;
-                rpc.kind = protocol::error_kind::kConfigError;
-                rpc.message = error.what();
-                fail(job.id, rpc);
-            }
-        } else if (job.method == "session.compact") {
-            compact(job.id, job.params);
+            return;
         }
+        (this->*job.handler)(job.id, job.params);
     } catch (const nlohmann::json::exception& error) {
         fail(job.id, invalid_params(error.what()));
     } catch (const std::exception& error) {
@@ -614,13 +628,35 @@ void Backend::handle_command(Job job) {
     }
 }
 
+void Backend::add_provider_model(const std::string& id, const nlohmann::json& params) {
+    if (!check_target(id, params)) return;
+    try {
+        const auto saved = login_->invoke("provider.model.add", params, command_thread_.get_stop_token());
+        const auto name = saved.at("name").get<std::string>();
+        nlohmann::json model;
+        for (const auto& item : configuration_->models()) if (item.name == name) model = to_protocol(item);
+        const auto done = [this, id, model](std::expected<void, runtime::RuntimeError> result) {
+            respond(id, {{"model", model}, {"selected", result.has_value()},
+                         {"selection_error", result ? nlohmann::json(nullptr) : nlohmann::json(result.error().message)}});
+        };
+        const auto accepted = runtime_->select_model(name, done);
+        if (!accepted) done(std::unexpected(accepted.error()));
+    } catch (const std::exception& error) {
+        fail(id, business_error(protocol::error_kind::kConfigError, error.what()));
+    }
+}
+
+void Backend::save_appearance(const std::string& id, const nlohmann::json& params) {
+    try {
+        respond(id, {{"appearance", configuration_->save_appearance(params.at("appearance"), params.value("layout", nlohmann::json(nullptr)))}});
+    } catch (const std::exception& error) {
+        fail(id, business_error(protocol::error_kind::kConfigError, error.what()));
+    }
+}
+
 void Backend::initialize(const std::string& id, const nlohmann::json& params) {
     if (initialized_) {
-        protocol::RpcError error;
-        error.code = protocol::rpc_code::kBusinessError;
-        error.kind = protocol::error_kind::kInvalidState;
-        error.message = "the backend is already initialized";
-        fail(id, error);
+        fail(id, business_error(protocol::error_kind::kInvalidState, "the backend is already initialized"));
         return;
     }
     protocol::RpcError error;
@@ -653,11 +689,7 @@ void Backend::initialize(const std::string& id, const nlohmann::json& params) {
     try {
         assembled = assemble_(options);
     } catch (const runtime::ConfigurationError& config_error) {
-        protocol::RpcError rpc;
-        rpc.code = protocol::rpc_code::kBusinessError;
-        rpc.kind = protocol::error_kind::kConfigError;
-        rpc.message = config_error.what();
-        fail(id, rpc);
+        fail(id, business_error(protocol::error_kind::kConfigError, config_error.what()));
         return;
     }
     if (!assembled.maintenance.is_null()) {
@@ -694,11 +726,7 @@ void Backend::initialize(const std::string& id, const nlohmann::json& params) {
             resumed = runtime_->start(start);
         } catch (const std::exception& error) {
             runtime_.reset();
-            protocol::RpcError rpc;
-            rpc.code = protocol::rpc_code::kBusinessError;
-            rpc.kind = protocol::error_kind::kStartupFailed;
-            rpc.message = error.what();
-            fail(id, rpc);
+            fail(id, business_error(protocol::error_kind::kStartupFailed, error.what()));
             return;
         }
         session_json = nlohmann::json(to_protocol(runtime_->snapshot()));
@@ -796,11 +824,7 @@ void Backend::add_model(const std::string& id, const nlohmann::json& params) {
     const auto accepted = runtime_->add_model(
         std::move(input), [this, id](agent::PublicModel saved, std::string selection_error) {
             if (saved.name.empty()) {
-                protocol::RpcError rpc;
-                rpc.code = protocol::rpc_code::kBusinessError;
-                rpc.kind = protocol::error_kind::kConfigError;
-                rpc.message = selection_error.empty() ? "failed to save the model" : selection_error;
-                fail(id, rpc);
+                fail(id, business_error(protocol::error_kind::kConfigError, selection_error.empty() ? "failed to save the model" : selection_error));
                 return;
             }
             respond(id, {{"model", to_protocol(saved)},
@@ -829,57 +853,55 @@ void Backend::compact(const std::string& id, const nlohmann::json& params) {
 
 void Backend::handle_query(Job job) {
     try {
-        if (job.method.starts_with("provider.")) {
-            respond(job.id, login_->invoke(job.method, job.params, query_thread_.get_stop_token()));
-        } else if (job.method == "session.list") {
-            list_sessions(job.id, job.params);
-        } else if (job.method == "session.children") {
-            list_children(job.id, job.params);
-        } else if (job.method == "session.history") {
-            history(job.id, job.params);
-        } else if (job.method == "session.history_close") {
-            history_close(job.id, job.params);
-        } else if (job.method == "workspace.info") {
-            workspace_info(job.id, job.params);
-        } else if (job.method == "workspace.git_status") {
-            respond(job.id, queries_->git_status());
-        } else if (job.method == "agents.list") {
-            respond(job.id, queries_->agents());
-        } else if (job.method == "skills.list") {
-            const auto& catalog = queries_->skills();
-            nlohmann::json skills = nlohmann::json::array(), diagnostics = nlohmann::json::array();
-            for (const auto& skill : catalog.definitions)
-                skills.push_back({{"name", skill.name}, {"description", skill.description},
-                                  {"path", skill.file.string()}});
-            for (const auto& diagnostic : catalog.diagnostics)
-                diagnostics.push_back({{"path", diagnostic.path}, {"message", diagnostic.message}});
-            respond(job.id, {{"skills", std::move(skills)}, {"diagnostics", std::move(diagnostics)}});
-        } else if (job.method == "memory.list") {
-            nlohmann::json entries = nlohmann::json::array();
-            for (const auto& entry : queries_->memory_list())
-                entries.push_back({{"scope", entry.scope}, {"name", entry.name}, {"type", entry.type},
-                                   {"updated", entry.updated}, {"description", entry.description}});
-            respond(job.id, {{"entries", std::move(entries)}});
-        } else if (job.method == "memory.view" || job.method == "memory.delete") {
-            const auto scope = job.params.at("scope").get<std::string>();
-            const auto name = job.params.at("name").get<std::string>();
-            const auto view = job.method == "memory.view" ? queries_->memory_view(scope, name)
-                                                          : queries_->memory_delete(scope, name);
-            respond(job.id, {{"view", agent::to_json(agent::View(view))}});
-        } else if (job.method == "workspace.complete") {
-            workspace_complete(job.id, job.params);
-        }
+        (this->*job.handler)(job.id, job.params);
     } catch (const nlohmann::json::exception& error) {
         fail(job.id, invalid_params(error.what()));
     } catch (const runtime::QueryError& error) {
         fail(job.id, query_error(error));
     } catch (const std::exception& error) {
-        protocol::RpcError rpc;
-        rpc.code = protocol::rpc_code::kBusinessError;
-        rpc.kind = protocol::error_kind::kQueryFailed;
-        rpc.message = error.what();
-        fail(job.id, rpc);
+        fail(job.id, business_error(protocol::error_kind::kQueryFailed, error.what()));
     }
+}
+
+void Backend::git_status(const std::string& id, const nlohmann::json&) {
+    respond(id, queries_->git_status());
+}
+
+void Backend::list_agents(const std::string& id, const nlohmann::json&) {
+    respond(id, queries_->agents());
+}
+
+void Backend::list_skills(const std::string& id, const nlohmann::json&) {
+    const auto& catalog = queries_->skills();
+    nlohmann::json skills = nlohmann::json::array(), diagnostics = nlohmann::json::array();
+    for (const auto& skill : catalog.definitions)
+        skills.push_back({{"name", skill.name}, {"description", skill.description},
+                          {"path", skill.file.string()}});
+    for (const auto& diagnostic : catalog.diagnostics)
+        diagnostics.push_back({{"path", diagnostic.path}, {"message", diagnostic.message}});
+    respond(id, {{"skills", std::move(skills)}, {"diagnostics", std::move(diagnostics)}});
+}
+
+void Backend::list_memory(const std::string& id, const nlohmann::json&) {
+    nlohmann::json entries = nlohmann::json::array();
+    for (const auto& entry : queries_->memory_list())
+        entries.push_back({{"scope", entry.scope}, {"name", entry.name}, {"type", entry.type},
+                           {"updated", entry.updated}, {"description", entry.description}});
+    respond(id, {{"entries", std::move(entries)}});
+}
+
+void Backend::view_memory(const std::string& id, const nlohmann::json& params) {
+    const auto scope = params.at("scope").get<std::string>();
+    const auto name = params.at("name").get<std::string>();
+    const auto view = queries_->memory_view(scope, name);
+    respond(id, {{"view", agent::to_json(agent::View(view))}});
+}
+
+void Backend::delete_memory(const std::string& id, const nlohmann::json& params) {
+    const auto scope = params.at("scope").get<std::string>();
+    const auto name = params.at("name").get<std::string>();
+    const auto view = queries_->memory_delete(scope, name);
+    respond(id, {{"view", agent::to_json(agent::View(view))}});
 }
 
 void Backend::list_sessions(const std::string& id, const nlohmann::json& params) {
@@ -925,11 +947,7 @@ void Backend::history(const std::string& id, const nlohmann::json& params) {
     if (!cursor.empty()) {
         const auto it = histories_.find(cursor);
         if (it == histories_.end() || it->second->session_id() != session_id) {
-            protocol::RpcError rpc;
-            rpc.code = protocol::rpc_code::kBusinessError;
-            rpc.kind = protocol::error_kind::kInvalidState;
-            rpc.message = "the history cursor does not belong to this query";
-            fail(id, rpc);
+            fail(id, business_error(protocol::error_kind::kInvalidState, "the history cursor does not belong to this query"));
             return;
         }
         reader = std::move(it->second);
