@@ -8,8 +8,8 @@
 #include <string_view>
 #include <system_error>
 #include <utility>
-#include <unistd.h>
 
+#include "base/platform.hpp"
 #include "base/path.hpp"
 #include "exec/process.hpp"
 
@@ -420,7 +420,7 @@ Config load_config(const LoadOptions& options) {
     config.session.database = paths.database;
     config.session.lock_directory = paths.run / "session-locks";
     config.log = map_log(node.required("log"));
-    config.log.file = paths.logs / std::format("dagent-{}.log", ::getpid());
+    config.log.file = paths.logs / std::format("dagent-{}.log", base::process_id());
     config.mcp = map_mcp(node.required("mcp"));
     config.mcp.http = config.http;
     config.mcp.process = config.process;

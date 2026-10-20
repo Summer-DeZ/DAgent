@@ -7,6 +7,7 @@
 #include <optional>
 #include <string_view>
 
+#include "base/platform.hpp"
 #include "base/text.hpp"
 
 namespace dagent::agent {
@@ -268,7 +269,7 @@ ExecutionGrant Policy::grant_for_exec(SandboxProfile profile, GrantSource source
     }
     grant.protected_read = {control_root_ / "config", control_root_ / "data",
                             control_root_ / "logs", control_root_ / "run", control_root_ / "memory", workspace_root_ / ".env"};
-    if (const char* home = std::getenv("HOME")) {
+    if (const char* home = base::home_directory()) {
         grant.protected_read.emplace_back(fs::path(home) / ".ssh");
         grant.protected_read.emplace_back(fs::path(home) / ".gnupg");
     }

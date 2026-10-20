@@ -93,7 +93,7 @@ Impl 持有共享 `ConnectionState`，传输借用它及不可变的配置/选�
 stdio server 必须携带受信任配置里的显式权限 profile（`permissions.read/write/network`）；缺少 profile
 时不会启动，不允许"先运行、再在 tools/call 时请求批准"。启动方式是在 SRT 内运行：每连接一个长生命周期
 bridge，server 只拿到 profile 允许的读取/写入范围与严格网络 allowlist（`strictAllowlist=true`，没有运行中
-审批），私有 HOME/TMPDIR 使用每次连接独占的 `/tmp/dagent-home-XXXXXX`（`mkdtemp` 创建，0700），
+审批），私有 HOME/TMPDIR 使用每次连接独占的 `/tmp/dagent-home-XXXXXX`（`base::create_unique_directory` 通过 mkdtemp 创建，0700），
 避免 Home 路径或 server 名过长导致 SRT Unix socket 超过路径上限。`init.json` 仍保存在 state root 下的
 每连接状态目录；连接关闭或启动失败时，在子进程结束后清理状态目录与私有 HOME。
 新旧连接与 lease 在权限降级或切换时被显式作废

@@ -1,4 +1,5 @@
 #include "app/toolchain.hpp"
+#include "base/platform.hpp"
 
 #include "app/hash.hpp"
 
@@ -196,7 +197,7 @@ std::map<std::string, exec::Environment> Toolchain::environments() const {
         installed_.value("platform", "") != platform())
         throw std::runtime_error("managed runtime is not prepared for this configuration; run dagent runtime sync");
     for (const auto& [name, file] : installed_.at("programs").items())
-        if (::access(file.get<std::string>().c_str(), X_OK) != 0)
+        if (!base::can_execute(file.get<std::string>()))
             throw std::runtime_error("managed program is missing: " + name + "; run dagent runtime sync");
     std::map<std::string, exec::Environment> out;
     out.emplace("managed", environment(paths_, installed_, "managed"));
@@ -272,7 +273,7 @@ json Toolchain::sync() {
             entry["programs"] = json::object();
             for (const auto& [program, relative] : package.at("programs").items()) {
                 const auto file = within(directory, relative.get<std::string>());
-                if (::access(file.c_str(), X_OK) != 0) throw std::runtime_error("installed program is not executable: " + file.string());
+                if (!base::can_execute(file)) throw std::runtime_error("installed program is not executable: " + file.string());
                 entry["programs"][program] = file.string();
                 entry["checksums"][program] = sha256(read(file));
             }

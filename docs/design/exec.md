@@ -151,6 +151,7 @@ unrestricted 的 bash 使用 host；web 仍强制进入只读 SRT，由运行中
   不在父进程清除 CLOEXEC，避免并发启动时将通道泄漏给其他进程，也不依赖启动器偶然保留描述符。
 - 工作区保护遵循启动快照语义：运行中新建的同名敏感文件不在保护承诺内。
 - 受限命令的私有 HOME 使用短临时路径，避免深层 Home 导致 SRT Unix socket 路径过长；bridge 初始化异常按结构化错误报告。
+  控制目录与私有 HOME 通过 `base::create_unique_directory` 创建，父目录处理、错误文本和清理仍由 SRT 管理。
 
 ### 宿主前置
 

@@ -1,4 +1,5 @@
 #include "app/paths.hpp"
+#include "base/platform.hpp"
 
 #include <array>
 #include <cerrno>
@@ -36,7 +37,7 @@ HomePaths home_paths() {
     if (!fs::is_directory(root, ec))
         throw InstallError("installation root does not exist or is not a directory: " + root.string());
 
-    const fs::path probe = root / std::format(".dagent-write-{}", ::getpid());
+    const fs::path probe = root / std::format(".dagent-write-{}", base::process_id());
     const int fd = ::open(probe.c_str(), O_WRONLY | O_CREAT | O_EXCL | O_CLOEXEC, 0600);
     if (fd < 0) {
         throw InstallError(std::format(

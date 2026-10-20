@@ -6,8 +6,7 @@
 #include <limits>
 #include <utility>
 
-#include <unistd.h>
-
+#include "base/platform.hpp"
 #include "base/text.hpp"
 #include "exec/process.hpp"
 #include "lib/nlohmann/json.hpp"
@@ -31,7 +30,7 @@ fs::path find_rg(const SearchOptions& opt) {
             if (!found) missing(path.string() + " not found in PATH");
             path = *found;
         }
-        if (::access(path.c_str(), X_OK) != 0) missing(path.string() + " is not executable");
+        if (!base::can_execute(path)) missing(path.string() + " is not executable");
         return path;
     }
     static const fs::path cached = [] {

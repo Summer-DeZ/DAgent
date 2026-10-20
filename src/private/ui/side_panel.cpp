@@ -1,4 +1,5 @@
 #include "ui/side_panel.hpp"
+#include "base/platform.hpp"
 #include "ui/display.hpp"
 #include "ui/strings.hpp"
 #include "tui/document.hpp"
@@ -32,7 +33,7 @@ void SidePanel::start_session(std::string_view id) {
     std::uint64_t millis = 0;
     const auto result = std::from_chars(stamp.data(), stamp.data() + stamp.size(), millis, 16);
     const std::time_t when = result.ec == std::errc{} ? static_cast<std::time_t>(millis / 1000) : std::time(nullptr);
-    std::tm local{}; localtime_r(&when, &local);
+    std::tm local{}; base::local_time(when, local);
     char time[6]; std::strftime(time, sizeof(time), "%H:%M", &local); started_ = time;
     invalidate();
 }

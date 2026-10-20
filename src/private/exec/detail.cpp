@@ -1,4 +1,5 @@
 #include "exec/detail.hpp"
+#include "base/platform.hpp"
 
 
 #include <algorithm>
@@ -27,7 +28,7 @@ bool is_denied(std::string_view name, const std::vector<std::string>& patterns) 
 bool is_executable(const std::filesystem::path& path) {
     struct stat st {};
     if (::stat(path.c_str(), &st) != 0 || !S_ISREG(st.st_mode)) return false;
-    return ::access(path.c_str(), X_OK) == 0;
+    return base::can_execute(path);
 }
 
 // 环境条目形如 "名字=值"；名字为空或没有 '=' 的条目直接忽略。

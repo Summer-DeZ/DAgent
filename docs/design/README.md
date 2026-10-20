@@ -28,3 +28,4 @@
 | [web](web.md) | 受管网页抓取、解码和托管搜索 |
 | [net](net.md) | HTTP 客户端与 SSE 解析 |
 | [base](base.md) | 日志与公共工具 |
+| [platform](platform.md) | 平台实现边界、编译期选择与已提取的中立接口 |

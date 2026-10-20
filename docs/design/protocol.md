@@ -37,7 +37,7 @@ sequenceDiagram
     B-->>F: closed=true，随后关闭连接
 ```
 
-- `spawn_backend` 在前端真实可执行文件同目录找 `dagent-backend`，不随 `DAGENT_HOME` 改变；先关闭父端再 `dup2` 到 fd 3 并清除 CLOEXEC，其余 FD 用 `close_range` 关闭；
+- `spawn_backend` 通过 `base::executable_path(error_code&)` 在前端真实可执行文件同目录找 `dagent-backend`，不随 `DAGENT_HOME` 改变；先关闭父端再 `dup2` 到 fd 3 并清除 CLOEXEC，其余 FD 用 `close_range` 关闭；
   不经 shell，argv 不带密钥或提示词。后端启动后把 IPC FD 设回 CLOEXEC，工具和 MCP 子进程不会继承它。
 - 后端新建独立进程组，终端 SIGINT 只由前端转成取消请求，不广播到其他后端。
 - 一行一个完整 JSON 对象（UTF-8 JSON Lines），读取处理半帧/多帧，写入处理短写；不支持 batch。

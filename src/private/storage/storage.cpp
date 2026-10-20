@@ -21,6 +21,7 @@
 #include <unistd.h>
 
 #include "agent/port_store.hpp"
+#include "base/platform.hpp"
 #include "base/json.hpp"
 #include "base/path.hpp"
 #include "storage/history_read.hpp"
@@ -46,7 +47,7 @@ std::string iso_from_ms(std::int64_t value) {
     const auto point = std::chrono::system_clock::time_point{std::chrono::milliseconds{value}};
     const std::time_t raw = std::chrono::system_clock::to_time_t(point);
     std::tm utc{};
-    ::gmtime_r(&raw, &utc);
+    base::utc_time(raw, utc);
     const auto millis = value % 1000;
     return std::format("{:04}-{:02}-{:02}T{:02}:{:02}:{:02}.{:03}Z",
                        utc.tm_year + 1900, utc.tm_mon + 1, utc.tm_mday,

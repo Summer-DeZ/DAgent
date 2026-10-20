@@ -1,4 +1,5 @@
 #include "llm/auth.hpp"
+#include "base/platform.hpp"
 
 #include <algorithm>
 #include <cerrno>
@@ -89,7 +90,7 @@ void write_credentials(const CredentialPaths& paths, const Credentials& value) {
     Fd existing(::openat(dir.value, name.c_str(), O_RDONLY | O_NOFOLLOW | O_NONBLOCK | O_CLOEXEC));
     if (existing.value >= 0) check_file(existing.value);
     else if (errno != ENOENT) io_error();
-    const auto temp = std::format(".{}-{}-{}", name, ::getpid(), std::random_device{}());
+    const auto temp = std::format(".{}-{}-{}", name, base::process_id(), std::random_device{}());
     Fd fd(::openat(dir.value, temp.c_str(), O_WRONLY | O_CREAT | O_EXCL | O_NOFOLLOW | O_CLOEXEC, 0600));
     if (fd.value < 0) io_error();
     try {

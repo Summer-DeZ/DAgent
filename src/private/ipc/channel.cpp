@@ -1,4 +1,5 @@
 #include "ipc/channel.hpp"
+#include "base/platform.hpp"
 
 #include <cerrno>
 #include <chrono>
@@ -115,7 +116,7 @@ BackendProcess::~BackendProcess() { channel.close(); }
 
 std::filesystem::path backend_binary_path() {
     std::error_code error;
-    const std::filesystem::path self = std::filesystem::read_symlink("/proc/self/exe", error);
+    const std::filesystem::path self = base::executable_path(error);
     if (error) return {};
     const std::filesystem::path backend = self.parent_path() / "dagent-backend";
     if (!std::filesystem::exists(backend, error)) return {};

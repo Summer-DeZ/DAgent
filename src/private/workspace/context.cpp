@@ -10,8 +10,8 @@
 #include <iterator>
 #include <sstream>
 
-#include <sys/utsname.h>
 
+#include "base/platform.hpp"
 #include "base/log.hpp"
 #include "base/path.hpp"
 #include "base/text.hpp"
@@ -195,8 +195,7 @@ Environment collect_environment(const fs::path& cwd, const ContextOptions& opt, 
     Environment env;
     env.cwd = base::canonical_or_absolute_or_lexical(cwd);
 
-    struct utsname name {};
-    env.os = ::uname(&name) == 0 ? std::format("{} {}", name.sysname, name.release) : "unknown";
+    env.os = detail::os_description();
     if (const char* shell = std::getenv("SHELL"); shell != nullptr && *shell != '\0') {
         env.shell = shell;
     } else {
@@ -204,7 +203,7 @@ Environment collect_environment(const fs::path& cwd, const ContextOptions& opt, 
     }
     const std::time_t now = std::time(nullptr);
     std::tm local {};
-    if (::localtime_r(&now, &local) != nullptr) {
+    if (base::local_time(now, local)) {
         char date[16] = {};
         if (std::strftime(date, sizeof(date), "%Y-%m-%d", &local) > 0) env.date = date;
     }

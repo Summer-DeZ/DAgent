@@ -15,6 +15,7 @@
 #include <thread>
 
 #include "base/log.hpp"
+#include "base/platform.hpp"
 #include "base/text.hpp"
 #include "lib/nlohmann/json.hpp"
 
@@ -29,9 +30,9 @@ std::string system_error(const char* what) { return std::string(what) + ": " + s
 fs::path make_unique_dir(const fs::path& parent, std::string_view prefix) {
     std::error_code error;
     fs::create_directories(parent, error);
-    std::string pattern = (parent / (std::string(prefix) + "-XXXXXX")).string();
-    if (::mkdtemp(pattern.data()) == nullptr) throw ExecError{ExecError::Kind::sandbox, system_error("mkdtemp")};
-    return pattern;
+    auto directory = base::create_unique_directory((parent / (std::string(prefix) + "-XXXXXX")).string());
+    if (!directory) throw ExecError{ExecError::Kind::sandbox, "mkdtemp: " + directory.error()};
+    return *directory;
 }
 
 /// 已存在的 literal 去重；SRT 会为缺失的拒绝路径建占位点，这里只传已存在路径。

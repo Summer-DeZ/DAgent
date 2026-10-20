@@ -7,11 +7,11 @@
 #include <format>
 #include <stdexcept>
 #include <utility>
-#include <unistd.h>
 
 #include <variant>
 
 #include "backend/convert.hpp"
+#include "base/platform.hpp"
 #include "base/log.hpp"
 #include "base/text.hpp"
 
@@ -369,7 +369,7 @@ void Backend::hello(const std::string& id, const nlohmann::json& params) {
     }
     respond(id, {{"protocol_version", {{"major", protocol::kMajor}, {"minor", protocol::kMinor}}},
                  {"backend_version", DAGENT_VERSION},
-                 {"backend_instance_id", std::format("{}-{}", ::getpid(), epoch_ms(std::chrono::system_clock::now()))}});
+                 {"backend_instance_id", std::format("{}-{}", base::process_id(), epoch_ms(std::chrono::system_clock::now()))}});
 }
 
 void Backend::shutdown(const std::string& id, const nlohmann::json&) {

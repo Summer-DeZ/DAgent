@@ -4,6 +4,7 @@ add_library(dagent_base STATIC
     private/base/log.cpp
     private/base/text.cpp
     private/base/path.cpp
+    private/base/platform_${DAGENT_PLATFORM}.cpp
     private/base/json.cpp
 )
 
@@ -112,6 +113,7 @@ add_library(dagent_workspace STATIC
     private/workspace/diff.cpp
     private/workspace/git.cpp
     private/workspace/context.cpp
+    private/workspace/context_${DAGENT_PLATFORM}.cpp
 )
 
 target_include_directories(dagent_workspace PUBLIC ${CMAKE_SOURCE_DIR}/src/public)

@@ -1,4 +1,5 @@
 #include "ui/model_picker.hpp"
+#include "base/platform.hpp"
 
 #include <algorithm>
 #include <chrono>
@@ -22,7 +23,7 @@ std::string expiry(const json& status) {
     const auto raw = static_cast<std::time_t>(status.value("expires_at", std::int64_t{0}));
     if (!raw) return std::string(text().model_unknown);
     std::tm local{};
-    localtime_r(&raw, &local);
+    base::local_time(raw, local);
     return format_text(text().welcome_date, text().welcome_months.substr(local.tm_mon * 3, 3), local.tm_mday);
 }
 std::string age(std::int64_t seconds) {

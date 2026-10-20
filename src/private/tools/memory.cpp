@@ -8,6 +8,7 @@
 
 #include <yaml-cpp/yaml.h>
 
+#include "base/platform.hpp"
 #include "base/frontmatter.hpp"
 #include "base/log.hpp"
 #include "workspace/files.hpp"
@@ -167,7 +168,7 @@ MemoryEntry MemoryStore::save(std::string_view scope, std::string_view name, std
     validate(type, description);
     const std::time_t now = std::time(nullptr);
     std::tm local{};
-    ::localtime_r(&now, &local);
+    base::local_time(now, local);
     char today[16] = {};
     std::strftime(today, sizeof(today), "%Y-%m-%d", &local);
     MemoryEntry entry{std::string(scope), std::string(name), std::string(type), today,

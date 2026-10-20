@@ -143,8 +143,10 @@ camelCase 边界 0.7；连续匹配奖励 1.0；两端与内部的 gap 惩罚分
 
 ### 环境事实
 
-`collect_environment` 收集 cwd（规范化）、`uname` 拼出的 os 字符串、`$SHELL`（没有时退回 `sh`）、本地
+`collect_environment` 收集 cwd（规范化）、`detail::os_description` 提供的 os 字符串、`$SHELL`（没有时退回 `sh`）、本地
 日期；调用前 `stop_token` 已经被取消时直接抛 `cancelled`，不做任何工作。
+OS 描述由 `context_posix.cpp` 用 uname 拼出 `sysname release`，失败仍返回 `unknown`；
+日期转换调用 `base::local_time`，格式化和失败时留空的处理仍在共享实现。
 
 ### git 信息
 

@@ -1,4 +1,5 @@
 #include "exec/shell.hpp"
+#include "base/platform.hpp"
 
 #include <tree_sitter/api.h>
 
@@ -677,7 +678,7 @@ bool is_dangerous(const Analysis& analysis) {
         }
         return recursive && force;
     };
-    const char* home = std::getenv("HOME");
+    const char* home = base::home_directory();
     const auto broad_target = [home](std::string_view raw) {
         if (raw == "/" || raw == "~" || raw == "$HOME" || raw == "${HOME}") return true;
         if (home != nullptr && raw == home) return true;

@@ -3,7 +3,7 @@
 DAgent 外围模块的最底层。头文件在 `src/public/base/`，实现在 `src/private/base/`，构建为静态库
 `dagent_base`（公开链接 `spdlog::spdlog`）。命名空间 `dagent::base`。
 
-核心、app 和外围模块都可以依赖它；它自己只依赖标准库、spdlog 和 nlohmann/json。
+核心、app 和外围模块都可以依赖它；共享实现依赖标准库、spdlog 和 nlohmann/json，平台原语由选定的平台源文件实现。
 放进 base 的标准：至少两个模块需要，并且和业务无关。
 
 ---
@@ -15,6 +15,7 @@ DAgent 外围模块的最底层。头文件在 `src/public/base/`，实现在 `s
 | 日志：全局初始化、按模块命名的 logger、滚动文件、崩溃时刷盘 | `base/log.hpp` | `init_log`、`logger`、`shutdown_log` |
 | 文本处理：UTF-8 校验与修复、按字符边界截断、清理 ANSI 转义、base64 解码 | `base/text.hpp` | `to_valid_utf8`、`truncate_middle`、`strip_ansi`、`base64_decode` |
 | 路径规范化：解析符号链接，失败时逐级回退 | `base/path.hpp` | `canonical_or_absolute_or_lexical` |
+| 平台原语：程序路径、HOME、进程号、时间转换、执行权限和独占目录 | `base/platform.hpp` | `executable_path`、`home_directory`、`process_id`、`local_time`、`utc_time`、`utc_timestamp`、`can_execute`、`create_unique_directory` |
 | frontmatter 文本切分：返回 header/body 视图，区分缺少开头与结尾分隔符 | `base/frontmatter.hpp` | `split_frontmatter` |
 | JSON 参数解析与脱敏 | `base/json.hpp` | `parse_arguments`、`require_string`、`get_string`、`get_int`、`get_bool`、`redact` |
 
@@ -32,6 +33,7 @@ app 配置、workspace 上下文与 storage 会话路径共用 `canonical_or_abs
 
 约定：
 
+- 平台原语的实现与调用语义见 [platform](platform.md)。业务错误、时间格式和目录生命周期仍由调用方决定。
 - `truncate_middle` 直接返回截断后的字符串；截断标记保留省略字节数。`exec::Result.out/err` 同样直接保存字符串。
 - **交互模式日志只写文件。** 非交互模式可通过 `also_stderr` 同时输出到 stderr。
 

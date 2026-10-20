@@ -9,6 +9,7 @@
 #include "agent/session.hpp"
 #include "app/history.hpp"
 #include "app/prompt.hpp"
+#include "base/platform.hpp"
 #include "base/log.hpp"
 #include "exec/shell.hpp"
 #include "storage/storage.hpp"
@@ -50,7 +51,7 @@ std::chrono::system_clock::time_point parse_created(std::string_view text) {
         utc.tm_hour = hour;
         utc.tm_min = minute;
         utc.tm_sec = second;
-        const std::time_t raw = ::timegm(&utc);
+        const std::time_t raw = base::utc_timestamp(utc);
         if (raw != static_cast<std::time_t>(-1))
             return std::chrono::system_clock::from_time_t(raw) + std::chrono::milliseconds(millis);
     }

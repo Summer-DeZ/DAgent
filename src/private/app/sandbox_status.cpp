@@ -1,7 +1,5 @@
 #include "app/sandbox_status.hpp"
-
-#include <sys/types.h>
-#include <unistd.h>
+#include "base/platform.hpp"
 
 #include <chrono>
 #include <filesystem>
@@ -20,12 +18,12 @@ namespace fs = std::filesystem;
 
 fs::path executable_dir() {
     std::error_code error;
-    const fs::path exe = fs::read_symlink("/proc/self/exe", error);
+    const fs::path exe = base::executable_path(error);
     if (error) return {};
     return exe.parent_path();
 }
 
-bool runnable(const fs::path& file) { return !file.empty() && ::access(file.c_str(), X_OK) == 0; }
+bool runnable(const fs::path& file) { return !file.empty() && base::can_execute(file); }
 
 std::optional<fs::path> host_program(std::string_view name, std::string_view fallback) {
     if (const auto found = exec::which(name)) return found;
@@ -84,7 +82,7 @@ std::optional<exec::SrtRuntime> sandbox_runtime(const HomePaths& paths) {
 }
 
 nlohmann::json sandbox_probe(const exec::SrtRuntime& runtime, const fs::path& state_root) {
-    const fs::path workdir = state_root / ("probe-" + std::to_string(::getpid()));
+    const fs::path workdir = state_root / ("probe-" + std::to_string(base::process_id()));
     std::error_code error;
     fs::remove_all(workdir, error);
     fs::create_directories(workdir, error);

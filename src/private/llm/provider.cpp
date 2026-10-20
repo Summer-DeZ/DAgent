@@ -1,4 +1,5 @@
 #include "llm/provider_detail.hpp"
+#include "base/platform.hpp"
 #include "base/text.hpp"
 
 #include <algorithm>
@@ -94,7 +95,7 @@ std::optional<std::chrono::milliseconds> parse_retry_after(std::string_view raw)
     tm.tm_hour = hour;
     tm.tm_min = minute;
     tm.tm_sec = second;
-    const std::time_t when = ::timegm(&tm);
+    const std::time_t when = base::utc_timestamp(tm);
     const auto delta = std::chrono::system_clock::from_time_t(when) - std::chrono::system_clock::now();
     if (delta <= std::chrono::system_clock::duration::zero()) return std::chrono::milliseconds(0);
     return std::chrono::duration_cast<std::chrono::milliseconds>(delta);

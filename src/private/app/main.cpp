@@ -13,6 +13,7 @@
 
 #include <signal.h>
 
+#include "base/platform.hpp"
 #include "app/cli.hpp"
 #include "app/interrupts.hpp"
 #include "app/launcher.hpp"
@@ -49,7 +50,7 @@ std::pair<std::string, int> fit_title(std::string_view title, int columns) {
 std::string local_minute(std::chrono::system_clock::time_point time) {
     const std::time_t raw = std::chrono::system_clock::to_time_t(time);
     std::tm local{};
-    if (::localtime_r(&raw, &local) == nullptr) return "0000-00-00 00:00";
+    if (!dagent::base::local_time(raw, local)) return "0000-00-00 00:00";
     std::ostringstream out;
     out << std::put_time(&local, "%Y-%m-%d %H:%M");
     return out.str();

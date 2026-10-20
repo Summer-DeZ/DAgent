@@ -17,6 +17,10 @@
 
 namespace dagent::workspace {
 
+namespace detail {
+std::string os_description();
+} // namespace detail
+
 struct GitStatus {
     bool dirty = false;
     std::string branch;                      ///< detached HEAD 时是短 SHA

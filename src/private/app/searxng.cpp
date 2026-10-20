@@ -4,7 +4,7 @@
 #include <fstream>
 #include <mutex>
 #include <openssl/rand.h>
-#include <unistd.h>
+#include "base/platform.hpp"
 #include "base/text.hpp"
 #include "exec/child.hpp"
 #include "lib/nlohmann/json.hpp"
@@ -47,9 +47,9 @@ struct Searxng::Impl {
             throw std::runtime_error("SearXNG is not prepared; run dagent runtime sync");
         if (directory.empty()) {
             fs::create_directories(paths.run);
-            auto pattern = (paths.run / "searxng-XXXXXX").string();
-            if (!::mkdtemp(pattern.data())) throw std::runtime_error("cannot create SearXNG run directory");
-            directory = pattern;
+            auto created = base::create_unique_directory((paths.run / "searxng-XXXXXX").string());
+            if (!created) throw std::runtime_error("cannot create SearXNG run directory");
+            directory = *created;
         }
         unsigned char random[32];
         if (RAND_bytes(random, sizeof(random)) != 1) throw std::runtime_error("cannot generate SearXNG secret");
@@ -70,7 +70,7 @@ struct Searxng::Impl {
         output.exceptions(std::ios::failbit | std::ios::badbit);
         output << settings.dump(2); output.close();
         fs::permissions(config, fs::perms::owner_read | fs::perms::owner_write);
-        const auto executable = fs::read_symlink("/proc/self/exe").parent_path();
+        const auto executable = base::executable_path().parent_path();
         exec::Command command;
         command.argv = {(environment / "bin/python").string(), "-u", (executable / "libexec/searxng_server.py").string()};
         command.cwd = directory;

@@ -1,4 +1,5 @@
 #include "ui/appearance.hpp"
+#include "base/platform.hpp"
 #include "ui/approval.hpp"
 #include "ui/strings.hpp"
 #include "ui/display.hpp"
@@ -267,7 +268,7 @@ void ApprovalDialog::open(const ApprovalRequest& approval,
         doc.set_meta(id, std::string(label));
     };
     auto cwd = approval.cwd;
-    if (const char* home = std::getenv("HOME")) {
+    if (const char* home = base::home_directory()) {
         const std::string prefix(home);
         if (cwd == prefix || cwd.starts_with(prefix + "/")) cwd = "~" + cwd.substr(prefix.size());
     }

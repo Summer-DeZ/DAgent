@@ -6,10 +6,9 @@
 #include <utility>
 
 #include "base/log.hpp"
+#include "base/platform.hpp"
 #include "exec/child.hpp"
 #include "mcp/detail.hpp"
-
-#include <unistd.h>
 
 namespace dagent::mcp::detail {
 
@@ -34,15 +33,15 @@ void StdioTransport::start_sandboxed() {
     const StdioSandbox& sandbox = *config_.sandbox;
     std::error_code error;
     std::filesystem::create_directories(sandbox.state_root, error);
-    std::string pattern = (sandbox.state_root / ("mcp-" + config_.name + "-XXXXXX")).string();
-    if (::mkdtemp(pattern.data()) == nullptr)
+    auto directory = base::create_unique_directory((sandbox.state_root / ("mcp-" + config_.name + "-XXXXXX")).string());
+    if (!directory)
         throw McpError{McpError::Kind::spawn, config_.name + ": cannot create the sandbox state directory"};
-    state_dir_ = pattern;
+    state_dir_ = *directory;
     // SRT 在 TMPDIR 下创建 Unix sockets；固定短路径避免 Home 或 server 名过长。
-    pattern = "/tmp/dagent-home-XXXXXX";
-    if (::mkdtemp(pattern.data()) == nullptr)
+    directory = base::create_unique_directory("/tmp/dagent-home-XXXXXX");
+    if (!directory)
         throw McpError{McpError::Kind::spawn, config_.name + ": cannot create the sandbox private home"};
-    private_home_ = pattern;
+    private_home_ = *directory;
     const auto& private_home = private_home_;
     std::filesystem::create_directories(private_home / "config", error);
     std::filesystem::create_directories(private_home / "cache", error);

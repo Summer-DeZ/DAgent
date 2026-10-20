@@ -21,6 +21,7 @@
 #include <utility>
 #include <vector>
 
+#include "base/platform.hpp"
 #include "base/log.hpp"
 #include "base/overloaded.hpp"
 #include "tui/document.hpp"
@@ -55,7 +56,7 @@ using namespace std::chrono_literals;
 
 std::string local_time() {
     const auto now = std::time(nullptr);
-    std::tm local{}; localtime_r(&now, &local);
+    std::tm local{}; base::local_time(now, local);
     char value[6]; std::strftime(value, sizeof(value), "%H:%M", &local);
     return value;
 }
@@ -270,7 +271,7 @@ private:
 
 std::string display_path(const std::filesystem::path& path) {
     const std::string value = path.string();
-    if (const char* home = std::getenv("HOME")) {
+    if (const char* home = base::home_directory()) {
         const std::string prefix(home);
         if (value == prefix) return "~";
         if (value.starts_with(prefix + "/")) return "~" + value.substr(prefix.size());
@@ -933,7 +934,7 @@ private:
                 const auto updated = std::chrono::system_clock::time_point(std::chrono::milliseconds(session.value("updated", std::int64_t{0})));
                 auto age = relative_age(updated);
                 const auto now = std::time(nullptr), then = std::chrono::system_clock::to_time_t(updated);
-                std::tm today{}, previous{}; localtime_r(&now, &today); localtime_r(&then, &previous);
+                std::tm today{}, previous{}; base::local_time(now, today); base::local_time(then, previous);
                 auto midnight = today; midnight.tm_hour = midnight.tm_min = midnight.tm_sec = 0;
                 const auto today_start = std::mktime(&midnight);
                 --midnight.tm_mday; midnight.tm_isdst = -1;
