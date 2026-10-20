@@ -9,6 +9,7 @@ PromptInput::PromptInput(tui::InputBox& box, std::function<void(std::string)> su
       changed_(std::move(changed)), modal_visible_(std::move(modal_visible)) {}
 
 bool PromptInput::on_event(const tui::Event& e) {
+    if (before_edit && before_edit(e)) return true;
     if (e.kind == tui::Event::Kind::key && e.mods == tui::Mods::none && box_.text().empty() &&
         (e.key == tui::Key::home || e.key == tui::Key::end)) return false;
     if (modal_visible_ && modal_visible_() &&

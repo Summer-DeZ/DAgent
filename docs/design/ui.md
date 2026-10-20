@@ -29,7 +29,8 @@
 | `Chip` / `appearance` | 标签绘制、外观令牌变换、统一 Unicode/Nerd/ASCII 图标表 |
 | `SettingsDialog` | 外观选项、即时预览、后端保存与撤回 |
 | `Completion` | `/` 命令、`@` 文件和 `$` 技能的贴输入框补全浮层 |
-| `Panel` | 命令、会话和帮助共用的居中列表浮层 |
+| `Panel` | 支持分组、匹配高亮、别名与快捷键列的居中列表浮层 |
+| `WelcomeView` | 新会话字标、状态 Chip、可恢复的最近会话与快捷键提示 |
 | `ToastStack` | 右上角最多三条、五秒到期的瞬时通知 |
 | `SidePanel` | 可左右放置或隐藏的 SESSION / CONTEXT / PLAN / AGENTS / CHANGED / MCP 分节栏与底部版本 |
 | `ApprovalDialog` | 权限审批与选项提问共用的模态骨架与输入；回答经 `interaction.answer` 提交 |
@@ -42,7 +43,7 @@ LayerStack
    ├─ AgentTabs                         content，有子 Pane 时 2 行（标签 + primary 下划线）
    ├─ Workspace(horizontal)             主区 + SidePanel（可左右交换）
    │  ├─ Container(vertical)            主区
-   │  │  ├─ Center(Scrollback)          flex 1，内容栏最大 88 列
+   │  │  ├─ Center(ScrollFrame)         flex 1，WelcomeView / Scrollback，内容栏最大 88 列
    │  │  ├─ Center(Activity)            content，空闲高度 0
    │  │  ├─ Center(QueueLabel)          content，有排队输入时 1 行，最多 3 个 Chip + 余数
    │  │  └─ Center(PromptBox)           content，1–8 行正文；密度/面板样式决定留白与边框
@@ -55,7 +56,9 @@ LayerStack
 对话、活动、排队和输入使用同一宽度与左缘。侧栏被收起或终端少于 80 列时宽度为 0；
 80–99 列占 26 列，至少 100 列占 30 列。HeaderBar、AgentTabs 与 HintBar 始终铺满终端；Sidebar 左右交换不影响主区的居中规则。
 
-新会话的第一个 Document 块是欢迎头，包含版本、项目、git 分支和 MCP 数量；内容栏少于 60 列时只画单行字标。
+新建且尚未发送消息的会话由 ScrollFrame 显示独立 WelcomeView，不向 Transcript 写欢迎 Banner；
+启动新会话和 `/new` 均显示；初始化的 system 历史记录不算用户消息，不影响欢迎页可见性。
+首次提交普通消息或收到 turn_started 时隐藏，恢复会话时也不显示。内容栏少于 60 列或 ASCII 图标集时使用单行字标。
 历史 `turn_end` 保留在协议与存储中；历史 DTO 没有轮次耗时，回放不伪造实时尾行。
 文本显示宽度和带省略号的裁剪统一使用 `ui/display`；工具折叠提示在极窄宽度仍按列硬裁剪。
 恢复会话改画恢复 id 与回放事件数。Scrollback 不贴底时，右下角覆盖显示未读行数，End 回到底部。
@@ -127,7 +130,7 @@ unrestricted 为 error），模型为 text。右侧 muted 显示 `↵ send · �
 正文按内容栏宽度折行，正文高度为 1–8 行，超出后滚动并保持光标可见。
 comfortable 保留两行 padding，compact 去掉；outline 沿用 phase 1 的页面底色、边框和无填色 Chip。
 
-新会话 Banner 只显示版本、项目路径、git 分支与 MCP 数量，不重复显示模型；当前模型保留在输入框尾行和消息尾行。
+欢迎页的状态 Chip 包含模型；模型同时保留在 HeaderBar、输入框尾行和消息尾行。
 
 框架的 `tui::InputBox` 只做横向滚动、不折行，所以 PromptBox 自绘正文，不调用基类 `render`；
 基类内部的横竖滚动量因此恒为 0，`cursor()` 借这一点从基类光标反推逻辑行号与显示列（基类没有公开它们）。
@@ -203,7 +206,7 @@ token 数为零时只显示阶段与耗时（如 `Working · 0.1s`）；有输�
 
 | meta / Event | 显示 |
 | --- | --- |
-| `banner` | 新会话字标、项目信息和提示；恢复使用单行系统块 |
+| 恢复提示 | 恢复 id 与回放事件数的单行系统块；新会话欢迎页不进入 Document |
 | `turn_started` / 历史 user | primary `▌`、正文和整行 `background_element`；首行右侧 muted 本地 `HH:MM`，历史无时间则留空 |
 | `TextDelta` | `MarkdownStream`，正文前留两列 |
 | `ReasoningDelta` / `thought` | 思考中显示 `· Thinking...`；正文开始或一轮结束时定稿成 `+ Thought: N.Ns`（accent），正文块收起 |
@@ -233,7 +236,8 @@ muted 数字列右对齐，列宽取整张卡片最大行号的位数；折行�
 分别将 success / error 前景色以 15% 混入 background；transparent 用 background_panel 作混色基底。
 混色读取当前主题令牌，indexed 颜色先转 RGB，再由原终端输出路径量化为 256 色；不改框架。
 Task 运行中与结束后共用标题：状态符、粗体 `Task`、两空格、text 色的 Agent 名、
-两空格、muted 任务描述，最右为 `N steps · M tools · S.Ss`；描述按列省略并优先为统计让位。
+两空格、muted 任务描述，最右为 `N steps · M tools · S.Ss`；数量为 1 时分别使用 `1 step` / `1 tool`。
+描述按列省略并优先为统计让位。
 运行中按已收到的子工具完成摘要数与调用数更新 steps/tools，耗时每 100 ms 更新；结束后使用 TaskView 的最终统计。
 运行中主体逐工具原位更新为
 `│ ✓ Grep  parse_date  6 matches`：状态图标、粗体名称、muted 参数与统计；运行中 spinner、失败或中断用叉。
@@ -282,7 +286,9 @@ HintBar 左侧是缩成 `~` 的项目路径；右侧按 key=text、description=t
 空闲显示 ctrl+p commands、ctrl+t sidebar、shift+tab mode；忙碌显示 esc interrupt，
 有排队输入时加 ↑ recall queued，有子 Pane 时加 ctrl+a agents。Panel/Completion 打开时显示
 enter select、esc close；Settings 显示 enter save、esc revert。审批显示 y allow、n deny、esc deny，
-问题显示 enter confirm、esc cancel。上下文与计划进度不再占用底栏。
+问题显示 enter confirm、esc cancel。欢迎页有最近会话且输入为空、队列为空、空闲时显示
+`↑↓ pick session · ctrl+p commands · ctrl+c quit`；ASCII 集使用对应方向字符。其余时候沿用普通空闲提示。
+上下文与计划进度不再占用底栏。
 
 SidePanel 留一行上边距和两列左右留白，章节标题为大写 muted，comfortable 章节间空一行：
 
@@ -298,22 +304,86 @@ SidePanel 留一行上边距和两列左右留白，章节标题为大写 muted�
 底部固定 DAgent 版本；路径与分支分别交给 HintBar 和 HeaderBar。侧栏隐藏时计划仍在 Transcript 原位显示。
 恢复会话通过已有历史投影恢复标题、轮数、计划与文件增删统计，不访问工作树猜测会话改动。
 
-Panel 由标题、可选内存过滤、三列列表和底部提示组成，最大宽 76 列、高度不超过终端 60%。上下移动跳过不可用项，
-Enter 执行，Esc 关闭。会话列表和文件候选的 I/O 不发生在渲染线程。
+Panel 最大宽 76 列、高度不超过终端 60%，由标题、可选内存过滤、列表、过滤计数与底部提示组成。
+高度按实际内容计算，查询为空时不为过滤计数预留行，列表末尾不额外留空行。
+每个 Row 可带 group；按组的首次出现顺序归组，组头为大写 muted，不可选择，除首组外前置一空行。
+过滤后没有任何行的组不显示。↑/↓ 仅在可用数据行间循环，滚动按包含组头与空行的实际显示行定位。
+过滤仍为 label 的大小写不敏感子串匹配；label 中匹配的字素使用 primary 加粗。
+选中行填充 background_element，左侧 primary `▌`（ASCII 为 `|`）。
 
-ToastStack 是单一右上角 overlay，内部维护最多三条通知，新通知在上；info/warn/error 分别使用 `·`/`⚠`/`✗`。
-错误 Event 已永久进入 Transcript，因此不重复弹 error toast。权限对话框使用 y/a/n/e/Esc/Ctrl+C，
-使用 active 圆角边框、`Approval needed` 标题、英文 reason 与 session rule、可滚动预览和横排选项。
-长意图和 session rule 放在可折行的预览区，标题说明、选项、预览与输入均不占用边框列。
-审批预览同时显示实际 cwd、模式和每项增量权限原因；敏感/受保护请求不显示 session 选项。
-底边单独预留一行，避免覆盖选项；紧凑选项为 `[y] allow / [a] session / [n] deny / [e] explain`。
-请求条目按 kind 显示（命令 / 读取 / 写入 / 网络目标 / 敏感读取 / 受保护写入 / host access），
-host access 附完整宿主边界说明，一次性请求说明不能会话允许，部分执行显示警告。
-同一模态骨架也显示 Question：数字或上下键选择，Enter 确认，多选用空格，Other 进入自由输入，Esc 取消。
-问题正文只在可折行预览区显示一次，选中标记保留在左边框内侧；unrestricted 确认默认选中取消。
-权限与问题浮层互斥。子 Agent 发起的审批在标题里追加 `· via task · <agent>`，与主 Agent 自己的请求区分。
-unrestricted 的输入/消息尾行使用 error 色，plan 使用 accent 色。长计划条目与通知按显示列宽截断。
-`/permissions` 复用 Panel 显示当前内存授权，Enter 撤销所选规则；空列表只显示不可选提示。
+列表列为 label、可选 middle、alias、right：label 使用 text，后三者 muted；right 右对齐，
+alias 与 right 保留独立列宽，right 按当前行内容占用宽度。middle 跟随 label 并使用扣除别名和右列后的剩余宽度，
+空间不足时省略；所有裁剪按终端显示列宽。
+启用过滤且查询非空时，在 hint 上方显示 muted 的 `N of M <noun>`；默认 noun 为 items，命令面板为 commands。
+不支持过滤的 Panel 无搜索框和计数。会话列表和文件候选的 I/O 不发生在渲染线程。
+`/memory` 的 Global / Project 使用实际分组；`/agents` 的 main 保留会话 id 前八位，子项 middle 显示任务描述，
+实时取自子会话 turn_started，历史取自 TaskView，不再显示易重复的 UUID 时间前缀。
+
+Ctrl+P 标题为 `Commands`，按已有 Session、Permission、Transcript、View 等命令分类分组。
+每项同时显示 slash alias 和 key binding（若存在），忙碌时仍按原 enabled 条件禁用。
+hint 为 `↑↓ move · enter run · esc close`；ASCII 图标集使用对应方向字符。
+
+模态变暗完全在应用层 Page 完成：Panel、SettingsDialog、ApprovalDialog/Question、ModelDialog 任一个可见时，
+重绘完整基础层，再通过现有 Surface::at/put 把每个非占位单元格的前景色向页面背景混合 60%。
+字符、字重及背景均保留，宽字素按原宽度写回；先重画再混色，避免增量帧累积变暗。
+之后框架照常绘制各浮层，Toast 和 Completion 不触发变暗，Toast 自身也不被混色。
+indexed 色先转 RGB，再走既有终端输出量化；transparent 不改变任何 default 背景。
+透明页面的混色目标优先取终端报告的 OSC 11 背景，终端未报告时使用 background_panel 作为近似。
+没有新增或修改冻结框架的接口。
+
+ToastStack 保持右上角、最多三条、新通知在上、五秒到期；每条为面板底色的圆角框。
+边框与前导图标按 info / success / warning / error 使用 info / success / warning / error 色，正文始终为 text。
+图标来自统一表：`● ✓ ! ✗`，ASCII 为 `i v ! x`。框架 Notice 只有 info/warn/error，
+应用 ToastStack 自有 severity 支持 success；设置保存成功使用 success。错误 Event 已永久进入 Transcript，仍不重复弹 toast。
+
+ApprovalDialog 使用风险色圆角框：一般命令、network/read/write 为 warning，host access、protected write、
+sensitive read 或 partially_executed 为 error。标题为加粗 `Approval needed`，两侧各留一个空格，随后是同色类别 Chip，
+采用首项请求的 `COMMAND / NETWORK / READ / WRITE / SENSITIVE READ / PROTECTED WRITE / HOST ACCESS`；
+其他不同 kind 的数量显示为 `+N`。摘要使用原 summary，只显示一次。
+
+预览位于页面底色矩形中；命令复用既有 SyntaxRenderer 的 bash 高亮，并用 muted `$` 替代原代码装订线。
+其他 code/diff/text 保留原渲染类型并使用同样底色。预览和详情共用 Scrollback，初始定位顶部，
+按当前宽度的实际内容行数确定高度，不用空行填满；整个审批/问题框按内容收缩，保留原终端约 60% 的高度上限
+（短终端沿用原最多 8 行、且不超出屏幕的上限）。超过上限时，PgUp/PgDn 与鼠标滚轮继续滚动预览。
+详情左侧固定八列，label 为 muted，内容折行并保持对齐：
+`cwd` 缩短 HOME 为 `~`，`mode` 保留原模式，`needs` 每项一行（kind、target 与原 request reason），
+`reason` 为总体理由，仅提供会话授权选项时以 `session` 行显示完整 session_rule，
+子 Agent 请求增加 `via task · <agent>`。无 d3 review 数据，因此没有 review 行。
+保留完整宿主边界说明、远端请求自带的边界/理由文本、一次性说明、部分执行警告与各权限原因。
+
+选项使用元素底色 Chip，key 为 primary 加粗，label 为 text：`y allow once`、
+`a allow for this session`（仅有 session_rule 时）、`n deny`、`e deny and explain`。
+120 列终端下四个 Chip 同行，窄宽度按显示列折行；完整 session_rule 在详情区折行。
+←/→ 循环选择，primary 竖条标记当前项，Enter 确认；
+y/a/n/e 仍直接执行，Esc 拒绝、Ctrl+C 中断保持原行为。框内底部为
+`y a n e · ←→ choose · enter confirm · esc deny`，不提供 session allow 时省略 a。
+反馈输入保留原提交/退出行为；底部单独预留 hint 和边框行。
+
+Question 使用同一骨架，primary 边框、原 header 标题和原选项列表；审批与问题标题两侧均留空格（`╭─ Title ─…`）。
+问题正文按内容行数占位，正文与选项间只留一行间距。数字/上下键选择、Enter 确认、
+多选空格、Other 自由输入、Esc 取消保持不变，unrestricted 确认默认取消，Shift+Tab 仍可穿透循环权限。
+权限与问题互斥。`/permissions` 复用 Panel 显示内存授权，Enter 撤销；空列表只显示不可选提示。
+unrestricted 的输入/消息尾行使用 error，plan 使用 accent。
+
+### 欢迎页
+
+WelcomeView 复用原六行块字标并使用 primary；内容栏不足 60 列时为 `◆ DAgent`，ASCII 时为 `* DAgent`。
+下面的 Chip 按空间自动换行，遵循 filled / outline：缩为 `~` 的项目路径、git 分支（仓库外省略）、
+模型、权限模式（与 HeaderBar 同色）、`● MCP ready/total`、`N memories`。
+MCP 未配置时省略；全部 ready 为 success，失败为 error，其余为 warning。记忆数量来自已有 memory.list，零时省略。
+外观、模型、模式、MCP 快照、分支的变化更新欢迎页，无额外周期轮询。
+
+`RECENT SESSIONS` 从已有 session.list 返回结果中选取最多五个有标题的非当前会话，跳过空标题会话；
+`/sessions` 仍保留空会话。标题在左，相对时间在右且为 muted：
+`2h ago`、本地日期的 `yesterday`、更早为 `Oct 18`。无符合条件的会话时整节省略；节尾 muted `/sessions all sessions`。
+输入框为空、无排队输入且空闲时 ↑/↓ 循环选中最近会话，选中行使用元素底色和 primary `▌`；
+Enter 复用 /sessions 的 session.resume 路径。输入任意文字或粘贴清除选择并交给原 PromptInput 编辑。
+短终端可用 PgUp/PgDn、Home/End 或鼠标滚轮查看余下内容，改变会话选择时让该行可见。
+
+`TIPS` 的 key 为 text、说明为 muted：`@ attach a file`、`$ run a skill`、
+`shift+tab cycle permission mode`、`ctrl+g read-only plan mode`、`/settings theme and background`。
+unrestricted 模式继续显示其权限说明。comfortable 保留节间空行，compact 去掉这些空行。
+欢迎页首次发送消息后消失；恢复会话（包括恢复空会话）直接进入 Transcript。
 
 符合条件的子权限请求由父模型审阅，显示 `Reviewing subagent permission`，不打开人工模态框。
 决定以持久 Notice 保留来源、范围与理由；历史 `permission/parent_review` 投影为相同的审计提示。
@@ -352,4 +422,4 @@ Ctrl+M 需要终端提供可区分的扩展按键编码；传统终端把它与 
 
 历史加载各自拥有条目缓冲和分页游标；切换会话会取消旧加载，完成或失败即释放。主会话实时事件始终进入主文档，子事件按会话身份进入子文档。
 
-本轮改版范围为 phase 2a（会话区）。命令面板分组、浮层变暗、审批框、toast 与欢迎页重做留在 phase 2b。
+phase 2a（会话区）和 phase 2b（浮层与欢迎页）已实现；本阶段仅构建验证，真实 PTY 视觉与交互验收仍由用户执行。

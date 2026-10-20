@@ -14,6 +14,7 @@ public:
         std::string label, middle, right;
         bool enabled = true;
         std::function<void()> activate;
+        std::string group = {}, alias = {};
     };
 
     explicit Panel(tui::Runtime&);
@@ -21,7 +22,7 @@ public:
     void open(std::string title, std::vector<Row>, std::string hint,
               bool filter = true, std::function<void(int)> on_highlight = {},
               std::function<void(bool)> on_close = {}, int initial_row = 0,
-              std::function<void()> on_add = {});
+              std::function<void()> on_add = {}, std::string noun = {});
     void close(bool committed = false);
     bool visible() const noexcept { return overlay_ != 0; }
     void set_theme(const tui::ThemeTokens&);
@@ -37,7 +38,7 @@ private:
     uint32_t overlay_ = 0;
     std::vector<Row> rows_;
     std::vector<int> shown_;
-    std::string query_;
+    std::string query_, noun_;
     bool filter_ = true;
     int selected_ = 0;
     std::function<void(int)> on_highlight_;

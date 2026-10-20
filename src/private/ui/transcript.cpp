@@ -45,6 +45,12 @@ std::string clean_field(std::string value) {
     return value;
 }
 
+std::string task_stats(std::size_t steps, std::size_t tools, double seconds) {
+    const auto& text = ui::text();
+    return format_text(text.card_task_stats, steps, steps == 1 ? text.card_task_step : text.card_task_steps,
+                       tools, tools == 1 ? text.card_task_tool : text.card_task_tools, seconds);
+}
+
 std::string trim_blank_lines(std::string_view value) {
     while (!value.empty()) {
         const auto end = value.find('\n');
@@ -676,7 +682,7 @@ void Transcript::finished(const ToolFinished& event) {
             blocks.task_agent = param = clean_field(v.agent);
             if (!v.task.empty()) blocks.task_description = clean_field(v.task);
             blocks.task_result = trim_blank_lines(v.result);
-            stat = format_text(ui::text().card_task_stats, v.steps.size(), v.tool_calls, v.seconds);
+            stat = task_stats(v.steps.size(), v.tool_calls, v.seconds);
             for (auto& [id, child] : blocks.children) {
                 if (child[1] == 'R') child[1] = 'E';
             }
@@ -684,7 +690,7 @@ void Transcript::finished(const ToolFinished& event) {
                 blocks.children.emplace_back("", std::string("\x1e") + (step.is_error ? "E" : "S") +
                                                  clean_field(step.summary) + "\t\t");
             rows = 10;
-            tasks_.push_back({v.agent, v.session_id, event.id, event.is_error || event.interrupted, v.seconds});
+            tasks_.push_back({v.agent, v.session_id, event.id, event.is_error || event.interrupted, v.seconds, blocks.task_description});
         }
     }, event.view);
     if (body.empty() && event.is_error) body = event.text;
@@ -716,7 +722,7 @@ void Transcript::refresh_task_title(ToolBlocks& blocks) {
     const auto steps = std::ranges::count_if(blocks.children, [](const auto& child) { return child.second[1] != 'R'; });
     const auto seconds = std::chrono::duration<double>(std::chrono::steady_clock::now() - blocks.began).count();
     blocks.label = "\x1e" + std::string(ui::text().card_task) + "\t" + blocks.task_agent + "\t" +
-        format_text(ui::text().card_task_stats, steps, blocks.children.size(), seconds) + "\t" + blocks.task_description;
+        task_stats(steps, blocks.children.size(), seconds) + "\t" + blocks.task_description;
     doc_.replace(blocks.title, blocks.label);
 }
 void Transcript::refresh_task_body(ToolBlocks& blocks) {

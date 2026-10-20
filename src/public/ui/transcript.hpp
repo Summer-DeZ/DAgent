@@ -21,6 +21,7 @@ public:
         std::string agent, session_id, call_id;
         bool failed = false;
         double seconds = 0;
+        std::string description = {};
     };
 
     explicit Transcript(tui::Document&, std::function<void(const TodoList&)> todo = {},

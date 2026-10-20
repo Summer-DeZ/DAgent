@@ -22,7 +22,7 @@ int text_width(std::string_view value) {
 
 class ToastStack::View final : public tui::Widget {
 public:
-    struct Entry { std::uint64_t id; tui::Notice::Severity severity; std::string text; };
+    struct Entry { std::uint64_t id; Severity severity; std::string text; };
     std::deque<Entry> entries;
     const tui::ThemeTokens* theme = &tui::dark_theme();
 
@@ -39,15 +39,15 @@ public:
             if (y + 2 >= surface.rows()) break;
             const int w = surface.cols();
             auto panel = [&](tui::Style style) { style.bg = theme->background_panel.bg; return style; };
-            const tui::Style border = panel(theme->border);
-            draw_frame(surface, {0, y, w, 3}, border);
-            std::string prefix = std::string(icons().dot) + " ";
-            tui::Style style = theme->text_muted;
-            if (entry.severity == tui::Notice::Severity::warn) { prefix = std::string(icons().warning) + " "; style = theme->warning; }
-            if (entry.severity == tui::Notice::Severity::error) { prefix = std::string(icons().cross) + " "; style = theme->error; }
-            style = panel(style);
-            int x = surface.text(2, y + 1, prefix, style);
-            surface.text(x, y + 1, fit_columns(entry.text, w - x - 2), style);
+            auto tone = theme->info;
+            auto icon = icons().toast_info;
+            if (entry.severity == Severity::success) { tone = theme->success; icon = icons().check; }
+            if (entry.severity == Severity::warning) { tone = theme->warning; icon = icons().toast_warning; }
+            if (entry.severity == Severity::error) { tone = theme->error; icon = icons().cross; }
+            surface.fill({0, y, w, 3}, U' ', theme->background_panel);
+            draw_frame(surface, {0, y, w, 3}, panel(tone));
+            int x = surface.text(2, y + 1, std::string(icon) + " ", panel(tone));
+            surface.text(x, y + 1, fit_columns(entry.text, w - x - 2), panel(theme->text));
             y += 4;
         }
     }
@@ -57,6 +57,10 @@ ToastStack::ToastStack(tui::Runtime& rt) : rt_(rt) {}
 ToastStack::~ToastStack() { if (overlay_) rt_.close_overlay(overlay_); }
 
 void ToastStack::show(tui::Notice::Severity severity, std::string text) {
+    show(severity == tui::Notice::Severity::warn ? Severity::warning :
+         severity == tui::Notice::Severity::error ? Severity::error : Severity::info, std::move(text));
+}
+void ToastStack::show(Severity severity, std::string text) {
     if (text.empty()) return;
     if (!view_) {
         auto view = std::make_unique<View>();

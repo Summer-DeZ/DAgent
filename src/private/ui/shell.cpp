@@ -1,6 +1,7 @@
 #include "ui/shell.hpp"
 
 #include "ui/strings.hpp"
+#include "ui/welcome.hpp"
 #include "ui/display.hpp"
 
 #include <algorithm>
@@ -140,6 +141,24 @@ private:
     const tui::ThemeTokens* theme_ = &tui::dark_theme();
 };
 
+// 重画完整基础层再混色，避免增量帧反复把已经变暗的前景再次混色。
+class Page final : public tui::Container {
+public:
+    std::function<bool()> modal;
+    std::function<void(tui::Surface&)> dim;
+    bool dirty_tree() const noexcept override {
+        return tui::Container::dirty_tree() || (modal && modal() != dimmed_);
+    }
+    void render(tui::Surface& surface) override {
+        invalidate_tree();
+        tui::Container::render(surface);
+        dimmed_ = modal && modal();
+        if (dimmed_) dim(surface);
+    }
+private:
+    bool dimmed_ = false;
+};
+
 class Workspace final : public tui::Container {
 public:
     Workspace() : tui::Container(Direction::horizontal) {}
@@ -156,8 +175,9 @@ public:
 
 class ScrollFrame final : public tui::Widget {
 public:
-    ScrollFrame() = default;
-    ~ScrollFrame() override { if (current_ != nullptr) disown(*current_); }
+    WelcomeView welcome;
+    ScrollFrame() { adopt(*this, welcome); }
+    ~ScrollFrame() override { disown(welcome); if (current_ != nullptr) disown(*current_); }
 
     /// 新建一个滚动区；第一个自动成为当前显示的那个。
     tui::Scrollback& create() {
@@ -191,8 +211,10 @@ public:
     void layout(tui::Rect area) override {
         tui::Widget::layout(area);
         if (current_ != nullptr) current_->layout({0, 0, area.w, area.h});
+        welcome.layout({0, 0, area.w, area.h});
     }
     void render(tui::Surface& surface) override {
+        if (welcome.visible) { welcome.render(surface); welcome.clear_dirty(); clear_dirty(); return; }
         if (current_ == nullptr) return;
         if (current_->dirty_tree()) {
             current_->render(surface); current_->clear_dirty();
@@ -205,13 +227,13 @@ public:
         clear_dirty();
     }
     bool dirty_tree() const noexcept override {
-        return dirty_ || (current_ != nullptr && current_->dirty_tree());
+        return dirty_ || (welcome.visible ? welcome.dirty_tree() : (current_ != nullptr && current_->dirty_tree()));
     }
     bool needs_layout() const noexcept override {
         return layout_dirty_ || (current_ != nullptr && current_->needs_layout());
     }
     void invalidate_tree() noexcept override {
-        invalidate();
+        invalidate(); welcome.invalidate_tree();
         if (current_ != nullptr) current_->invalidate_tree();
     }
     void invalidate_rect(tui::Rect rect) override {
@@ -219,6 +241,7 @@ public:
         Widget::invalidate_rect(rect);
     }
     tui::Widget* hit_test(tui::Point point) const noexcept override {
+        if (welcome.visible) return welcome.hit_test(point);
         if (current_ != nullptr) {
             if (auto* hit = current_->hit_test(point)) return hit;
         }
@@ -412,6 +435,8 @@ public:
         bind_active_mouse();
         tabs_->select = [this](size_t i) { show_pane(i); };
         rt_.bind_mouse(*tabs_, *tabs_);
+        rt_.bind_mouse(frame_->welcome, frame_->welcome);
+        prompt_.before_edit = [this](const tui::Event& e) { return welcome_event(e); };
         register_commands();
         apply_appearance(appearance_);
         rt_.on_caps([this](const tui::Terminal::Caps&) {
@@ -437,6 +462,7 @@ public:
         terminal_.restore();
         unbind_active_mouse();
         rt_.unbind_mouse(*tabs_);
+        rt_.unbind_mouse(frame_->welcome);
     }
 
     int run(std::stop_token stop) {
@@ -563,6 +589,7 @@ private:
         window_tokens_ = snapshot.context.window;
         mcp_states_ = decode_mcp(snapshot.mcp);
         side_->set_mcp(mcp_states_);
+        update_welcome();
         header_->trigger = snapshot.context.trigger_percent;
         side_->set_trigger(snapshot.context.trigger_percent);
         update_context(snapshot.context.used, snapshot.context.limit);
@@ -646,7 +673,9 @@ private:
         if (index == 0) return;
         auto decoded = decode_event(event);
         if (!decoded) return;
-        if (auto* started = std::get_if<TurnStarted>(&decoded->payload)) started->time = local_time();
+        if (auto* started = std::get_if<TurnStarted>(&decoded->payload)) {
+            started->time = local_time(); panes_[index].description = started->input;
+        }
         panes_[index].transcript->apply_live(*decoded);
         panes_.front().transcript->apply_child(call_id, *decoded, *panes_[index].transcript);
         if (const auto* ended = std::get_if<TurnEnded>(&decoded->payload)) {
@@ -657,6 +686,7 @@ private:
     }
 
     void apply_live(const Event& event, bool update_state) {
+        if (std::holds_alternative<TurnStarted>(event.payload)) hide_welcome();
         panes_.front().transcript->apply_live(event);
         std::visit(Overloaded{
                        [&](const TurnStarted&) {
@@ -777,6 +807,80 @@ private:
             if (id_ != id) return;
             branch_ = value.value("branch", "");
             header_->branch = branch_; header_->invalidate();
+            update_welcome();
+        });
+    }
+
+    void update_welcome() {
+        auto& view = frame_->welcome;
+        view.path = project_path_; view.branch = branch_; view.model = model_label_;
+        view.mode = mode_label(); view.mcp = mcp_states_; view.invalidate();
+    }
+    void hide_welcome() {
+        if (!frame_->welcome.visible) return;
+        frame_->welcome.visible = false; frame_->welcome.selected = -1;
+        frame_->invalidate_tree();
+    }
+    bool welcome_navigation() const {
+        return frame_->welcome.visible && !frame_->welcome.sessions.empty() &&
+               input_->text().empty() && snapshot_.queue.empty() && !busy_ && active_ == 0;
+    }
+    bool welcome_event(const tui::Event& e) {
+        auto& view = frame_->welcome;
+        if (view.visible && input_->text().empty() && e.mods == tui::Mods::none) {
+            if (e.key == tui::Key::page_up || e.key == tui::Key::page_down) {
+                view.scroll((e.key == tui::Key::page_up ? -1 : 1) * std::max(1, view.rect().h - 1)); return true;
+            }
+            if (e.key == tui::Key::home || e.key == tui::Key::end) {
+                view.top = e.key == tui::Key::home ? 0 : 64;
+                view.reveal_selection = false; view.invalidate(); return true;
+            }
+        }
+        if (welcome_navigation() && !completion_.visible() && e.mods == tui::Mods::none) {
+            const int count = static_cast<int>(view.sessions.size());
+            if (e.key == tui::Key::up || e.key == tui::Key::down) {
+                view.selected = view.selected < 0 ? (e.key == tui::Key::up ? count - 1 : 0)
+                    : (view.selected + (e.key == tui::Key::up ? count - 1 : 1)) % count;
+                view.reveal_selection = true; view.invalidate(); return true;
+            }
+            if (e.key == tui::Key::enter && view.selected >= 0) {
+                resume_session(view.sessions[view.selected].id); return true;
+            }
+        }
+        if (view.selected >= 0 && (e.kind == tui::Event::Kind::text || e.kind == tui::Event::Kind::paste)) {
+            view.selected = -1; view.invalidate();
+        }
+        return false;
+    }
+    void refresh_welcome() {
+        const auto id = id_;
+        request("session.list", {{"limit", 6}}, [this, id](const nlohmann::json& value) {
+            auto& view = frame_->welcome;
+            if (id != id_ || !view.visible) return;
+            view.sessions.clear();
+            for (const auto& session : value.value("sessions", nlohmann::json::array())) {
+                const auto title = session.value("title", "");
+                if (session.value("id", "") == id || title.empty() || view.sessions.size() == 5) continue;
+                const auto updated = std::chrono::system_clock::time_point(std::chrono::milliseconds(session.value("updated", std::int64_t{0})));
+                auto age = relative_age(updated);
+                const auto now = std::time(nullptr), then = std::chrono::system_clock::to_time_t(updated);
+                std::tm today{}, previous{}; localtime_r(&now, &today); localtime_r(&then, &previous);
+                auto midnight = today; midnight.tm_hour = midnight.tm_min = midnight.tm_sec = 0;
+                const auto today_start = std::mktime(&midnight);
+                --midnight.tm_mday; midnight.tm_isdst = -1;
+                const auto yesterday_start = std::mktime(&midnight);
+                if (then < today_start && then >= yesterday_start) age = ui::text().welcome_yesterday;
+                else if (then < yesterday_start) {
+                    age = format_text(ui::text().welcome_date, ui::text().welcome_months.substr(previous.tm_mon * 3, 3), previous.tm_mday);
+                }
+                view.sessions.push_back({session.value("id", ""), title, age});
+            }
+            view.selected = -1; view.invalidate();
+        });
+        request("memory.list", {}, [this, id](const nlohmann::json& value) {
+            if (id != id_ || !frame_->welcome.visible) return;
+            frame_->welcome.memories = value.value("entries", nlohmann::json::array()).size();
+            frame_->welcome.invalidate();
         });
     }
 
@@ -831,6 +935,7 @@ private:
         activity_->set_theme(theme_);
         queue_label_->set_theme(theme_); tabs_->set_theme(theme_);
         input_->set_theme(theme_); header_->set_theme(theme_); hints_->set_theme(theme_);
+        frame_->welcome.set_theme(theme_);
         side_->set_theme(theme_); toasts_.set_theme(theme_); panel_.set_theme(theme_);
         dialog_.set_theme(theme_); model_dialog_.set_theme(theme_); completion_.set_theme(theme_);
         settings_.set_theme(theme_);
@@ -873,7 +978,9 @@ private:
         auto side = std::make_unique<SidePanel>(); side_ = side.get();
         workspace->add({tui::Sizing::content}, std::move(side));
 
-        auto page = std::make_unique<tui::Container>();
+        auto page = std::make_unique<Page>();
+        page->modal = [this] { return panel_.visible() || settings_.active() || dialog_.active() || model_dialog_.active(); };
+        page->dim = [this](tui::Surface& surface) { dim_surface(surface, theme_, terminal_.caps().background); };
         auto header = std::make_unique<HeaderBar>(); header_ = header.get();
         page->add({tui::Sizing::content}, std::move(header));
         auto tabs = std::make_unique<AgentTabs>(); tabs_ = tabs.get();
@@ -930,8 +1037,11 @@ private:
         active_transcript().clear();
         side_->start_session(id_); header_->title.clear(); header_->invalidate();
         if (resumed) active_transcript().resumed(id_, messages, std::string(ui::text().panel_just_now));
-        else active_transcript().banner(DAGENT_VERSION, project_path_, branch_,
-                                        static_cast<int>(mcp_states_.size()));
+        // 新会话也有 system 历史记录；历史条目数不能用来判断是否已发送消息。
+        frame_->welcome.visible = !resumed;
+        frame_->welcome.selected = -1; frame_->welcome.top = 0; frame_->welcome.sessions.clear(); frame_->welcome.memories = 0;
+        update_welcome(); frame_->invalidate_tree();
+        if (frame_->welcome.visible) refresh_welcome();
         update_todo_status(terminal_.size().cols);
     }
 
@@ -945,6 +1055,7 @@ private:
         AgentState state = AgentState::running;
         Clock::time_point began = Clock::now();
         double seconds = 0;
+        std::string description = {};
     };
     void refresh_agents() {
         std::vector<AgentInfo> agents, tabs;
@@ -1027,6 +1138,7 @@ private:
         const std::size_t index = add_pane("task · " + task.agent, task.session_id, task.call_id);
         panes_[index].state = task.failed ? AgentState::failed : AgentState::done;
         panes_[index].seconds = task.seconds;
+        panes_[index].description = task.description;
         task_panes_[task.call_id] = index;
         show_pane(index);
         const std::string id = task.session_id;
@@ -1055,14 +1167,14 @@ private:
         for (std::size_t i = 1; i < panes_.size(); ++i) {
             seen.insert(panes_[i].session_id);
             rows.push_back({std::format("{}. {}", ++no, panes_[i].title),
-                            panes_[i].session_id.substr(0, 8),
+                            panes_[i].description,
                             active_ == i ? std::string(ui::text().panel_current) : "", true,
                             [this, i] { show_pane(i); }});
         }
         for (const Transcript::TaskRef& task : panes_[0].transcript->tasks()) {
             if (!seen.insert(task.session_id).second) continue;
             rows.push_back({std::format("{}. task · {}", ++no, task.agent),
-                            task.session_id.substr(0, 8), "", true,
+                            task.description, "", true,
                             [this, task] { open_task_pane(task); }});
         }
         panel_.open(std::string(ui::text().panel_agents), std::move(rows),
@@ -1094,6 +1206,7 @@ private:
         header_->mode = planning_ ? "plan" : mode_; header_->model = model_label_; header_->invalidate();
         input_->set_footer(mode_label(), model_label_, busy_);
         input_->set_footer_tone(!planning_ && mode_ == "unrestricted", planning_);
+        update_welcome();
     }
 
     void recall() {
@@ -1129,6 +1242,7 @@ private:
             toast(std::string(ui::text().toast_subview_readonly), tui::Notice::Severity::warn);
             return;
         }
+        hide_welcome();
         const auto submission = ++submission_seq_;
         submitted_.push_back({submission, text, local_time()});
         nlohmann::json params = target();
@@ -1223,14 +1337,16 @@ private:
         std::vector<Panel::Row> rows;
         for (const auto& command : keys_.commands()) {
             const auto meta = std::ranges::find_if(command_ui_, [&](const CommandUi& item) { return item.id == command.id; });
-            std::string right;
-            if (meta != command_ui_.end()) right = !meta->shortcut.empty() ? meta->shortcut : meta->alias;
             const bool enabled = !command.enabled || command.enabled();
-            rows.push_back({command.title, command.category, right, enabled,
-                            [this, id = command.id] { run_command(id); }});
+            rows.push_back({command.title, {}, meta == command_ui_.end() ? "" : meta->shortcut, enabled,
+                [this, id = command.id] { run_command(id); }, command.category,
+                meta == command_ui_.end() ? "" : meta->alias});
         }
-        panel_.open(std::string(ui::text().panel_commands), std::move(rows), std::string(ui::text().panel_command_footer));
+        panel_.open(std::string(ui::text().panel_commands), std::move(rows),
+                    format_text(ui::text().panel_command_footer, icons().up, icons().down),
+                    true, {}, {}, 0, {}, std::string(ui::text().panel_commands_noun));
     }
+
     void skill_panel() {
         panel_.open(std::string(ui::text().panel_skills),
                     {{std::string(ui::text().panel_loading), {}, {}, false, {}}},
@@ -1267,7 +1383,6 @@ private:
             std::vector<Panel::Row> rows;
             const auto entries = value.value("entries", nlohmann::json::array());
             for (const auto scope : {"global", "project"}) {
-                rows.push_back({scope == std::string_view("global") ? "Global" : "Project", {}, {}, false, {}});
                 bool found = false;
                 for (const auto& entry : entries) {
                     if (entry.value("scope", "") != scope) continue;
@@ -1275,9 +1390,9 @@ private:
                     const std::string name = entry.value("name", "");
                     rows.push_back({name, entry.value("description", ""),
                         entry.value("type", "") + " " + entry.value("updated", ""), true,
-                        [this, scope = std::string(scope), name] { memory_entry(scope, name); }});
+                        [this, scope = std::string(scope), name] { memory_entry(scope, name); }, scope});
                 }
-                if (!found) rows.push_back({"(no memories)", {}, {}, false, {}});
+                if (!found) rows.push_back({"(no memories)", {}, {}, false, {}, scope});
             }
             panel_.open("Memory", std::move(rows), "Enter view · Esc close");
         }, [this](const protocol::RpcError& error) { memory_error(error); });
@@ -1372,6 +1487,7 @@ private:
             workspace_->left = value.sidebar == "left"; workspace_->invalidate_layout();
             input_->set_appearance(value);
             queue_label_->outline = value.panels == "outline";
+            frame_->welcome.appearance = value; frame_->welcome.invalidate();
             for (auto& pane : panes_) {
                 pane.transcript->set_compact(value.density == "compact");
                 if (icons_changed) pane.transcript->refresh_icons();
@@ -1393,7 +1509,7 @@ private:
             [this](const Appearance& value) {
                 request("ui.appearance.save", {{"appearance", value.json()}},
                     [this](const nlohmann::json&) {
-                        settings_.saved(); toast(std::string(ui::text().settings_saved));
+                        settings_.saved(); toasts_.show(ToastStack::Severity::success, std::string(ui::text().settings_saved));
                     }, [this](const protocol::RpcError& error) {
                         settings_.failed(); toast(error.message, tui::Notice::Severity::error);
                     });
@@ -1419,10 +1535,12 @@ private:
             if (panes_.size() > 1) out.push_back(hint("ctrl+a", ui::text().hint_agents));
             return out;
         }
+        if (welcome_navigation()) return {hint(std::string(icons().up) + std::string(icons().down), ui::text().welcome_pick),
+            hint("ctrl+p", ui::text().hint_commands), hint("ctrl+c", ui::text().welcome_quit)};
         return {hint("ctrl+p", ui::text().hint_commands), hint("ctrl+t", ui::text().hint_sidebar), hint("shift+tab", ui::text().hint_mode)};
     }
 
-    void prompt_changed() { update_completion();  }
+    void prompt_changed() { frame_->welcome.selected = -1; frame_->welcome.invalidate(); update_completion(); }
     void update_completion() {
         const std::string value = input_->text();
         if (value.starts_with('/') && value.find('\n') == std::string::npos) {

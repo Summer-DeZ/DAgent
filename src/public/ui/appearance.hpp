@@ -23,11 +23,13 @@ struct Icons {
     std::string_view brand, branch, check, cross, current, dot, circle, folder, message, bar, meter, vertical, elbow;
     std::string_view horizontal, top_left, top_right, bottom_left, bottom_right, up, down, warning, minus, separator, enter, newline;
     std::array<std::string_view, 10> spinner;
+    std::string_view toast_info, toast_warning;
 };
 const Icons& icons();
 void set_icons(std::string_view);
 std::string compact_tokens(std::size_t);
 tui::Color diff_background(const tui::ThemeTokens&, bool added);
+void dim_surface(tui::Surface&, const tui::ThemeTokens&, std::optional<tui::Color> terminal);
 void draw_frame(tui::Surface&, tui::Rect, tui::Style);
 int chip_width(std::string_view, bool outline);
 int draw_chip(tui::Surface&, int x, int y, std::string_view, tui::Style,

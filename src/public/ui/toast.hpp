@@ -10,9 +10,11 @@ namespace dagent::ui {
 
 class ToastStack {
 public:
+    enum class Severity { info, success, warning, error };
     explicit ToastStack(tui::Runtime&);
     ~ToastStack();
     void show(tui::Notice::Severity, std::string text);
+    void show(Severity, std::string text);
     void set_theme(const tui::ThemeTokens&);
 
 private:

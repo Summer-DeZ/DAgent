@@ -6,6 +6,7 @@
 #include <algorithm>
 #include <cctype>
 #include <utility>
+#include "tui/grapheme.hpp"
 
 namespace dagent::ui {
 
@@ -15,8 +16,25 @@ public:
     std::string title, hint;
     const tui::ThemeTokens* theme = &tui::dark_theme();
 
+    struct Line { int pos; std::string group; };
+    std::vector<Line> lines() const {
+        std::vector<Line> out;
+        std::string previous;
+        for (int pos = 0; pos < static_cast<int>(owner->shown_.size()); ++pos) {
+            const auto& group = owner->rows_[owner->shown_[pos]].group;
+            if (!group.empty() && group != previous) {
+                if (!out.empty()) out.push_back({-1, {}});
+                auto title = group;
+                std::ranges::transform(title, title.begin(), [](unsigned char c) { return std::toupper(c); });
+                out.push_back({-1, std::move(title)});
+            }
+            out.push_back({pos, {}}); previous = group;
+        }
+        return out;
+    }
     tui::Size measure(tui::Size available) const override {
-        const int rows = static_cast<int>(owner->shown_.size()) + (owner->filter_ ? 4 : 3);
+        const int rows = static_cast<int>(lines().size()) + 2 +
+                         (owner->filter_ ? 2 + !owner->query_.empty() : 0);
         return {std::max(1, std::min(76, available.cols - 8)),
                 std::max(3, std::min(rows, available.rows * 3 / 5))};
     }
@@ -25,8 +43,7 @@ public:
         surface.fill({0, 0, w, h}, U' ', theme->background_panel);
         if (w < 4 || h < 3) return;
         auto panel = [&](tui::Style style) { style.bg = theme->background_panel.bg; return style; };
-        const tui::Style border = panel(theme->border_active);
-        draw_frame(surface, {0, 0, w, h}, border);
+        draw_frame(surface, {0, 0, w, h}, panel(theme->border_active));
         surface.text(2, 0, fit_columns(" " + title + " ", w - 4), panel(theme->text));
         const std::string footer = fit_columns(" " + hint + " ", w - 4);
         surface.text((w - display_width(footer)) / 2, h - 1, footer, panel(theme->text_muted));
@@ -35,27 +52,58 @@ public:
             surface.text(2, y++, fit_columns(std::string(ui::text().panel_search) + owner->query_, w - 4), panel(theme->text_muted));
             ++y;
         }
-        const int visible = std::max(0, h - y - 1);
-        int first = 0;
-        if (owner->selected_ >= visible) first = owner->selected_ - visible + 1;
-        for (int pos = first; pos < static_cast<int>(owner->shown_.size()) && y < h - 1; ++pos, ++y) {
-            const Row& row = owner->rows_[static_cast<std::size_t>(owner->shown_[pos])];
-            const bool selected = pos == owner->selected_;
+        const bool count = owner->filter_ && !owner->query_.empty();
+        const int end = h - 1 - (count ? 1 : 0);
+        if (count) surface.text(2, end, fit_columns(format_text(ui::text().panel_count,
+            owner->shown_.size(), owner->rows_.size(), owner->noun_), w - 4), panel(theme->text_muted));
+        const auto visual = lines();
+        int selected_line = 0;
+        for (int i = 0; i < static_cast<int>(visual.size()); ++i)
+            if (visual[i].pos == owner->selected_) selected_line = i;
+        const int first = std::max(0, selected_line - std::max(0, end - y) + 1);
+        int alias_width = 0;
+        for (const int index : owner->shown_) {
+            alias_width = std::max(alias_width, display_width(owner->rows_[index].alias));
+        }
+        alias_width = std::min(alias_width, std::max(0, (w - 6) / 4));
+        for (int i = first; i < static_cast<int>(visual.size()) && y < end; ++i, ++y) {
+            const auto& line = visual[i];
+            if (line.pos < 0) {
+                surface.text(2, y, fit_columns(line.group, w - 4), panel(theme->text_muted)); continue;
+            }
+            const Row& row = owner->rows_[owner->shown_[line.pos]];
+            const int right_width = std::min(display_width(row.right), std::max(0, (w - 6) / 3));
+            const int right_col = w - 2 - right_width;
+            const int alias_col = right_col - (right_width ? 2 : 0) - alias_width;
+            const int content_end = alias_col - (alias_width ? 2 : 0);
+            const bool selected = line.pos == owner->selected_ && row.enabled;
             if (selected) surface.fill({1, y, w - 2, 1}, U' ', theme->background_element);
-            auto row_style = [&](tui::Style style) {
-                style.bg = selected ? theme->background_element.bg : theme->background_panel.bg;
-                return style;
+            auto style = [&](tui::Style value) {
+                value.bg = selected ? theme->background_element.bg : theme->background_panel.bg; return value;
             };
-            surface.text(1, y, selected ? icons().bar : " ", row_style(selected ? theme->primary : theme->text_muted));
-            const tui::Style style = row_style(row.enabled ? theme->text : theme->text_muted);
-            const std::string right = fit_columns(row.right, std::max(0, (w - 4) / 3));
-            const int right_col = w - 2 - display_width(right);
-            const int label_end = !row.middle.empty() ? w / 2 - 2
-                                : !right.empty() ? right_col - 2 : w - 2;
-            surface.text(2, y, fit_columns(row.label, label_end - 2), style);
-            if (!row.middle.empty()) surface.text(w / 2, y,
-                fit_columns(row.middle, right_col - w / 2 - 2), row_style(theme->text_muted));
-            if (!right.empty()) surface.text(right_col, y, right, row_style(theme->text_muted));
+            surface.text(1, y, selected ? icons().bar : " ", style(theme->primary));
+            const int room = std::max(0, content_end - 2);
+            const int label_room = row.middle.empty() ? room : std::min(room, std::max(room / 2, std::min(display_width(row.label), room * 2 / 3)));
+            const auto label = fit_columns(row.label, label_room);
+            std::string folded = row.label, needle = owner->query_;
+            const auto lower = [](unsigned char c) { return std::tolower(c); };
+            std::ranges::transform(folded, folded.begin(), lower);
+            std::ranges::transform(needle, needle.begin(), lower);
+            const auto hit = needle.empty() ? std::string::npos : folded.find(needle);
+            std::string_view rest = label;
+            tui::unicode::Grapheme g;
+            int x = 2; size_t offset = 0;
+            while (tui::unicode::next_grapheme(rest, g)) {
+                auto tone = row.enabled ? theme->text : theme->text_muted;
+                if (hit != std::string::npos && offset < hit + needle.size() && offset + g.bytes.size() > hit) {
+                    tone = theme->primary; tone.attrs = tone.attrs | tui::Attr::bold;
+                }
+                surface.put(x, y, g.bytes, style(tone)); x += g.width; offset += g.bytes.size();
+            }
+            if (!row.middle.empty()) surface.text(x + 2, y, fit_columns(row.middle, content_end - x - 2), style(theme->text_muted));
+            surface.text(alias_col, y, fit_columns(row.alias, alias_width), style(theme->text_muted));
+            const auto right = fit_columns(row.right, right_width);
+            surface.text(w - 2 - display_width(right), y, right, style(theme->text_muted));
         }
     }
 };
@@ -65,15 +113,15 @@ Panel::~Panel() { on_close_ = {}; close(); }
 void Panel::open(std::string title, std::vector<Row> rows, std::string hint,
                  bool filter, std::function<void(int)> on_highlight,
                  std::function<void(bool)> on_close, int initial_row,
-                 std::function<void()> on_add) {
+                 std::function<void()> on_add, std::string noun) {
     close(); rows_ = std::move(rows); filter_ = filter; on_highlight_ = std::move(on_highlight);
     on_close_ = std::move(on_close); on_add_ = std::move(on_add);
-    query_.clear(); selected_ = 0;
+    query_.clear(); selected_ = 0; noun_ = noun.empty() ? std::string(ui::text().panel_items) : std::move(noun);
     auto view = std::make_unique<View>(); view_ = view.get(); view_->owner = this;
     view_->title = std::move(title); view_->hint = std::move(hint); view_->theme = &theme_;
     refilter();
     if (initial_row >= 0 && initial_row < static_cast<int>(shown_.size()) && rows_[initial_row].enabled)
-        selected_ = initial_row;
+        selected_ = static_cast<int>(std::ranges::find(shown_, initial_row) - shown_.begin());
     overlay_ = rt_.open_overlay(std::move(view), tui::Placement::center, {}, this);
 }
 void Panel::close(bool committed) {
@@ -95,6 +143,12 @@ void Panel::refilter() {
         std::ranges::transform(label, label.begin(), [](unsigned char c) { return std::tolower(c); });
         if (needle.empty() || label.find(needle) != std::string::npos) shown_.push_back(i);
     }
+    std::vector<std::string> groups;
+    for (const int index : shown_)
+        if (std::ranges::find(groups, rows_[index].group) == groups.end()) groups.push_back(rows_[index].group);
+    std::stable_sort(shown_.begin(), shown_.end(), [&](int a, int b) {
+        return std::ranges::find(groups, rows_[a].group) < std::ranges::find(groups, rows_[b].group);
+    });
     selected_ = 0;
     while (selected_ < static_cast<int>(shown_.size()) &&
            !rows_[static_cast<std::size_t>(shown_[selected_])].enabled) ++selected_;
