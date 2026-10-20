@@ -512,18 +512,21 @@ unrestricted 的输入框模式 Chip 使用 error，plan 使用 accent；普通�
 
 WelcomeView 在输入框上方的 transcript 区域内水平、垂直居中，独立于 `ui.layout.width`。
 欢迎块固定 76 列；主区可用宽度不足 80 列时取可用宽度减 4，两侧各留至少 2 列。
-内容超高时依次省略字标、版本与标语行、SHORTCUTS（仅在 RECENT 显示时）、信息卡中的 mcp / memory，
+comfortable 下各块拉开：字标与说明行之间隔 1 行，说明、信息卡、RECENT / SHORTCUTS 之间各隔 2 行，
+信息卡内上下各留 1 行、左右各留 2 列；SHORTCUTS 的按键列与说明之间至少 3 列，RECENT 列宽 42。
+compact 取消这些额外间距。内容超高时先收紧为单行间距且信息卡不留上下空行，
+再依次省略字标、版本与标语行、SHORTCUTS（仅在 RECENT 显示时）、信息卡中的 mcp / memory，
 每步重新计算高度，能容纳就停止省略；省略顶部内容时同时移除其后的空行。
 仍超高才从顶部显示并滚动，不裁掉不可见的后半部分；80×24 下优先让信息卡与 RECENT 无需滚动即可看到。
 
-块顶部居中显示两行 accent 加粗字标：
+块顶部居中显示两行 primary 加粗字标：
 
 ```text
 █▀▄ ▄▀▄ █▀▀ █▀▀ █▄ █ ▀█▀
 █▄▀ █▀█ █▄█ ██▄ █ ▀█  █
 ```
 
-块宽不足 30 列时为 `◆ DAgent`，ASCII 图标集时为 `* DAgent`，仍用 accent 加粗。
+块宽不足 30 列时为 `◆ DAgent`，ASCII 图标集时为 `* DAgent`，仍用 primary 加粗。
 区域高度放不下完整欢迎块时省略字标行。其下为 `v<version> · a coding agent that lives in your terminal`，
 版本与句子使用 text_muted，分隔符使用 text_faint；始终保持单行，窄宽度用省略号截断。
 若连版本、分隔符、一个句子字符与省略号都放不下，则只保留版本（极窄时版本也按宽度截断）。

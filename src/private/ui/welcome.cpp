@@ -15,7 +15,10 @@ void WelcomeView::render(tui::Surface& s) {
     s.fill({0, 0, s.cols(), s.rows()}, U' ', t.background);
     const int w = std::min(76, std::max(0, s.cols() - 4));
     if (w == 0 || s.rows() == 0) return;
-    const int gap = appearance.density == "compact" ? 0 : 1;
+    const bool compact = appearance.density == "compact";
+    const int gap = compact ? 0 : 1;
+    // comfortable 下各块拉开：字标与说明隔 1 行，大块之间隔 2 行，信息卡内上下各留 1 行。
+    int logo_gap = gap, section = compact ? 0 : 2, card_pad = compact ? 0 : 1;
     const auto style = [&](tui::Style value) { value.bg = t.background.bg; return value; };
     const auto wrap = [](std::string_view value, int width) {
         std::vector<std::string_view> rows;
@@ -58,15 +61,16 @@ void WelcomeView::render(tui::Surface& s) {
     int logo_height = small_logo ? 1 : 2;
     int card_height = 0, columns_height = 0;
     const auto height = [&] {
-        card_height = static_cast<int>((fields.size() + 1) / 2) + 2;
+        card_height = static_cast<int>((fields.size() + 1) / 2) + 2 + 2 * card_pad;
         columns_height = show_shortcuts
             ? (recent && stacked ? recent_height + gap + shortcuts_height : std::max(recent_height, shortcuts_height))
             : recent_height;
-        const int header_height = logo_height + (show_tagline ? 1 : 0);
-        return header_height + (header_height ? gap : 0) + card_height + gap + columns_height
+        const int header_height = logo_height + (show_tagline ? 1 + (logo_height ? logo_gap : 0) : 0);
+        return header_height + (header_height ? section : 0) + card_height + section + columns_height
             + (notice_rows.empty() ? 0 : gap + static_cast<int>(notice_rows.size()));
     };
     content_rows = height();
+    if (content_rows > s.rows()) { logo_gap = 0; section = gap; card_pad = 0; content_rows = height(); }
     if (content_rows > s.rows()) { logo_height = 0; content_rows = height(); }
     if (content_rows > s.rows()) { show_tagline = false; content_rows = height(); }
     if (content_rows > s.rows() && recent) { show_shortcuts = false; content_rows = height(); }
@@ -86,6 +90,7 @@ void WelcomeView::render(tui::Surface& s) {
         }
     }
     if (show_tagline) {
+        if (y) y += logo_gap;
         const int x = (w - display_width(subtitle)) / 2;
         body.text(x, y, subtitle, style(t.text_muted));
         const auto separator = subtitle.find(icons().separator);
@@ -93,22 +98,22 @@ void WelcomeView::render(tui::Surface& s) {
             body.text(x + display_width(std::string_view(subtitle).substr(0, separator)), y, icons().separator, style(t.text_faint));
         ++y;
     }
-    if (y) y += gap;
+    if (y) y += section;
     draw_frame(body, {0, y, w, card_height}, style(t.border));
-    const int field_width = std::max(0, (w - 6) / 2);
+    const int field_width = std::max(0, (w - 8) / 2);
     int key_width = 0;
     for (const auto& field : fields) key_width = std::max(key_width, display_width(field.key));
     for (int i = 0; i < static_cast<int>(fields.size()); ++i) {
         const auto& field = fields[i];
-        const int x = 2 + (i % 2) * (field_width + 2), row = y + 1 + i / 2;
+        const int x = 3 + (i % 2) * (field_width + 2), row = y + 1 + card_pad + i / 2;
         body.text(x, row, fit_columns(field.key, std::min(key_width, field_width)), style(t.text_muted));
         body.text(x + key_width + 2, row, fit_columns(field.value, field_width - key_width - 2), style(field.tone));
     }
-    y += card_height + gap;
+    y += card_height + section;
 
     int selection_y = -1;
     if (recent) {
-        const int width = std::min(44, w), x = stacked || !show_shortcuts ? (w - width) / 2 : 0;
+        const int width = std::min(42, w), x = stacked || !show_shortcuts ? (w - width) / 2 : 0;
         body.text(x, y, fit_columns(text().welcome_recent, width), style(t.text_muted));
         for (int i = 0; i < static_cast<int>(sessions.size()); ++i) {
             const int row = y + 1 + i;
@@ -128,13 +133,13 @@ void WelcomeView::render(tui::Surface& s) {
         body.text(x, y + recent_height - 1, fit_columns(hint, width), style(t.text_faint));
     }
     if (show_shortcuts) {
-        const int shortcuts_width = std::min(29, w);
+        const int shortcuts_width = std::min(31, w);
         const int shortcuts_x = recent && !stacked ? w - shortcuts_width : (w - shortcuts_width) / 2;
         int shortcuts_y = y + (recent && stacked ? recent_height + gap : 0);
         body.text(shortcuts_x, shortcuts_y++, fit_columns(text().welcome_shortcuts, shortcuts_width), style(t.text_muted));
         for (const auto& [key, description] : shortcuts) {
             body.text(shortcuts_x, shortcuts_y, fit_columns(key, std::min(9, shortcuts_width)), style(t.text));
-            body.text(shortcuts_x + 10, shortcuts_y++, fit_columns(description, shortcuts_width - 10), style(t.text_muted));
+            body.text(shortcuts_x + 12, shortcuts_y++, fit_columns(description, std::max(0, shortcuts_width - 12)), style(t.text_muted));
         }
     }
     y += columns_height;
