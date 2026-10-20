@@ -1,4 +1,5 @@
 #include "runtime/runtime.hpp"
+#include "runtime/snapshot_projection.hpp"
 #include "runtime/subagent.hpp"
 
 #include <algorithm>
@@ -9,7 +10,6 @@
 #include "agent/run.hpp"
 #include "agent/turn_runner.hpp"
 #include "base/log.hpp"
-#include "base/overloaded.hpp"
 #include "base/text.hpp"
 
 namespace dagent::runtime {
@@ -105,36 +105,13 @@ std::string Runtime::next_input_id() { return std::format("in-{}", ++input_seq_)
 std::string Runtime::next_run_id() { return std::format("run-{}", ++run_seq_); }
 
 void Runtime::refresh_snapshot(SessionInstance& instance) {
-    agent::Session& session = instance.session();
-    RuntimeSnapshot next;
-    next.session_id = session.meta().id;
-    next.model = session.config().provider;
-    next.trigger_percent = session.config().options.context.compaction_trigger_percent;
-    next.window_tokens = session.config().options.context.window_tokens;
-    next.cwd = session.config().cwd;
-    next.project_root = session.config().project_root;
-    const agent::SessionSnapshot values = session.snapshot(); // 执行线程上的即时值
-    next.permission_mode = values.permission_mode;
-    next.planning = values.planning;
-    next.read_only = values.read_only;
-    next.used_tokens = values.used_tokens;
-    next.token_limit = values.token_limit;
-    next.work_plan = values.plan;
-    next.grants = values.grants;
-    next.recording_broken = session.committer().broken();
-    next.recording_error = session.committer().error();
+    RuntimeSnapshot next = detail::snapshot_from_session(instance);
 
     {
         const std::lock_guard lock(mutex_);
-        next.generation = generation_;
-        next.busy = state_ == State::executing || state_ == State::replacing;
+        write_control_snapshot_locked(next);
         next.pending_permission_confirmation = pending_permission_;
         next.pending_permission_entry = pending_permission_entry_;
-        for (const QueueEntry& entry : queue_) next.queue.push_back(entry.input);
-        if (run_) {
-            next.operation = run_->operation;
-            next.run_id = run_->id;
-        }
     }
     const std::lock_guard lock(publish_mutex_);
     snapshot_ = std::move(next);
@@ -143,15 +120,19 @@ void Runtime::refresh_snapshot(SessionInstance& instance) {
 void Runtime::sync_control_snapshot() {
     const std::lock_guard lock(mutex_);
     const std::lock_guard publish(publish_mutex_);
-    snapshot_.generation = generation_;
-    snapshot_.busy = state_ == State::executing || state_ == State::replacing;
-    snapshot_.queue.clear();
-    for (const QueueEntry& entry : queue_) snapshot_.queue.push_back(entry.input);
-    snapshot_.operation.clear();
-    snapshot_.run_id.clear();
+    write_control_snapshot_locked(snapshot_);
+}
+
+void Runtime::write_control_snapshot_locked(RuntimeSnapshot& target) const {
+    target.queue.clear();
+    target.operation.clear();
+    target.run_id.clear();
+    target.generation = generation_;
+    target.busy = state_ == State::executing || state_ == State::replacing;
+    for (const QueueEntry& entry : queue_) target.queue.push_back(entry.input);
     if (run_) {
-        snapshot_.operation = run_->operation;
-        snapshot_.run_id = run_->id;
+        target.operation = run_->operation;
+        target.run_id = run_->id;
     }
 }
 
@@ -178,7 +159,7 @@ void Runtime::publish(EventPayload payload, const std::string& session_id,
         event.session_id = session_id;
         event.generation = generation;
         event.payload = std::move(payload);
-        apply_to_snapshot(event);
+        detail::apply_snapshot_event(snapshot_, event);
         if (frontend_) frontend_->event(event);
     }
 }
@@ -192,34 +173,6 @@ void Runtime::publish_control(ControlEvent event) {
         generation = generation_;
     }
     publish(EventPayload{std::move(event)}, session_id, generation);
-}
-
-void Runtime::apply_to_snapshot(const Event& event) {
-    // EventPayload 是 variant<agent::Event, ControlEvent>：核心事件要先取出内层 variant 再分派，
-    // 否则快照字段不会随实时事件更新（前端按快照显示标签，必须保持一致）。
-    const auto* core = std::get_if<agent::Event>(&event.payload);
-    if (core == nullptr) return;
-    std::visit(base::Overloaded{
-                   [&](const agent::ContextUpdate& update) {
-                       snapshot_.used_tokens = update.used;
-                       snapshot_.token_limit = update.limit;
-                   },
-                   [&](const agent::ModeChanged& mode) {
-                       snapshot_.planning = mode.planning;
-                       snapshot_.permission_mode =
-                           mode.mode == "ask" ? agent::PermissionMode::ask
-                           : mode.mode == "unrestricted" ? agent::PermissionMode::unrestricted
-                                                         : agent::PermissionMode::workspace;
-                       if (mode.planning) snapshot_.read_only = true;
-                   },
-                   [&](const agent::ModelChanged& model) { snapshot_.model.model = model.model; },
-                   [&](const agent::ToolFinished& finished) {
-                       if (const auto* plan = std::get_if<agent::TodoView>(&finished.result.display))
-                           snapshot_.work_plan = *plan;
-                   },
-                   [&](const auto&) {},
-               },
-               *core);
 }
 
 void Runtime::finalize_execution() {

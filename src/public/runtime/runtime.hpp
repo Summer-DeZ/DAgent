@@ -131,11 +131,12 @@ private:
     void publish(EventPayload payload, const std::string& session_id, std::uint64_t generation);
     void publish_control(ControlEvent event);
     void sync_control_snapshot();
+    /// 调用方持有 mutex_；只填写共用控制字段，不写 pending permission。
+    void write_control_snapshot_locked(RuntimeSnapshot& target) const;
     /// @brief 模式/上限变化后：收窄子会话并终止不再被当前策略覆盖的活跃执行。
     void apply_permission_change(SessionInstance& instance);
     void finalize_execution();
     void refresh_snapshot(SessionInstance& instance);
-    void apply_to_snapshot(const Event& event);
     std::string next_input_id();
     std::string next_run_id();
 

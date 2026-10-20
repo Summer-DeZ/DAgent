@@ -292,6 +292,7 @@ target_link_libraries(dagent_client PUBLIC dagent_protocol dagent_ipc dagent_bas
 add_library(dagent_runtime STATIC
     private/runtime/interaction.cpp
     private/runtime/session_control.cpp
+    private/runtime/snapshot_projection.cpp
     private/runtime/subagent.cpp
     private/runtime/runtime.cpp
 )

@@ -100,6 +100,19 @@ new/resume/切模型先在旧会话空闲时准备候选（`PendingReplace`）�
 `RuntimeSnapshot` 是面向前端的只读状态：session_id、generation、公开模型、权限档/planning/read_only、busy 与当前操作
 （turn/compact/replacing + run_id）、排队输入、上下文用量与窗口、项目路径、WorkPlan、MCP 状态、记录 broken、会话授权。
 
+会话与事件投影位于 `src/public/runtime/snapshot_projection.hpp` 和
+`src/private/runtime/snapshot_projection.cpp`，命名空间为 `dagent::runtime::detail`。
+`snapshot_from_session` 读取完整会话状态；`apply_snapshot_event` 只更新事件涉及的字段。
+两者共用用量及 mode/planning 的填写函数，但完整刷新覆盖 read_only，ModeChanged 仅在进入规划模式时将其置为 true；
+ModelChanged 仍只更新模型标识，ToolFinished 仅在结果包含 TodoView 时更新计划。
+投影函数不获取 Runtime 锁、不发布事件、不读取调度状态。
+
+`refresh_snapshot` 在 Runtime 锁外完成会话投影，再持 `mutex_` 调用
+`write_control_snapshot_locked` 并填写 pending permission，释放后持 `publish_mutex_` 替换快照。
+`sync_control_snapshot` 保持同时持有 `mutex_ → publish_mutex_`，直接调用同一控制字段函数，
+不更新 pending permission。控制字段函数先清空 queue/operation/run_id，再填写 generation、busy、队列及当前操作；
+它自身不加锁，由调用方保证锁边界。
+
 控制器用一把发布锁完成「应用事件到快照、交给 `EventSink`」。线上 seq/state_seq 仅由 backend Publisher 分配；
 runtime 不维护重复计数。事件载荷是核心 `agent::Event` 或 runtime 自己的 `ControlEvent`：
 
