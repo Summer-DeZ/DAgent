@@ -5,7 +5,6 @@
 #include "ui/display.hpp"
 
 #include <algorithm>
-#include <cctype>
 #include <cstdlib>
 #include <ctime>
 #include <expected>
@@ -27,7 +26,7 @@
 #include "tui/document.hpp"
 #include "ui/approval.hpp"
 #include "ui/center.hpp"
-#include "ui/completion.hpp"
+#include "ui/completion_controller.hpp"
 #include "ui/model_dialog.hpp"
 #include "ui/model_picker.hpp"
 #include "ui/panel.hpp"
@@ -292,22 +291,6 @@ std::string relative_age(std::chrono::system_clock::time_point when) {
     return format_text(ui::text().panel_days, seconds / 86400);
 }
 
-std::vector<int> subsequence_hits(std::string_view query, std::string_view value) {
-    std::vector<int> hits;
-    std::size_t from = 0;
-    for (const char raw : query) {
-        const char target = static_cast<char>(std::tolower(static_cast<unsigned char>(raw)));
-        std::size_t index = from;
-        while (index < value.size() &&
-               static_cast<char>(std::tolower(static_cast<unsigned char>(value[index]))) != target)
-            ++index;
-        if (index == value.size()) break;
-        hits.push_back(static_cast<int>(index++));
-        from = index;
-    }
-    return hits;
-}
-
 /// @brief 只读历史分页：每页结果经 rt.post 回到渲染线程；关闭/离开时释放未读完游标。
 class HistoryPager : public std::enable_shared_from_this<HistoryPager> {
 public:
@@ -449,7 +432,23 @@ public:
               [this] { refresh_models(); refresh_snapshot(); },
               [this](ToastStack::Severity severity, std::string message) { toasts_.show(severity, std::move(message)); }
           }),
-          completion_(rt_, *input_, [this] { completion_kind_.clear(); }),
+          completion_(rt_, *input_, {
+              [this](std::string method, nlohmann::json params, CompletionController::Done done) {
+                  request(std::move(method), std::move(params), std::move(done));
+              },
+              [this] { return id_; },
+              [this] {
+                  std::vector<CompletionController::Command> commands;
+                  for (const auto& meta : command_ui_) {
+                      const auto command = std::ranges::find_if(keys_.commands(), [&](const tui::Command& item) {
+                          return item.id == meta.id;
+                      });
+                      commands.push_back({meta.alias, command == keys_.commands().end() ? "" : command->title});
+                  }
+                  return commands;
+              },
+              [this](std::string text) { submit(std::move(text)); }
+          }),
           branch_(std::move(branch)), project_root_(std::move(project_root)) {
         apply_snapshot(initial);
         project_path_ = display_path(project_root_);
@@ -498,7 +497,6 @@ public:
             gate_->open = false;
         }
         model_picker_.close();
-        rt_.cancel(file_debounce_);
         rt_.cancel(git_debounce_);
         terminal_.restore();
         unbind_active_mouse();
@@ -1725,86 +1723,7 @@ private:
         return out;
     }
 
-    void prompt_changed() { frame_->welcome.selected = -1; frame_->welcome.invalidate(); update_completion(); }
-    void update_completion() {
-        const std::string value = input_->text();
-        if (value.starts_with('/') && value.find('\n') == std::string::npos) {
-            if (completion_kind_ != "command") {
-                completion_kind_ = "command";
-                completion_.open(std::string(ui::text().panel_commands), [this](std::string_view query, auto done) {
-                    std::vector<Completion::Item> items;
-                    for (const auto& meta : command_ui_) {
-                        if (meta.alias.empty() || !meta.alias.starts_with(query)) continue;
-                        const auto command = std::ranges::find_if(keys_.commands(), [&](const tui::Command& item) {
-                            return item.id == meta.id;
-                        });
-                        items.push_back({meta.alias, meta.alias,
-                                         command == keys_.commands().end() ? "" : command->title, {}});
-                    }
-                    done(std::move(items));
-                }, std::string(ui::text().panel_complete_footer),
-                [this](const Completion::Item& item, bool tab) {
-                    input_->set_text(tab ? item.value : "");
-                    if (!tab) submit(item.value);
-                });
-            }
-            completion_.refresh(value); return;
-        }
-        const std::size_t token = value.find_last_of(" \t\r\n");
-        const std::size_t begin = token == std::string::npos ? 0 : token + 1;
-        if (begin < value.size() && value[begin] == '$') {
-            if (completion_kind_ != "skill") {
-                completion_kind_ = "skill";
-                completion_.open(std::string(ui::text().panel_skills), [this](std::string_view query, auto done) {
-                    request("skills.list", {}, [query = std::string(query), done = std::move(done)](const nlohmann::json& value) mutable {
-                        std::vector<Completion::Item> items;
-                        for (const auto& skill : value.value("skills", nlohmann::json::array())) {
-                            const std::string name = skill.value("name", "");
-                            const auto hits = subsequence_hits(query, name);
-                            if (query.empty() || hits.size() == query.size())
-                                items.push_back({"$" + name, name, skill.value("description", ""), hits});
-                        }
-                        done(std::move(items));
-                    });
-                }, std::string(ui::text().panel_skill_footer),
-                [this](const Completion::Item& item, bool) {
-                    std::string text = input_->text();
-                    const std::size_t split = text.find_last_of(" \t\r\n");
-                    text.erase(split == std::string::npos ? 0 : split + 1);
-                    text += item.value + " "; input_->set_text({}); input_->insert(text);
-                });
-            }
-            completion_.refresh(std::string_view(value).substr(begin + 1)); return;
-        }
-        if (begin < value.size() && value[begin] == '@') {
-            if (completion_kind_ != "file") {
-                completion_kind_ = "file";
-                completion_.open(std::string(ui::text().panel_files), [this](std::string_view query, auto done) {
-                    rt_.cancel(file_debounce_);
-                    file_debounce_ = rt_.after(80ms, [this, query = std::string(query), done = std::move(done)]() mutable {
-                        nlohmann::json params{{"session_id", id_}, {"text", query}, {"limit", 8}};
-                        request("workspace.complete", std::move(params), [done = std::move(done), query](const nlohmann::json& value) mutable {
-                            std::vector<Completion::Item> items;
-                            for (const auto& candidate : value.value("candidates", nlohmann::json::array())) {
-                                const std::string path = candidate.value("path", "");
-                                items.push_back({path, path, {}, subsequence_hits(query, path)});
-                            }
-                            done(std::move(items));
-                        });
-                    });
-                }, std::string(ui::text().panel_file_footer),
-                [this](const Completion::Item& item, bool) {
-                    std::string text = input_->text();
-                    const std::size_t split = text.find_last_of(" \t\r\n");
-                    text.erase(split == std::string::npos ? 0 : split + 1);
-                    text += item.value + " "; input_->set_text(std::move(text));
-                });
-            }
-            completion_.refresh(std::string_view(value).substr(begin + 1)); return;
-        }
-        completion_.close();
-    }
-
+    void prompt_changed() { frame_->welcome.selected = -1; frame_->welcome.invalidate(); completion_.update(); }
     void interrupt() {
         if (!busy_) return;
         const nlohmann::json params = target();
@@ -1972,8 +1891,8 @@ private:
     SettingsDialog settings_;
     ModelPicker model_picker_;
     std::string interaction_kind_;
-    Completion completion_;
-    std::string id_, error_, project_path_, branch_, completion_kind_;
+    CompletionController completion_;
+    std::string id_, error_, project_path_, branch_;
     std::filesystem::path project_root_;
     std::string active_interaction_, model_name_, model_label_;
     bool permission_prompt_ = false; ///< 本会话已就当前 pending 弹出过确认框
@@ -1990,7 +1909,7 @@ private:
     std::vector<Submitted> submitted_;
     std::size_t submission_seq_ = 0;
     std::optional<Clock::time_point> last_cancel_;
-    tui::TimerId activity_timer_ = 0, mcp_timer_ = 0, file_debounce_ = 0;
+    tui::TimerId activity_timer_ = 0, mcp_timer_ = 0;
     bool busy_ = false, exiting_ = false, signal_exit_ = false;
 };
 

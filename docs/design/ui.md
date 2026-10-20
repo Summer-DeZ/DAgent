@@ -32,6 +32,7 @@ phase 5c 的自适应阅读宽度、双侧分节栏、导航焦点与 Layout 设
 | `Chip` / `appearance` | 标签绘制、外观令牌变换、统一 Unicode/Nerd/ASCII 图标表 |
 | `SettingsDialog` | Appearance / Layout、分节移动和排序、即时预览、后端保存与撤回 |
 | `Completion` | `/` 命令、`@` 文件和 `$` 技能的贴输入框补全浮层 |
+| `CompletionController` | 拥有 Completion、当前补全类型及文件防抖计时器，负责来源请求、筛选与选中后的输入替换 |
 | `Panel` | 支持分组、匹配高亮、别名与快捷键列的居中列表浮层；可选详情栏、状态行、来源页脚与行颜色 |
 | `ModelPicker` | 两栏模型选择、OpenCode Go 设备登录和提供方模型清单；只经 RPC 操作 |
 | `WelcomeView` | 居中新会话起始页：字标、项目信息卡、可恢复的最近会话与快捷键 |
@@ -275,7 +276,14 @@ token 数为零时只显示阶段与耗时（如 `Working · 0.1s`）；有输�
 | Ctrl+? | Keys and commands（帮助面板） |
 | PgUp/PgDn、Home/End | Page up/down、Go to top/bottom（翻页、回顶、回底） |
 
-输入是单行且以 `/` 开头时，Completion 从 Shell 注册的命令表按前缀过滤。Tab 只补全，Enter 直接执行，
+输入补全控制位于 `ui/completion_controller.hpp` / `private/ui/completion_controller.cpp`。
+Shell 注入现有 Runtime、PromptBox，以及 RPC、当前会话 ID、命令数据和提交回调；控制器不持有 Shell。
+命令数据按需从 Shell 的同一份命令表生成，保留注册顺序，不新增持久命令目录。
+RPC 仍经 Shell 的 CallbackGate 转回 UI 线程；Shell 在成员析构前关闭门禁，控制器直接使用注入的 RPC 回调。
+文件防抖仅由控制器析构取消，所引用的 Runtime 此时仍存活；Completion 关闭时其类型状态仍存活。弹层的代次过滤规则不变，
+普通关闭弹层不额外取消原本已安排的文件请求。
+
+输入是单行且以 `/` 开头时，CompletionController 从 Shell 注册的命令表按前缀过滤。Tab 只补全，Enter 直接执行，
 不把命令提交给模型。命令表同时驱动 ctrl+p 与帮助面板，避免维护第二份标题和分类。
 
 光标前最后一个非空白串以 `@` 开头时打开文件补全。80 ms 防抖后发 `workspace.complete`，后端用 `workspace::files`

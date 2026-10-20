@@ -52,6 +52,7 @@ add_library(dagent_ui STATIC
     private/ui/toast.cpp
     private/ui/prompt_box.cpp
     private/ui/completion.cpp
+    private/ui/completion_controller.cpp
     private/ui/welcome.cpp
     private/ui/panel.cpp
     private/ui/model_picker.cpp
