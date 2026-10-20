@@ -15,8 +15,8 @@
   termios、sigset_t 等原生类型；资源状态用不透明类型表示。标准库类型可用于中立接口。
 - 平台提取保留原操作、标志、顺序、错误和日志文本、超时、权限与参数；格式化和业务失败策略留在调用方。
 
-这是逐步落实的源码边界约定。当前已提取跨模块小原语、workspace 的 OS 描述、入口与宿主辅助，尚未完成全仓 I1/I2：
-IPC、TUI、exec、工作区文件操作、配置/凭据/会话锁与监听等仍有共享实现中的平台代码；Channel、Terminal、Runtime、
+这是逐步落实的源码边界约定。当前已提取跨模块小原语、workspace 的 OS 描述、入口与宿主辅助和 IPC，尚未完成全仓 I1/I2：
+TUI、exec、工作区文件操作、配置/凭据/会话锁与监听等仍有共享实现中的平台代码；Terminal、Runtime、
 Command、PipeFds 和 ModelWriteLock 仍含原生状态。下面只列已落地的平台文件。
 
 ## 当前平台文件与接口
@@ -32,6 +32,7 @@ Command、PipeFds 和 ModelWriteLock 仍含原生状态。下面只列已落地�
 | `src/private/app/toolchain_posix.cpp` | `src/public/app/toolchain_detail.hpp` | `detail::runtime_platform`、`detail::SyncLock` |
 | `src/private/ui/browser_posix.cpp` | `src/public/ui/browser.hpp` | `open_browser` |
 | `src/private/web/document_posix.cpp` | `src/public/web/detail.hpp` | `detail::convert_charset` |
+| `src/private/ipc/channel_posix.cpp` | `src/public/ipc/channel.hpp` | `InheritedEndpoint` 参数解析、`Channel` 原生状态与传输、`BackendProcess` 不透明进程标识、`spawn_backend`、`wait_or_terminate` |
 
 `executable_path` 的两个重载分别保留 filesystem 的抛异常和 error_code 行为，供 IPC、sandbox status、
 SearXNG 定位程序资源。安装根的固定缓冲区 readlink 和 InstallError 在 `app/paths_posix.cpp` 中保持独立；
@@ -51,7 +52,12 @@ local/UTC 转换返回是否成功，UTC 时间戳转换保留原返回值和对
 
 CLI 用 `stdin_is_terminal` 判断输入来源，用 `read_stdin_all` 读取管道输入，保留 EINTR 重试与其他错误时停止读取。
 Terminal 仍使用原终端实现。前端先安装中断处理，再忽略断管信号；后端参数校验后恢复信号屏蔽并忽略断管信号，
-随后接管 Channel。后端 `--ipc-fd` 和 Channel 接口尚未提取。
+随后接管 Channel。后端 `--ipc-fd` 保留原参数格式，参数值经不透明的 `InheritedEndpoint` 解析和接管。
 
 浏览器启动完整实现在 `browser_posix.cpp`，保留原 posix_spawn 属性与回收线程。
 网页 charset/BOM 检测留在共享文件，只有 iconv 转换循环进入 `document_posix.cpp`，保留缓冲区、截断与错误处理。
+
+IPC 的共享文件只保留分帧、缓冲、错误状态与后端路径。Channel 和继承参数对象共用不透明端点状态，
+参数解析与替换不取得连接所有权，adopt 移交已有状态而不重新分配。socketpair 的端点状态和后端进程状态
+分别在创建连接、fork 前分配。BackendProcess 移动时保留源对象的进程标识，各对象的回收标记独立，
+析构只关闭 channel；原生调用、flags、继承顺序和回收节奏见 [protocol](protocol.md#1-进程与传输)。

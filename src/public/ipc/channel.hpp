@@ -1,24 +1,49 @@
 /// @file channel.hpp
-/// @brief 私有连接的字节传输：AF_UNIX socketpair、UTF-8 JSON Lines 分帧与后端进程启动。
+/// @brief 私有连接的字节传输：UTF-8 JSON Lines 分帧与后端进程启动。
 ///
 /// 只做字节层：组帧、短写、EOF 与子进程生命周期；不解析业务、不共享其他 FD。
 #pragma once
 
+#include <chrono>
 #include <cstddef>
 #include <filesystem>
+#include <memory>
 #include <optional>
+#include <span>
 #include <string>
 #include <string_view>
-#include <sys/types.h>
 #include <utility>
 
 namespace dagent::ipc {
 
-/// @brief 一个 socketpair 端点；send/receive 需由各自线程分别调用（不保证内部加锁）。
+namespace detail {
+struct EndpointState;
+} // namespace detail
+
+class BackendProcess;
+
+/// @brief 继承端点的参数值；解析和销毁均不接管或关闭连接。
+class InheritedEndpoint {
+public:
+    InheritedEndpoint() noexcept;
+    InheritedEndpoint(InheritedEndpoint&&) noexcept;
+    InheritedEndpoint& operator=(InheritedEndpoint&&) noexcept;
+    ~InheritedEndpoint();
+    InheritedEndpoint(const InheritedEndpoint&) = delete;
+    InheritedEndpoint& operator=(const InheritedEndpoint&) = delete;
+
+    static InheritedEndpoint parse_argument(const char* text);
+    bool valid() const noexcept;
+
+private:
+    std::unique_ptr<detail::EndpointState> state_;
+    friend class Channel;
+};
+
+/// @brief 一个连接端点；send/receive 需由各自线程分别调用（不保证内部加锁）。
 class Channel {
 public:
-    Channel() = default;
-    explicit Channel(int fd) : fd_(fd) {}
+    Channel() noexcept;
     Channel(Channel&& other) noexcept;
     Channel& operator=(Channel&& other) noexcept;
     ~Channel();
@@ -27,12 +52,12 @@ public:
 
     /// @brief 建立一对已连接端点。
     static std::pair<Channel, Channel> create_pair();
+    static Channel adopt(InheritedEndpoint endpoint);
 
-    bool valid() const { return fd_ >= 0; }
-    int fd() const { return fd_; }
+    bool valid() const noexcept;
 
-    /// @brief 设为 CLOEXEC：工具/MCP 子进程不能继承私有连接 FD。
-    void set_cloexec();
+    /// @brief 禁止随后启动的工具/MCP 子进程继承私有连接。
+    void prevent_inheritance();
 
     /// @brief 发送一行（自动补 '\n'）；处理短写与 EINTR，失败记录 error。
     bool send_line(std::string_view line);
@@ -40,33 +65,50 @@ public:
     /// @brief 读取一行；EOF 返回 nullopt 且 eof() 为真；超长行返回 nullopt 并设 error。
     std::optional<std::string> receive_line(std::size_t max_bytes = 64u << 20);
 
-    /// @brief 半关闭并关闭本端；幂等。
+    /// @brief 停止本端双向通信；不关闭连接资源。
     void shutdown();
+    /// @brief 关闭本端；幂等，不清空缓冲与错误状态。
     void close();
 
     bool eof() const { return eof_; }
     const std::string& error() const { return error_; }
 
 private:
-    int fd_ = -1;
+    struct Transfer {
+        enum class Kind { bytes, interrupted, closed, failed };
+        Kind kind;
+        std::size_t count = 0;
+        std::string error;
+    };
+    Transfer send_bytes(std::string_view bytes);
+    Transfer receive_bytes(std::span<char> bytes);
+
+    std::unique_ptr<detail::EndpointState> native_;
     std::string buffer_;
     std::string error_;
     bool eof_ = false;
+    friend std::optional<BackendProcess> spawn_backend(std::string& error);
 };
 
-/// @brief 本进程创建的后端进程；负责宽限终止与回收。
+/// @brief 本进程创建的后端进程；析构只关闭 channel，回收由 wait_or_terminate 显式执行。
 class BackendProcess {
 public:
-    BackendProcess() = default;
-    BackendProcess(Channel channel, pid_t pid) : channel(std::move(channel)), pid(pid) {}
-    BackendProcess(BackendProcess&&) noexcept = default;
-    BackendProcess& operator=(BackendProcess&&) noexcept = default;
+    BackendProcess() noexcept;
+    BackendProcess(BackendProcess&& other) noexcept;
+    BackendProcess& operator=(BackendProcess&& other) noexcept;
     ~BackendProcess();
     BackendProcess(const BackendProcess&) = delete;
     BackendProcess& operator=(const BackendProcess&) = delete;
 
     Channel channel;
-    pid_t pid = -1;
+
+private:
+    struct State;
+    BackendProcess(Channel channel, std::shared_ptr<const State> state);
+    std::shared_ptr<const State> state_;
+    bool reaped_ = false;
+    friend std::optional<BackendProcess> spawn_backend(std::string& error);
+    friend bool wait_or_terminate(BackendProcess& process, std::chrono::milliseconds grace);
 };
 
 /// @brief 同安装目录下的 dagent-backend；找不到返回 nullopt。

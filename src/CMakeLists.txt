@@ -278,6 +278,7 @@ target_link_libraries(dagent_protocol PUBLIC dagent_base)
 # ipc：socketpair FD 包装、JSON 行分帧与后端进程启动。
 add_library(dagent_ipc STATIC
     private/ipc/channel.cpp
+    private/ipc/channel_${DAGENT_PLATFORM}.cpp
 )
 
 target_include_directories(dagent_ipc PUBLIC ${CMAKE_SOURCE_DIR}/src/public)

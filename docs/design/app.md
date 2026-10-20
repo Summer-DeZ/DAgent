@@ -345,7 +345,8 @@ stdout 被关闭时 jsonl 请求取消本轮并返回 1，text / json 最终写�
 
 前端的 `install_interrupts`、`ignore_broken_pipe` 位于 `app/interrupts_posix.cpp`，main 按此顺序调用。
 后端的 `initialize_backend_signals` 位于 `app/backend_main_posix.cpp`，仍在参数校验后、Channel 接管前调用；
-参数解析与 `--ipc-fd` 保持在共享入口中。
+参数遍历与 `--ipc-fd` 保持在共享入口中，值经 `InheritedEndpoint::parse_argument` 按 atoi 语义解析，
+重复参数最后一次生效；校验后先初始化信号，再 `Channel::adopt`，最后 `prevent_inheritance`。
 
 | 情况 | 退出码 |
 | --- | --- |

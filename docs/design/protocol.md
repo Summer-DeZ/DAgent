@@ -45,6 +45,22 @@ sequenceDiagram
 - 前端拥有后端 PID：正常退出等待 10 秒宽限，超时 SIGTERM/SIGKILL 自己创建的后端。后端意外退出时前端报告
   `the backend connection was closed`，不自动拉起新后端、不重发输入。
 
+`ipc/channel.cpp` 保留分帧、长度限制、缓冲、错误状态和后端路径查找；`ipc/channel_posix.cpp`
+实现连接 I/O、描述符继承、进程启动与回收。公共头不暴露 fd 或 pid_t，平台文件由 `DAGENT_PLATFORM` 选择。
+每次底层 send/recv 返回字节数、中断、关闭或失败的中立结果，共享循环仍按原位置重试 EINTR；
+send 保留 MSG_NOSIGNAL，recv 保留原 flags，长度检查与 EOF 时的缓冲处理不变。
+
+后端参数遍历仍在 `app/backend_main.cpp`。`InheritedEndpoint::parse_argument` 保留 atoi 语义，重复
+`--ipc-fd` 最后一次生效；参数对象只持有解析结果，替换或销毁它不会关闭端点。校验通过后先执行
+`initialize_backend_signals`，再 `Channel::adopt` 接管端点，最后 `prevent_inheritance` 设置 CLOEXEC。
+usage、退出码和 `--ipc-fd <fd>` 参数格式不变。
+
+`Channel` 移动后源连接失效，移动赋值先关闭目标旧连接；close 不清空缓冲、错误和 EOF 状态。
+`BackendProcess` 析构只关闭 channel，不 wait/kill。它的移动保留原默认移动复制 PID 的语义：
+共享不透明的只读进程标识，各对象独立记录是否已回收，移动后的源对象仍保留原进程标识；
+回收一个对象不会更改另一个对象的记录。移动赋值不回收目标原来的进程。
+`wait_or_terminate` 仍以 20ms 间隔等待，宽限到期后发 SIGTERM，等待 200ms 后按原条件 SIGKILL/waitpid。
+
 只有后端读取 models.json、凭据、提示词和业务配置；前端只读取初始化返回的主题文件路径指向的 UI 主题。
 
 ## 2. 身份与版本
