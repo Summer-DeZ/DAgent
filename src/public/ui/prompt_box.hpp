@@ -20,7 +20,7 @@ class PromptBox final : public tui::InputBox {
 public:
     static constexpr int k_max_rows = 8; ///< 正文最多占的行数，超出后在框内滚动
 
-    void set_footer(std::string);
+    void set_footer(std::string mode, std::string model, bool busy);
     void set_footer_tone(bool error, bool accent);
     void set_active(bool);
     void set_theme(const tui::ThemeTokens&);
@@ -46,7 +46,8 @@ private:
     int top() const { return outline_ || !compact_ ? 1 : 0; }
     int chrome() const { return top() + (compact_ ? 0 : 1) + 1 + (outline_ ? 1 : 0); }
     bool compact_ = false, outline_ = false;
-    std::string footer_;
+    std::string mode_, model_;
+    bool busy_ = false;
     bool footer_error_ = false, footer_accent_ = false;
     bool active_ = false;
     const tui::ThemeTokens* theme_ = &tui::dark_theme();

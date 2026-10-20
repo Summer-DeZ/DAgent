@@ -13,6 +13,7 @@ struct Strings {
     std::string_view section_session;
     std::string_view section_context;
     std::string_view section_plan;
+    std::string_view section_agents;
     std::string_view section_changed;
     std::string_view section_mcp;
     std::string_view session_started;
@@ -132,8 +133,8 @@ struct Strings {
     std::string_view card_timeout;
     std::string_view card_signal;
     std::string_view card_exit;
-    std::string_view card_matches;
-    std::string_view card_files;
+    std::string_view card_match, card_matches;
+    std::string_view card_file, card_files;
     std::string_view card_content;
     std::string_view card_items;
     std::string_view card_done;
@@ -210,6 +211,7 @@ struct Strings {
     std::string_view panel_project;
     std::string_view panel_version;
     std::string_view box_footer;
+    std::string_view prompt_send, prompt_queue, queue_label, queue_recall, agent_switch, agent_task, activity_working, activity_retrying, activity_elapsed, activity_tokens, activity_rate, turn_output;
     std::string_view turn_footer;
     std::string_view thought_live;
     std::string_view thought_open;

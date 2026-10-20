@@ -4,8 +4,15 @@
 #include "ui/projection.hpp"
 
 namespace dagent::ui {
+enum class AgentState { running, done, failed };
+struct AgentInfo {
+    std::string name;
+    AgentState state = AgentState::running;
+    double seconds = 0;
+};
 class SidePanel final : public tui::Widget {
 public:
+    void set_agents(std::vector<AgentInfo> agents, int frame) { agents_ = std::move(agents); frame_ = frame; invalidate(); }
     void set_title(std::string);
     void set_context(std::size_t used, std::size_t limit);
     void set_items(TodoList);
@@ -26,6 +33,8 @@ public:
     tui::Size measure(tui::Size available) const override;
     void render(tui::Surface&) override;
 private:
+    std::vector<AgentInfo> agents_;
+    int frame_ = 0;
     TodoList items_;
     std::vector<McpStatus> mcp_;
     std::map<std::string, std::pair<int, int>> changes_;

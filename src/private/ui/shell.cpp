@@ -6,6 +6,7 @@
 #include <algorithm>
 #include <cctype>
 #include <cstdlib>
+#include <ctime>
 #include <expected>
 #include <format>
 #include <functional>
@@ -53,11 +54,90 @@ struct CallbackGate {
     bool open = true;
 };
 
-class QueueLabel final : public tui::Text {
+std::string local_time() {
+    const auto now = std::time(nullptr);
+    std::tm local{}; localtime_r(&now, &local);
+    char value[6]; std::strftime(value, sizeof(value), "%H:%M", &local);
+    return value;
+}
+class QueueLabel final : public tui::Widget {
 public:
-    tui::Size measure(tui::Size available) const override {
-        return text().empty() ? tui::Size{} : tui::Text::measure(available);
+    void set_queue(const std::vector<protocol::QueueItem>& queue) { queue_ = queue; invalidate_layout(); }
+    void set_theme(const tui::ThemeTokens& t) { theme_ = &t; invalidate(); }
+    bool outline = false;
+    tui::Size measure(tui::Size available) const override { return {available.cols, queue_.empty() ? 0 : 1}; }
+    void render(tui::Surface& s) override {
+        const auto& t = *theme_;
+        s.fill({0, 0, s.cols(), s.rows()}, U' ', t.background);
+        if (queue_.empty()) return;
+        const auto hint = format_text(ui::text().queue_recall, icons().up);
+        const int right = s.cols() - display_width(hint);
+        int x = s.text(0, 0, ui::text().queue_label, t.text_muted) + 1;
+        const int count = std::min(3, static_cast<int>(queue_.size()));
+        const int gap = outline ? 2 : 1;
+        int shown = 0;
+        for (; shown < count; ++shown) {
+            const int remaining = count - shown;
+            const int more = queue_.size() > static_cast<size_t>(count) ? display_width(std::format("+{}", queue_.size() - count)) + 1 : 0;
+            const int room = (right - x - more - 1) / remaining - gap - (outline ? 0 : 2);
+            if (room < 1) break;
+            const auto& value = queue_[shown].text_preview;
+            const auto label = fit_columns(std::string_view(value).substr(0, value.find('\n')), std::min(24, room));
+            x = draw_chip(s, x, 0, label, t.text, t, outline, t.background.bg) + gap;
+        }
+        if (queue_.size() > static_cast<size_t>(shown))
+            s.text(x, 0, fit_columns(std::format("+{}", queue_.size() - shown), right - x - 1), t.text_muted);
+        s.text(right, 0, hint, t.text_muted);
     }
+private:
+    std::vector<protocol::QueueItem> queue_;
+    const tui::ThemeTokens* theme_ = &tui::dark_theme();
+};
+
+class AgentTabs final : public tui::Widget, public tui::EventHandler {
+public:
+    std::vector<AgentInfo> tabs;
+    size_t active = 0;
+    int frame = 0;
+    std::function<void(size_t)> select;
+    void set_theme(const tui::ThemeTokens& t) { theme_ = &t; invalidate(); }
+    tui::Size measure(tui::Size a) const override { return {a.cols, tabs.size() > 1 ? 2 : 0}; }
+    bool on_event(const tui::Event& e) override {
+        if (e.kind != tui::Event::Kind::mouse || !e.mouse.press || e.mouse.motion || e.mouse.button != 0) return false;
+        for (const auto& hit : hits_) if (e.mouse.x >= hit.begin && e.mouse.x < hit.end) { select(hit.index); return true; }
+        return false;
+    }
+    void render(tui::Surface& s) override {
+        const auto& t = *theme_; hits_.clear();
+        s.fill({0, 0, s.cols(), s.rows()}, U' ', t.background);
+        if (tabs.size() < 2) return;
+        const auto hint = ui::text().agent_switch;
+        const int right = std::max(0, s.cols() - display_width(hint) - 1);
+        const int label_limit = std::max(4, (right - 10) / 2);
+        const auto label = [&](size_t i) {
+            return fit_columns(i == 0 ? tabs[i].name : std::string(ui::text().agent_task) + std::string(icons().separator) + tabs[i].name, label_limit);
+        };
+        size_t first = 1;
+        int required = 0;
+        for (size_t i = 1; i <= active; ++i) required += display_width(label(i)) + 4;
+        while (first < active && required > right - 10) { required -= display_width(label(first)) + 4; ++first; }
+        int x = 1;
+        for (size_t i = 0; i < tabs.size(); i = i == 0 ? first : i + 1) {
+            const auto name = label(i); const int width = display_width(name) + 2;
+            if (x + width > right - 1) break;
+            const auto state = tabs[i].state;
+            const auto tone = state == AgentState::running ? t.accent : state == AgentState::failed ? t.error : t.success;
+            s.text(x, 0, state == AgentState::running ? icons().spinner[frame] : state == AgentState::failed ? icons().cross : icons().check, tone);
+            s.text(x + 2, 0, name, i == active ? t.text : t.text_muted);
+            if (i == active) for (int col = x; col < x + width; ++col) s.put(col, 1, icons().horizontal, t.primary);
+            hits_.push_back({x, x + width, i}); x += width + 2;
+        }
+        s.text(right, 0, hint, t.text_muted);
+    }
+private:
+    struct Hit { int begin, end; size_t index; };
+    std::vector<Hit> hits_;
+    const tui::ThemeTokens* theme_ = &tui::dark_theme();
 };
 
 class Workspace final : public tui::Container {
@@ -330,6 +410,8 @@ public:
         rt_.set_focus(&prompt_, input_); rt_.set_global(*this);
         terminal_.set_mouse(true); // 不开这一行，滚轮与拖选的转义序列根本不会上报
         bind_active_mouse();
+        tabs_->select = [this](size_t i) { show_pane(i); };
+        rt_.bind_mouse(*tabs_, *tabs_);
         register_commands();
         apply_appearance(appearance_);
         rt_.on_caps([this](const tui::Terminal::Caps&) {
@@ -339,6 +421,7 @@ public:
         reset_transcript(resumed_, history_.size());
         for (const auto& item : history_) active_transcript().append_history(item);
         history_.clear();
+        refresh_agents();
         refresh_project();
         refresh_mcp();
     }
@@ -353,6 +436,7 @@ public:
         rt_.cancel(file_debounce_);
         terminal_.restore();
         unbind_active_mouse();
+        rt_.unbind_mouse(*tabs_);
     }
 
     int run(std::stop_token stop) {
@@ -483,10 +567,12 @@ private:
         side_->set_trigger(snapshot.context.trigger_percent);
         update_context(snapshot.context.used, snapshot.context.limit);
         if (!panes_.empty()) {
-            active_transcript().set_session(mode_label(), model_label_);
+            panes_.front().transcript->set_session(mode_label(), model_label_);
             update_prompt_footer();
         }
         set_busy(snapshot.busy);
+        if (snapshot.current_operation && snapshot.current_operation->kind == "compact")
+            phase_ = std::string(ui::text().act_compacting);
         refresh_queue();
         refresh_mcp();
         update_todo_status(terminal_.size().cols);
@@ -512,7 +598,14 @@ private:
         if (event.session_id != id_) return;
         const bool update_state = event.seq > state_seq_;
         state_seq_ = std::max(state_seq_, event.seq);
-        if (const auto decoded = decode_event(event)) apply_live(*decoded, update_state);
+        if (auto decoded = decode_event(event)) {
+            if (auto* started = std::get_if<TurnStarted>(&decoded->payload)) {
+                started->time = local_time();
+                const auto submitted = std::ranges::find_if(submitted_, [&](const auto& item) { return item.text == started->input; });
+                if (submitted != submitted_.end()) { started->time = submitted->time; submitted_.erase(submitted); }
+            }
+            apply_live(*decoded, update_state);
+        }
     }
 
     void apply_session_changed(const protocol::Event& event) {
@@ -532,7 +625,7 @@ private:
             side_->set_title({});
             if (resumed) refresh_history();
         } else {
-            active_transcript().set_session(mode_label(), model_label_);
+            panes_.front().transcript->set_session(mode_label(), model_label_);
             update_prompt_footer();
         }
         set_busy(false);
@@ -550,30 +643,51 @@ private:
             index = add_pane("task · " + agent, event.session_id, call_id);
             task_panes_.emplace(call_id, index);
         }
-        phase_ = format_text(ui::text().act_task, agent);
         if (index == 0) return;
-        const auto decoded = decode_event(event);
+        auto decoded = decode_event(event);
         if (!decoded) return;
+        if (auto* started = std::get_if<TurnStarted>(&decoded->payload)) started->time = local_time();
         panes_[index].transcript->apply_live(*decoded);
+        panes_.front().transcript->apply_child(call_id, *decoded, *panes_[index].transcript);
+        if (const auto* ended = std::get_if<TurnEnded>(&decoded->payload)) {
+            panes_[index].state = ended->status == TurnStatus::done ? AgentState::done : AgentState::failed;
+            panes_[index].seconds = std::chrono::duration<double>(Clock::now() - panes_[index].began).count();
+        }
+        refresh_agents();
     }
 
     void apply_live(const Event& event, bool update_state) {
         panes_.front().transcript->apply_live(event);
         std::visit(Overloaded{
-                       [&](const TurnStarted&) { if (update_state) { set_busy(true); refresh_snapshot(); } },
-                       [&](const StepStarted&) { phase_ = std::string(ui::text().act_thinking); step_begin_ = Clock::now(); },
-                       [&](const TextDelta&) { phase_ = std::string(ui::text().act_generating); },
-                       [&](const ReasoningDelta&) { phase_ = std::string(ui::text().act_generating); },
-                       [&](const ToolPending& e) { phase_ = std::string(ui::text().act_preparing) + e.name; },
-                       [&](const ToolStarted& e) { running_.push_back({e.id, e.summary, Clock::now()}); },
+                       [&](const TurnStarted&) {
+                           turn_begin_ = Clock::now(); output_ = estimated_ = stream_chars_ = 0;
+                           streaming_.reset(); stream_seconds_ = 0;
+                           if (update_state) { set_busy(true); refresh_snapshot(); }
+                       },
+                       [&](const StepStarted&) { phase_ = std::string(ui::text().activity_working); stream_chars_ = 0; },
+                       [&](const TextDelta& e) { streamed(e.text); },
+                       [&](const ReasoningDelta& e) { streamed(e.text); },
+                       [&](const ToolPending&) { phase_ = std::string(ui::text().activity_working); if (!streaming_) streaming_ = Clock::now(); },
+                       [&](const StreamReset&) { stream_chars_ = 0; streaming_.reset(); },
                        [&](const ToolFinished& e) {
-                           std::erase_if(running_, [&](const Running& running) { return running.id == e.id; });
+                           for (auto& pane : panes_) if (pane.call_id == e.id) {
+                               pane.state = e.is_error || e.interrupted ? AgentState::failed : AgentState::done;
+                               pane.seconds = std::chrono::duration<double>(Clock::now() - pane.began).count();
+                           }
+                           refresh_agents();
                        },
                        [&](const ContextUpdate& e) {
+                           if (streaming_) stream_seconds_ += std::chrono::duration<double>(Clock::now() - *streaming_).count();
+                           streaming_.reset();
+                           if (e.output) output_ += *e.output;
+                           else estimated_ += (stream_chars_ + 3) / 4;
+                           stream_chars_ = 0;
                            if (!update_state) return;
                            update_context(e.used, e.limit);
                        },
                        [&](const Retrying& e) {
+                           phase_ = std::string(ui::text().activity_retrying);
+                           streaming_.reset();
                            toast(format_text(ui::text().toast_retry, e.reason, e.wait_ms / 1000.0,
                                              e.attempt, e.max_attempts),
                                  tui::Notice::Severity::warn);
@@ -588,10 +702,13 @@ private:
                            if (!update_state) return;
                            planning_ = e.planning;
                            mode_ = e.mode;
-                           active_transcript().set_session(mode_label(), model_label_);
+                           panes_.front().transcript->set_session(mode_label(), model_label_);
                            update_prompt_footer();
                        },
-                       [&](const TurnEnded&) {
+                       [&](const TurnEnded& e) {
+                           for (size_t i = 1; i < panes_.size(); ++i) if (panes_[i].state == AgentState::running)
+                               panes_[i].transcript->apply_live(Event{TurnEnded{TurnStatus::interrupted, {}, {}}});
+                           panes_[0].state = e.status == TurnStatus::done ? AgentState::done : AgentState::failed;
                            if (!update_state) return;
                            dialog_.close();
                            set_busy(false);
@@ -608,12 +725,20 @@ private:
         busy_ = value; rt_.cancel(activity_timer_); activity_timer_ = 0;
         input_->set_active(!value && active_ == 0); update_prompt_footer();
         if (value) {
-            step_begin_ = Clock::now(); phase_ = std::string(ui::text().act_thinking);
-            activity_timer_ = rt_.every(100ms, [this] { activity(); activity_->tick(); return true; });
+            turn_begin_ = Clock::now(); phase_ = std::string(ui::text().activity_working);
+            output_ = estimated_ = stream_chars_ = 0; stream_seconds_ = 0; streaming_.reset();
+            activity_timer_ = rt_.every(100ms, [this] {
+                activity(); activity_->tick(); animation_ = (animation_ + 1) % 10;
+                for (auto& pane : panes_) pane.transcript->tick();
+                refresh_agents(); return true;
+            });
         } else {
-            running_.clear();
+            for (auto& pane : panes_) if (pane.state == AgentState::running) {
+                pane.state = AgentState::failed;
+                pane.seconds = std::chrono::duration<double>(Clock::now() - pane.began).count();
+            }
         }
-        refresh_mcp(); activity();
+        refresh_agents(); refresh_mcp(); activity();
     }
 
     void cancel_history() {
@@ -633,6 +758,7 @@ private:
             reset_transcript(true, items->size());
             for (const auto& item : *items) panes_.front().transcript->append_history(item);
             history_pager_.reset();
+            refresh_agents();
             root_.invalidate_tree();
             refresh_mcp();
         };
@@ -667,17 +793,7 @@ private:
         });
     }
 
-    void refresh_queue() {
-        std::string label;
-        const auto& queue = snapshot_.queue;
-        if (!queue.empty()) {
-            label = format_text(ui::text().queue_count, queue.size());
-            const std::size_t first = queue.size() > 2 ? queue.size() - 2 : 0;
-            for (std::size_t i = first; i < queue.size(); ++i)
-                label += std::format("\n{} {}", i - first + 1, queue[i].text_preview);
-        }
-        queue_label_->set_text(std::move(label));
-    }
+    void refresh_queue() { queue_label_->set_queue(snapshot_.queue); }
 
     bool mcp_pending() const {
         return std::ranges::any_of(mcp_states_, [](const McpStatus& state) {
@@ -713,21 +829,31 @@ private:
         theme_ = resolve_theme(selected); theme_.epoch = ++theme_epoch_;
         for (Pane& pane : panes_) pane.scroll->set_theme(theme_);
         activity_->set_theme(theme_);
-        queue_label_->set_theme(theme_); queue_label_->set_style(theme_.text_muted);
+        queue_label_->set_theme(theme_); tabs_->set_theme(theme_);
         input_->set_theme(theme_); header_->set_theme(theme_); hints_->set_theme(theme_);
         side_->set_theme(theme_); toasts_.set_theme(theme_); panel_.set_theme(theme_);
         dialog_.set_theme(theme_); model_dialog_.set_theme(theme_); completion_.set_theme(theme_);
         settings_.set_theme(theme_);
         root_.invalidate_tree();
     }
+    void streamed(std::string_view text) {
+        if (text.empty()) return;
+        phase_ = std::string(ui::text().activity_working);
+        if (!streaming_) streaming_ = Clock::now();
+        // 四个 Unicode 码点约一个 token；是显示估计，收到 usage 后即替换。
+        stream_chars_ += std::ranges::count_if(text, [](unsigned char c) { return (c & 0xc0) != 0x80; });
+    }
     void activity() {
         if (!busy_) { activity_->set_action({}); return; }
-        if (dialog_.active()) { activity_->set_action(std::string(ui::text().act_waiting)); return; }
-        std::string label = phase_;
-        auto begin = step_begin_;
-        if (!running_.empty()) { label = std::string(ui::text().act_running) + running_.front().summary; begin = running_.front().begin; }
-        const auto seconds = std::chrono::duration_cast<std::chrono::seconds>(Clock::now() - begin).count();
-        activity_->set_action(format_text(ui::text().act_line, label, seconds));
+        const auto now = Clock::now();
+        const auto seconds = std::chrono::duration<double>(now - turn_begin_).count();
+        const auto count = output_ + estimated_ + (stream_chars_ + 3) / 4;
+        const double streaming = stream_seconds_ + (streaming_ ? std::chrono::duration<double>(now - *streaming_).count() : 0);
+        const auto tokens = std::string(estimated_ || streaming_ || stream_chars_ ? "~" : "") + compact_tokens(count);
+        activity_->set_action(format_text(ui::text().activity_elapsed,
+            dialog_.active() ? std::string(ui::text().act_waiting) : phase_, seconds, icons().separator),
+            count > 0 ? format_text(ui::text().activity_tokens, tokens) : "",
+            count > 0 && streaming > 0 ? format_text(ui::text().activity_rate, count / streaming) : "");
     }
 
     std::unique_ptr<tui::Widget> layout() {
@@ -739,7 +865,7 @@ private:
         auto frame = std::make_unique<ScrollFrame>(); frame_ = frame.get();
         main->add({tui::Sizing::flex, 1}, centered(std::move(frame), 88, theme_));
         add_centered(activity_, {tui::Sizing::content});
-        add_centered(queue_label_, {tui::Sizing::content, 0, 0, 3});
+        add_centered(queue_label_, {tui::Sizing::content});
         add_centered(input_, {tui::Sizing::content, 0, 2, PromptBox::k_max_rows + 4});
 
         auto workspace = std::make_unique<Workspace>(); workspace_ = workspace.get();
@@ -750,6 +876,8 @@ private:
         auto page = std::make_unique<tui::Container>();
         auto header = std::make_unique<HeaderBar>(); header_ = header.get();
         page->add({tui::Sizing::content}, std::move(header));
+        auto tabs = std::make_unique<AgentTabs>(); tabs_ = tabs.get();
+        page->add({tui::Sizing::content}, std::move(tabs));
         page->add({tui::Sizing::flex, 1}, std::move(workspace));
         auto hints = std::make_unique<HintBar>(); hints_ = hints.get();
         page->add({tui::Sizing::fixed, 1}, std::move(hints));
@@ -814,7 +942,29 @@ private:
         std::unique_ptr<tui::ScrollbackMouse> mouse;
         std::shared_ptr<HistoryPager> pager;
         std::string title, session_id, call_id;
+        AgentState state = AgentState::running;
+        Clock::time_point began = Clock::now();
+        double seconds = 0;
     };
+    void refresh_agents() {
+        std::vector<AgentInfo> agents, tabs;
+        std::set<std::string> seen;
+        for (size_t i = 0; i < panes_.size(); ++i) {
+            const auto& pane = panes_[i];
+            const auto state = i == 0 && busy_ ? AgentState::running : pane.state;
+            const auto seconds = state == AgentState::running ? std::chrono::duration<double>(Clock::now() - pane.began).count() : pane.seconds;
+            const auto name = i == 0 ? pane.title : pane.title.substr(pane.title.find(" · ") + 4);
+            tabs.push_back({name, state, seconds});
+            if (i != 0) { agents.push_back({name, state, seconds}); seen.insert(pane.call_id); }
+        }
+        if (!panes_.empty()) for (const auto& task : panes_[0].transcript->tasks()) {
+            if (seen.insert(task.call_id).second) agents.push_back({task.agent, task.failed ? AgentState::failed : AgentState::done, task.seconds});
+        }
+        const bool resized = tabs_->tabs.size() != tabs.size();
+        tabs_->tabs = std::move(tabs); tabs_->active = active_; tabs_->frame = animation_;
+        if (resized) tabs_->invalidate_layout(); else tabs_->invalidate();
+        side_->set_agents(std::move(agents), animation_);
+    }
     tui::Scrollback& active_scroll() { return *panes_[active_].scroll; }
     Transcript& active_transcript() { return *panes_[active_].transcript; }
     void bind_active_mouse() { rt_.bind_mouse(active_scroll(), *panes_[active_].mouse); }
@@ -838,6 +988,8 @@ private:
         auto mouse = std::make_unique<tui::ScrollbackMouse>(rt_, scroll);
         panes_.push_back({&scroll, std::move(transcript), std::move(mouse), {}, std::move(title),
                           std::move(session_id), std::move(call_id)});
+        if (index == 0) panes_[0].state = AgentState::done;
+        refresh_agents();
         return index;
     }
     void show_pane(std::size_t index) {
@@ -849,6 +1001,7 @@ private:
         bind_active_mouse();
         input_->set_active(!busy_ && active_ == 0);
         update_prompt_footer();
+        refresh_agents();
         root_.invalidate_tree();
     }
     void close_child_panes() {
@@ -865,12 +1018,16 @@ private:
             frame_->destroy(*panes_[i].scroll);
         }
         panes_.resize(1);
-        task_panes_.clear();
+        task_panes_.clear(); submitted_.clear();
+        refresh_agents();
         input_->set_active(!busy_);
     }
     /// 恢复出来的 task 没有 Pane：切进去时再回放子会话记录。
     void open_task_pane(const Transcript::TaskRef& task) {
         const std::size_t index = add_pane("task · " + task.agent, task.session_id, task.call_id);
+        panes_[index].state = task.failed ? AgentState::failed : AgentState::done;
+        panes_[index].seconds = task.seconds;
+        task_panes_[task.call_id] = index;
         show_pane(index);
         const std::string id = task.session_id;
         auto pager = std::make_shared<HistoryPager>(client_, rt_, gate_, id);
@@ -935,7 +1092,7 @@ private:
     }
     void update_prompt_footer() {
         header_->mode = planning_ ? "plan" : mode_; header_->model = model_label_; header_->invalidate();
-        input_->set_footer(format_text(ui::text().box_footer, mode_label(), model_label_));
+        input_->set_footer(mode_label(), model_label_, busy_);
         input_->set_footer_tone(!planning_ && mode_ == "unrestricted", planning_);
     }
 
@@ -944,7 +1101,10 @@ private:
             const nlohmann::json result = client_.call("input.recall_last", target());
             const auto& input = result["input"];
             if (input.is_object()) {
-                input_->set_text(input.value("text", ""));
+                const auto value = input.value("text", "");
+                const auto submitted = std::find_if(submitted_.rbegin(), submitted_.rend(), [&](const auto& item) { return item.text == value; });
+                if (submitted != submitted_.rend()) submitted_.erase(std::next(submitted).base());
+                input_->set_text(value);
                 prompt_changed();
             }
             refresh_snapshot();
@@ -969,11 +1129,14 @@ private:
             toast(std::string(ui::text().toast_subview_readonly), tui::Notice::Severity::warn);
             return;
         }
+        const auto submission = ++submission_seq_;
+        submitted_.push_back({submission, text, local_time()});
         nlohmann::json params = target();
         params["text"] = std::move(text);
         request("input.submit", std::move(params), [this](const nlohmann::json&) {
             refresh_snapshot();
-        }, [this](const protocol::RpcError& error) {
+        }, [this, submission](const protocol::RpcError& error) {
+            std::erase_if(submitted_, [&](const auto& item) { return item.id == submission; });
             toast(error.message, tui::Notice::Severity::warn);
         });
     }
@@ -1208,6 +1371,7 @@ private:
             side_->set_collapsed(sidebar_override_.value_or(value.sidebar == "hidden"));
             workspace_->left = value.sidebar == "left"; workspace_->invalidate_layout();
             input_->set_appearance(value);
+            queue_label_->outline = value.panels == "outline";
             for (auto& pane : panes_) {
                 pane.transcript->set_compact(value.density == "compact");
                 if (icons_changed) pane.transcript->refresh_icons();
@@ -1473,6 +1637,7 @@ private:
     uint32_t theme_epoch_ = 0;
     ScrollFrame* frame_ = nullptr;
     Activity* activity_ = nullptr;
+    AgentTabs* tabs_ = nullptr;
     QueueLabel* queue_label_ = nullptr;
     PromptBox* input_ = nullptr;
     HeaderBar* header_ = nullptr;
@@ -1504,9 +1669,14 @@ private:
     std::size_t worked_tokens_ = 0, token_limit_ = 0, window_tokens_ = 0;
     std::vector<McpStatus> mcp_states_;
     std::vector<CommandUi> command_ui_;
-    struct Running { std::string id, summary; Clock::time_point begin; };
-    std::vector<Running> running_;
-    Clock::time_point step_begin_{};
+    Clock::time_point turn_begin_{};
+    std::optional<Clock::time_point> streaming_;
+    double stream_seconds_ = 0;
+    std::size_t output_ = 0, estimated_ = 0, stream_chars_ = 0;
+    int animation_ = 0;
+    struct Submitted { std::size_t id; std::string text, time; };
+    std::vector<Submitted> submitted_;
+    std::size_t submission_seq_ = 0;
     std::optional<Clock::time_point> last_cancel_;
     tui::TimerId activity_timer_ = 0, mcp_timer_ = 0, file_debounce_ = 0;
     bool busy_ = false, exiting_ = false, signal_exit_ = false;

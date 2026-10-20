@@ -23,13 +23,15 @@
 | `Transcript` | 协议事件与历史条目到 Document 块的投影：`apply_live` 处理实时事件，`append_history` 回放历史且不触发当前 Run 收尾 |
 | `PromptBox`、`PromptInput` | 自动折行、按行数增高的多行输入；左侧竖条与框内尾行；发送、排队和取回 |
 | `HeaderBar` | 顶部品牌、会话标题、权限/模型 Chip 与 git 分支；侧栏隐藏时显示模型与上下文百分比 |
+| `AgentTabs` | HeaderBar 下方的主会话与子 Agent 标签、状态、选中下划线与鼠标切换；无子 Pane 时隐藏 |
+| `Activity`、`QueueLabel` | 当前轮耗时、输出 token 与生成速率；单行队列 Chip 和取回提示 |
 | `HintBar` | 底部项目路径与随浮层、审批、运行状态变化的键位提示 |
 | `Chip` / `appearance` | 标签绘制、外观令牌变换、统一 Unicode/Nerd/ASCII 图标表 |
 | `SettingsDialog` | 外观选项、即时预览、后端保存与撤回 |
 | `Completion` | `/` 命令、`@` 文件和 `$` 技能的贴输入框补全浮层 |
 | `Panel` | 命令、会话和帮助共用的居中列表浮层 |
 | `ToastStack` | 右上角最多三条、五秒到期的瞬时通知 |
-| `SidePanel` | 可左右放置或隐藏的 SESSION / CONTEXT / PLAN / CHANGED / MCP 分节栏与底部版本 |
+| `SidePanel` | 可左右放置或隐藏的 SESSION / CONTEXT / PLAN / AGENTS / CHANGED / MCP 分节栏与底部版本 |
 | `ApprovalDialog` | 权限审批与选项提问共用的模态骨架与输入；回答经 `interaction.answer` 提交 |
 | `projection` | 协议 DTO / View JSON → UI 实际消费的字段；子事件由 Shell 按协议信封路由，解码后直接投影，不重复包装身份 |
 
@@ -37,11 +39,12 @@
 LayerStack
 └─ Container(vertical)
    ├─ HeaderBar                         content，filled 1 行；outline 加 1 行底部分隔线
+   ├─ AgentTabs                         content，有子 Pane 时 2 行（标签 + primary 下划线）
    ├─ Workspace(horizontal)             主区 + SidePanel（可左右交换）
    │  ├─ Container(vertical)            主区
    │  │  ├─ Center(Scrollback)          flex 1，内容栏最大 88 列
    │  │  ├─ Center(Activity)            content，空闲高度 0
-   │  │  ├─ Center(QueueLabel)          content，最多 3 行
+   │  │  ├─ Center(QueueLabel)          content，有排队输入时 1 行，最多 3 个 Chip + 余数
    │  │  └─ Center(PromptBox)           content，1–8 行正文；密度/面板样式决定留白与边框
    │  └─ SidePanel                      content，26/30 列或宽 0
    └─ HintBar                           fixed 1，铺满终端
@@ -50,11 +53,11 @@ LayerStack
 
 `centered()` 在主区至少留四列边距，内容栏最大 88 列；主区窄于 44 列时取消边距。
 对话、活动、排队和输入使用同一宽度与左缘。侧栏被收起或终端少于 80 列时宽度为 0；
-80–99 列占 26 列，至少 100 列占 30 列。HeaderBar 与 HintBar 始终铺满终端；Sidebar 左右交换不影响主区的居中规则。
+80–99 列占 26 列，至少 100 列占 30 列。HeaderBar、AgentTabs 与 HintBar 始终铺满终端；Sidebar 左右交换不影响主区的居中规则。
 
 新会话的第一个 Document 块是欢迎头，包含版本、项目、git 分支和 MCP 数量；内容栏少于 60 列时只画单行字标。
-历史 `turn_end` 保留在协议与存储中，UI 不将其转换为无人消费的结束事件。
-文本显示宽度和带省略号的裁剪统一使用 `ui/display`；工具折叠提示的硬裁剪保留原行为。
+历史 `turn_end` 保留在协议与存储中；历史 DTO 没有轮次耗时，回放不伪造实时尾行。
+文本显示宽度和带省略号的裁剪统一使用 `ui/display`；工具折叠提示在极窄宽度仍按列硬裁剪。
 恢复会话改画恢复 id 与回放事件数。Scrollback 不贴底时，右下角覆盖显示未读行数，End 回到底部。
 
 ## 2. 外观与设置
@@ -111,14 +114,18 @@ paper 为暖纸色，均提供明暗变体。层次通过亮度、间距、字�
 Shell 进入全屏后调用 `Terminal::set_mouse(true)` 打开鼠标上报，ScrollbackMouse 才收得到滚轮、
 拖选与双击；退出时的终端还原由框架处理。
 
-活动动画忙时每 100 ms 更新；MCP 状态来自会话快照：只在连接中或轮次忙碌时每 200 ms 请求一次 `session.snapshot`，稳定空闲后停止。
+活动动画忙时每 100 ms 更新，同时更新运行中的工具、任务标签和 AGENTS 耗时；MCP 状态来自会话快照：只在连接中或轮次忙碌时每 200 ms 请求一次 `session.snapshot`，稳定空闲后停止。
 toast 使用一次性五秒定时器，文件补全使用一次性 80 ms 防抖；空闲时没有新增的周期唤醒。
 
 ## 4. 输入、补全与排队
 
-PromptBox 左侧是一根竖条（忙碌时换成 `primary`），底纹用 `background_panel`，正文上方留一行、
-与框内最后一行之间再留一行，输入时不贴着上面的对话；最后一行显示 `权限模式 · 模型`。正文按内容栏宽度折行，控件高度跟着折行结果在 1–8 行之间变化（加上三行留白与尾行，整体 4–11 行），超过 8 行在框内滚动并保证
-光标可见；空输入显示占位文字，占位文字不属于 `text()`。
+PromptBox 保留左侧 `▌` 与 `background_panel` 底纹，正文上方及尾行前各留一行 padding。
+尾行左侧复用 Chip helper 绘制权限模式、模型：模式与 HeaderBar 同色（普通 muted、plan 为 accent、
+unrestricted 为 error），模型为 text。右侧 muted 显示 `↵ send · ⇧↵ newline`，忙时为
+`↵ queue · ⇧↵ newline`；ASCII 图标集改用 `enter` / `shift+enter`。窄宽度先裁剪模型，
+不足以同时容纳标签和完整快捷键时省略快捷键，不重叠绘制。
+正文按内容栏宽度折行，正文高度为 1–8 行，超出后滚动并保持光标可见。
+comfortable 保留两行 padding，compact 去掉；outline 沿用 phase 1 的页面底色、边框和无填色 Chip。
 
 新会话 Banner 只显示版本、项目路径、git 分支与 MCP 数量，不重复显示模型；当前模型保留在输入框尾行和消息尾行。
 
@@ -128,8 +135,26 @@ PromptBox 左侧是一根竖条（忙碌时换成 `primary`），底纹用 `back
 补全列表的名称和描述使用统一列起点，按字素的终端显示宽度计算列宽；中文、宽字符和窄屏截断不以 UTF-8
 字节数计宽，长内容用省略号收尾，避免侵入右侧边框。
 
-普通输入经 `input.submit` 进入后端内存 FIFO，忙时也立即提交；QueueLabel 按快照里的队列显示数量与最近两条的首行预览。
-输入框为空时 ↑ 发 `input.recall_last`，把最后一条仍排队的输入取回输入框。后端在 `turn_ended` 或压缩完成后自行处理下一条。
+普通输入经 `input.submit` 进入后端内存 FIFO，忙时也立即提交。QueueLabel 仅在队列非空时占一行：
+muted 的 `QUEUED`、按 FIFO 顺序最多三个 Chip、其余 `+N`，右侧 muted 的 `↑ recall`。
+每个 Chip 使用输入首行，最多 24 个终端显示列（包括省略号），窄屏按可用空间进一步裁剪；
+沿用 filled / outline Chip 样式和统一图标表。输入框为空时 ↑ 发 `input.recall_last`，
+把最后一条仍排队的输入取回输入框；重新提交会重新记录提交时间。
+后端在 `turn_ended` 或压缩完成后自行处理下一条。
+
+Activity 位于对话和队列之间，忙时一行，空闲零高度。左侧为 accent spinner 与
+`Working · 23.4s · 1.8k tokens · 64 tok/s`，右侧 muted 的 `esc interrupt`。
+token 数为零时只显示阶段与耗时（如 `Working · 0.1s`）；有输出量且有流式用时后才显示速率。
+宽度不足时依次整项省略速率、token 数、`esc interrupt`，不截断指标。
+耗时从本轮开始累计，跨多次模型调用和工具执行不重置；重试、压缩及等待审批沿用相应阶段名称。
+输出量累计本轮各次模型调用的 `context.completion`，当前调用未报告 usage 时由已流出的正文与思考
+按约四个 Unicode 码点一个 token 估计，任何估计部分用 `~` 标记；收到真实 usage 即替换该调用估计。
+速率分母是各调用从首次流式输出（含工具调用开始）到完成的时间之和，工具执行、等待首 token、
+重试等待不计入。没有流式用时则省略速率。失败重试丢弃当前部分输出的估计与计时，
+最终尾行以 `turn_ended.usage.completion` 为准。
+现有协议把未报告 usage 编成全零，因此全零无法与“真实零用量”区分：只有 prompt 或 completion
+非零才认定为真实报告，不将默认零伪装成实测用量。
+
 斜杠命令不进队列，立即分派：业务命令（new、sessions、model、compact、plan、permissions）按原 busy 条件发请求，
 本地视图命令（settings、theme、help、agents、exit、折叠与侧栏）在前端执行。
 
@@ -172,28 +197,50 @@ PromptBox 左侧是一根竖条（忙碌时换成 `primary`），底纹用 `back
 
 ## 5. 对话投影
 
-每个逻辑块左侧有两列装订线；窄内容栏压成一列。装饰符、底纹补空格、工具右侧统计使用 `k_no_src`，
+每个逻辑块左侧有两列装订线。装饰符、底纹补空格、工具右侧统计使用 `k_no_src`，
 拖选仍得到原始用户输入、Markdown 或工具主体。普通 Markdown、代码、表格和工具主体在原渲染器外套一层 gutter，
 折行宽度与实际绘制宽度一致。
 
 | meta / Event | 显示 |
 | --- | --- |
 | `banner` | 新会话字标、项目信息和提示；恢复使用单行系统块 |
-| `turn_started` / 历史 user | `▌` 竖条、正文和整行 `background_element` |
+| `turn_started` / 历史 user | primary `▌`、正文和整行 `background_element`；首行右侧 muted 本地 `HH:MM`，历史无时间则留空 |
 | `TextDelta` | `MarkdownStream`，正文前留两列 |
 | `ReasoningDelta` / `thought` | 思考中显示 `· Thinking...`；正文开始或一轮结束时定稿成 `+ Thought: N.Ns`（accent），正文块收起 |
-| `ToolStarted` | 建立同组标题、开放主体和折叠行，按调用 id 保存 |
+| `ToolStarted` | 建立同组标题、开放主体和折叠行；accent spinner、粗体名称、muted 参数，按调用 id 保存 |
 | `ToolOutput` | 追加到对应开放主体，并行调用不会串卡 |
-| `ToolFinished` | 用结构化 View 定稿名称、参数、右对齐统计和主体 |
+| `ToolFinished` | success 勾 / error 叉；结构化 View 定稿名称、参数、右对齐统计和主体，edit/write 的 +N −M 分别为 success / error 色且均不加粗 |
 | `Compacted` | 永久的压缩前后 token 系统块 |
 | `Notice` | error 留永久块；`persistent=true` 的审批审计留正文；其它 info/warn 进 toast |
-| 带 parent_session_id 的事件 | 按 model_call_id 归位：在对应 task 块正文追加子 Agent 的工具行，同时把事件喂给该子会话的 Pane |
-| `TurnEnded` | interrupted/denied/limit/failed 留系统块；done 追加 `▣ 模式 · 模型 · 耗时` 尾行 |
+| 带 parent_session_id 的事件 | 按 model_call_id 归位：先更新子会话 Pane，再复用其工具标题与统计原位更新父 task 的嵌套工具行 |
+| `TurnEnded` | interrupted/denied/limit/failed 留系统块；done 追加 `▣ 模式 · 模型 · 耗时`，有 usage 时加 ` · 2.1k out` |
 
-工具标题是状态符 + 加粗名称、muted 参数、右对齐统计三段；参数过长时省略。主体每行用 `│ `，折叠行独立用
-`└ `，同一工具三个块共享 group 且只有标题有上边距。默认折叠：edit/write 20 行、bash 10 行、web 8 行、grep/glob/MCP 5 行、
-非结构化结果 3 行。Read 和 Plan 通常没有主体。`TaskView` 的统计是 `N steps · M tools · S.Ss`，展开后先列逐条
-工具摘要（错误项用 ✗），空行后是子 Agent 的最终文本。
+实时主会话消息使用前端 `input.submit` 时记录的本地提交时间，排队期间不改为执行时间；
+子会话输入使用收到其 `turn_started` 的时间。时间在用户块 meta 中，不插入可复制的原文。
+当前 HistoryItem 没有用户事件时间字段，历史用户消息省略时间，不用恢复时刻替代。
+用户块为时间预留右侧列，长正文折行后仍整行填充元素底色。comfortable 块间一空行，compact 无空行。
+
+工具标题是状态符 + 加粗名称、muted 参数、右对齐统计三段；参数过长时省略。主体每行用 muted 的 `│ `，折叠行独立用 muted 的
+`└ N more lines · ctrl+o expand` / `└ ctrl+o collapse`；剩余行数按当前宽度的实际显示与折行数计算。
+无折叠行的卡片在两种状态下均不显示折叠块，也不为它留间距；Ctrl+O 往返不改变这些卡片布局。
+同一工具三个块共享 group 且只有标题有上边距。默认折叠：edit/write 20 行、bash 10 行、web 8 行、grep/glob/MCP 5 行、
+非结构化结果 3 行。Read 和 Plan 通常没有主体。edit/write diff 隐藏 `---` / `+++` 文件头；
+hunk 标题独占一行，以 muted 的 `⋯` 加第二个 `@@` 后的函数上下文显示，无上下文则只显示 `⋯`，不加底色。
+唯一 hunk 从第 1 行开始时省略标题（新建/清空文件允许另一侧从 0 开始）。
+正文为 `│ <num> <sign> <code>`：新增与上下文使用新文件行号，删除使用旧文件行号，
+muted 数字列右对齐，列宽取整张卡片最大行号的位数；折行续行保留列宽但不重复行号与符号。
+新增、删除行在 gutter 之后从数字列到行末空白铺满底色，
+分别将 success / error 前景色以 15% 混入 background；transparent 用 background_panel 作混色基底。
+混色读取当前主题令牌，indexed 颜色先转 RGB，再由原终端输出路径量化为 256 色；不改框架。
+Task 运行中与结束后共用标题：状态符、粗体 `Task`、两空格、text 色的 Agent 名、
+两空格、muted 任务描述，最右为 `N steps · M tools · S.Ss`；描述按列省略并优先为统计让位。
+运行中按已收到的子工具完成摘要数与调用数更新 steps/tools，耗时每 100 ms 更新；结束后使用 TaskView 的最终统计。
+运行中主体逐工具原位更新为
+`│ ✓ Grep  parse_date  6 matches`：状态图标、粗体名称、muted 参数与统计；运行中 spinner、失败或中断用叉。
+结束后保留子工具摘要，去掉结果文本首尾空白行；两者均存在时 comfortable 恰好留一行 `│`，
+compact 不留空行。历史 TaskView 的子工具步骤只保存 summary/is_error，
+回放忠实使用这些摘要，不能从旧记录补出缺失的结构化参数和统计。Grep/Glob 统计在数量为 1 时显示
+`1 match` / `1 file`；实时嵌套子工具行复用相同的标题与统计。
 
 `WebView` 的卡片名称为 `Web search` / `Web fetch`，参数显示搜索词或最终 URL，统计显示 HTTP 状态和耗时；
 抓取另显示字节范围/正文总量、cached 和 truncated 标记。状态 0 表示尚未取得可显示的 HTTP 状态，应查看正文中的失败原因。
@@ -216,6 +263,14 @@ Ctrl+C 或再次切换回到主会话。
 活动期之外的子会话没有 Pane：恢复父会话时只还原 task 块，用户从 `/agents` 选中某个 task 时才用
 `session.history` 分页读取子会话记录并投影进新 Pane。浏览是只读查询，不修改子会话记录或 updated。子 Pane 下提交输入被拒并保留草稿。
 
+有子 Pane 时 HeaderBar 下方出现 AgentTabs，属于基础布局并从工作区扣除两行高度。
+显示 `main` 与各 `task · agent`，每项带运行 spinner / 成功勾 / 失败或中断叉。
+当前 Pane 标签为 text，下一行用 primary 的 `─` 标记，其他标签为 muted；右侧 `ctrl+a switch`。
+宽度不足时裁剪长标签并移动可见任务窗口，保持 main 和当前选择可见。
+Ctrl+A 仍打开现有 picker；点击可见标签通过现有 Runtime 鼠标绑定直接切换。
+未选择过的历史 task 不提前创建 Pane，但可在 AGENTS 节查看其已保存的耗时和结果状态。
+
+
 ## 6. 状态、浮层与权限
 
 HeaderBar 左侧为 primary 粗体品牌与首条用户输入的首行（未输入时为 muted 的 new session）。
@@ -236,7 +291,8 @@ SidePanel 留一行上边距和两列左右留白，章节标题为大写 muted�
 | SESSION | 首次用户输入标题，最多两行；会话 UUIDv7 创建时间转本地 HH:MM、回放和实时 user 轮数（窄栏自动折行） |
 | CONTEXT | 标题右侧百分比、primary/border 用量条、简写的 used / limit tokens；达到压缩阈值用 warning |
 | PLAN | 仅收到 TodoView 后显示；done/total；完成勾 success、当前箭头 accent、未完成圆圈 muted |
-| CHANGED | 当前会话已成功 edit/write 的相对路径和累计 +N −M；最多 8 文件，其余 +K more |
+| AGENTS | 位于 PLAN 与 CHANGED 之间，仅有任务时显示；左侧状态图标和 Agent 名，右侧耗时，运行中随动画刷新 |
+| CHANGED | 当前会话已成功 edit/write 的相对路径和累计 +N −M（分别为 success / error 色，均不加粗）；最多 8 文件，其余 +K more |
 | MCP | 配置的服务器逐项显示名称和 ready/connecting/failed，分别用 success/warning/error 状态符 |
 
 底部固定 DAgent 版本；路径与分支分别交给 HintBar 和 HeaderBar。侧栏隐藏时计划仍在 Transcript 原位显示。
@@ -295,3 +351,5 @@ Ctrl+M 需要终端提供可区分的扩展按键编码；传统终端把它与 
 `/skills` opens the skill catalog and discovery diagnostics. Selecting a skill inserts `$name` without submitting; typing `$` opens skill completion. Both reuse the existing application panel/completion widgets and fetch metadata through `skills.list`. Skill tool results use a dedicated card projection. See [skills](skills.md).
 
 历史加载各自拥有条目缓冲和分页游标；切换会话会取消旧加载，完成或失败即释放。主会话实时事件始终进入主文档，子事件按会话身份进入子文档。
+
+本轮改版范围为 phase 2a（会话区）。命令面板分组、浮层变暗、审批框、toast 与欢迎页重做留在 phase 2b。

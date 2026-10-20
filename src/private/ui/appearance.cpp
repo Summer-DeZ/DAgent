@@ -4,15 +4,17 @@
 
 #include <algorithm>
 #include <cmath>
+#include <format>
+#include "ui/strings.hpp"
 
 namespace dagent::ui {
 namespace {
 const Icons sets[] = {
-    {"◆", "⎇", "✓", "✗", "▸", "●", "○", "▣", "▣", "▌", "█", "│", "└", "─", "╭", "╮", "╰", "╯", "↑", "↓", "⚠", "−", " · ",
+    {"◆", "⎇", "✓", "✗", "▸", "●", "○", "▣", "▣", "▌", "█", "│", "└", "─", "╭", "╮", "╰", "╯", "↑", "↓", "⚠", "−", " · ", "↵", "⇧↵",
      {"⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"}},
-    {"\uf489", "\ue0a0", "\uf00c", "\uf00d", "▸", "\uf111", "○", "\uf07b", "▣", "▌", "█", "│", "└", "─", "╭", "╮", "╰", "╯", "↑", "↓", "⚠", "−", " · ",
+    {"\uf489", "\ue0a0", "\uf00c", "\uf00d", "▸", "\uf111", "○", "\uf07b", "▣", "▌", "█", "│", "└", "─", "╭", "╮", "╰", "╯", "↑", "↓", "⚠", "−", " · ", "↵", "⇧↵",
      {"⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"}},
-    {"*", "|/", "v", "x", ">", "o", "o", "#", "#", "|", "#", "|", "+", "-", "+", "+", "+", "+", "^", "v", "!", "-", " . ",
+    {"*", "|/", "v", "x", ">", "o", "o", "#", "#", "|", "#", "|", "+", "-", "+", "+", "+", "+", "^", "v", "!", "-", " . ", "enter", "shift+enter",
      {"-", "\\", "|", "/", "-", "\\", "|", "/", "-", "\\"}},
 };
 int current_icons = 0;
@@ -84,10 +86,43 @@ int draw_chip(tui::Surface& s, int x, int y, std::string_view label, tui::Style 
     style.bg = outline ? background : t.background_element.bg;
     return s.text(x, y, outline ? std::string(label) : " " + std::string(label) + " ", style);
 }
+std::string compact_tokens(std::size_t n) {
+    if (n < 1000) return std::to_string(n);
+    return n % 1000 == 0 ? std::format("{}k", n / 1000) : std::format("{:.1f}k", n / 1000.0);
+}
+tui::Color diff_background(const tui::ThemeTokens& t, bool added) {
+    const auto rgb = [](tui::Color c) {
+        if (c.kind != tui::Color::Kind::indexed) return c;
+        const int n = c.r;
+        if (n >= 232) return tui::Color::rgb(8 + (n - 232) * 10, 8 + (n - 232) * 10, 8 + (n - 232) * 10);
+        if (n >= 16) {
+            const auto channel = [](int v) { return v ? 55 + v * 40 : 0; };
+            return tui::Color::rgb(channel((n - 16) / 36), channel((n - 16) / 6 % 6), channel((n - 16) % 6));
+        }
+        constexpr unsigned palette[] = {0x000000,0x800000,0x008000,0x808000,0x000080,0x800080,0x008080,0xc0c0c0,
+                                        0x808080,0xff0000,0x00ff00,0xffff00,0x0000ff,0xff00ff,0x00ffff,0xffffff};
+        return tui::Color::rgb(palette[n] >> 16, (palette[n] >> 8) & 255, palette[n] & 255);
+    };
+    const auto base = t.background.bg.kind == tui::Color::Kind::default_ ? t.background_panel.bg : t.background.bg;
+    return mix(rgb(base), rgb(added ? t.success.fg : t.error.fg), .15);
+}
 void Activity::render(tui::Surface& s) {
     s.fill({0, 0, s.cols(), s.rows()}, U' ', theme_->background);
     if (action_.empty()) return;
-    s.text(0, 0, icons().spinner[frame_], theme_->primary);
-    s.text(2, 0, fit_columns(action_, s.cols() - 2), theme_->text_muted);
+    const std::string hint = "esc " + std::string(text().hint_interrupt);
+    auto value = action_;
+    if (!tokens_.empty()) value += std::string(icons().separator) + tokens_;
+    const auto without_rate = value;
+    if (!rate_.empty()) value += std::string(icons().separator) + rate_;
+    const int hint_width = display_width(hint);
+    const auto fits = [&](std::string_view label) {
+        return 2 + display_width(label) + 1 + hint_width <= s.cols();
+    };
+    if (!fits(value)) value = without_rate;
+    if (!fits(value)) value = action_;
+    const bool show_hint = fits(value);
+    s.text(0, 0, icons().spinner[frame_], theme_->accent);
+    if (2 + display_width(value) <= s.cols()) s.text(2, 0, value, theme_->text_muted);
+    if (show_hint) s.text(s.cols() - hint_width, 0, hint, theme_->text_muted);
 }
 } // namespace dagent::ui

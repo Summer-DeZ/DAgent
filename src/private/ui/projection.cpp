@@ -127,6 +127,7 @@ ToolView decode_tool_view(const json& view) {
     if (kind == "task") {
         TaskView out;
         out.agent = text_field(view, "agent");
+        out.task = text_field(view, "task");
         out.session_id = text_field(view, "session_id");
         out.result = text_field(view, "result");
         for (const json& step : view.value("steps", json::array())) {
@@ -140,7 +141,7 @@ ToolView decode_tool_view(const json& view) {
 }
 
 std::optional<EventPayload> decode_payload(std::string_view kind, const json& data) {
-    if (kind == "turn_started") return TurnStarted{data.value("input", "")};
+    if (kind == "turn_started") return TurnStarted{data.value("input", ""), {}};
     if (kind == "step_started") return StepStarted{};
     if (kind == "text") return TextDelta{data.value("text", "")};
     if (kind == "reasoning") return ReasoningDelta{data.value("text", "")};
@@ -178,6 +179,8 @@ std::optional<EventPayload> decode_payload(std::string_view kind, const json& da
         ContextUpdate out;
         out.used = data.value("used", std::size_t{0});
         out.limit = data.value("limit", std::size_t{0});
+        if (data.value("prompt", 0) > 0 || data.value("completion", 0) > 0)
+            out.output = data.value("completion", std::size_t{0});
         return out;
     }
     if (kind == "notice") {
@@ -205,6 +208,9 @@ std::optional<EventPayload> decode_payload(std::string_view kind, const json& da
         TurnEnded out;
         out.status = status_from(data.value("status", "done"));
         out.error = data.value("error", "");
+        const auto usage = data.value("usage", json::object());
+        if (usage.value("prompt", 0) > 0 || usage.value("completion", 0) > 0)
+            out.output = usage.value("completion", std::size_t{0});
         return out;
     }
     return std::nullopt;
@@ -223,7 +229,7 @@ std::vector<Event> decode_history(const protocol::HistoryItem& item) {
     if (item.kind == "system") {
         if (!item.model.empty()) events.push_back(Event{ModelChanged{item.model}});
     } else if (item.kind == "user") {
-        events.push_back(Event{TurnStarted{item.text}});
+        events.push_back(Event{TurnStarted{item.text, {}}});
     } else if (item.kind == "assistant") {
         if (!item.reasoning.empty()) events.push_back(Event{ReasoningDelta{item.reasoning}});
         if (!item.text.empty()) events.push_back(Event{TextDelta{item.text}});

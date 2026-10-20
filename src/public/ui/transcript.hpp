@@ -19,6 +19,8 @@ public:
     /// @brief 一次已结束的 task：切进子会话时用 session_id 回放。
     struct TaskRef {
         std::string agent, session_id, call_id;
+        bool failed = false;
+        double seconds = 0;
     };
 
     explicit Transcript(tui::Document&, std::function<void(const TodoList&)> todo = {},
@@ -31,6 +33,8 @@ public:
     void clear();
     void set_compact(bool);
     void refresh_icons();
+    void tick();
+    void apply_child(const std::string& call_id, const Event&, const Transcript& child);
     void toggle_tools();
     void toggle_thoughts();
     void set_session(std::string mode, std::string model);
@@ -47,8 +51,10 @@ private:
         uint32_t rows = 3;
         uint32_t group = 0;
         bool finished = false;
-        bool foldable = false;
+        bool task = false;
         std::string label;
+        std::string task_agent, task_description, task_result;
+        std::vector<std::pair<std::string, std::string>> children;
         std::chrono::steady_clock::time_point began{};
     };
     /// 一段思考：标题行、正文块与耗时，供 ctrl+r 统一展开收起。
@@ -63,9 +69,12 @@ private:
     ToolBlocks& tool(const std::string& id, const std::string& name, const std::string& summary);
     void finished(const ToolFinished&);
     void collapse(ToolBlocks&);
+    void refresh_task_title(ToolBlocks&);
+    void refresh_task_body(ToolBlocks&);
     void update_todo_block();
 
     void refresh_density();
+    int frame_ = 0;
     tui::Document& doc_;
     std::map<uint64_t, uint8_t> margins_;
     std::map<uint64_t, std::function<std::string()>> icon_sources_;

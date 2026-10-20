@@ -95,7 +95,7 @@ struct TaskStep {
 };
 
 struct TaskView {
-    std::string agent, session_id, result;
+    std::string agent, task, session_id, result;
     std::vector<TaskStep> steps;
     int tool_calls = 0;
     double seconds = 0;
@@ -118,6 +118,7 @@ struct ToolFinished {
 
 struct TurnStarted {
     std::string input;
+    std::string time;
 };
 struct StepStarted {};
 struct TextDelta {
@@ -146,6 +147,7 @@ struct Compacted {
 };
 struct ContextUpdate {
     std::size_t used = 0, limit = 0;
+    std::optional<std::size_t> output;
 };
 struct Notice {
     NoticeLevel level = NoticeLevel::info;
@@ -162,6 +164,7 @@ struct ModeChanged {
 struct TurnEnded {
     TurnStatus status = TurnStatus::done;
     std::string error;
+    std::optional<std::size_t> output;
 };
 
 using EventPayload =

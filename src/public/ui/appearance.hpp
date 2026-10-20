@@ -21,11 +21,13 @@ tui::ThemeTokens appearance_theme(const Appearance&, const std::filesystem::path
 // 应用层图标统一入口；改变集合后通过主题 epoch 使已物化块重新绘制。
 struct Icons {
     std::string_view brand, branch, check, cross, current, dot, circle, folder, message, bar, meter, vertical, elbow;
-    std::string_view horizontal, top_left, top_right, bottom_left, bottom_right, up, down, warning, minus, separator;
+    std::string_view horizontal, top_left, top_right, bottom_left, bottom_right, up, down, warning, minus, separator, enter, newline;
     std::array<std::string_view, 10> spinner;
 };
 const Icons& icons();
 void set_icons(std::string_view);
+std::string compact_tokens(std::size_t);
+tui::Color diff_background(const tui::ThemeTokens&, bool added);
 void draw_frame(tui::Surface&, tui::Rect, tui::Style);
 int chip_width(std::string_view, bool outline);
 int draw_chip(tui::Surface&, int x, int y, std::string_view, tui::Style,
@@ -45,13 +47,16 @@ private:
 
 class Activity final : public tui::Widget {
 public:
-    void set_action(std::string value) { action_ = std::move(value); invalidate_layout(); }
+    void set_action(std::string value, std::string tokens = {}, std::string rate = {}) {
+        action_ = std::move(value); tokens_ = std::move(tokens); rate_ = std::move(rate);
+        invalidate_layout();
+    }
     void tick() { frame_ = (frame_ + 1) % 10; invalidate(); }
     void set_theme(const tui::ThemeTokens& theme) { theme_ = &theme; invalidate(); }
     tui::Size measure(tui::Size available) const override { return {available.cols, action_.empty() ? 0 : 1}; }
     void render(tui::Surface&) override;
 private:
-    std::string action_;
+    std::string action_, tokens_, rate_;
     int frame_ = 0;
     const tui::ThemeTokens* theme_ = &tui::dark_theme();
 };

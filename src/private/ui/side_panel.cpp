@@ -25,7 +25,7 @@ void SidePanel::set_appearance(const Appearance& a) {
     invalidate_layout();
 }
 void SidePanel::start_session(std::string_view id) {
-    title_.clear(); turns_ = 0; changes_.clear(); items_.clear(); has_plan_ = false;
+    agents_.clear(); title_.clear(); turns_ = 0; changes_.clear(); items_.clear(); has_plan_ = false;
     // 会话 ID 为 UUIDv7，前 48 位是创建时的 Unix 毫秒，恢复会话也保持原始时间。
     std::string stamp;
     for (char c : id.substr(0, 13)) if (c != '-') stamp += c;
@@ -101,16 +101,31 @@ void SidePanel::render(tui::Surface& s) {
             s.text(x + 2, y++, fit_columns(item.text, width - 2), style(doing ? t.text : t.text_muted));
         }
     }
+    if (!agents_.empty()) {
+        gap(); heading(text().section_agents);
+        for (const auto& agent : agents_) {
+            if (y >= h - 2) break;
+            const bool running = agent.state == AgentState::running, failed = agent.state == AgentState::failed;
+            const auto elapsed = std::format("{:.1f}s", agent.seconds);
+            s.text(x, y, running ? icons().spinner[frame_] : failed ? icons().cross : icons().check,
+                   style(running ? t.accent : failed ? t.error : t.success));
+            s.text(x + 2, y, fit_columns(agent.name, width - display_width(elapsed) - 3), style(t.text));
+            s.text(w - 2 - display_width(elapsed), y++, elapsed, style(t.text_muted));
+        }
+    }
     if (!changes_.empty()) {
         gap(); heading(text().section_changed);
+        auto added_style = style(t.success), removed_style = style(t.error);
+        added_style.attrs = added_style.attrs & ~tui::Attr::bold;
+        removed_style.attrs = removed_style.attrs & ~tui::Attr::bold;
         int count = 0;
         for (const auto& [path, counts] : changes_) {
             if (count++ == 8 || y >= h - 2) break;
             const auto added = std::format("+{}", counts.first), removed = std::string(icons().minus) + std::to_string(counts.second);
             const int right = w - 2 - display_width(added) - 1 - display_width(removed);
             s.text(x, y, fit_columns(path, right - x - 1), style(t.text));
-            s.text(right, y, added, style(t.success));
-            s.text(right + display_width(added) + 1, y++, removed, style(t.error));
+            s.text(right, y, added, added_style);
+            s.text(right + display_width(added) + 1, y++, removed, removed_style);
         }
         if (changes_.size() > 8) line(format_text(text().changed_more, changes_.size() - 8), t.text_muted);
     }

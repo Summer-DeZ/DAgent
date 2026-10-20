@@ -13,9 +13,9 @@ constexpr int k_right = 1;  ///< 右侧留白
 
 }
 
-void PromptBox::set_footer(std::string value) {
-    if (footer_ == value) return;
-    footer_ = std::move(value); invalidate();
+void PromptBox::set_footer(std::string mode, std::string model, bool busy) {
+    if (mode_ == mode && model_ == model && busy_ == busy) return;
+    mode_ = std::move(mode); model_ = std::move(model); busy_ = busy; invalidate();
 }
 void PromptBox::set_footer_tone(bool error, bool accent) {
     if (footer_error_ == error && footer_accent_ == accent) return;
@@ -137,11 +137,18 @@ void PromptBox::render(tui::Surface& surface) {
             surface.text(k_left, this->top() + i, line, body);
         }
     }
-    if (!footer_.empty()) {
-        tui::Style footer = footer_error_ ? theme_->error : footer_accent_ ? theme_->accent : muted;
-        footer.bg = (outline_ ? theme_->background : theme_->background_panel).bg;
-        surface.text(k_left, h - 1 - (outline_ ? 1 : 0), fit_columns(footer_, width), footer);
-    }
+    const int y = h - 1 - (outline_ ? 1 : 0), gap = outline_ ? 2 : 1;
+    const auto tone = footer_error_ ? theme_->error : footer_accent_ ? theme_->accent : muted;
+    const std::string hint = format_text(busy_ ? ui::text().prompt_queue : ui::text().prompt_send,
+                                         icons().enter, icons().newline, icons().separator);
+    // 极窄内容栏优先保留两个标签；有足够空间时才放完整快捷键说明。
+    const bool show_hint = width >= display_width(hint) + chip_width(mode_, outline_) + gap + 8;
+    const int budget = show_hint ? width - display_width(hint) - 2 : width;
+    const auto mode = fit_columns(mode_, std::max(0, budget - gap - 4 - (outline_ ? 0 : 4)));
+    int x = draw_chip(surface, k_left, y, mode, tone, *theme_, outline_, body.bg) + gap;
+    const auto model = fit_columns(model_, std::max(0, k_left + budget - x - (outline_ ? 0 : 2)));
+    if (!model.empty()) draw_chip(surface, x, y, model, theme_->text, *theme_, outline_, body.bg);
+    if (show_hint) surface.text(w - k_right - display_width(hint), y, hint, muted);
 }
 
 } // namespace dagent::ui
