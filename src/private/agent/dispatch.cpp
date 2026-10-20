@@ -54,36 +54,96 @@ std::string summary_of(const PreparedAction& action) {
     return std::get<std::unique_ptr<PreparedTool>>(action)->intent().summary;
 }
 
-} // namespace
+// 一次 dispatch 的状态与回调；所有 worker 和邮箱处理结束后才销毁。
+class DispatchBatch {
+    using Outcome = ActionDispatcher::Outcome;
 
-ActionDispatcher::Outcome ActionDispatcher::dispatch(const std::vector<ToolCall>& calls, int budget) {
-    SessionCommitter& committer = session_.committer();
-    Policy& policy = session_.policy();
-    ExecutionRegistry& executions = session_.executions();
-    ControlActionExecutor& control = session_.control();
-    ActionCatalog& catalog = session_.catalog();
-    SessionResources* resources = services_.resources;
-    const Sink& sink = services_.sink;
-    const std::stop_token stop = services_.stop;
-    ExecutionMailbox mailbox;
-    ParentReviewer reviewer(session_, run_, services_);
-    const Approver parent_reviewer = [&](Approval& approval, std::stop_token child_stop) {
-        return reviewer.submit(mailbox, approval, child_stop);
+    struct Slot {
+        const ToolCall* call = nullptr;
+        std::string summary;
+        std::optional<PreparedAction> action; ///< 已准备的动作（普通工具或控制请求）
+        std::optional<ToolResult> result;     ///< 有值 = 可以提交
+        std::shared_ptr<ActiveExecution> execution; ///< 活跃执行登记（普通工具）
     };
-    control.set_parent_reviewer(
-        session_.config().options.approval.mode != ParentReviewMode::disabled ? &parent_reviewer : nullptr);
+    struct Pending {
+        std::size_t slot;
+        ExecutionGrant grant;
+    };
+    enum class GroupKind { readonly, task };
+
     struct ResetReviewer {
+        ResetReviewer(ControlActionExecutor& control, const Approver* parent_reviewer)
+            : control(control) {
+            control.set_parent_reviewer(parent_reviewer);
+        }
         ControlActionExecutor& control;
         ~ResetReviewer() { control.set_parent_reviewer(nullptr); }
-    } reset_reviewer{control};
+    };
+
+    Session& session_;
+    const RunServices& services_;
+    const std::string& root_turn_id_; ///< 借用 ActionDispatcher 的整轮标识，不按批次生成。
+    int budget;
+    SessionCommitter& committer;
+    Policy& policy;
+    ExecutionRegistry& executions;
+    ControlActionExecutor& control;
+    ActionCatalog& catalog;
+    SessionResources* resources;
+    const Sink& sink;
+    const std::stop_token stop;
+    ExecutionMailbox mailbox;
+    ParentReviewer reviewer;
+    const Approver parent_reviewer;
+    // 保持原局部变量的析构顺序：后续批次状态先销毁，再复位，最后销毁回调、reviewer 和 mailbox。
+    ResetReviewer reset_reviewer;
     std::map<std::string, std::string> execution_ids;
-    static std::atomic<std::uint64_t> sequence{0};
-    const auto execution_id = [&](const std::string& call_id) -> const std::string& {
+    static inline std::atomic<std::uint64_t> sequence{0}; ///< execution/approval 共用的进程级序列。
+    std::vector<Slot> slots;
+    Outcome outcome;
+    std::size_t committed = 0;
+    std::vector<Pending> group; ///< 挂起的并行组
+    GroupKind group_kind = GroupKind::readonly;
+    // 决策审阅：只有配置了决策模型、且本轮自动审批未被关闭时才尝试代批（计划 2.2/2.9）。
+    const std::shared_ptr<DecisionServices>& decisions;
+    const bool decision_ready;
+    std::optional<DecisionReviewer> decision_reviewer;
+    const ReviewContext review_context;
+
+public:
+    DispatchBatch(Session& session, Run& run, const RunServices& services,
+                  const std::string& root_turn_id, const std::vector<ToolCall>& calls, int budget)
+        : session_(session), services_(services), root_turn_id_(root_turn_id), budget(budget),
+          committer(session_.committer()), policy(session_.policy()), executions(session_.executions()),
+          control(session_.control()), catalog(session_.catalog()), resources(services_.resources),
+          sink(services_.sink), stop(services_.stop), reviewer(session_, run, services_),
+          parent_reviewer([this](Approval& approval, std::stop_token child_stop) {
+              return reviewer.submit(mailbox, approval, child_stop);
+          }),
+          reset_reviewer(control, session_.config().options.approval.mode != ParentReviewMode::disabled
+                                      ? &parent_reviewer : nullptr),
+          // 槽位与摘要仍在注册父审批之后、初始化决策审阅之前创建；执行期间不再移动槽位。
+          slots([&calls] {
+              std::vector<Slot> slots(calls.size());
+              for (std::size_t i = 0; i < calls.size(); ++i) {
+                  slots[i].call = &calls[i];
+                  slots[i].summary = fallback_summary(calls[i]);
+              }
+              return slots;
+          }()),
+          decisions(session_.decision()), decision_ready(decisions != nullptr && decisions->enabled()),
+          review_context(session_.review_context()) {
+        if (decision_ready) decision_reviewer.emplace(*decisions, review_context, root_turn_id_);
+    }
+
+private:
+    const std::string& execution_id(const std::string& call_id) {
         const auto [execution, inserted] = execution_ids.try_emplace(call_id);
         if (inserted) execution->second = session_.meta().id + "/execution/" + std::to_string(++sequence);
         return execution->second;
-    };
-    const auto identify = [&](Approval& approval) {
+    }
+
+    void identify(Approval& approval) {
         approval.identity.request_id = session_.meta().id + "/approval/" + std::to_string(++sequence);
         approval.identity.child_session_id = session_.meta().id;
         approval.identity.call_id = approval.call_id;
@@ -92,8 +152,9 @@ ActionDispatcher::Outcome ActionDispatcher::dispatch(const std::vector<ToolCall>
         approval.read_only = live.read_only;
         approval.planning = live.planning;
         for (const auto& grant : policy.session_grants()) approval.existing_permissions.push_back(grant.description);
-    };
-    const auto validate_decision = [&](const Approval& approval, Decision& decision, std::stop_token pending_stop) {
+    }
+
+    void validate_decision(const Approval& approval, Decision& decision, std::stop_token pending_stop) {
         const bool approved = decision.answer == Decision::Answer::allow || decision.answer == Decision::Answer::allow_session;
         if (pending_stop.stop_requested() || (approval.authority == ApprovalAuthority::parent_model &&
                                               approval.authority_stop.stop_requested())) {
@@ -106,34 +167,11 @@ ActionDispatcher::Outcome ActionDispatcher::dispatch(const std::vector<ToolCall>
             decision.feedback = "Permission changed or the requested approval scope is invalid; prepare again.";
             decision.state = "cancelled";
         } else if (decision.state.empty()) decision.state = approved ? "approved" : "denied";
-    };
-    struct Slot {
-        const ToolCall* call = nullptr;
-        std::string summary;
-        std::optional<PreparedAction> action; ///< 已准备的动作（普通工具或控制请求）
-        std::optional<ToolResult> result;     ///< 有值 = 可以提交
-        std::shared_ptr<ActiveExecution> execution; ///< 活跃执行登记（普通工具）
-    };
-    struct Pending {
-        std::size_t slot;
-        ExecutionGrant grant;
-    };
-
-    std::vector<Slot> slots(calls.size());
-    for (std::size_t i = 0; i < calls.size(); ++i) {
-        slots[i].call = &calls[i];
-        slots[i].summary = fallback_summary(calls[i]);
     }
 
-    Outcome outcome;
-    std::size_t committed = 0;
-    enum class GroupKind { readonly, task };
-    std::vector<Pending> group; ///< 挂起的并行组
-    GroupKind group_kind = GroupKind::readonly;
-
     // 并行资格：普通工具按既有 parallel()；控制动作按类型（todo 只读组、task 任务组、问答串行等待）。
-    const auto parallel_kind = [](const std::expected<PreparedAction, ToolResult>& prepared,
-                                  const std::optional<Verdict>& verdict) -> std::optional<GroupKind> {
+    std::optional<GroupKind> parallel_kind(const std::expected<PreparedAction, ToolResult>& prepared,
+                                          const std::optional<Verdict>& verdict) {
         if (!prepared) return std::nullopt;
         if (const auto* control = std::get_if<ControlRequest>(&prepared.value())) {
             if (std::holds_alternative<PlanReplacement>(*control)) return GroupKind::readonly;
@@ -144,10 +182,10 @@ ActionDispatcher::Outcome ActionDispatcher::dispatch(const std::vector<ToolCall>
         const auto& tool = std::get<std::unique_ptr<PreparedTool>>(prepared.value());
         if (!parallel(*verdict, tool->intent())) return std::nullopt;
         return GroupKind::readonly;
-    };
+    }
 
     // 结果按 tool_calls 的原始顺序写入历史、写记录、发事件；能提交的前缀尽早提交（docs/design/agent.md §6）。
-    const auto commit = [&] {
+    void commit() {
         while (committed < slots.size() && slots[committed].result.has_value()) {
             Slot& slot = slots[committed];
             for (const ExecutionSignal& signal : slot.result->signals) {
@@ -170,14 +208,14 @@ ActionDispatcher::Outcome ActionDispatcher::dispatch(const std::vector<ToolCall>
             committer.commit_tool(*slot.call, slot.summary, *slot.result, plan);
             ++committed;
         }
-    };
+    }
 
-    const auto make_on_output = [&](const ToolCall& call) {
-        return [&sink, id = call.id](std::string_view chunk) { sink(ToolOutput{id, std::string(chunk)}); };
-    };
+    auto make_on_output(const ToolCall& call) {
+        return [this, id = call.id](std::string_view chunk) { sink(ToolOutput{id, std::string(chunk)}); };
+    }
 
     // 权限变化终止执行后，用说明替换"被用户中断"，避免把系统降权误报成用户取消。
-    const auto finish_execution = [&](Slot& slot) {
+    void finish_execution(Slot& slot) {
         if (slot.execution == nullptr) return;
         if (slot.result) {
             if (auto* bash = std::get_if<BashView>(&slot.result->display)) {
@@ -211,41 +249,39 @@ ActionDispatcher::Outcome ActionDispatcher::dispatch(const std::vector<ToolCall>
         }
         executions.end(slot.execution);
         slot.execution.reset();
-    };
+    }
 
-    // 决策审阅：只有配置了决策模型、且本轮自动审批未被关闭时才尝试代批（计划 2.2/2.9）。
-    const std::shared_ptr<DecisionServices>& decisions = session_.decision();
-    const bool decision_ready = decisions != nullptr && decisions->enabled();
-    std::optional<DecisionReviewer> decision_reviewer;
-    const ReviewContext review_context = session_.review_context();
-    if (decision_ready) decision_reviewer.emplace(*decisions, review_context, root_turn_id_);
-    const auto gate_open = [&] {
+    bool gate_open() {
         return services_.review_gate == nullptr || services_.review_gate->enabled();
-    };
+    }
+
     /// 决策模型可用于本会话：只在 auto-edit（workspace、无只读/规划上限）下代批；
     /// unrestricted、ask、只读/规划保持原有语义（计划 §2.3/§3）。
     /// 子会话 may_ask=false（无人工出口）时也不能借它新增权限。
-    const auto decision_allowed = [&] {
+    bool decision_allowed() {
         if (decisions == nullptr) return false;
         if (!session_.is_main() && !services_.approver) return false;
         const EffectivePermission live = policy.effective();
         return live.mode == PermissionMode::workspace && !live.read_only && !live.planning;
-    };
-    const auto review_deadline = [&] {
+    }
+
+    auto review_deadline() {
         return std::chrono::steady_clock::now() +
                (decisions != nullptr ? decisions->options.timeout : std::chrono::milliseconds{10000});
-    };
-    const auto commit_auto_review = [&](const std::string& call_id, std::vector<std::string> review_ids,
-                                        std::string_view result, std::string reason) {
+    }
+
+    void commit_auto_review(const std::string& call_id, std::vector<std::string> review_ids,
+                            std::string_view result, std::string reason) {
         AutoReview event;
         event.call_id = call_id;
         event.review_ids = std::move(review_ids);
         event.result = std::string(result);
         event.reason = std::move(reason);
         committer.commit_auto_review(event);
-    };
+    }
+
     /// 人工最终决定回填：只有用户明确批准/拒绝才更新动态阈值；父复批与取消不调整。
-    const auto commit_feedback = [&](const Approval& approval, const Decision& decision) {
+    void commit_feedback(const Approval& approval, const Decision& decision) {
         if (!decision_ready || decisions->store == nullptr) return;
         if (approval.authority != ApprovalAuthority::user) return;
         if (decision.state != "approved" &&
@@ -262,13 +298,13 @@ ActionDispatcher::Outcome ActionDispatcher::dispatch(const std::vector<ToolCall>
         } catch (const std::exception& error) {
             log_agent()->warn("决策审阅反馈保存失败：{}", error.what());
         }
-    };
+    }
 
     // 运行中网络判定：先查配置/会话拒绝；需要时做脚本强制复审与 d3 代批；再走现有审批器。
     // Dispatcher consumes requests from the execution mailbox and owns approval/journal calls.
-    const auto make_network_decider = [&](std::size_t index) {
+    auto make_network_decider(std::size_t index) {
         auto decided = std::make_shared<std::map<std::string, std::pair<std::uint64_t, NetworkAction>>>();
-        return [&, index, decided](const NetworkTarget& target, std::string& reason, std::stop_token execution_stop) -> NetworkAction {
+        return [this, index, decided](const NetworkTarget& target, std::string& reason, std::stop_token execution_stop) -> NetworkAction {
             if (execution_stop.stop_requested() || stop.stop_requested()) {
                 reason = "execution cancelled before network authorization";
                 return NetworkAction::cancel;
@@ -503,10 +539,9 @@ ActionDispatcher::Outcome ActionDispatcher::dispatch(const std::vector<ToolCall>
                 policy.remember_denied_network(target, approval.authority);
             return remember(NetworkAction::cancel);
         };
-    };
+    }
 
-    const auto authorize = [&](const ToolCall& call, const PreparedIntent& intent)
-        -> std::expected<ExecutionGrant, ToolResult> {
+    std::expected<ExecutionGrant, ToolResult> authorize(const ToolCall& call, const PreparedIntent& intent) {
         Verdict verdict = policy.evaluate(call, intent);
         if (verdict.kind == Verdict::Kind::deny)
             return std::unexpected(make_result(std::format(texts::kPolicyDenied, verdict.reason), true, false));
@@ -630,11 +665,11 @@ ActionDispatcher::Outcome ActionDispatcher::dispatch(const std::vector<ToolCall>
             return std::unexpected(make_result(feedback, true, false));
         }
         return *grant;
-    };
+    }
 
     // web_fetch 逐跳 URL 审阅与结果扫描：审阅与扫描都走 execution mailbox（在执行线程上编排）。
-    const auto make_web_request_decider = [&](std::size_t index) {
-        return [&, index](const WebRequestIntent& request, std::stop_token execution_stop) -> WebRequestAccess {
+    auto make_web_request_decider(std::size_t index) {
+        return [this, index](const WebRequestIntent& request, std::stop_token execution_stop) -> WebRequestAccess {
             WebRequestAccess access;
             access.action = NetworkAction::deny;
             if (execution_stop.stop_requested() || stop.stop_requested()) {
@@ -644,9 +679,9 @@ ActionDispatcher::Outcome ActionDispatcher::dispatch(const std::vector<ToolCall>
             }
             const std::string key = request.target.host + ":" + std::to_string(request.target.port);
             const auto request_revision = policy.revision();
-            const auto hop_decider = [&, index](WebRequestIntent reviewed, std::uint64_t revision,
+            const auto hop_decider = [this, index](WebRequestIntent reviewed, std::uint64_t revision,
                                                bool persisted, std::stop_token authority_stop) {
-                return [&, index, reviewed, revision, persisted, authority_stop](const NetworkTarget& target,
+                return [this, index, reviewed, revision, persisted, authority_stop](const NetworkTarget& target,
                     std::string& reason, std::stop_token token) -> NetworkAction {
                     if (token.stop_requested() || stop.stop_requested() || authority_stop.stop_requested() ||
                         policy.revision() != revision) {
@@ -758,10 +793,10 @@ ActionDispatcher::Outcome ActionDispatcher::dispatch(const std::vector<ToolCall>
                 policy.remember_denied_network(request.target, approval.authority);
             return access;
         };
-    };
+    }
 
-    const auto make_web_result_scanner = [&](std::size_t index) {
-        return [&, index](const WebScanInput& input, std::stop_token execution_stop) -> ScanResult {
+    auto make_web_result_scanner(std::size_t index) {
+        return [this, index](const WebScanInput& input, std::stop_token execution_stop) -> ScanResult {
             ScanResult scan;
             if (!decision_allowed()) {
                 // 未配置决策模型：不扫描，沿用原结果。
@@ -797,9 +832,9 @@ ActionDispatcher::Outcome ActionDispatcher::dispatch(const std::vector<ToolCall>
             }
             return scan;
         };
-    };
+    }
 
-    const auto execute = [&](Slot& slot, const ExecutionGrant& grant) {
+    ToolResult execute(Slot& slot, const ExecutionGrant& grant) {
         if (const auto* control_request = std::get_if<ControlRequest>(&slot.action.value()))
             return control.execute(*control_request, stop);
         ExecutionGrant scoped = grant;
@@ -811,10 +846,10 @@ ActionDispatcher::Outcome ActionDispatcher::dispatch(const std::vector<ToolCall>
             slot.execution != nullptr ? slot.execution->stop.get_token() : stop;
         return std::get<std::unique_ptr<PreparedTool>>(slot.action.value())
             ->execute(scoped, make_on_output(*slot.call), execution_stop);
-    };
+    }
 
     // 串行执行：普通工具写 tool_started 审计；ask/exit_plan 只发实时开始、不写记录。
-    const auto run_serial = [&](std::size_t i, ExecutionGrant grant) {
+    void run_serial(std::size_t i, ExecutionGrant grant) {
         Slot& slot = slots[i];
         grant.execution_id = execution_id(slot.call->id);
         const bool ordinary = std::holds_alternative<std::unique_ptr<PreparedTool>>(slot.action.value());
@@ -898,11 +933,11 @@ ActionDispatcher::Outcome ActionDispatcher::dispatch(const std::vector<ToolCall>
         }
         finish_execution(slot);
         if (!ordinary && slot.result->interrupted) outcome.stop = Outcome::Stop::interrupted;
-    };
+    }
 
     // 并行组：ToolStarted 按顺序在 agent 线程上发；执行分块、每块至多 width 个 jthread，
     // 块内 join 完才起下一块；每个线程只写自己的 slot（docs/design/agent.md §6）。
-    const auto run_group = [&] {
+    void run_group() {
         if (group.empty()) return;
         const std::size_t width = group_kind == GroupKind::task
                                       ? static_cast<std::size_t>(
@@ -937,118 +972,128 @@ ActionDispatcher::Outcome ActionDispatcher::dispatch(const std::vector<ToolCall>
         } // jthread 析构时 join：这一块全部结束才开始下一块
         for (const Pending& p : group) finish_execution(slots[p.slot]);
         group.clear();
-    };
+    }
 
-    for (std::size_t i = 0; i < slots.size(); ++i) {
-        Slot& slot = slots[i];
-        if (outcome.stop == Outcome::Stop::interrupted || stop.stop_requested()) {
-            outcome.stop = Outcome::Stop::interrupted;
-            slot.result = make_result(std::string(texts::kInterruptedCall), false, true);
-            continue;
-        }
-        if (outcome.stop == Outcome::Stop::denied) {
-            slot.result = make_result(std::string(texts::kPriorDenied), true, false);
-            continue;
-        }
-        if (outcome.handled == budget) {
-            slot.result = make_result(
-                std::format(texts::kToolLimit, session_.config().options.run.max_tool_calls), true, false);
-            outcome.hit_limit = true;
-            continue;
-        }
-        ++outcome.handled;
+public:
+    Outcome run() {
+        for (std::size_t i = 0; i < slots.size(); ++i) {
+            Slot& slot = slots[i];
+            if (outcome.stop == Outcome::Stop::interrupted || stop.stop_requested()) {
+                outcome.stop = Outcome::Stop::interrupted;
+                slot.result = make_result(std::string(texts::kInterruptedCall), false, true);
+                continue;
+            }
+            if (outcome.stop == Outcome::Stop::denied) {
+                slot.result = make_result(std::string(texts::kPriorDenied), true, false);
+                continue;
+            }
+            if (outcome.handled == budget) {
+                slot.result = make_result(
+                    std::format(texts::kToolLimit, session_.config().options.run.max_tool_calls), true, false);
+                outcome.hit_limit = true;
+                continue;
+            }
+            ++outcome.handled;
 
-        auto prepared = catalog.prepare(slot.call->name, slot.call->arguments, slot.call->id);
-        std::optional<Verdict> verdict;
-        if (prepared) {
-            if (const auto* tool = std::get_if<std::unique_ptr<PreparedTool>>(&prepared.value()))
-                verdict = policy.evaluate(*slot.call, (*tool)->intent());
-        }
-        if (!prepared && !catalog.contains(slot.call->name)) {
-            slot.result = std::move(prepared.error());
-            commit();
-            continue;
-        }
-        // 这个调用进不了并行组（或类别不同）：先跑完挂起的组，再重新 prepare（prepare 无副作用，docs/design/agent.md §6）。
-        std::optional<GroupKind> kind = parallel_kind(prepared, verdict);
-        if (!group.empty() && (!kind || *kind != group_kind)) {
-            run_group();
-            prepared = catalog.prepare(slot.call->name, slot.call->arguments, slot.call->id);
-            verdict.reset();
+            auto prepared = catalog.prepare(slot.call->name, slot.call->arguments, slot.call->id);
+            std::optional<Verdict> verdict;
             if (prepared) {
                 if (const auto* tool = std::get_if<std::unique_ptr<PreparedTool>>(&prepared.value()))
                     verdict = policy.evaluate(*slot.call, (*tool)->intent());
             }
-            kind = parallel_kind(prepared, verdict);
-        }
-        if (!prepared) {
-            slot.result = std::move(prepared.error());
-            commit();
-            continue;
-        }
-        slot.action = std::move(prepared.value());
-        slot.summary = summary_of(*slot.action); // 以最后一次 prepare 的 Intent 为准
+            if (!prepared && !catalog.contains(slot.call->name)) {
+                slot.result = std::move(prepared.error());
+                commit();
+                continue;
+            }
+            // 这个调用进不了并行组（或类别不同）：先跑完挂起的组，再重新 prepare（prepare 无副作用，docs/design/agent.md §6）。
+            std::optional<GroupKind> kind = parallel_kind(prepared, verdict);
+            if (!group.empty() && (!kind || *kind != group_kind)) {
+                run_group();
+                prepared = catalog.prepare(slot.call->name, slot.call->arguments, slot.call->id);
+                verdict.reset();
+                if (prepared) {
+                    if (const auto* tool = std::get_if<std::unique_ptr<PreparedTool>>(&prepared.value()))
+                        verdict = policy.evaluate(*slot.call, (*tool)->intent());
+                }
+                kind = parallel_kind(prepared, verdict);
+            }
+            if (!prepared) {
+                slot.result = std::move(prepared.error());
+                commit();
+                continue;
+            }
+            slot.action = std::move(prepared.value());
+            slot.summary = summary_of(*slot.action); // 以最后一次 prepare 的 Intent 为准
 
-        if (std::holds_alternative<ControlRequest>(*slot.action)) {
-            if (kind) {
-                group.push_back(Pending{i, {}});
-                group_kind = *kind;
-            } else {
-                run_serial(i, {});
+            if (std::holds_alternative<ControlRequest>(*slot.action)) {
+                if (kind) {
+                    group.push_back(Pending{i, {}});
+                    group_kind = *kind;
+                } else {
+                    run_serial(i, {});
+                }
+                commit();
+                continue;
+            }
+
+            auto& tool = *std::get<std::unique_ptr<PreparedTool>>(*slot.action);
+            if (verdict->kind != Verdict::Kind::deny) {
+                if (const auto request = tool.preview_request()) {
+                    auto read_grant = authorize(*slot.call, *request);
+                    if (!read_grant) slot.result = std::move(read_grant.error());
+                    else if (read_grant->revision != policy.revision() || stop.stop_requested())
+                        slot.result = make_result("Permission changed before preview; prepare again.", true, false);
+                    else slot.result = tool.prepare_preview(*read_grant);
+                    if (slot.result) { commit(); continue; }
+                    verdict = policy.evaluate(*slot.call, tool.intent());
+                    slot.summary = tool.intent().summary;
+                }
+            }
+
+            const Verdict& v = *verdict;
+            log_agent()->debug("工具调用 {}：{} → {}", slot.call->name, slot.summary,
+                               v.kind == Verdict::Kind::allow    ? "allow"
+                               : v.kind == Verdict::Kind::ask    ? "ask"
+                                                                 : "deny");
+
+            switch (v.kind) {
+            case Verdict::Kind::allow:
+                if (kind) {
+                    group.push_back(Pending{i, v.grant});
+                    group_kind = *kind;
+                } else {
+                    run_serial(i, v.grant);
+                }
+                break;
+            case Verdict::Kind::deny:
+                slot.result = make_result(std::format(texts::kPolicyDenied, v.reason), true, false);
+                break;
+            case Verdict::Kind::ask: {
+                auto grant = authorize(*slot.call, tool.intent());
+                if (grant) run_serial(i, *grant);
+                else slot.result = std::move(grant.error());
+                break;
+            }
             }
             commit();
-            continue;
         }
-
-        auto& tool = *std::get<std::unique_ptr<PreparedTool>>(*slot.action);
-        if (verdict->kind != Verdict::Kind::deny) {
-            if (const auto request = tool.preview_request()) {
-                auto read_grant = authorize(*slot.call, *request);
-                if (!read_grant) slot.result = std::move(read_grant.error());
-                else if (read_grant->revision != policy.revision() || stop.stop_requested())
-                    slot.result = make_result("Permission changed before preview; prepare again.", true, false);
-                else slot.result = tool.prepare_preview(*read_grant);
-                if (slot.result) { commit(); continue; }
-                verdict = policy.evaluate(*slot.call, tool.intent());
-                slot.summary = tool.intent().summary;
-            }
-        }
-
-        const Verdict& v = *verdict;
-        log_agent()->debug("工具调用 {}：{} → {}", slot.call->name, slot.summary,
-                           v.kind == Verdict::Kind::allow    ? "allow"
-                           : v.kind == Verdict::Kind::ask    ? "ask"
-                                                             : "deny");
-
-        switch (v.kind) {
-        case Verdict::Kind::allow:
-            if (kind) {
-                group.push_back(Pending{i, v.grant});
-                group_kind = *kind;
-            } else {
-                run_serial(i, v.grant);
-            }
-            break;
-        case Verdict::Kind::deny:
-            slot.result = make_result(std::format(texts::kPolicyDenied, v.reason), true, false);
-            break;
-        case Verdict::Kind::ask: {
-            auto grant = authorize(*slot.call, tool.intent());
-            if (grant) run_serial(i, *grant);
-            else slot.result = std::move(grant.error());
-            break;
-        }
-        }
+        run_group();
         commit();
+        // 最后一个调用执行中被中断时，循环里没有下一个调用来发现 stop。
+        if (outcome.stop == Outcome::Stop::none && stop.stop_requested()) {
+            outcome.stop = Outcome::Stop::interrupted;
+        }
+        assert(committed == slots.size());
+        return outcome;
     }
-    run_group();
-    commit();
-    // 最后一个调用执行中被中断时，循环里没有下一个调用来发现 stop。
-    if (outcome.stop == Outcome::Stop::none && stop.stop_requested()) {
-        outcome.stop = Outcome::Stop::interrupted;
-    }
-    assert(committed == slots.size());
-    return outcome;
+};
+
+} // namespace
+
+ActionDispatcher::Outcome ActionDispatcher::dispatch(const std::vector<ToolCall>& calls, int budget) {
+    DispatchBatch batch(session_, run_, services_, root_turn_id_, calls, budget);
+    return batch.run();
 }
 
 } // namespace dagent::agent

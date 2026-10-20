@@ -214,6 +214,11 @@ TurnEnded
 
 工具语义见 [tools](tools.md)。ActionDispatcher 只决定顺序、权限和并行：
 
+`ActionDispatcher::dispatch` 构造并运行 `dispatch.cpp` 内部的 `DispatchBatch`。批次持有定长槽位、
+并行组、提交进度、邮箱及父审批/决策审阅状态；原调度步骤作为批次成员函数执行。所有 worker join、
+邮箱处理完成后批次才销毁，父审批回调的复位守卫保持原析构顺序。整轮标识仍由 ActionDispatcher 持有，
+execution/approval 编号仍共用进程级序列。
+
 ```text
 tool_calls → ActionCatalog.prepare → 普通 PreparedTool ── PreparedIntent → Policy
                                    │                                 ├─ 允许 → 串行执行或加入只读并行组
