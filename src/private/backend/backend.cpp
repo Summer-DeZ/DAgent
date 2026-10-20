@@ -62,16 +62,16 @@ protocol::RpcError business_error(std::string kind, std::string message) {
     return error;
 }
 
-protocol::RpcError query_error(const runtime::QueryError& error) {
+protocol::RpcError query_error(const QueryError& error) {
     auto out = business_error({}, error.what());
     switch (error.kind()) {
-    case runtime::QueryError::Kind::invalid_state:
+    case QueryError::Kind::invalid_state:
         out.kind = protocol::error_kind::kInvalidState;
         break;
-    case runtime::QueryError::Kind::not_found:
+    case QueryError::Kind::not_found:
         out.kind = protocol::error_kind::kNotFound;
         break;
-    case runtime::QueryError::Kind::query_failed:
+    case QueryError::Kind::query_failed:
         out.kind = protocol::error_kind::kQueryFailed;
         break;
     }
@@ -147,7 +147,7 @@ nlohmann::json question_payload(const agent::Question& question) {
 
 } // namespace
 
-Backend::Backend(ipc::Channel channel, runtime::Assembler assemble)
+Backend::Backend(ipc::Channel channel, Assembler assemble)
     : channel_(std::move(channel)), assemble_(std::move(assemble)) {
     publisher_ = std::make_unique<Publisher>(channel_, [this] {
         closing_ = true;
@@ -671,7 +671,7 @@ void Backend::initialize(const std::string& id, const nlohmann::json& params) {
         return;
     }
     mode_ = params.value("mode", "interactive");
-    runtime::BootstrapOptions options;
+    BootstrapOptions options;
     options.mode = mode_;
     options.root = root;
     options.cwd = cwd;
@@ -685,10 +685,10 @@ void Backend::initialize(const std::string& id, const nlohmann::json& params) {
         options.log_level = params["log_level"].get<std::string>();
     }
 
-    runtime::Assembled assembled;
+    Assembled assembled;
     try {
         assembled = assemble_(options);
-    } catch (const runtime::ConfigurationError& config_error) {
+    } catch (const ConfigurationError& config_error) {
         fail(id, business_error(protocol::error_kind::kConfigError, config_error.what()));
         return;
     }
@@ -731,8 +731,7 @@ void Backend::initialize(const std::string& id, const nlohmann::json& params) {
         }
         session_json = nlohmann::json(to_protocol(runtime_->snapshot()));
     }
-    configuration_ = std::dynamic_pointer_cast<ConfigurationGateway>(assembled.configuration);
-    if (!configuration_) throw std::runtime_error("backend configuration gateway is unavailable");
+    configuration_ = assembled.configuration;
     initialized_ = true;
     if (mode_ == "interactive") queries_->watch_workspace([this] {
         protocol::Event event; event.kind = "workspace.changed";
@@ -856,7 +855,7 @@ void Backend::handle_query(Job job) {
         (this->*job.handler)(job.id, job.params);
     } catch (const nlohmann::json::exception& error) {
         fail(job.id, invalid_params(error.what()));
-    } catch (const runtime::QueryError& error) {
+    } catch (const QueryError& error) {
         fail(job.id, query_error(error));
     } catch (const std::exception& error) {
         fail(job.id, business_error(protocol::error_kind::kQueryFailed, error.what()));
@@ -912,7 +911,7 @@ void Backend::list_sessions(const std::string& id, const nlohmann::json& params)
     }
     const std::size_t limit = params.value("limit", std::size_t{50});
     nlohmann::json sessions = nlohmann::json::array();
-    for (const runtime::SessionSummary& summary : queries_->sessions(limit)) {
+    for (const SessionSummary& summary : queries_->sessions(limit)) {
         sessions.push_back(
             {{"id", summary.id}, {"title", summary.title}, {"updated", epoch_ms(summary.updated)}});
     }
@@ -927,7 +926,7 @@ void Backend::list_children(const std::string& id, const nlohmann::json& params)
         return;
     }
     nlohmann::json sessions = nlohmann::json::array();
-    for (const runtime::ChildSummary& child : queries_->children(session_id)) {
+    for (const ChildSummary& child : queries_->children(session_id)) {
         sessions.push_back(
             {{"session_id", child.session_id}, {"agent", child.agent}, {"title", child.title}});
     }
@@ -943,7 +942,7 @@ void Backend::history(const std::string& id, const nlohmann::json& params) {
     }
     const std::string cursor = params.value("cursor", "");
     const std::size_t limit = params.value("limit", std::size_t{100});
-    std::unique_ptr<runtime::HistoryReader> reader;
+    std::unique_ptr<HistoryReader> reader;
     if (!cursor.empty()) {
         const auto it = histories_.find(cursor);
         if (it == histories_.end() || it->second->session_id() != session_id) {
@@ -955,7 +954,7 @@ void Backend::history(const std::string& id, const nlohmann::json& params) {
     } else {
         reader = queries_->open_history(session_id);
     }
-    runtime::HistoryPage page = reader->read(limit);
+    HistoryPage page = reader->read(limit);
     const auto upper_seq = reader->upper_seq();
     nlohmann::json items = nlohmann::json::array();
     for (const agent::HistoryItem& item : page.items) items.push_back(to_protocol(item));
@@ -978,7 +977,7 @@ void Backend::history_close(const std::string& id, const nlohmann::json& params)
 }
 
 void Backend::workspace_info(const std::string& id, const nlohmann::json&) {
-    const runtime::WorkspaceInfo info = queries_->workspace();
+    const WorkspaceInfo info = queries_->workspace();
     respond(id, {{"cwd", info.cwd.string()},
                  {"project_root", info.project_root.string()},
                  {"branch", info.branch}});
@@ -987,9 +986,9 @@ void Backend::workspace_info(const std::string& id, const nlohmann::json&) {
 void Backend::workspace_complete(const std::string& id, const nlohmann::json& params) {
     const std::string text = params.value("text", "");
     const std::size_t limit = params.value("limit", std::size_t{8});
-    const std::vector<runtime::FileCandidate> candidates = queries_->complete(text, limit);
+    const std::vector<FileCandidate> candidates = queries_->complete(text, limit);
     nlohmann::json array = nlohmann::json::array();
-    for (const runtime::FileCandidate& candidate : candidates) {
+    for (const FileCandidate& candidate : candidates) {
         array.push_back({{"path", candidate.path}, {"directory", candidate.directory}});
     }
     respond(id, {{"candidates", std::move(array)}, {"truncated", candidates.size() == limit}});

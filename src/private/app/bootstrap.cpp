@@ -47,7 +47,7 @@ std::shared_ptr<agent::DecisionServices> make_decision_services(const Config& co
     const llm::DecisionProviderConfig& selected = config.decision_models.at(*config.decision);
     const llm::DecisionProviderInfo* info = llm::find_decision_provider(selected.kind);
     if (info == nullptr)
-        throw runtime::ConfigurationError("unknown decision provider kind: " + selected.kind);
+        throw backend::ConfigurationError("unknown decision provider kind: " + selected.kind);
     auto services = std::make_shared<agent::DecisionServices>();
     services->options = config.decision_review;
     services->version = agent::ReviewVersion{selected.kind,
@@ -73,7 +73,7 @@ std::shared_ptr<agent::DecisionServices> make_decision_services(const Config& co
     return services;
 }
 
-agent::PermissionMode permission_mode(const Config& config, const runtime::BootstrapOptions& options) {
+agent::PermissionMode permission_mode(const Config& config, const backend::BootstrapOptions& options) {
     // 优先级：--permissions → config.json。
     if (options.permissions) {
         if (*options.permissions == "ask") return agent::PermissionMode::ask;
@@ -84,7 +84,7 @@ agent::PermissionMode permission_mode(const Config& config, const runtime::Boots
 }
 
 /// @brief 会话工厂的装配值：cwd/工具/存储/沙箱探测/提示词与启动权限档。
-SessionAssembly::Options session_options(const Config& config, const runtime::BootstrapOptions& options,
+SessionAssembly::Options session_options(const Config& config, const backend::BootstrapOptions& options,
                                          const std::shared_ptr<Configuration>& configuration,
                                          const ModelFactory& make_session) {
     SessionAssembly::Options out;
@@ -151,21 +151,21 @@ SessionAssembly::Options session_options(const Config& config, const runtime::Bo
 
 } // namespace
 
-runtime::Assembled assemble_backend(const runtime::BootstrapOptions& options) {
+backend::Assembled assemble_backend(const backend::BootstrapOptions& options) {
     const HomePaths paths(options.root);
     if (options.mode == "runtime-sync" || options.mode == "runtime-list") {
         Toolchain toolchain(paths);
-        runtime::Assembled out;
+        backend::Assembled out;
         out.maintenance = options.mode == "runtime-sync" ? toolchain.sync() : toolchain.status();
         return out;
     }
     if (options.mode == "sandbox-status") {
-        runtime::Assembled out;
+        backend::Assembled out;
         out.maintenance = sandbox_status(paths);
         return out;
     }
     if (options.mode == "login") {
-        runtime::Assembled out;
+        backend::Assembled out;
         out.login = std::make_shared<Login>(paths);
         return out;
     }
@@ -173,7 +173,7 @@ runtime::Assembled assemble_backend(const runtime::BootstrapOptions& options) {
     try {
         config = load_config({options.root, options.cwd, options.overrides});
     } catch (const ConfigError& error) {
-        throw runtime::ConfigurationError(error.what());
+        throw backend::ConfigurationError(error.what());
     }
     if (options.log_level) config.log.level = *options.log_level;
     // 全屏交互界面下写 stderr 会弄花画面；run/查询沿用配置（docs/design/agent.md §12）。
@@ -192,7 +192,7 @@ runtime::Assembled assemble_backend(const runtime::BootstrapOptions& options) {
             skill.body += "\n\nFor commands belonging to this skill, set the bash environment parameter to " + name + ".";
     }
     auto memory = std::make_shared<tools::MemoryStore>(paths.memory, paths.project_memory(config.project_root), config.memory);
-    runtime::Assembled out;
+    backend::Assembled out;
     out.configuration = configuration;
     out.login = std::make_shared<Login>(paths);
 

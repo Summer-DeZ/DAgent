@@ -19,25 +19,25 @@
 namespace dagent::app {
 namespace {
 
-/// @brief storage 错误 → runtime 中立查询错误：backend 不包含 storage 头。
+/// @brief storage 错误 → backend 查询错误：backend 不包含 storage 头。
 [[noreturn]] void rethrow(const storage::StorageError& error) {
-    using Kind = runtime::QueryError::Kind;
+    using Kind = backend::QueryError::Kind;
     const Kind kind = error.kind() == storage::StorageError::Kind::not_found ? Kind::not_found
                      : error.kind() == storage::StorageError::Kind::invalid_state ? Kind::invalid_state
                                                                                   : Kind::query_failed;
-    throw runtime::QueryError(kind, error.what());
+    throw backend::QueryError(kind, error.what());
 }
 
-/// @brief storage::HistoryRead → runtime::HistoryReader（只读分页 + 释放语义）。
-class HistoryReaderImpl final : public runtime::HistoryReader {
+/// @brief storage::HistoryRead → backend::HistoryReader（只读分页 + 释放语义）。
+class HistoryReaderImpl final : public backend::HistoryReader {
 public:
     HistoryReaderImpl(std::unique_ptr<storage::HistoryRead> read, std::string session_id)
         : read_(std::move(read)), session_id_(std::move(session_id)) {}
 
-    runtime::HistoryPage read(std::size_t limit) override {
+    backend::HistoryPage read(std::size_t limit) override {
         try {
             storage::HistoryRead::Page page = read_->read(limit);
-            runtime::HistoryPage out;
+            backend::HistoryPage out;
             out.items = std::move(page.items);
             out.done = page.done;
             return out;
@@ -79,8 +79,8 @@ agent::MemoryView QueryGatewayImpl::memory_delete(std::string_view scope, std::s
     return {"delete", std::string(scope), std::string(name), {}, {}, {}, {}};
 }
 
-std::vector<runtime::SessionSummary> QueryGatewayImpl::sessions(std::size_t limit) {
-    std::vector<runtime::SessionSummary> out;
+std::vector<backend::SessionSummary> QueryGatewayImpl::sessions(std::size_t limit) {
+    std::vector<backend::SessionSummary> out;
     try {
         for (const storage::Summary& summary : storage::list(storage_, cwd_, limit)) {
             out.push_back({summary.meta.id, summary.title, summary.updated});
@@ -91,7 +91,7 @@ std::vector<runtime::SessionSummary> QueryGatewayImpl::sessions(std::size_t limi
     return out;
 }
 
-std::unique_ptr<runtime::HistoryReader> QueryGatewayImpl::open_history(std::string_view session_id) {
+std::unique_ptr<backend::HistoryReader> QueryGatewayImpl::open_history(std::string_view session_id) {
     try {
         return std::make_unique<HistoryReaderImpl>(
             storage::HistoryRead::open(storage_, session_id), std::string(session_id));
@@ -100,8 +100,8 @@ std::unique_ptr<runtime::HistoryReader> QueryGatewayImpl::open_history(std::stri
     }
 }
 
-std::vector<runtime::ChildSummary> QueryGatewayImpl::children(std::string_view session_id) {
-    std::vector<runtime::ChildSummary> out;
+std::vector<backend::ChildSummary> QueryGatewayImpl::children(std::string_view session_id) {
+    std::vector<backend::ChildSummary> out;
     try {
         for (const storage::Summary& summary : storage::list_children(storage_, session_id)) {
             out.push_back({summary.meta.id, summary.meta.agent_name, summary.title});
@@ -112,8 +112,8 @@ std::vector<runtime::ChildSummary> QueryGatewayImpl::children(std::string_view s
     return out;
 }
 
-runtime::WorkspaceInfo QueryGatewayImpl::workspace() {
-    runtime::WorkspaceInfo info;
+backend::WorkspaceInfo QueryGatewayImpl::workspace() {
+    backend::WorkspaceInfo info;
     info.cwd = cwd_;
     info.project_root = project_root_;
     workspace::ContextOptions options; options.process = process_; options.sandbox = search_.sandbox;
@@ -267,7 +267,7 @@ nlohmann::json QueryGatewayImpl::git_status() {
     return result;
 }
 
-std::vector<runtime::FileCandidate> QueryGatewayImpl::complete(std::string_view query, std::size_t limit) {
+std::vector<backend::FileCandidate> QueryGatewayImpl::complete(std::string_view query, std::size_t limit) {
     workspace::FilesQuery query_options;
     query_options.root = project_root_;
     query_options.max_files = completion_max_files_;
@@ -280,7 +280,7 @@ std::vector<runtime::FileCandidate> QueryGatewayImpl::complete(std::string_view 
             return !relative.empty() && *relative.begin() != "..";
         });
     });
-    std::vector<runtime::FileCandidate> out;
+    std::vector<backend::FileCandidate> out;
     for (std::size_t index : workspace::fuzzy_rank(query, candidates, limit)) {
         out.push_back({candidates[index], false});
     }

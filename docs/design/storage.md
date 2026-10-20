@@ -28,7 +28,7 @@ schema 初始化、版本与业务校验。
 
 `Options::database` 由装配固定为 `<root>/data/dagent.db`，`lock_directory` 为 `<root>/run/session-locks`。首次写入自动建立数据库父目录。`history_scan_limit` 由 `session.history_scan_limit` 提供每页扫描上限，必须为正整数。`redact_fields` 默认包含 `api_key`、`authorization`、
 `token`；payload 在序列化和写库前递归脱敏，只改交给持久化的副本。存储层自身的失败为 `StorageError{io, not_found,
-corrupt, invalid_state}`，经端口返回核心前转换成 `RecordError`，交给 app 查询适配时转换成 `runtime::QueryError`。
+corrupt, invalid_state}`，经端口返回核心前转换成 `RecordError`，交给 app 查询适配时转换成 `backend::QueryError`。
 
 ## 2. Schema
 

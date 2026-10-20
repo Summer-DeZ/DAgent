@@ -16,7 +16,7 @@
 #include <thread>
 
 #include "backend/publisher.hpp"
-#include "backend/configuration.hpp"
+#include "backend/assembly.hpp"
 #include "ipc/channel.hpp"
 #include "lib/nlohmann/json.hpp"
 #include "protocol/rpc.hpp"
@@ -28,7 +28,7 @@ namespace dagent::backend {
 class Backend final : public runtime::Frontend {
 public:
     /// @param assemble 由后端入口注入的 app 装配实现；backend 不依赖具体配置与适配对象。
-    Backend(ipc::Channel channel, runtime::Assembler assemble);
+    Backend(ipc::Channel channel, Assembler assemble);
     ~Backend() override;
     Backend(const Backend&) = delete;
     Backend& operator=(const Backend&) = delete;
@@ -110,12 +110,12 @@ private:
     void push_query(Job job);
 
     ipc::Channel channel_;
-    runtime::Assembler assemble_;
+    Assembler assemble_;
     std::unique_ptr<Publisher> publisher_;
     std::unique_ptr<runtime::Runtime> runtime_;
-    std::shared_ptr<runtime::QueryGateway> queries_;
+    std::shared_ptr<QueryGateway> queries_;
     std::shared_ptr<ConfigurationGateway> configuration_;
-    std::shared_ptr<runtime::LoginGateway> login_;
+    std::shared_ptr<LoginGateway> login_;
     bool initialized_ = false;
     std::string mode_;
     std::string default_model_;
@@ -135,7 +135,7 @@ private:
     std::jthread query_thread_;
 
     // 查询线程独占；每一页使用连接内唯一、单次消费的游标。
-    std::map<std::string, std::unique_ptr<runtime::HistoryReader>> histories_;
+    std::map<std::string, std::unique_ptr<HistoryReader>> histories_;
     std::uint64_t history_seq_ = 0;
     std::mutex state_mutex_; ///< pending compact 身份
     std::string pending_compact_id_;

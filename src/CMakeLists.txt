@@ -327,6 +327,8 @@ target_compile_definitions(dagent_app_config PRIVATE DAGENT_VERSION="${PROJECT_V
 if(DAGENT_DEV_HOME)
     target_compile_definitions(dagent_app_config PRIVATE DAGENT_DEV_HOME="${DAGENT_DEV_HOME}")
 endif()
+# backend 的纯头装配/配置/查询/登录契约由上述 src/public 路径提供，
+# app_config 不使用 backend 实现符号，无需链接 dagent_backend。
 target_link_libraries(dagent_app_config
     PUBLIC dagent_runtime dagent_llm tools dagent_storage dagent_workspace dagent_exec dagent_mcp
            dagent_base

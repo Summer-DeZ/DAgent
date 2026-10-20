@@ -40,12 +40,15 @@ runtime 只看到核心类型；`tools::Context`、`Registry`、`SqliteJournal` 
 | 端口 | 操作 | 实现 |
 | --- | --- | --- |
 | `SessionFactory` | `create_new`（L01）、`resume`（L20）、`prepare_switch_model`（L21，复用 lease）、`create_child`（L02）、`resolve_session`、`find_subagent` | `app::SessionAssembly` |
-| `ConfigurationGateway` | 公开模型列表、provider 种类元数据、添加模型、主题文件路径 | `app::Configuration` |
-| `QueryGateway` / `HistoryReader` | 会话列表、子会话、历史分页、项目信息、文件补全 | `app::QueryGatewayImpl` |
-| `Assembler` | `BootstrapOptions` → `Assembled{configuration, queries, factory, default_model, progress_interval_ms}` | `app::assemble_backend`，由后端入口注入 backend |
+| `ConfigurationGateway` | 公开模型列表、provider 种类元数据、添加模型 | `app::Configuration`，经 backend 配置端口上转型 |
 
 凭据只在 `ConfigurationGateway` 与 app 内部的 `llm::ProviderConfig` 之间转换，公开返回值只有 `PublicModel`。
-只读查询失败以中立 `QueryError{not_found, invalid_state, query_failed}` 抛出，backend 按类别映射协议错误。
+主题路径与外观能力属于 `backend/configuration.hpp` 的派生端口。
+`BootstrapOptions`、`Assembled`、`Assembler` 和 `ConfigurationError` 位于 `backend/assembly.hpp`；
+`Assembled` 静态持有 backend 配置端口，注入 `Runtime::Deps` 时上转型为 runtime 模型配置端口。
+`QueryGateway`、`HistoryReader`、查询 DTO 与 `QueryError` 位于 `backend/queries.hpp`，
+`LoginGateway` 位于 `backend/login.hpp`，均由 app 实现；runtime 不包含这些后端契约。
+查询失败以 `backend::QueryError{not_found, invalid_state, query_failed}` 抛出，由 backend 映射协议错误。
 
 ## 2. 会话控制状态机
 

@@ -1,12 +1,15 @@
 #pragma once
 
+#include <cstdint>
+#include <memory>
 #include <mutex>
+#include <utility>
 #include "app/home.hpp"
 #include "llm/auth.hpp"
-#include "runtime/factory.hpp"
+#include "backend/login.hpp"
 
 namespace dagent::app {
-class Login final : public runtime::LoginGateway {
+class Login final : public backend::LoginGateway {
 public:
     explicit Login(HomePaths paths) : paths_(std::move(paths)) {}
     nlohmann::json invoke(std::string_view method, const nlohmann::json&, std::stop_token) override;

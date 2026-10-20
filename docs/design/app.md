@@ -11,6 +11,12 @@
 
 前端不链接执行、SQLite、MCP 或 HTTP 实现；后端不链接 UI/TUI。两者的通信见 [protocol](protocol.md)。
 
+`app/bootstrap.hpp` 的装配入口实现 `backend/assembly.hpp` 中的 `backend::Assembler`，
+返回静态持有 backend 配置端口的 `backend::Assembled`。
+app 同时实现 `backend/configuration.hpp`、`backend/queries.hpp`、`backend/login.hpp` 中的端口。
+这些契约仅含类型与内联定义，现有 `src/public` include 路径已覆盖，`dagent_app_config` 的链接依赖不变，
+无需链接 `dagent_backend`；backend 不依赖 app，runtime 也不反向依赖 backend。
+
 ## 1. 自包含安装目录
 
 运行时只认一个安装根：
@@ -279,7 +285,7 @@ run： --output <text|json|jsonl>
 等待批准，Ctrl+C 取消；成功显示 workspace 和到期时间。`dagent login` 只查本地状态，不联网、不刷新。
 `dagent logout opencode` 在共享锁内删除凭据；--list-models 的 AUTH 列为 key、login:opencode 或空。
 
-`app/login.cpp` 提供独立 LoginGateway，由后端装配到 runtime 的中立端口。models.dev/api.json 的 opencode-go
+`app/login.cpp` 实现 `backend/login.hpp` 中的 LoginGateway，由后端装配注入。models.dev/api.json 的 opencode-go
 清单缓存在 Home/cache/opencode-go.json；打开时超过 24 小时刷新，refresh=true 强制刷新，离线使用缓存。
 列表以 models.json 的实际条目计算 added；过滤允许地址之外的模型，Anthropic 项标为不可用。
 新增模型 ID 为 opencode-go/<model>，由接口类型生成 kind/base_url，context_window 取 context，

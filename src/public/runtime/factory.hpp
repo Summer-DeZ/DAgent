@@ -1,23 +1,18 @@
 /// @file factory.hpp
-/// @brief runtime 的外部装配端口：会话工厂、配置网关与只读查询网关。
+/// @brief runtime 的外部装配端口：会话工厂与模型配置网关。
 ///
 /// 具体实现在 app 后端装配（dagent_app_config）；runtime 只经这些端口访问
 /// storage/llm/tools/workspace 等具体实现。
 #pragma once
 
-#include <chrono>
-#include <cstddef>
 #include <filesystem>
-#include <functional>
 #include <memory>
 #include <optional>
-#include <stdexcept>
 #include <string>
 #include <string_view>
 #include <vector>
 
 #include "agent/events.hpp"
-#include "agent/history.hpp"
 #include "agent/mcp_state.hpp"
 #include "agent/model_input.hpp"
 #include "agent/permission.hpp"
@@ -26,7 +21,6 @@
 #include "agent/public_model.hpp"
 #include "agent/run_services.hpp"
 #include "agent/session.hpp"
-#include "agent/skills.hpp"
 #include "agent/subagent_def.hpp"
 
 namespace dagent::runtime {
@@ -84,7 +78,7 @@ public:
                                                           const agent::DerivedPermission& permission) = 0;
 };
 
-/// @brief 后端配置操作：模型清单/添加与主题文件路径；凭据只在此边界转换，不进入公开返回值。
+/// @brief 模型配置操作：模型清单与添加；凭据只在此边界转换，不进入公开返回值。
 class ConfigurationGateway {
 public:
     virtual ~ConfigurationGateway() = default;
@@ -93,116 +87,6 @@ public:
     virtual std::vector<agent::ProviderKindInfo> provider_kinds() const = 0;
     /// @brief 校验并原子保存模型；失败抛异常（前端按 config_error 处理）。返回保存后的公开描述。
     virtual agent::PublicModel add_model(const agent::ModelInput&) = 0;
-    virtual std::filesystem::path theme_file() const = 0;
 };
-
-struct SessionSummary {
-    std::string id;
-    std::string title;
-    std::chrono::system_clock::time_point updated;
-};
-
-struct WorkspaceInfo {
-    std::filesystem::path cwd;
-    std::filesystem::path project_root;
-    std::string branch;
-};
-
-struct FileCandidate {
-    std::string path;
-    bool directory = false;
-};
-
-struct ChildSummary {
-    std::string session_id, agent, title;
-};
-
-/// @brief 一页顺序读取的历史；查询游标由 backend 独立管理。
-struct HistoryPage {
-    std::vector<agent::HistoryItem> items;
-    bool done = false;
-};
-
-/// @brief 只读查询失败的中立分类：app 适配层把存储/IO 错误翻译到这里，backend 只按 kind 映射协议错误。
-class QueryError : public std::runtime_error {
-public:
-    enum class Kind { not_found, invalid_state, query_failed };
-
-    QueryError(Kind kind, std::string message)
-        : std::runtime_error(std::move(message)), kind_(kind) {}
-    Kind kind() const noexcept { return kind_; }
-
-private:
-    Kind kind_;
-};
-
-/// @brief 一个打开的历史查询：固定高水位、顺序读取；释放后读取返回错误。
-class HistoryReader {
-public:
-    virtual ~HistoryReader() = default;
-
-    virtual HistoryPage read(std::size_t limit) = 0;
-    virtual const std::string& session_id() const = 0;
-    virtual std::int64_t upper_seq() const = 0;
-};
-
-/// @brief 查询与记忆管理：在查询线程调用，不碰当前会话 Writer。
-class QueryGateway {
-public:
-    virtual ~QueryGateway() = default;
-
-    virtual std::vector<SessionSummary> sessions(std::size_t limit) = 0;
-    virtual std::unique_ptr<HistoryReader> open_history(std::string_view session_id) = 0;
-    virtual std::vector<ChildSummary> children(std::string_view session_id) = 0;
-    virtual WorkspaceInfo workspace() = 0;
-    virtual nlohmann::json git_status() = 0;
-    virtual void watch_workspace(std::function<void()> changed) = 0;
-    virtual nlohmann::json agents() const = 0;
-    virtual const agent::SkillCatalog& skills() const = 0;
-    virtual std::vector<agent::MemoryView> memory_list() const = 0;
-    virtual agent::MemoryView memory_view(std::string_view scope, std::string_view name) const = 0;
-    virtual agent::MemoryView memory_delete(std::string_view scope, std::string_view name) = 0;
-    virtual std::vector<FileCandidate> complete(std::string_view query, std::size_t limit) = 0;
-};
-
-/// @brief 后端启动输入：只在装配层读取。
-struct BootstrapOptions {
-    std::string mode; ///< interactive / run / sessions / models
-    std::filesystem::path root;
-    std::filesystem::path cwd;
-    std::vector<std::string> overrides;     ///< 按序 --set
-    std::optional<std::string> permissions; ///< --permissions；空表示用 config.json
-    bool read_only = false;
-    bool plan = false;
-    std::optional<std::string> log_level;
-};
-
-// Backend-only login operations; implementations never return credentials.
-class LoginGateway {
-public:
-    virtual ~LoginGateway() = default;
-    virtual nlohmann::json invoke(std::string_view method, const nlohmann::json&, std::stop_token) = 0;
-    virtual bool cancel(std::string_view login_id) = 0;
-};
-
-/// @brief 装配结果：backend 只经这些端口访问具体实现。
-struct Assembled {
-    nlohmann::json maintenance;
-    std::shared_ptr<LoginGateway> login;
-    std::shared_ptr<ConfigurationGateway> configuration;
-    std::shared_ptr<QueryGateway> queries;
-    std::unique_ptr<SessionFactory> factory; ///< 纯查询模式（sessions/models）为空
-    std::string default_model;
-    int progress_interval_ms = 1000;
-};
-
-/// @brief 配置文件或覆写无效；backend 映射为协议 config_error。
-class ConfigurationError : public std::runtime_error {
-public:
-    using std::runtime_error::runtime_error;
-};
-
-/// @brief 读取配置、初始化日志并装配具体对象；由 app 装配层实现并注入 backend。
-using Assembler = std::function<Assembled(const BootstrapOptions&)>;
 
 } // namespace dagent::runtime

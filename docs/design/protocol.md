@@ -10,8 +10,13 @@
 | `client` / `dagent_client` | `client/client.hpp` | 前端 RPC：请求 id 匹配、同步/异步调用、事件与交互转交、连接结束一次性失败 |
 | `backend` / `dagent_backend` | `backend/backend.hpp`、`publisher.hpp`、`convert.hpp` | 后端 RPC 方法分发、核心值 → DTO 转换、单一有序发送队列；依赖 runtime/protocol/ipc/base |
 
-后端可执行入口在 `app/backend_main.cpp`：它把 `app::assemble_backend` 作为 `runtime::Assembler` 注入 `backend::Backend`，
+后端可执行入口在 `app/backend_main.cpp`：它把 `app::assemble_backend` 作为 `backend::Assembler` 注入 `backend::Backend`，
 因此 backend 库不包含任何 app 头。会话控制见 [runtime](runtime.md)。
+
+装配输入、结果、配置错误及回调契约位于 `backend/assembly.hpp`。
+`Assembled::configuration` 直接持有 `backend::ConfigurationGateway`，无需运行时向下转换；
+该端口在 `backend/configuration.hpp` 中扩展 runtime 的模型操作，提供主题路径与外观能力。
+查询与历史读取契约位于 `backend/queries.hpp`，登录契约位于 `backend/login.hpp`。
 
 这是现有功能的进程间适配：没有监听 socket、共享后端、发现文件、自动重连、事件补发或后台继续执行。
 
