@@ -146,6 +146,7 @@ target_link_libraries(dagent_storage
 # MCP 客户端：JSON-RPC 2.0，stdio 走 dagent_exec 的 Child，Streamable HTTP 走 dagent_net。
 add_library(dagent_mcp STATIC
     private/mcp/client.cpp
+    private/mcp/stdio_transport.cpp
     private/mcp/detail.cpp
 )
 

@@ -5,6 +5,8 @@
 `HttpClient`、`SseParser`。
 
 `mcp/detail.hpp` 仅供模块内部共享 JSON-RPC 组装、协议元数据、工具命名和 HTTP 参数头处理。
+`mcp/transport.hpp` 定义内部 `Response`、`ConnectionState` 和 `StdioTransport`，
+同样不属于 Client 对外接口。
 
 ## 1. 接口与生命周期
 
@@ -69,7 +71,10 @@ stdio server 冷启动时间包含在发现超时内，调用方需要按真实�
 `StatelessDialect` 实现发现握手，`SessionDialect` 实现初始化握手并持有 session id。
 `Impl::negotiate` 按无状态、会话型顺序尝试；只有明确不支持握手的返回值才进入下一 dialect，
 其他失败直接传播。选定修订在 dialect 中保存，成功后记录版本并写日志。
-stdio/SRT 和 HTTP 的收发、SSE 解析、超时及取消仍由共享传输实现负责。
+stdio/SRT 的收发、pending 请求匹配、超时及取消由 `stdio_transport.cpp` 中的 `StdioTransport` 负责；
+HTTP 收发、SSE 解析、超时及取消仍在 `client.cpp`。请求编号、Dialect、协议版本、工具目录及参数头映射留在 Impl。
+Impl 持有共享 `ConnectionState`，传输借用它及不可变的配置/选项，不持有 Impl、不参与协议协商或重连。
+普通 stdio 请求的参数由 Dialect 装饰后交给传输，通知仍不作参数装饰。
 
 新增采用既有握手模型的修订时，在 `kRevisions` 中按偏好增加一条能力记录即可；版本匹配、
 元数据和 HTTP 头均读取该记录。只有握手模型改变时才增加 dialect 实现，并加入协商偏好顺序。
@@ -97,6 +102,10 @@ bridge 在 stderr 上以 `{"dagent_bridge":true,...}` 帧报告 ready/error/exit
 清除等待项；迟到响应直接丢弃。客户端不处理 server 主动请求或通知。
 stderr 回调在获取握手锁前注册，允许同步回放已缓存的 ready/error 帧。发送和关闭时移走 Child 使用同一把锁，
 关闭在释放锁后终止子进程并等待读取线程退出，避免回调重新加锁时死锁。
+这把锁位于 Impl 持有的 `ConnectionState`；stdio 的 pending 登记、发送、退出通知和关闭均使用它。
+Impl 在销毁传输前调用 `StdioTransport::shutdown`：锁内标记关闭、移走 Child、失败未完成的 pending，
+锁外唤醒等待者，再经 `CloseProtocol` 回调执行原 Dialect 关闭，随后 terminate/join 并清理目录。
+启动失败也沿用这条清理路径，传输及其借用的连接状态在所有进程回调结束前保持存活。
 Hub 处理连接失败时，除向前端发送 notice 外，也将具体失败原因写入后端 warning 日志。
 
 ### Streamable HTTP

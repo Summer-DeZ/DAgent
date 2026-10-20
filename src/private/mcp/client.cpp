@@ -1,5 +1,6 @@
 #include "mcp/client.hpp"
 #include "mcp/detail.hpp"
+#include "mcp/transport.hpp"
 
 #include <algorithm>
 #include <atomic>
@@ -7,9 +8,7 @@
 #include <cmath>
 #include <condition_variable>
 #include <cstdint>
-#include <filesystem>
 #include <format>
-#include <fstream>
 #include <map>
 #include <memory>
 #include <mutex>
@@ -21,16 +20,14 @@
 #include <vector>
 
 #include "base/log.hpp"
-#include "exec/child.hpp"
 #include "net/sse.hpp"
-
-#include <unistd.h>
 
 namespace dagent::mcp {
 namespace {
 
 using json = nlohmann::json;
 using std::chrono::milliseconds;
+using detail::Response;
 
 constexpr std::size_t kMaxQualifiedToolName = 64; ///< OpenAI 等协议对函数名的长度限制
 
@@ -107,24 +104,6 @@ std::string rpc_text(std::string_view method, const json& error) {
                                detail)};
 }
 
-/// @brief 等待中的 stdio 请求。读取线程填结果，调用线程取走并从 id 表删除。
-struct Pending {
-    bool done = false;
-    bool disconnected = false;
-    std::string error_text;
-    json result; ///< 成功时的 result；error 非 null 时无效
-    json error;  ///< JSON-RPC error 对象
-};
-
-/// @brief 一次请求的原始结果；超时/取消/断连以异常表达，业务错误放在这里。
-struct Response {
-    bool ok = false;
-    json result;
-    bool rpc_error = false;
-    json error;
-    long status = 0;          ///< 仅 HTTP
-};
-
 // HTTP 已匹配响应的解包：随调用方值类别移动或复制字段，保留已有 HTTP status。
 template<class Json>
 void unpack_rpc_response(Response& out, Json&& message) {
@@ -198,8 +177,6 @@ struct Client::Impl {
 
     // ---- 生命周期
     void start();
-    void start_sandboxed();
-    void on_bridge_line(std::string_view line);
     void shutdown();
     void negotiate(std::stop_token stop);
     void close_http_session(const net::Headers& headers);
@@ -208,16 +185,10 @@ struct Client::Impl {
     // ---- 消息收发
     Response exchange(std::string_view method, json params, milliseconds timeout, std::stop_token stop,
                       bool notification = false);
-    Response stdio_exchange(std::int64_t id, std::string_view method, json params, milliseconds timeout,
-                            std::stop_token stop);
     Response http_exchange(std::optional<std::int64_t> id, std::string_view method, json params, milliseconds timeout,
                            std::stop_token stop);
     json request(std::string_view method, json params, milliseconds timeout, std::stop_token stop,
                  bool notification = false);
-    void send_cancel(std::int64_t id, std::string_view reason);
-    void stdio_send(std::string_view line);
-    void on_line(std::string_view line);
-    void on_exit(std::optional<int> code, std::optional<int> signal);
 
     ServerConfig config_;
     Options opt_;
@@ -225,23 +196,9 @@ struct Client::Impl {
     std::unique_ptr<Dialect> dialect_;
     std::string protocol_version_; ///< 握手完成后不再改变
 
-    std::unique_ptr<exec::Child> child_;
-    std::filesystem::path state_dir_; ///< 受限 stdio 的每次连接私有目录
-    std::filesystem::path private_home_; ///< SRT Unix sockets 使用的短路径私有 HOME
-
-    std::mutex bridge_mu_;
-    std::condition_variable_any bridge_cv_;
-    bool bridge_ready_ = false;
-    bool bridge_failed_ = false;
-    std::string bridge_error_;
-
     std::atomic<std::int64_t> next_id_{1};
-    std::mutex mu_;
-    std::condition_variable_any cv_;
-    std::map<std::int64_t, std::shared_ptr<Pending>> pending_;
-    bool closing_ = false;
-    bool disconnected_ = false;
-    std::string disconnect_reason_;
+    detail::ConnectionState connection_;
+    std::unique_ptr<detail::StdioTransport> stdio_;
 
     mutable std::mutex data_mu_;
     std::vector<Tool> tools_;
@@ -257,151 +214,22 @@ void Client::Impl::start() {
         http_ = true;
         return;
     }
-    if (config_.command.empty())
-        throw McpError{McpError::Kind::spawn, config_.name + ": stdio server is missing command"};
-    if (!config_.sandbox)
-        throw McpError{McpError::Kind::spawn,
-                       config_.name + ": no permission profile is configured; the server was not started"};
-    start_sandboxed();
-}
-
-void Client::Impl::start_sandboxed() {
-    const StdioSandbox& sandbox = *config_.sandbox;
-    std::error_code error;
-    std::filesystem::create_directories(sandbox.state_root, error);
-    std::string pattern = (sandbox.state_root / ("mcp-" + config_.name + "-XXXXXX")).string();
-    if (::mkdtemp(pattern.data()) == nullptr)
-        throw McpError{McpError::Kind::spawn, config_.name + ": cannot create the sandbox state directory"};
-    state_dir_ = pattern;
-    // SRT 在 TMPDIR 下创建 Unix sockets；固定短路径避免 Home 或 server 名过长。
-    pattern = "/tmp/dagent-home-XXXXXX";
-    if (::mkdtemp(pattern.data()) == nullptr)
-        throw McpError{McpError::Kind::spawn, config_.name + ": cannot create the sandbox private home"};
-    private_home_ = pattern;
-    const auto& private_home = private_home_;
-    std::filesystem::create_directories(private_home / "config", error);
-    std::filesystem::create_directories(private_home / "cache", error);
-    std::filesystem::create_directories(private_home / "run", error);
-
-    std::string command;
-    for (const std::string& argument : config_.command) {
-        if (!command.empty()) command += ' ';
-        command += exec::shell_quote(argument);
-    }
-    nlohmann::json init;
-    init["command"] = command;
-    init["shell"] = sandbox.runtime.shell.string();
-    init["config"] = exec::srt_config(sandbox.runtime, sandbox.policy, private_home, true);
-    init["kill_grace_ms"] = opt_.process.kill_grace.count();
-    const std::filesystem::path init_file = state_dir_ / "init.json";
-    {
-        std::ofstream out(init_file, std::ios::binary | std::ios::trunc);
-        out << init.dump();
-        if (!out) throw McpError{McpError::Kind::spawn, config_.name + ": cannot write the sandbox init file"};
-    }
-
-    exec::Command cmd;
-    cmd.argv = {sandbox.runtime.node.string(), sandbox.runtime.bridge.string(), "--mode=stdio",
-                "--srt=" + sandbox.runtime.entry.string(),
-                "--bwrap=" + sandbox.runtime.bwrap.string(),
-                "--socat=" + sandbox.runtime.socat.string(),
-                "--rg=" + sandbox.runtime.rg.string(),
-                "--shell=" + sandbox.runtime.shell.string(),
-                "--init-file=" + init_file.string()};
-    cmd.cwd = state_dir_;
-    cmd.inherit_env = config_.environment == "project";
-    cmd.env_set = config_.env;
-    cmd.env_set.insert(cmd.env_set.end(),
-                       {{"HOME", private_home.string()},
-                        {"XDG_CONFIG_HOME", (private_home / "config").string()},
-                        {"XDG_CACHE_HOME", (private_home / "cache").string()},
-                        {"XDG_RUNTIME_DIR", (private_home / "run").string()},
-                        {"TMPDIR", private_home.string()},
-                        {"TMP", private_home.string()},
-                        {"TEMP", private_home.string()}});
-    cmd.env_unset = {"BASH_ENV", "ENV", "BASHOPTS", "SHELLOPTS", "CDPATH", "GLOBIGNORE",
-                     "PROMPT_COMMAND", "LD_PRELOAD", "LD_LIBRARY_PATH", "PYTHONPATH", "PERL5LIB",
-                     "RUBYOPT", "NODE_OPTIONS", "NODE_PATH", "NODE_EXTRA_CA_CERTS",
-                     "http_proxy", "https_proxy", "all_proxy", "ftp_proxy",
-                     "HTTP_PROXY", "HTTPS_PROXY", "ALL_PROXY", "FTP_PROXY"};
-    try {
-        auto process = opt_.process;
-        if (config_.environment == "project") process.environment.clear();
-        child_ = exec::Child::spawn(cmd, process);
-    } catch (const exec::ExecError& e) {
-        throw McpError{McpError::Kind::spawn, config_.name + ": " + e.what()};
-    }
-    child_->on_line([this](std::string_view line) { on_line(line); });
-    child_->on_exit([this](std::optional<int> code, std::optional<int> signal) { on_exit(code, signal); });
-
-    child_->on_stderr([this](std::string_view line) { on_bridge_line(line); });
-    std::unique_lock<std::mutex> lock(bridge_mu_);
-    const bool settled = bridge_cv_.wait_for(lock, sandbox.startup_timeout,
-                                             [this] { return bridge_ready_ || bridge_failed_; });
-    if (!settled) throw McpError{McpError::Kind::handshake, config_.name + ": sandbox bridge did not become ready"};
-    if (bridge_failed_) throw McpError{McpError::Kind::handshake,
-                                       config_.name + ": sandbox bridge failed: " + bridge_error_};
-}
-
-void Client::Impl::on_bridge_line(std::string_view line) {
-    const nlohmann::json frame = nlohmann::json::parse(line, nullptr, false);
-    if (frame.is_discarded() || !frame.value("dagent_bridge", false)) {
-        log_mcp()->info("{}", line); // server 自身的 stderr
-        return;
-    }
-    const std::string type = frame.value("type", "");
-    {
-        const std::lock_guard lock(bridge_mu_);
-        if (type == "ready") {
-            const bool ok = frame.value("protocol", 0) == 1 &&
-                            frame.value("environment", "") == config_.sandbox->runtime.entry.string() &&
-                            frame.value("sandboxing_enabled", false) &&
-                            frame.value("srt", "") == exec::kSrtVersion;
-            if (ok) bridge_ready_ = true;
-            else {
-                bridge_failed_ = true;
-                bridge_error_ = "SRT protocol, package version or environment identity mismatch";
-            }
-        } else if (type == "error") {
-            bridge_failed_ = true;
-            bridge_error_ = frame.value("stage", std::string{"bridge"}) + ": " + frame.value("error", "sandbox bridge failed");
-        } else if (type == "exited" && !bridge_ready_) {
-            bridge_failed_ = true;
-            bridge_error_ = "sandbox bridge exited before ready";
-        }
-    }
-    bridge_cv_.notify_all();
+    stdio_ = std::make_unique<detail::StdioTransport>(config_, opt_, connection_);
+    stdio_->start();
 }
 
 void Client::Impl::shutdown() {
-    std::unique_ptr<exec::Child> child;
+    if (stdio_) {
+        stdio_->shutdown([this] { if (dialect_) dialect_->close(*this); });
+        return;
+    }
     {
-        std::lock_guard lock(mu_);
-        if (closing_) return;
-        closing_ = true;
-        child = std::move(child_);
-        disconnected_ = true;
-        for (auto& [id, pending] : pending_) {
-            if (pending->done) continue;
-            pending->done = true;
-            pending->disconnected = true;
-            pending->error_text = config_.name + ": client is closed";
-        }
+        std::lock_guard lock(connection_.mutex);
+        if (connection_.closing) return;
+        connection_.closing = true;
+        connection_.disconnected = true;
     }
-    cv_.notify_all();
     if (dialect_) dialect_->close(*this);
-    if (child) child->terminate(); // 锁外等读取线程退出，之后不会再回调
-    child.reset();
-    if (!state_dir_.empty()) {
-        std::error_code error;
-        std::filesystem::remove_all(state_dir_, error);
-        state_dir_.clear();
-    }
-    if (!private_home_.empty()) {
-        std::error_code error;
-        std::filesystem::remove_all(private_home_, error);
-        private_home_.clear();
-    }
 }
 
 void Client::Impl::close_http_session(const net::Headers& headers) {
@@ -417,66 +245,6 @@ void Client::Impl::close_http_session(const net::Headers& headers) {
     } catch (const std::exception& error) {
         log_mcp()->warn("{}: 关闭 HTTP 会话失败：{}", config_.name, error.what());
     }
-}
-
-// ---- stdio 读写 ----
-
-void Client::Impl::stdio_send(std::string_view line) {
-    std::string data(line);
-    data.push_back('\n');
-    const std::lock_guard lock(mu_);
-    if (!child_) return;
-    child_->write(data);
-}
-
-void Client::Impl::on_line(std::string_view line) {
-    json message = json::parse(line, nullptr, false);
-    if (message.is_discarded() || !message.is_object()) {
-        log_mcp()->warn("{}: 忽略 server stdout 上的非 JSON 行（{} 字节）", config_.name, line.size());
-        return;
-    }
-    if (!message.contains("method")) {
-        const auto id = message.find("id");
-        if (id == message.end() || !id->is_number_integer()) {
-            log_mcp()->debug("{}: 忽略无法匹配的消息", config_.name);
-            return;
-        }
-        std::shared_ptr<Pending> pending;
-        {
-            std::lock_guard lock(mu_);
-            const auto it = pending_.find(id->get<std::int64_t>());
-            if (it == pending_.end()) {
-                log_mcp()->debug("{}: 忽略已结束请求 {} 的迟到响应", config_.name, id->get<std::int64_t>());
-                return;
-            }
-            pending = it->second;
-            if (message.contains("error")) pending->error = message["error"];
-            else pending->result = message.contains("result") ? std::move(message["result"]) : json::object();
-            pending->done = true;
-        }
-        cv_.notify_all();
-        return;
-    }
-    log_mcp()->debug("{}: 忽略主动消息 {}", config_.name, string_or(message, "method"));
-}
-
-void Client::Impl::on_exit(std::optional<int> code, std::optional<int> signal) {
-    std::string reason;
-    if (signal.has_value()) reason = std::format("server terminated by signal {}", *signal);
-    else reason = std::format("server exited (code={})", code.value_or(-1));
-    {
-        std::lock_guard lock(mu_);
-        disconnected_ = true;
-        disconnect_reason_ = config_.name + ": " + reason;
-        for (auto& [id, pending] : pending_) {
-            if (pending->done) continue;
-            pending->done = true;
-            pending->disconnected = true;
-            pending->error_text = disconnect_reason_;
-        }
-    }
-    cv_.notify_all();
-    log_mcp()->warn("{}", disconnect_reason_);
 }
 
 // ---- Dialect 的请求装饰与会话 ----
@@ -540,66 +308,15 @@ Response Client::Impl::exchange(std::string_view method, json params, millisecon
                                 std::stop_token stop, bool notification) {
     {
         // 被显式撤销后，旧 lease 不能再发请求。
-        const std::lock_guard lock(mu_);
-        if (closing_ || disconnected_)
+        const std::lock_guard lock(connection_.mutex);
+        if (connection_.closing || connection_.disconnected)
             throw McpError{McpError::Kind::disconnected, config_.name + ": client is closed"};
     }
     const std::optional<std::int64_t> id = notification ? std::nullopt
                                                        : std::optional{next_id_.fetch_add(1)};
     if (http_) return http_exchange(id, method, std::move(params), timeout, stop);
-    if (notification) {
-        if (stop.stop_requested())
-            throw McpError{McpError::Kind::cancelled, config_.name + ": connection interrupted"};
-        stdio_send(detail::make_notification(method, std::move(params)).dump());
-        Response response;
-        response.ok = true;
-        return response;
-    }
-    return stdio_exchange(*id, method, std::move(params), timeout, stop);
-}
-
-Response Client::Impl::stdio_exchange(std::int64_t id, std::string_view method, json params,
-                                      milliseconds timeout, std::stop_token stop) {
-    std::string line = detail::make_request(id, method, dialect_->decorate_params(std::move(params))).dump();
-    auto pending = std::make_shared<Pending>();
-    {
-        std::lock_guard lock(mu_);
-        if (closing_)
-            throw McpError{McpError::Kind::disconnected, config_.name + ": client is closed"};
-        if (disconnected_) throw McpError{McpError::Kind::disconnected, disconnect_reason_};
-        pending_[id] = pending;
-    }
-    stdio_send(line);
-
-    {
-        std::unique_lock lock(mu_);
-        const auto done = [&pending] { return pending->done; };
-        if (timeout.count() > 0) (void)cv_.wait_for(lock, stop, timeout, done);
-        else (void)cv_.wait(lock, stop, done);
-        if (!pending->done) {
-            pending_.erase(id);
-            lock.unlock();
-            if (stop.stop_requested()) {
-                send_cancel(id, "cancelled by caller");
-                throw McpError{McpError::Kind::cancelled,
-                               std::format("{}: {} interrupted", config_.name, method)};
-            }
-            send_cancel(id, "timeout");
-            throw McpError{McpError::Kind::timeout,
-                           std::format("{}: {} timed out ({}ms)", config_.name, method, timeout.count())};
-        }
-        pending_.erase(id);
-    }
-    if (pending->disconnected) throw McpError{McpError::Kind::disconnected, pending->error_text};
-    Response out;
-    if (!pending->error.is_null()) {
-        out.rpc_error = true;
-        out.error = std::move(pending->error);
-    } else {
-        out.ok = true;
-        out.result = std::move(pending->result);
-    }
-    return out;
+    if (notification) return stdio_->notify(method, std::move(params), stop);
+    return stdio_->exchange(*id, method, dialect_->decorate_params(std::move(params)), timeout, stop);
 }
 
 Response Client::Impl::http_exchange(std::optional<std::int64_t> id, std::string_view method, json params,
@@ -613,6 +330,7 @@ Response Client::Impl::http_exchange(std::optional<std::int64_t> id, std::string
     net::HttpRequest req{.method = "POST", .url = config_.url, .headers = {}, .body = message.dump()};
     req.headers = dialect_->headers(*this, method, message["params"]);
 
+    // HTTP：断开响应流本身就是取消信号，不发送 notifications/cancelled。
     std::stop_source cancel;
     std::stop_callback relay(stop, [&cancel] { cancel.request_stop(); });
     std::atomic<bool> deadline_hit{false};
@@ -705,11 +423,9 @@ Response Client::Impl::http_exchange(std::optional<std::int64_t> id, std::string
             return out;
         }
         if (stop.stop_requested()) {
-            if (id) send_cancel(*id, "cancelled by caller");
             throw McpError{McpError::Kind::cancelled, std::format("{}: {} interrupted", config_.name, method)};
         }
         if (deadline_hit) {
-            if (id) send_cancel(*id, "timeout");
             throw McpError{McpError::Kind::timeout,
                            std::format("{}: {} timed out ({}ms)", config_.name, method, timeout.count())};
         }
@@ -739,10 +455,10 @@ json Client::Impl::request(std::string_view method, json params, milliseconds ti
                            bool notification) {
     Response response = exchange(method, std::move(params), timeout, stop, notification);
     if (dialect_->session_expired(response)) {
-        const std::lock_guard lock(mu_);
-        disconnected_ = true;
-        disconnect_reason_ = config_.name + ": HTTP session expired (HTTP 404)";
-        throw McpError{McpError::Kind::disconnected, disconnect_reason_};
+        const std::lock_guard lock(connection_.mutex);
+        connection_.disconnected = true;
+        connection_.disconnect_reason = config_.name + ": HTTP session expired (HTTP 404)";
+        throw McpError{McpError::Kind::disconnected, connection_.disconnect_reason};
     }
     // 鉴权和 server 侧错误按状态码分类，哪怕 body 里带着 JSON-RPC error。
     if (response.status == 401 || response.status == 403 || response.status >= 500)
@@ -755,17 +471,6 @@ json Client::Impl::request(std::string_view method, json params, milliseconds ti
                        std::format("{}: {} response contains neither result nor error", config_.name, method)};
     }
     return std::move(response.result);
-}
-
-void Client::Impl::send_cancel(std::int64_t id, std::string_view reason) {
-    if (http_) return; // HTTP：断开响应流本身就是取消信号
-    try {
-        const json message = detail::make_notification(
-            "notifications/cancelled", {{"requestId", id}, {"reason", std::string(reason)}});
-        stdio_send(message.dump());
-    } catch (const std::exception& e) {
-        log_mcp()->warn("{}: 发送 notifications/cancelled 失败：{}", config_.name, e.what());
-    }
 }
 
 // ---- Dialect 握手与协商 ----
