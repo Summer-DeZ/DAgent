@@ -24,6 +24,7 @@ struct Icons {
     std::string_view horizontal, top_left, top_right, bottom_left, bottom_right, up, down, warning, minus, separator, enter, newline;
     std::array<std::string_view, 10> spinner;
     std::string_view toast_info, toast_warning;
+    std::string_view right, chevron;
 };
 const Icons& icons();
 void set_icons(std::string_view);

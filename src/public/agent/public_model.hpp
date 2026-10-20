@@ -18,6 +18,7 @@ struct PublicModel {
     double temperature = -1.0;
     std::size_t context_window = 0;
     std::string auth; ///< key / login:opencode / empty
+    bool send_reasoning_content = false;
     bool has_key = false; ///< 是否配置了凭据；不含凭据本身
 };
 

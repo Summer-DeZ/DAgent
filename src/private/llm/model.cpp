@@ -362,6 +362,7 @@ agent::PublicModel to_public(const ProviderConfig& provider) {
     out.max_tokens = provider.max_tokens;
     out.temperature = provider.temperature;
     out.context_window = provider.context_window;
+    out.send_reasoning_content = provider.send_reasoning_content;
     out.has_key = !provider.api_key.empty();
     out.auth = !provider.login.empty() ? "login:" + provider.login : out.has_key ? "key" : "";
     return out;

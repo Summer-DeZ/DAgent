@@ -28,9 +28,26 @@ dagent logout opencode    # 删除本地凭据，保留锁文件
 ```
 
 在浏览器选择工作区并批准；需要 Go 订阅时使用命令打印的订阅链接。无法自动打开浏览器时手工打开链接并输入用户码。
-等待时 Ctrl+C 取消，成功后显示工作区和到期时间。凭据存在 Home/data/credentials/（目录 0700，JSON 0600）。
+等待时 Ctrl+C 显示 Sign-in cancelled. 并以 130 退出，成功后显示工作区和到期日。
+`dagent login` 用 PROVIDER / STATUS / WORKSPACE / EXPIRES 表格列出本地状态，到期时间为本地 YYYY-MM-DD HH:MM；状态为 signed in、signed out、needs sign-in 或 expired。凭据存在 Home/data/credentials/（目录 0700，JSON 0600）。
+表格按表头和内容的显示宽度对齐，列间至少两个空格，工作区 ID 和缺省值 `—` 均参与列宽计算。
 不要复制或重用旧 refresh token；遇到 needs sign-in（含不确定的刷新结果）重新运行登录命令。
-本阶段尚未增加 TUI 登录框和 Go 选模型列表，CLI 登录后在 models.json 的 models 中添加条目，例如：
+也可以直接从 TUI 登录和选模型：
+
+1. 空闲时输入 `/model`（支持扩展键盘编码的终端也可 Ctrl+M）。上下移动到 **OpenCode Go**，Enter 或 → 打开。
+2. 未登录/已失效时自动尝试打开浏览器。登录框显示链接、用户码与倒计时；`c` 复制链接，`o` 再次打开，Esc 取消并返回。
+3. 在浏览器选择工作区并批准。成功后自动进入 Go 模型清单，以模型 ID 为标签，可输入 ID 或显示名称搜索；上下文、价格和状态按列对齐，`r` 刷新，Esc 返回。
+4. Enter 添加并切换。配置保存为 `opencode-go/<model>`；已添加显示 added 并直接切换。unavailable 的模型不可选。
+5. 关闭浮层后发送一条消息即可使用。若出现登录失效提示，再进入 `/model → OpenCode Go` 登录。
+
+清单来自 models.dev，后端缓存 24 小时；网络不可用但有缓存时标注 stale / offline cache，首次无缓存时显示错误。
+页脚缓存年龄显示为 cached 41s ago、cached 2h ago 等，少于 10 秒显示 cached just now。
+`/model` 右栏显示配置详情和登录状态，少于 80 列时只保留列表；`a` 或最后的添加行打开自定义模型表单。
+模型详情和 Go 清单的上下文按 1M、1.05M、262k、500k 显示；详情的 max output 显示精确值，如 32,768。
+侧栏和活动行的用量格式保持不变。
+已有 CLI 登录也会直接打开 Go 清单，不需要再次授权。
+
+仍可在 models.json 的 models 中手动添加条目，例如：
 
 ```json
 "opencode-go/deepseek-v4.1-flash": {

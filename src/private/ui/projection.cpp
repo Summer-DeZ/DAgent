@@ -1,4 +1,5 @@
 #include "ui/projection.hpp"
+#include "ui/strings.hpp"
 
 #include <utility>
 
@@ -11,6 +12,17 @@ using nlohmann::json;
 std::string text_field(const json& object, const char* key) {
     const auto it = object.find(key);
     return it != object.end() && it->is_string() ? it->get<std::string>() : std::string{};
+}
+
+// Phase 3a exposes these controlled authentication messages in turn errors.
+// Translate only the UI projection; run output and stored events retain CLI wording.
+std::string turn_error(std::string message) {
+    if (message.find("OpenCode needs sign-in;") != std::string::npos ||
+        (message.starts_with("OAuth ") && message.ends_with("sign in again")) ||
+        message == "invalid OAuth token response; sign in again" ||
+        message == "authentication transport failed; try signing in again")
+        return std::string(ui::text().provider_sign_in_error);
+    return message;
 }
 
 TurnStatus status_from(std::string_view value) {
@@ -189,7 +201,7 @@ std::optional<EventPayload> decode_payload(std::string_view kind, const json& da
         out.level = level == "warn" ? NoticeLevel::warn
                   : level == "error" ? NoticeLevel::error
                                      : NoticeLevel::info;
-        out.text = data.value("text", "");
+        out.text = turn_error(data.value("text", ""));
         out.persistent = data.value("persistent", false);
         return out;
     }
@@ -207,7 +219,7 @@ std::optional<EventPayload> decode_payload(std::string_view kind, const json& da
     if (kind == "turn_ended") {
         TurnEnded out;
         out.status = status_from(data.value("status", "done"));
-        out.error = data.value("error", "");
+        out.error = turn_error(data.value("error", ""));
         const auto usage = data.value("usage", json::object());
         if (usage.value("prompt", 0) > 0 || usage.value("completion", 0) > 0)
             out.output = usage.value("completion", std::size_t{0});

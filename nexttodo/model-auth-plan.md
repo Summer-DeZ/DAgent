@@ -1,6 +1,6 @@
 # 模型登录与请求头计划
 
-设计日期：2026-10-20。状态：待实现。交互预览：[TUI 预览](https://claude.ai/artifact/Lrbc8enKxAV8Nm1xw5Qf12)。
+设计日期：2026-10-20。状态：已完成（TUI 改版第 3 期）。交互预览：[TUI 预览](https://claude.ai/artifact/Lrbc8enKxAV8Nm1xw5Qf12)。
 
 ## 1. 目标
 

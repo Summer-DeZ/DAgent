@@ -51,6 +51,7 @@ protocol::PublicModel to_protocol(const agent::PublicModel& model) {
     out.max_tokens = model.max_tokens;
     out.temperature = model.temperature;
     out.context_window = model.context_window;
+    out.send_reasoning_content = model.send_reasoning_content;
     out.has_key = model.has_key;
     out.auth = model.auth;
     return out;

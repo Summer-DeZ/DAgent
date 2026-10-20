@@ -29,7 +29,8 @@
 | `Chip` / `appearance` | 标签绘制、外观令牌变换、统一 Unicode/Nerd/ASCII 图标表 |
 | `SettingsDialog` | 外观选项、即时预览、后端保存与撤回 |
 | `Completion` | `/` 命令、`@` 文件和 `$` 技能的贴输入框补全浮层 |
-| `Panel` | 支持分组、匹配高亮、别名与快捷键列的居中列表浮层 |
+| `Panel` | 支持分组、匹配高亮、别名与快捷键列的居中列表浮层；可选详情栏、状态行、来源页脚与行颜色 |
+| `ModelPicker` | 两栏模型选择、OpenCode Go 设备登录和提供方模型清单；只经 RPC 操作 |
 | `WelcomeView` | 新会话字标、状态 Chip、可恢复的最近会话与快捷键提示 |
 | `ToastStack` | 右上角最多三条、五秒到期的瞬时通知 |
 | `SidePanel` | 可左右放置或隐藏的 SESSION / CONTEXT / PLAN / AGENTS / CHANGED / MCP 分节栏与底部版本 |
@@ -49,7 +50,7 @@ LayerStack
    │  │  └─ Center(PromptBox)           content，1–8 行正文；密度/面板样式决定留白与边框
    │  └─ SidePanel                      content，26/30 列或宽 0
    └─ HintBar                           fixed 1，铺满终端
-浮层：Completion、Panel、SettingsDialog、ApprovalDialog、ToastStack
+浮层：Completion、Panel、ModelPicker（含 Sign-in）、ModelDialog、SettingsDialog、ApprovalDialog、ToastStack
 ```
 
 `centered()` 在主区至少留四列边距，内容栏最大 88 列；主区窄于 44 列时取消边距。
@@ -118,7 +119,8 @@ Shell 进入全屏后调用 `Terminal::set_mouse(true)` 打开鼠标上报，Scr
 拖选与双击；退出时的终端还原由框架处理。
 
 活动动画忙时每 100 ms 更新，同时更新运行中的工具、任务标签和 AGENTS 耗时；MCP 状态来自会话快照：只在连接中或轮次忙碌时每 200 ms 请求一次 `session.snapshot`，稳定空闲后停止。
-toast 使用一次性五秒定时器，文件补全使用一次性 80 ms 防抖；空闲时没有新增的周期唤醒。
+toast 使用一次性五秒定时器，文件补全使用一次性 80 ms 防抖；设备登录等待期间每 100 ms 更新 spinner 与到期倒计时，离开或出错即停止。空闲时没有新增的周期唤醒。
+浏览器由前端用 argv 调用 `xdg-open`（Linux）/ `open`（macOS），独立进程会话/进程组，标准流重定向到 `/dev/null`；只用一个 detached 回收线程等待子进程退出。
 
 ## 4. 输入、补全与排队
 
@@ -285,7 +287,11 @@ HeaderBar 左侧为 primary 粗体品牌与首条用户输入的首行（未输�
 HintBar 左侧是缩成 `~` 的项目路径；右侧按 key=text、description=text_muted 绘制，项目间用 ` · `。
 空闲显示 ctrl+p commands、ctrl+t sidebar、shift+tab mode；忙碌显示 esc interrupt，
 有排队输入时加 ↑ recall queued，有子 Pane 时加 ctrl+a agents。Panel/Completion 打开时显示
-enter select、esc close；Settings 显示 enter save、esc revert。审批显示 y allow、n deny、esc deny，
+enter select、esc close；Settings 显示 enter save、esc revert。
+ModelPicker 显示 `enter switch · → open provider · a add custom · esc close`；
+登录等待显示 `c copy link · o open again · esc cancel`，失败显示 `enter retry · esc back`；
+Go 清单显示 `enter add & switch · r refresh · esc back`。这些提示也出现在对应浮层底部边框。
+审批显示 y allow、n deny、esc deny，
 问题显示 enter confirm、esc cancel。欢迎页有最近会话且输入为空、队列为空、空闲时显示
 `↑↓ pick session · ctrl+p commands · ctrl+c quit`；ASCII 集使用对应方向字符。其余时候沿用普通空闲提示。
 上下文与计划进度不再占用底栏。
@@ -323,7 +329,7 @@ Ctrl+P 标题为 `Commands`，按已有 Session、Permission、Transcript、View
 每项同时显示 slash alias 和 key binding（若存在），忙碌时仍按原 enabled 条件禁用。
 hint 为 `↑↓ move · enter run · esc close`；ASCII 图标集使用对应方向字符。
 
-模态变暗完全在应用层 Page 完成：Panel、SettingsDialog、ApprovalDialog/Question、ModelDialog 任一个可见时，
+模态变暗完全在应用层 Page 完成：Panel、ModelPicker（含登录）、SettingsDialog、ApprovalDialog/Question、ModelDialog 任一个可见时，
 重绘完整基础层，再通过现有 Surface::at/put 把每个非占位单元格的前景色向页面背景混合 60%。
 字符、字重及背景均保留，宽字素按原宽度写回；先重画再混色，避免增量帧累积变暗。
 之后框架照常绘制各浮层，Toast 和 Completion 不触发变暗，Toast 自身也不被混色。
@@ -399,22 +405,67 @@ unrestricted 模式继续显示其权限说明。comfortable 保留节间空行�
 启动或通信失败返回 1。
 
 
-## 模型切换
+## 模型选择与登录
 
-`/model` 或 Ctrl+M 打开通用 Panel，展示配置名、kind、模型 ID，当前项标 current，支持搜索。
+`/model` 或 Ctrl+M 打开 `ModelPicker`，仅空闲时可用；忙碌时命令面板禁用，直接输入 `/model` 提示不可用。
 Ctrl+M 需要终端提供可区分的扩展按键编码；传统终端把它与 Enter 编成相同字节时使用 `/model`。
-命令面板在忙碌时禁用切换；忙碌时直接输入 `/model` 也会提示不可用。
+浮层居中、圆角 active 边框、标题 `Model`，最大约 100×24，随终端缩小。终端少于 80 列时取消详情栏。
+浮层填色、选中元素色、`▌`、匹配字素的 primary 加粗、分组与过滤计数复用应用层 Panel；框架不变。
 
-模型 Panel 的 `a add` 打开七步表单：协议、配置名、base URL、模型 ID、API key（也可填 `env:VARIABLE`）、
-最大输出和上下文窗口。provider 种类与默认端点来自 `model.list`；Enter/Tab 前进，Shift+Tab 返回，Esc 取消。
-提交发 `model.add`（密钥只作为这次请求的 write-only 字段），成功后刷新列表并自动切换；失败用 error toast 显示校验或写入错误，
-保存成功但切换失败时如实提示。
+左侧依次为 CONFIGURED、PROVIDERS 和 `+ Add a custom model`。配置名来自 `model.list`：
+右侧显示 current 或认证来源 key / login / local；已知未登录/失效的登录模型优先用 warning 显示 needs sign-in。
+打开时请求纯本地 `provider.status`，等待显示 `…`，失败在提供方行和详情中显示错误，Enter 重试。
+OpenCode Go 行未登录为 sign in，needs_sign_in 为 warning 的 expired · sign in；已登录为 `N models ›`，
+尚未取得清单时只显示箭头。N 来自本前端已取得的清单，不为显示数量额外联网。
 
-选择后发 `session.select_model`，后端在空闲时按 B13/B14 准备候选、复用写租约并安装（见 [runtime](runtime.md#替换会话)）。
-成功后前端更新输入框、后续消息尾行和 Context 预算；历史对话不清空，session ID 不变。失败弹 error toast，
-后端保留当前会话。历史条目带当时的模型标签。密钥不进入面板、协议 DTO 或日志。
+右侧展示配置名、via OpenCode Go 或 URL host，以及对齐的 kind、endpoint（去掉 userinfo/query/fragment）、
+context、max output、reasoning（仅 openai-chat / ollama，取 send_reasoning_content）、auth。
+context 达到百万时以 M 显示，最多两位小数并去掉末尾零（1M、1.05M），低于百万按整千显示（262k、500k）；
+max output 显示带千位逗号的精确值（32,768）。这些格式仅用于模型限制，侧栏和活动行的用量格式不变。
+已浏览 Go 清单后，同名配置显示已知 price（美元/百万输入输出 token，均为零显示 free）。
+登录模型附 SIGN-IN：success 的 signed in、工作区和 `expires <Mon D> · refreshes itself`，或 warning 的
+not signed in 与 `/model` 提供方行的登录引导。底部注明 `saved in home/config/models.json`。
+提供方详情展示状态、工作区、到期日、Go 订阅链接和 Enter 的行为；添加行解释自定义表单。
 
-本地 Qwen 与 Ollama 的跨协议切换、失败保留和回放已真实验证；远端切换尚未验证。
+↑/↓ 移动；输入过滤（a 保留为快捷键）；Enter 配置项调用现有 `session.select_model`；
+Enter 或 → 提供方打开登录/清单；Enter 添加行或任意位置 a 打开原 ModelDialog；Esc 关闭。
+ModelDialog 仍为七步表单：协议、配置名、base URL、模型 ID、API key（也可填 env:VARIABLE）、
+最大输出和上下文窗口。协议默认值来自 model.list；Enter/Tab 前进，Shift+Tab 返回，Esc 取消。
+提交经 model.add 保存并切换，密钥仅为该请求的 write-only 字段。
+
+### OpenCode Go 登录
+
+未登录或失效时发 `provider.login.start`，显示 `Sign in to OpenCode Go`。收到授权链接后前端尝试打开浏览器；
+启动成功显示 `Your browser was opened to authorize DAgent.`，无法启动则显示 `Open this link to authorize DAgent:`。
+链接用 primary 并按列省略；用户码复用 Chip，遵循 filled/outline；等待行使用统一 spinner 与 Unix 秒 expires_at 倒计时，
+另有 `No Go subscription yet? https://opencode.ai/go`。c 经现有剪贴板复制完整链接并 toast；o 再次打开。
+
+`provider.login.wait` 异步等待；成功 toast `Signed in to OpenCode Go` 并直接进入清单。
+拒绝、到期或错误以 error 显示，Enter 重新开始，Esc 返回。
+Esc / Ctrl+C 发送 provider.login.cancel 并返回选择器；即使 start 尚未返回，也会在迟到结果到达后取消该 login_id。
+界面代次隔离已关闭/已替换页面的回调，避免迟到结果重新打开浮层。
+
+### OpenCode Go 模型清单
+
+已登录时选择提供方或授权成功后发 `provider.models.list`。标题 `OpenCode Go`，搜索字段下显示
+`signed in · <workspace> · expires <Mon D>`。行以模型 ID（如 deepseek-v4.1-flash，不含 opencode-go/ 前缀）为标签，
+上下文简写右对齐，价格和右侧状态使用固定列对齐；上下文格式与模型详情一致，每百万 token 输入/输出价格免费时为 free。
+搜索同时匹配 ID 与显示名称，显示名称不占用列表列。已配置为 added。
+available=false 的 Anthropic 项用 muted / unavailable，方向键跳过，无法选中。
+加载中显示加载行，查询或添加失败显示 error 行；r 以 refresh=true 重新获取，Esc 返回选择器。
+页脚说明 context、price 单位、models.dev 来源、缓存年龄（cached 41s ago / 2h ago，少于 10 秒为 cached just now）；
+stale 标注 stale / offline cache。
+
+Enter 发 `provider.model.add`，由后端保存缺少的 `opencode-go/<model>` 条目并切换；已存在时不覆盖。
+成功 toast `Switched to opencode-go/<model>` 并关闭；保存成功但未切换时保留错误，刷新配置列表后可以重选。
+切换保留会话 ID 和历史，更新 HeaderBar、输入框与 Context；新条目不会使历史标签变化。
+本前端仅持有公开状态、清单和认证来源，不显示令牌或请求头。
+
+使用中提供方认证失效的受控错误仅在 UI 投影替换为：
+`OpenCode Go sign-in is no longer valid. Open /model → OpenCode Go to sign in again.`
+`dagent run` 和后端保存的错误文案不变；再次打开选择器重新读取 provider.status。
+
+本阶段仅构建验证；真实浏览器批准、models.dev 清单、添加切换、对话和失效状态由用户验收。
 
 ## Skill selection
 

@@ -107,7 +107,8 @@ wait 可阻塞至授权期限，取消用独立 cancel 请求，关闭连接同�
 model.add 的 SessionTarget 必须有效；保存失败为 config_error。保存成功但切换忙碌/失败时，selected=false、selection_error
 说明原因，已保存条目保留，可随后 session.select_model。成功切换沿用 session.changed 与 generation 更新。
 已存在模型不覆盖且不依赖公共清单下载。清单 added 按磁盘 models.json 计算，model.list 同样读取当前配置。
-公开模型 DTO 新增 auth（key / login:opencode / 空），保留 has_key 供旧界面使用。
+公开模型 DTO 包含 auth（key / login:opencode / 空），保留 has_key 供旧界面使用；
+另有 send_reasoning_content 布尔值（默认 false），供 TUI 对支持此选项的 kind 显示 reasoning 开关，不含内部 headers/凭据。
 
 ### 外观初始化与保存（协议 minor 3）
 

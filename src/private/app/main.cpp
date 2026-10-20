@@ -1,3 +1,4 @@
+#include <array>
 #include <chrono>
 #include <csignal>
 #include <cstddef>
@@ -7,12 +8,8 @@
 #include <sstream>
 #include <string>
 #include <variant>
-#include <thread>
-#include <fcntl.h>
-#include <spawn.h>
-#include <sys/wait.h>
-
-extern char** environ;
+#include <algorithm>
+#include <format>
 
 #include <signal.h>
 
@@ -25,6 +22,8 @@ extern char** environ;
 #include "protocol/dto.hpp"
 #include "tui/grapheme.hpp"
 #include "ui/shell.hpp"
+#include "ui/browser.hpp"
+#include "ui/display.hpp"
 
 namespace {
 
@@ -75,35 +74,32 @@ void print_sessions(const nlohmann::json& sessions) {
     }
 }
 
-void open_browser(const std::string& url) {
-#ifdef __APPLE__
-    const char* program = "open";
-#else
-    const char* program = "xdg-open";
-#endif
-    posix_spawn_file_actions_t actions;
-    posix_spawn_file_actions_init(&actions);
-    for (int fd = 0; fd < 3; ++fd)
-        posix_spawn_file_actions_addopen(&actions, fd, "/dev/null", fd == 0 ? O_RDONLY : O_WRONLY, 0);
-    posix_spawnattr_t attributes;
-    posix_spawnattr_init(&attributes);
-    sigset_t mask;
-    sigemptyset(&mask);
-    posix_spawnattr_setsigmask(&attributes, &mask);
-    posix_spawnattr_setflags(&attributes, POSIX_SPAWN_SETSIGMASK);
-    char* argv[] = {const_cast<char*>(program), const_cast<char*>(url.c_str()), nullptr};
-    pid_t pid = 0;
-    const int result = posix_spawnp(&pid, program, &actions, &attributes, argv, environ);
-    posix_spawnattr_destroy(&attributes);
-    posix_spawn_file_actions_destroy(&actions);
-    if (result == 0) std::thread([pid] { while (::waitpid(pid, nullptr, 0) < 0 && errno == EINTR) {} }).detach();
+std::string login_expiry(const nlohmann::json& status) {
+    const auto seconds = status.value("expires_at", std::int64_t{0});
+    return seconds > 0 ? local_minute(std::chrono::system_clock::from_time_t(seconds)) : "—";
 }
 void print_login_status(const nlohmann::json& status) {
-    std::cout << status.at("provider").get<std::string>() << ": " << status.at("state").get<std::string>();
-    if (status.contains("workspace")) std::cout << "  workspace=" << status.at("workspace").get<std::string>();
-    if (status.contains("expires_at"))
-        std::cout << "  expires=" << local_minute(std::chrono::system_clock::from_time_t(status.at("expires_at").get<std::int64_t>()));
-    std::cout << '\n';
+    const auto state = status.at("state").get<std::string>();
+    const auto expires = status.value("expires_at", std::int64_t{0});
+    const auto now = std::chrono::system_clock::to_time_t(std::chrono::system_clock::now());
+    const auto label = state == "signed_out" ? "signed out" : expires > 0 && expires <= now ? "expired" :
+        state == "signed_in" ? "signed in" : "needs sign-in";
+    const std::array<std::array<std::string, 4>, 2> rows{{
+        {"PROVIDER", "STATUS", "WORKSPACE", "EXPIRES"},
+        {"OpenCode Go", label, status.value("workspace", "—"), login_expiry(status)}
+    }};
+    std::array<int, 4> widths{};
+    for (const auto& row : rows)
+        for (std::size_t i = 0; i < row.size(); ++i)
+            widths[i] = std::max(widths[i], dagent::ui::display_width(row[i]));
+    for (const auto& row : rows) {
+        for (std::size_t i = 0; i < row.size(); ++i) {
+            std::cout << row[i];
+            if (i + 1 < row.size())
+                std::cout << std::string(widths[i] - dagent::ui::display_width(row[i]) + 2, ' ');
+        }
+        std::cout << '\n';
+    }
 }
 
 } // namespace
@@ -140,7 +136,10 @@ int main(int argc, char** argv) {
             launch.mode = "login";
             auto session = dagent::app::BackendSession::start(launch, {});
             if (args.mode == Mode::logout) {
-                print_login_status(session.client().call("provider.logout", {{"provider", args.login_provider}}));
+                const auto before = session.client().call("provider.status", {{"provider", args.login_provider}});
+                session.client().call("provider.logout", {{"provider", args.login_provider}});
+                std::cout << (before.value("state", "") == "signed_out" ? "Not signed in to OpenCode Go.\n" :
+                              "Signed out of OpenCode Go. Local credentials removed.\n");
                 return 0;
             }
             if (args.login_provider.empty()) {
@@ -148,24 +147,36 @@ int main(int argc, char** argv) {
                 return 0;
             }
             interrupts.graceful = true;
-            const auto started = session.client().call("provider.login.start", {{"provider", args.login_provider}});
-            const auto url = started.at("verification_url").get<std::string>();
-            const auto id = started.at("login_id").get<std::string>();
-            std::cout << "Open: " << url << "\nCode: " << started.at("user_code").get<std::string>()
-                      << "\nGo subscription: " << started.at("subscription_url").get<std::string>()
-                      << "\nWaiting for approval (Ctrl+C cancels)...\n" << std::flush;
-            if (!interrupts.stop.stop_requested()) open_browser(url);
-            std::stop_callback cancel(interrupts.stop.get_token(), [&] {
-                session.client().call_async("provider.login.cancel", {{"provider", args.login_provider}, {"login_id", id}}, [](auto) {});
-            });
             try {
-                print_login_status(session.client().call("provider.login.wait", {{"provider", args.login_provider}, {"login_id", id}}));
+                const auto started = session.client().call("provider.login.start", {{"provider", args.login_provider}});
+                const auto url = started.at("verification_url").get<std::string>();
+                const auto id = started.at("login_id").get<std::string>();
+                std::stop_callback cancel(interrupts.stop.get_token(), [&] {
+                    session.client().call_async("provider.login.cancel", {{"provider", args.login_provider}, {"login_id", id}}, [](auto) {});
+                });
+                if (!interrupts.stop.stop_requested()) {
+                    const auto remaining = std::max(std::int64_t{0}, started.at("expires_at").get<std::int64_t>() -
+                        std::chrono::system_clock::to_time_t(std::chrono::system_clock::now()));
+                    std::cout << "Open this link in your browser to authorize DAgent:\n" << url
+                              << "\nCode: " << started.at("user_code").get<std::string>()
+                              << "\nNo Go subscription yet? https://opencode.ai/go\n"
+                              << std::format("Waiting for approval… (expires in {}:{:02}, Ctrl+C to cancel)\n", remaining / 60, remaining % 60)
+                              << std::flush;
+                    dagent::ui::open_browser(url);
+                    const auto result = session.client().call("provider.login.wait", {{"provider", args.login_provider}, {"login_id", id}});
+                    if (!interrupts.stop.stop_requested())
+                        std::cout << "✓ Signed in to OpenCode Go · workspace " << result.value("workspace", "")
+                                  << " · expires " << login_expiry(result).substr(0, 10) << '\n';
+                }
             } catch (...) {
-                if (interrupts.stop.stop_requested()) return 130;
-                throw;
+                if (!interrupts.stop.stop_requested()) throw;
             }
             interrupts.graceful = false;
-            return interrupts.stop.stop_requested() ? 130 : 0;
+            if (interrupts.stop.stop_requested()) {
+                std::cout << "Sign-in cancelled.\n";
+                return 130;
+            }
+            return 0;
         }
 
         // 查询模式：启动本前端独占的后端，经私有协议完成初始化与查询。

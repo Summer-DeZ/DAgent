@@ -28,6 +28,7 @@
 #include "ui/center.hpp"
 #include "ui/completion.hpp"
 #include "ui/model_dialog.hpp"
+#include "ui/model_picker.hpp"
 #include "ui/panel.hpp"
 #include "ui/prompt_box.hpp"
 #include "ui/prompt_input.hpp"
@@ -419,6 +420,16 @@ public:
                   [this] { return completion_.visible(); }),
           dialog_(rt_, [this] { interrupt(); }), model_dialog_(rt_),
           toasts_(rt_), panel_(rt_), settings_(rt_),
+          model_picker_(rt_, {
+              [this](std::string method, nlohmann::json params, ModelPicker::Done done, ModelPicker::Failed failed) {
+                  request(std::move(method), std::move(params), std::move(done), std::move(failed));
+              },
+              [this] { return target(); },
+              [this](const std::string& name) { switch_model(name); },
+              [this] { add_model(); },
+              [this] { refresh_models(); refresh_snapshot(); },
+              [this](ToastStack::Severity severity, std::string message) { toasts_.show(severity, std::move(message)); }
+          }),
           completion_(rt_, *input_, [this] { completion_kind_.clear(); }),
           branch_(std::move(branch)), project_root_(std::move(project_root)) {
         apply_snapshot(initial);
@@ -458,6 +469,7 @@ public:
             const std::lock_guard lock(gate_->mutex);
             gate_->open = false;
         }
+        model_picker_.close();
         rt_.cancel(file_debounce_);
         terminal_.restore();
         unbind_active_mouse();
@@ -473,6 +485,7 @@ public:
         rt_.run();
         terminal_.restore();
         exiting_ = true;
+        model_picker_.close();
         cancel_history();
         for (auto& pane : panes_) if (pane.pager) pane.pager->cancel();
         if (client_.connected()) {
@@ -583,6 +596,7 @@ private:
         generation_ = snapshot.session_generation;
         model_name_ = snapshot.model.name;
         model_label_ = snapshot.model.model;
+        model_picker_.update_models(models_, model_name_);
         planning_ = snapshot.planning;
         mode_ = snapshot.permission_mode;
         read_only_ = snapshot.read_only;
@@ -889,6 +903,7 @@ private:
             models_.clear();
             for (const auto& model : value.value("models", nlohmann::json::array()))
                 models_.push_back(model.get<protocol::PublicModel>());
+            model_picker_.update_models(models_, model_name_);
             provider_kinds_.clear();
             for (const auto& kind : value.value("provider_kinds", nlohmann::json::array())) {
                 const protocol::ProviderKind info = kind.get<protocol::ProviderKind>();
@@ -939,6 +954,7 @@ private:
         side_->set_theme(theme_); toasts_.set_theme(theme_); panel_.set_theme(theme_);
         dialog_.set_theme(theme_); model_dialog_.set_theme(theme_); completion_.set_theme(theme_);
         settings_.set_theme(theme_);
+        model_picker_.set_theme(theme_, appearance_.panels == "outline");
         root_.invalidate_tree();
     }
     void streamed(std::string_view text) {
@@ -979,7 +995,7 @@ private:
         workspace->add({tui::Sizing::content}, std::move(side));
 
         auto page = std::make_unique<Page>();
-        page->modal = [this] { return panel_.visible() || settings_.active() || dialog_.active() || model_dialog_.active(); };
+        page->modal = [this] { return model_picker_.active() || panel_.visible() || settings_.active() || dialog_.active() || model_dialog_.active(); };
         page->dim = [this](tui::Surface& surface) { dim_surface(surface, theme_, terminal_.caps().background); };
         auto header = std::make_unique<HeaderBar>(); header_ = header.get();
         page->add({tui::Sizing::content}, std::move(header));
@@ -1284,20 +1300,8 @@ private:
 
     void model_panel() {
         if (busy_) return;
-        std::vector<Panel::Row> rows;
-        int initial = 0;
-        int index = 0;
-        for (const auto& model : models_) {
-            const bool current = model.name == model_name_;
-            if (current) initial = index;
-            rows.push_back({model.name, model.kind + "   " + model.model,
-                            current ? std::string(ui::text().panel_current) : "", true,
-                            [this, name = model.name] { switch_model(name); }});
-            ++index;
-        }
-        panel_.open(std::string(ui::text().panel_model), std::move(rows),
-                    std::string(ui::text().panel_model_footer), true, {}, {}, initial,
-                    [this] { add_model(); });
+        model_picker_.open(models_, model_name_);
+        refresh_models();
     }
     void add_model() {
         if (busy_) return;
@@ -1526,6 +1530,7 @@ private:
                 return {hint("y", ui::text().hint_allow), hint("n", ui::text().hint_deny), hint("esc", ui::text().hint_deny)};
             return {hint("enter", ui::text().hint_confirm), hint("esc", ui::text().hint_cancel)};
         }
+        if (model_picker_.active()) return model_picker_.hints();
         if (settings_.active()) return {hint("enter", ui::text().hint_save), hint("esc", ui::text().hint_revert)};
         if (panel_.visible() || completion_.visible() || model_dialog_.active())
             return {hint("enter", ui::text().hint_select), hint("esc", ui::text().hint_close)};
@@ -1638,6 +1643,7 @@ private:
     void cancel() {
         if (completion_.visible()) { completion_.close(); return; }
         if (panel_.visible()) { panel_.close(); return; }
+        if (model_picker_.active()) { model_picker_.close(); return; }
         if (busy_) { interrupt(); return; }
         if (active_ != 0) { show_pane(0); return; }
         if (!input_->text().empty()) { input_->set_text({}); prompt_changed(); return; }
@@ -1774,6 +1780,7 @@ private:
     ToastStack toasts_;
     Panel panel_;
     SettingsDialog settings_;
+    ModelPicker model_picker_;
     std::string interaction_kind_;
     Completion completion_;
     std::string id_, error_, phase_, project_path_, branch_, completion_kind_;

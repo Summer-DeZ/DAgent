@@ -51,6 +51,8 @@ add_library(dagent_ui STATIC
     private/ui/completion.cpp
     private/ui/welcome.cpp
     private/ui/panel.cpp
+    private/ui/model_picker.cpp
+    private/ui/browser.cpp
     private/ui/model_dialog.cpp
     private/ui/side_panel.cpp
 )
