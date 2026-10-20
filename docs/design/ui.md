@@ -33,7 +33,7 @@ phase 5c 的自适应阅读宽度、双侧分节栏、导航焦点与 Layout 设
 | `Completion` | `/` 命令、`@` 文件和 `$` 技能的贴输入框补全浮层 |
 | `Panel` | 支持分组、匹配高亮、别名与快捷键列的居中列表浮层；可选详情栏、状态行、来源页脚与行颜色 |
 | `ModelPicker` | 两栏模型选择、OpenCode Go 设备登录和提供方模型清单；只经 RPC 操作 |
-| `WelcomeView` | 新会话字标、状态 Chip、可恢复的最近会话与快捷键提示 |
+| `WelcomeView` | 居中新会话起始页：字标、项目信息卡、可恢复的最近会话与快捷键 |
 | `ToastStack` | 右上角最多三条、五秒到期的瞬时通知 |
 | `SidePanel` | 共用数据模型的状态栏与导航栏；可配置分节、键盘选择、滚动与鼠标激活；状态栏底部版本 |
 | `ApprovalDialog` | 权限审批与选项提问共用的模态骨架与输入；回答经 `interaction.answer` 提交 |
@@ -58,7 +58,8 @@ LayerStack
 
 `ui.layout.width` 控制所有居中的正文：auto 在主区允许时随宽度从 88 增至 120 列，compact 最多 88，
 wide 最多 160，也接受 60–240 的整数。正常宽度每侧至少留 4 列；主区不足时收窄正文，少于 44 列时取消边距。
-Transcript、WelcomeView、Activity、QueueLabel 和 PromptBox 共用同一宽度函数。ScrollFrame 始终占满主区；
+Transcript、Activity、QueueLabel 和 PromptBox 共用同一宽度函数；WelcomeView 独立使用最多 76 列的居中块。
+ScrollFrame 始终占满主区；
 只有双栏 diff 主体可独立突破正文栏，两侧至少留 2 列、最多 176 列，同轴居中，标题/footer 保持正文宽度。
 改宽度时提升 theme epoch，使 Document 的测量与物化缓存同时失效。
 
@@ -92,7 +93,8 @@ Git 在轮次结束、主/子工具完成、后端 workspace.changed、终端重
 
 新建且尚未发送消息的会话由 ScrollFrame 显示独立 WelcomeView，不向 Transcript 写欢迎 Banner；
 启动新会话和 `/new` 均显示；初始化的 system 历史记录不算用户消息，不影响欢迎页可见性。
-首次提交普通消息或收到 turn_started 时隐藏，恢复会话时也不显示。内容栏少于 60 列或 ASCII 图标集时使用单行字标。
+首次提交普通消息或收到 turn_started 时隐藏，恢复会话时也不显示。欢迎块少于 30 列或 ASCII 图标集时使用单行字标；
+高度不足以放下完整欢迎块时省略字标行。
 历史 `turn_end` 保留在协议与存储中；历史 DTO 没有轮次耗时，回放不伪造实时尾行。
 文本显示宽度和带省略号的裁剪统一使用 `ui/display`；工具折叠提示在极窄宽度仍按列硬裁剪。
 恢复会话改画恢复 id 与回放事件数。Scrollback 不贴底且有未读行时，ScrollFrame 在其底部独占一行显示
@@ -506,23 +508,52 @@ unrestricted 的输入框模式 Chip 使用 error，plan 使用 accent；普通�
 
 ### 欢迎页
 
-WelcomeView 复用原六行块字标并使用 primary；内容栏不足 60 列时为 `◆ DAgent`，ASCII 时为 `* DAgent`。
-下面的 Chip 按空间自动换行，遵循 filled / outline：缩为 `~` 的项目路径、git 分支（仓库外省略）、
-模型、权限模式（与 HeaderBar 同色）、`● MCP ready/total`、`N memories`。
+WelcomeView 在输入框上方的 transcript 区域内水平、垂直居中，独立于 `ui.layout.width`。
+欢迎块固定 76 列；主区可用宽度不足 80 列时取可用宽度减 4，两侧各留至少 2 列。
+内容超高时依次省略字标、版本与标语行、SHORTCUTS（仅在 RECENT 显示时）、信息卡中的 mcp / memory，
+每步重新计算高度，能容纳就停止省略；省略顶部内容时同时移除其后的空行。
+仍超高才从顶部显示并滚动，不裁掉不可见的后半部分；80×24 下优先让信息卡与 RECENT 无需滚动即可看到。
+
+块顶部居中显示两行 accent 加粗字标：
+
+```text
+█▀▄ ▄▀▄ █▀▀ █▀▀ █▄ █ ▀█▀
+█▄▀ █▀█ █▄█ ██▄ █ ▀█  █
+```
+
+块宽不足 30 列时为 `◆ DAgent`，ASCII 图标集时为 `* DAgent`，仍用 accent 加粗。
+区域高度放不下完整欢迎块时省略字标行。其下为 `v<version> · a coding agent that lives in your terminal`，
+版本与句子使用 text_muted，分隔符使用 text_faint；始终保持单行，窄宽度用省略号截断。
+若连版本、分隔符、一个句子字符与省略号都放不下，则只保留版本（极窄时版本也按宽度截断）。
+
+空一行后是 border 圆角信息卡，页面底色。两列按行填充，顺序为 `project`、`branch` / `model`、`mode` /
+`mcp`、`memory`，省略项跳过并由后续项补齐。所有 key 补齐到同一宽度，之后留两个空格再显示 value；
+key 为 text_muted，value 为 text，按各列剩余宽度带省略号裁剪。
+`project` 为 HOME 缩为 `~` 的路径，`branch` 为 `⎇ name`（仓库外省略），
+`mode` 与 HeaderBar 模式 Chip 同色，`mcp` 为 `● N ready`，`memory` 为 `N entries`。
 MCP 未配置时省略；全部 ready 为 success，失败为 error，其余为 warning。记忆数量来自已有 memory.list，零时省略。
 外观、模型、模式、MCP 快照、分支的变化更新欢迎页，无额外周期轮询。
 
-`RECENT SESSIONS` 从已有 session.list 返回结果中选取最多五个有标题的非当前会话，跳过空标题会话；
-`/sessions` 仍保留空会话。标题在左，相对时间在右且为 muted：
-`2h ago`、本地日期的 `yesterday`、更早为 `Oct 18`。无符合条件的会话时整节省略；节尾 muted `/sessions all sessions`。
-输入框为空、无排队输入且空闲时 ↑/↓ 循环选中最近会话，选中行使用 background_selected 和 primary `▌`；
-Enter 复用 /sessions 的 session.resume 路径。输入任意文字或粘贴清除选择并交给原 PromptInput 编辑。
-短终端可用 PgUp/PgDn、Home/End 或鼠标滚轮查看余下内容，改变会话选择时让该行可见。
+再空一行后并排显示 `RECENT` 与 `SHORTCUTS`，标题为大写 text_muted。
+`RECENT` 从已有的当前项目 session.list 中选取最多五个有标题的非当前会话；
+`/sessions` 仍保留空会话。最近会话列最多 44 列，标题在左，相对时间紧邻列右侧且为 text_muted：
+`2h ago`、本地日期的 `yesterday`、更早为 `Oct 18`。列尾为 text_faint 的
+`↑↓ pick · enter resume · /sessions all`。
+无符合条件的会话，或导航栏可见且包含 SESSIONS 分节时，省略 RECENT，并将 SHORTCUTS 单独居中。
+主区可用宽度不足 80 列时，改为 RECENT 在上、SHORTCUTS 在下。
 
-`TIPS` 的 key 为 text、说明为 muted：`@ attach a file`、`$ run a skill`、
-`shift+tab cycle permission mode`、`ctrl+g read-only plan mode`、`/settings theme and background`。
-unrestricted 模式继续显示其权限说明。comfortable 保留节间空行，compact 去掉这些空行。
-欢迎页首次发送消息后消失；恢复会话（包括恢复空会话）直接进入 Transcript。
+RECENT 显示、输入框为空、无排队输入且空闲时 ↑/↓ 循环选中最近会话，选中行使用 background_selected 和 accent `▌`；
+Enter 复用 /sessions 的 session.resume 路径。输入任意文字或粘贴清除选择并交给原 PromptInput 编辑。
+HintBar 保留 `↑↓ pick session · ctrl+p commands · ctrl+c quit`，不再按终端宽度猜测是否显示 RECENT。
+短终端输入为空时可用 PgUp/PgDn、Home/End，或用鼠标滚轮查看余下内容，改变会话选择时让该行可见。
+
+`SHORTCUTS` 对齐键位列（text）和说明列（text_muted）：`@ attach a file`、`$ run a skill`、
+`shift+tab permission mode`、`ctrl+g read-only plan mode`、`ctrl+p all commands`、
+`/settings appearance · layout`。ASCII 图标集使用对应的 ASCII 框线、标记与提示分隔符。
+unrestricted 模式的权限说明放在两列之后，以 error 色按欢迎块宽度折行。
+comfortable 保留各部分间空行，compact 去掉这些空行。
+欢迎页显示期间输入框占位为 `What should we work on?`；首次发送消息后消失，
+恢复会话（包括恢复空会话）直接进入 Transcript，并还原普通输入占位。
 
 符合条件的子权限请求由父模型审阅，显示 `Reviewing subagent permission`，不打开人工模态框。
 决定以持久 Notice 保留来源、范围与理由；历史 `permission/parent_review` 投影为相同的审计提示。

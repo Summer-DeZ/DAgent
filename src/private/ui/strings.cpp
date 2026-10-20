@@ -243,16 +243,25 @@ constexpr Strings kEnglish{
     .panel_count = "{0} of {1} {2}",
     .panel_items = "items",
     .panel_commands_noun = "commands",
-    .welcome_recent = "RECENT SESSIONS",
-    .welcome_tips = "TIPS",
-    .welcome_all_sessions = "/sessions all sessions",
-    .welcome_memories = "{0} memories",
-    .welcome_mcp = "{0} MCP {1}/{2}",
+    .welcome_recent = "RECENT",
+    .welcome_shortcuts = "SHORTCUTS",
+    .welcome_recent_hint = "{0}{1} pick{2}enter resume{2}/sessions all",
+    .welcome_tagline = "a coding agent that lives in your terminal",
+    .welcome_placeholder = "What should we work on?",
+    .welcome_project = "project",
+    .welcome_branch = "branch",
+    .welcome_model = "model",
+    .welcome_mode_key = "mode",
+    .welcome_mcp_key = "mcp",
+    .welcome_memory = "memory",
+    .welcome_memories = "{0} entries",
+    .welcome_mcp = "{0} {1} ready",
     .welcome_attach = "attach a file",
     .welcome_skill = "run a skill",
-    .welcome_mode = "cycle permission mode",
+    .welcome_mode = "permission mode",
     .welcome_plan = "read-only plan mode",
-    .welcome_settings = "theme and background",
+    .welcome_commands = "all commands",
+    .welcome_settings = "appearance · layout",
     .welcome_pick = "pick session",
     .welcome_quit = "quit",
     .welcome_yesterday = "yesterday",
@@ -286,12 +295,8 @@ constexpr Strings kEnglish{
     .welcome_date = "{0} {1}",
     .welcome_months = "JanFebMarAprMayJunJulAugSepOctNovDec",
     .welcome_logo =
-        "██████╗  █████╗  ██████╗ ███████╗███╗   ██╗████████╗\n"
-        "██╔══██╗██╔══██╗██╔════╝ ██╔════╝████╗  ██║   ██║\n"
-        "██║  ██║███████║██║  ██╗ █████╗  ██╔██╗ ██║   ██║\n"
-        "██║  ██║██╔══██║██║  ╚██╗██╔══╝  ██║╚██╗██║   ██║\n"
-        "██████╔╝██║  ██║╚██████╔╝███████╗██║ ╚████║   ██║\n"
-        "╚═════╝ ╚═╝  ╚═╝ ╚═════╝ ╚══════╝╚═╝  ╚═══╝   ╚═╝\n",
+        "█▀▄ ▄▀▄ █▀▀ █▀▀ █▄ █ ▀█▀\n"
+        "█▄▀ █▀█ █▄█ ██▄ █ ▀█  █",
     .model_configured = "CONFIGURED",
     .model_providers = "PROVIDERS",
     .model_add_custom = "+ Add a custom model",

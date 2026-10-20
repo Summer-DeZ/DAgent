@@ -118,8 +118,8 @@ void PromptBox::render(tui::Surface& surface) {
     const int width = inner_width(w);
     const int visible = text_rows(h);
     if (value.empty()) {
-        if (!ui::text().box_placeholder.empty())
-            surface.text(k_left, this->top(), fit_columns(ui::text().box_placeholder, width), faint);
+        const auto placeholder = welcome_ ? ui::text().welcome_placeholder : ui::text().box_placeholder;
+        surface.text(k_left, this->top(), fit_columns(placeholder, width), faint);
     } else {
         const std::vector<Row> rows = wrap(value, width);
         const auto at = caret(rows, value);

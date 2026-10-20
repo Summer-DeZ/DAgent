@@ -215,8 +215,7 @@ public:
     void layout(tui::Rect area) override {
         tui::Widget::layout(area);
         if (current_ != nullptr) current_->layout({0, 0, area.w, area.h});
-        const int width = reading_width(area.w);
-        welcome.layout({(area.w - width) / 2, 0, width, area.h});
+        welcome.layout({0, 0, area.w, area.h});
     }
     void render(tui::Surface& surface) override {
         if (welcome.visible) {
@@ -875,6 +874,14 @@ private:
         const bool navigator = wanted && columns - (status ? width : 0) - width >= 50;
         side_->columns = navigator_->columns = width;
         side_->set_collapsed(!status); navigator_->set_collapsed(!navigator);
+        auto& welcome = frame_->welcome;
+        const bool sessions_in_navigator = navigator &&
+            std::ranges::find(navigator_->order, "sessions") != navigator_->order.end();
+        if (welcome.sessions_in_navigator != sessions_in_navigator) {
+            welcome.sessions_in_navigator = sessions_in_navigator;
+            welcome.selected = -1; welcome.reveal_selection = false; welcome.invalidate();
+            hints_->invalidate();
+        }
         side_->left = layout_.status_panel == "left"; navigator_->left = !side_->left;
         workspace_->left = side_->left; workspace_->invalidate_layout();
         if (!navigator && navigator_focused_) focus_prompt();
@@ -999,10 +1006,11 @@ private:
     void hide_welcome() {
         if (!frame_->welcome.visible) return;
         frame_->welcome.visible = false; frame_->welcome.selected = -1;
+        input_->set_welcome(false);
         frame_->invalidate_tree();
     }
     bool welcome_navigation() const {
-        return frame_->welcome.visible && !frame_->welcome.sessions.empty() &&
+        return frame_->welcome.visible && frame_->welcome.has_recent() &&
                input_->text().empty() && snapshot_.queue.empty() && !busy_ && active_ == 0;
     }
     bool welcome_event(const tui::Event& e) {
@@ -1012,7 +1020,7 @@ private:
                 view.scroll((e.key == tui::Key::page_up ? -1 : 1) * std::max(1, view.rect().h - 1)); return true;
             }
             if (e.key == tui::Key::home || e.key == tui::Key::end) {
-                view.top = e.key == tui::Key::home ? 0 : 64;
+                view.top = e.key == tui::Key::home ? 0 : view.content_rows;
                 view.reveal_selection = false; view.invalidate(); return true;
             }
         }
@@ -1034,7 +1042,7 @@ private:
     }
     void refresh_welcome() {
         const auto id = id_;
-        request("session.list", {{"limit", 6}}, [this, id](const nlohmann::json& value) {
+        request("session.list", {{"limit", 0}}, [this, id](const nlohmann::json& value) {
             auto& view = frame_->welcome;
             if (id != id_ || !view.visible) return;
             view.sessions.clear();
@@ -1230,6 +1238,7 @@ private:
         if (resumed) active_transcript().resumed(id_, messages, std::string(ui::text().panel_just_now));
         // 新会话也有 system 历史记录；历史条目数不能用来判断是否已发送消息。
         frame_->welcome.visible = !resumed;
+        input_->set_welcome(!resumed);
         frame_->welcome.selected = -1; frame_->welcome.top = 0; frame_->welcome.sessions.clear(); frame_->welcome.memories = 0;
         update_welcome(); frame_->invalidate_tree();
         if (frame_->welcome.visible) refresh_welcome();
@@ -1719,7 +1728,7 @@ private:
             if (panes_.size() > 1) out.push_back(hint("ctrl+a", ui::text().hint_agents));
             return out;
         }
-        if (welcome_navigation() && terminal_.size().cols < 170) return {hint(std::string(icons().up) + std::string(icons().down), ui::text().welcome_pick),
+        if (welcome_navigation()) return {hint(std::string(icons().up) + std::string(icons().down), ui::text().welcome_pick),
             hint("ctrl+p", ui::text().hint_commands), hint("ctrl+c", ui::text().welcome_quit)};
         std::vector<KeyHint> out{hint("ctrl+p", ui::text().hint_commands), hint("ctrl+t", ui::text().hint_sidebar), hint("shift+tab", ui::text().hint_mode)};
         if (terminal_.size().cols >= 110) out.push_back(hint("ctrl+b", ui::text().hint_navigator));

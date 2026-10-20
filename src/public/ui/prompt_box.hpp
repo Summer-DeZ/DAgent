@@ -23,6 +23,7 @@ public:
     void set_footer(std::string mode, std::string model, bool busy);
     void set_footer_tone(bool error, bool accent);
     void set_active(bool);
+    void set_welcome(bool value) { welcome_ = value; invalidate(); }
     void set_theme(const tui::ThemeTokens&);
     void set_appearance(const Appearance& a) { outline_ = a.panels == "outline"; invalidate_layout(); }
 
@@ -50,6 +51,7 @@ private:
     bool busy_ = false;
     bool footer_error_ = false, footer_accent_ = false;
     bool active_ = false;
+    bool welcome_ = false;
     const tui::ThemeTokens* theme_ = &tui::dark_theme();
 };
 
