@@ -14,11 +14,11 @@ namespace dagent::tui {
 
 /// @brief 语义主题令牌：控件与渲染器只引用令牌，不写死颜色。
 struct ThemeTokens {
-    Style text, text_muted, primary, accent;
+    Style text, text_muted, text_faint, primary, accent;
     Style border, border_active, background, background_panel,
-        background_element;
+        background_element, background_selected;
     Style success, warning, error, info;
-    Style diff_added, diff_removed, diff_context, diff_hunk;
+    Style diff_added, diff_removed, diff_context, diff_hunk, diff_added_bg, diff_removed_bg;
     Style syntax_keyword, syntax_string, syntax_comment, syntax_number,
         syntax_function, syntax_type;
     Style markdown_heading, markdown_code, markdown_link, markdown_quote;

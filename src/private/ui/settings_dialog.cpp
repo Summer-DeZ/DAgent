@@ -24,15 +24,15 @@ public:
         if (nav > 2) s.text(2, 2, text().settings_section, style(t.primary));
         const int end = preview ? w - 29 : w - 2;
         const int row_width = std::max(1, end - nav);
-        const std::string_view names[] = {text().settings_theme, text().settings_mode, text().settings_background,
+        const std::string_view names[] = {text().settings_mode, text().settings_background,
             text().settings_accent, text().settings_panels, text().settings_density, text().settings_icons, text().settings_sidebar, text().settings_diff, text().settings_links};
         const int room = std::max(1, h - 6), first = std::max(0, d.row_ - room + 1);
-        for (int i = first; i < 10 && i - first < room; ++i) {
+        for (int i = first; i < 9 && i - first < room; ++i) {
             const int y = 2 + i - first;
             auto normal = style(t.text), muted = style(t.text_muted);
             if (i == d.row_) {
-                s.fill({nav, y, row_width, 1}, U' ', t.background_element);
-                normal.bg = muted.bg = t.background_element.bg;
+                s.fill({nav, y, row_width, 1}, U' ', t.background_selected);
+                normal.bg = muted.bg = t.background_selected.bg;
                 auto bar = t.primary; bar.bg = normal.bg; s.text(nav, y, icons().bar, bar);
             }
             const int label_width = std::min(12, row_width / 2);
@@ -54,27 +54,29 @@ public:
                    d.current_.panels == "outline" ? t.background.bg : t.background_panel.bg);
             sample(6, text().settings_sample_user, t.text, t.background_element.bg);
             sample(8, std::string(icons().check) + " " + std::string(text().settings_sample_tool), t.success, t.background.bg);
-            if (d.row_ == 8) {
+            if (d.row_ == 7) {
                 const int half = (width - 1) / 2;
                 for (int y = 9; y <= 10 && y < h - 3; ++y) {
                     for (int side = 0; side < 2; ++side) {
-                        auto tone = y == 9 ? (side ? t.diff_added : t.diff_removed) : t.text_muted;
+                        auto tone = y == 9 ? (side ? t.diff_added : t.diff_removed) : t.text;
                         tone.bg = y == 9 ? diff_background(t, side != 0) : t.background.bg;
                         const int left = x + side * (half + 1), cols = side ? width - half - 1 : half;
                         s.fill({left, y, cols, 1}, U' ', tone);
-                        s.text(left, y, fit_columns(y == 9 ? (side ? "1 + new" : "1 − old") : "2   code", cols), tone);
+                        auto number = t.text_faint; number.bg = t.background.bg;
+                        s.text(left, y, y == 9 ? "1 " : "2 ", number);
+                        s.text(left + 2, y, fit_columns(y == 9 ? (side ? "+ new" : "− old") : "  code", cols - 2), tone);
                     }
-                    s.text(x + half, y, "│", style(t.text_muted));
+                    s.text(x + half, y, "│", style(t.text_faint));
                 }
-            } else sample(9, text().settings_sample_added, t.diff_added, t.background.bg);
+            } else sample(9, text().settings_sample_added, t.diff_added, t.diff_added_bg.bg);
             sample(11, text().settings_sample_assistant, t.text, t.background.bg);
-            sample(13, text().settings_sample_prompt, t.text_muted,
+            sample(13, text().settings_sample_prompt, t.text_faint,
                    d.current_.panels == "outline" ? t.background.bg : t.background_panel.bg);
         }
         if (h > 4) {
             const auto message = d.saving_ ? text().settings_saving : d.invalid_ ? text().settings_invalid : std::string_view{};
             s.text(2, h - 3, fit_columns(message, w - 4), style(d.invalid_ ? t.error : t.text_muted));
-            s.text(2, h - 2, fit_columns(d.editing_ ? text().settings_hex_footer : text().settings_footer, w - 4), style(t.text_muted));
+            draw_hint(s, 2, h - 2, fit_columns(d.editing_ ? text().settings_hex_footer : text().settings_footer, w - 4), style(t.text_muted), t.text_faint);
         }
     }
 };
@@ -84,8 +86,7 @@ void SettingsDialog::open(Appearance a, std::function<bool(const Appearance&)> p
     close(); original_ = current_ = std::move(a); preview_ = std::move(preview); save_ = std::move(save); revert_ = std::move(revert); row_ = row;
     editing_ = invalid_ = saving_ = color_accepted_ = false;
     background_custom_ = hex_color(current_.background);
-    accent_custom_ = !current_.accent.empty() && current_.accent != "#EC5B2B" && current_.accent != "#6ba1e6" &&
-                     current_.accent != "#c792ea" && current_.accent != "#7fd17f";
+    accent_custom_ = hex_color(current_.accent);
     auto view = std::make_unique<View>(*this); view_ = view.get();
     overlay_ = rt_.open_overlay(std::move(view), tui::Placement::center, {}, this);
 }
@@ -99,22 +100,16 @@ void SettingsDialog::set_theme(const tui::ThemeTokens& t) { theme_ = t; refresh(
 void SettingsDialog::refresh() { if (view_) view_->invalidate(); }
 std::string SettingsDialog::value(int row) const {
     switch (row) {
-    case 0: return current_.theme;
-    case 1: return current_.mode;
-    case 2: return background_custom_ ? std::string(text().settings_custom) + " " + (hex_color(current_.background) ? current_.background : "") : current_.background;
-    case 3:
-        if (accent_custom_) return std::string(text().settings_custom) + " " + current_.accent;
-        if (current_.accent.empty()) return std::string(text().settings_default);
-        if (current_.accent == "#EC5B2B") return "orange";
-        if (current_.accent == "#6ba1e6") return "blue";
-        if (current_.accent == "#c792ea") return "violet";
-        if (current_.accent == "#7fd17f") return "green";
+    case 0: return current_.mode;
+    case 1: return background_custom_ ? std::string(text().settings_custom) + " " + (hex_color(current_.background) ? current_.background : "") : current_.background;
+    case 2:
+        if (accent_custom_) return std::string(text().settings_custom) + " " + (hex_color(current_.accent) ? current_.accent : "");
         return current_.accent;
-    case 4: return current_.panels;
-    case 5: return current_.density;
-    case 6: return current_.icons;
-    case 7: return current_.sidebar;
-    case 8: return current_.diff;
+    case 3: return current_.panels;
+    case 4: return current_.density;
+    case 5: return current_.icons;
+    case 6: return current_.sidebar;
+    case 7: return current_.diff;
     default: return current_.links;
     }
 }
@@ -128,30 +123,25 @@ void SettingsDialog::cycle(int delta) {
     };
     color_accepted_ = invalid_ = false;
     switch (row_) {
-    case 0: {
-        std::vector<std::string> choices{"dagent", "midnight", "paper"};
-        if (std::ranges::find(choices, original_.theme) == choices.end()) choices.push_back(original_.theme);
-        cycle_value(current_.theme, std::move(choices)); break;
-    }
-    case 1: cycle_value(current_.mode, {"auto", "dark", "light"}); break;
-    case 2: {
+    case 0: cycle_value(current_.mode, {"auto", "dark", "light"}); break;
+    case 1: {
         std::string choice = background_custom_ ? "custom" : current_.background;
         cycle_value(choice, {"solid", "transparent", "custom"}); background_custom_ = choice == "custom";
         if (!background_custom_) current_.background = choice;
         break;
     }
-    case 3: {
+    case 2: {
         std::string choice = accent_custom_ ? "custom" : current_.accent;
-        cycle_value(choice, {"", "#EC5B2B", "#6ba1e6", "#c792ea", "#7fd17f", "custom"});
+        cycle_value(choice, {"orange", "green", "violet", "blue", "custom"});
         accent_custom_ = choice == "custom"; if (!accent_custom_) current_.accent = choice;
         break;
     }
-    case 4: cycle_value(current_.panels, {"filled", "outline"}); break;
-    case 5: cycle_value(current_.density, {"comfortable", "compact"}); break;
-    case 6: cycle_value(current_.icons, {"unicode", "nerd", "ascii"}); break;
-    case 7: cycle_value(current_.sidebar, {"right", "left", "hidden"}); break;
-    case 8: cycle_value(current_.diff, {"auto", "unified"}); break;
-    case 9: cycle_value(current_.links, {"on", "off"}); break;
+    case 3: cycle_value(current_.panels, {"filled", "outline"}); break;
+    case 4: cycle_value(current_.density, {"comfortable", "compact"}); break;
+    case 5: cycle_value(current_.icons, {"unicode", "nerd", "ascii"}); break;
+    case 6: cycle_value(current_.sidebar, {"right", "left", "hidden"}); break;
+    case 7: cycle_value(current_.diff, {"auto", "unified"}); break;
+    case 8: cycle_value(current_.links, {"on", "off"}); break;
     }
     if (!preview_(current_)) current_ = previous;
     refresh();
@@ -165,7 +155,7 @@ bool SettingsDialog::on_event(const tui::Event& e) {
     if (editing_) {
         if (e.key == tui::Key::enter) {
             if (!hex_color(hex_)) { invalid_ = true; refresh(); return true; }
-            (row_ == 2 ? current_.background : current_.accent) = hex_;
+            (row_ == 1 ? current_.background : current_.accent) = hex_;
             if (preview_(current_)) { editing_ = invalid_ = false; color_accepted_ = true; }
         } else if (e.key == tui::Key::backspace) {
             if (replace_hex_) hex_.clear(); else if (!hex_.empty()) hex_.pop_back();
@@ -178,13 +168,13 @@ bool SettingsDialog::on_event(const tui::Event& e) {
         refresh(); return true;
     }
     if (e.key == tui::Key::up || e.key == tui::Key::down) {
-        row_ = (row_ + (e.key == tui::Key::up ? 9 : 1)) % 10;
+        row_ = (row_ + (e.key == tui::Key::up ? 8 : 1)) % 9;
         color_accepted_ = invalid_ = false; refresh();
     } else if (e.key == tui::Key::left || e.key == tui::Key::right) {
         cycle(e.key == tui::Key::left ? -1 : 1);
     } else if (e.key == tui::Key::enter) {
-        if (!color_accepted_ && ((row_ == 2 && background_custom_) || (row_ == 3 && accent_custom_))) {
-            hex_ = row_ == 2 ? current_.background : current_.accent;
+        if (!color_accepted_ && ((row_ == 1 && background_custom_) || (row_ == 2 && accent_custom_))) {
+            hex_ = row_ == 1 ? current_.background : current_.accent;
             if (!hex_color(hex_)) hex_ = "#";
             editing_ = replace_hex_ = true; refresh();
         } else { saving_ = true; refresh(); save_(current_); }

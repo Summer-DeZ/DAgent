@@ -215,10 +215,14 @@ size_t DiffRenderer::render(const Block& block, int width,
         block, width, from, valid, out,
         [&theme](std::string_view src, size_t pos) {
             switch (src[line_start_of(src, pos)]) {
-            case '+':
-                return theme.diff_added;
-            case '-':
-                return theme.diff_removed;
+            case '+': {
+                auto style = theme.diff_added; style.bg = theme.diff_added_bg.bg;
+                return style;
+            }
+            case '-': {
+                auto style = theme.diff_removed; style.bg = theme.diff_removed_bg.bg;
+                return style;
+            }
             case '@':
                 return theme.diff_hunk;
             default:

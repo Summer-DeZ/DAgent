@@ -135,7 +135,7 @@ public:
         else if (block.meta == "thought") style = theme.accent;
         else if (block.meta == "msg.footer.error") style = theme.error;
         else if (block.meta == "msg.footer.plan") style = theme.accent;
-        else if (block.meta == "msg.footer") style = theme.text_muted;
+        else if (block.meta == "msg.footer") style = theme.text_faint;
         else if (block.meta == "thought.body") { // 与 Thought 标题同列，不再加符号
             style = theme.text_muted; style.attrs = style.attrs | tui::Attr::italic;
         } else if (block.meta == "system.error") { style = theme.error; first = std::string(icons().cross) + " "; }
@@ -220,8 +220,8 @@ private:
             const std::string value = body.collapsed
                 ? format_text(ui::text().card_folded, body.row_count - body.collapsed_rows, icons().separator)
                 : std::string(ui::text().card_collapse);
-            line.spans.push_back({std::string(icons().elbow) + " ", theme.text_muted, tui::k_no_src});
-            line.spans.push_back({fit(value, width - 2), theme.text_muted, tui::k_no_src});
+            line.spans.push_back({std::string(icons().elbow) + " ", theme.text_faint, tui::k_no_src});
+            line.spans.push_back({fit(value, width - 2), theme.text_faint, tui::k_no_src});
             line.width = std::min(width, 2 + display_width(value));
             return 1;
         }
@@ -379,8 +379,8 @@ class DiffBodyRenderer final : public tui::BlockRenderer {
         const auto side = [&](tui::Line& line, const Row* row, bool right, int cols) {
             if (!row) { line.spans.push_back({std::string(static_cast<size_t>(cols), ' '), theme.text, tui::k_no_src}); return; }
             auto code = row->sign == '+' ? theme.diff_added : row->sign == '-' ? theme.diff_removed : theme.text;
-            auto muted = theme.text_muted;
-            if (row->sign != ' ') code.bg = muted.bg = diff_background(theme, row->sign == '+');
+            auto muted = theme.text_faint;
+            if (row->sign != ' ') code.bg = diff_background(theme, row->sign == '+');
             const int number = right ? row->number : row->old_number;
             line.spans.push_back({number ? std::format("{:>{}} ", number, diff.side_digits)
                                         : std::string(static_cast<size_t>(diff.side_digits + 1), ' '), muted, tui::k_no_src});
@@ -401,10 +401,10 @@ class DiffBodyRenderer final : public tui::BlockRenderer {
             line.offset = row->offset; line.reordered = true;
             if (row->hunk) {
                 line.spans.push_back({fit_columns("⋯" + (row->code.empty() ? std::string{} : " " + std::string(row->code)), width),
-                                      theme.text_muted, tui::k_no_src});
+                                      theme.text_faint, tui::k_no_src});
             } else {
                 side(line, pair.left, false, left_width);
-                line.spans.push_back({"│", theme.text_muted, tui::k_no_src});
+                line.spans.push_back({"│", theme.text_faint, tui::k_no_src});
                 side(line, pair.right, true, width - left_width - 1);
             }
             line.width = width;
@@ -438,20 +438,20 @@ public:
             do {
                 tui::Line line;
                 line.offset = row.offset + at;
-                line.spans.push_back({std::string(icons().vertical) + " ", theme.text_muted, tui::k_no_src});
+                line.spans.push_back({std::string(icons().vertical) + " ", theme.text_faint, tui::k_no_src});
                 if (row.hunk) {
                     const auto value = std::string(icons().vertical == "|" ? "..." : "⋯") +
                         (row.code.empty() ? "" : " " + std::string(row.code));
                     const auto shown = fit_columns(value, std::max(0, width - 2));
-                    line.spans.push_back({shown, theme.text_muted, tui::k_no_src});
+                    line.spans.push_back({shown, theme.text_faint, tui::k_no_src});
                     line.width = 2 + display_width(shown);
                     out.push_back(std::move(line));
                     break;
                 }
-                auto muted = theme.text_muted;
+                auto muted = theme.text_faint;
                 auto code = row.sign == '+' ? theme.diff_added : row.sign == '-' ? theme.diff_removed : theme.text;
                 const bool tinted = row.sign == '+' || row.sign == '-';
-                if (tinted) muted.bg = code.bg = diff_background(theme, row.sign == '+');
+                if (tinted) code.bg = diff_background(theme, row.sign == '+');
                 if (row.number) {
                     const auto number = at == 0 ? std::format("{:>{}}", row.number, diff.digits)
                                                : std::string(static_cast<size_t>(diff.digits), ' ');

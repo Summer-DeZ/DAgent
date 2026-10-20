@@ -946,7 +946,7 @@ nlohmann::json resolve_appearance(const nlohmann::json& input, const fs::path& r
                                    const fs::path& legacy_theme) {
     if (!input.is_object()) fail(ConfigError::Kind::type, "/ui/appearance must be an object");
     json result{{"theme", legacy_theme.empty() ? "dagent" : legacy_theme.string()},
-                {"mode", "auto"}, {"background", "solid"}, {"panels", "filled"},
+                {"mode", "auto"}, {"background", "solid"}, {"accent", "orange"}, {"panels", "filled"},
                 {"density", "comfortable"}, {"icons", "unicode"}, {"sidebar", "right"}, {"diff", "auto"}, {"links", "on"}};
     const auto hex = [](const std::string& value) {
         return value.size() == 7 && value[0] == '#' &&
@@ -959,7 +959,7 @@ nlohmann::json resolve_appearance(const nlohmann::json& input, const fs::path& r
     for (auto it = input.begin(); it != input.end(); ++it) {
         const auto path = "/ui/appearance/" + it.key();
         if (!it->is_string()) fail(ConfigError::Kind::type, path + " must be a string");
-        const auto value = it->get<std::string>();
+        auto value = it->get<std::string>();
         if (const auto c = choices.find(it.key()); c != choices.end()) {
             if (std::ranges::find(c->second, value) == c->second.end())
                 fail(ConfigError::Kind::invalid, path + ": invalid value '" + value + "'");
@@ -967,7 +967,16 @@ nlohmann::json resolve_appearance(const nlohmann::json& input, const fs::path& r
             if (value != "solid" && value != "transparent" && !hex(value))
                 fail(ConfigError::Kind::invalid, path + " must be solid, transparent or #rrggbb");
         } else if (it.key() == "accent") {
-            if (!hex(value)) fail(ConfigError::Kind::invalid, path + " must be #rrggbb");
+            if (hex(value)) {
+                auto legacy = value;
+                std::ranges::transform(legacy, legacy.begin(), [](unsigned char c) { return static_cast<char>(std::tolower(c)); });
+                if (legacy == "#ec5b2b") value = "orange";
+                else if (legacy == "#6ba1e6") value = "blue";
+                else if (legacy == "#c792ea") value = "violet";
+                else if (legacy == "#7fd17f") value = "green";
+            } else if (value != "orange" && value != "green" && value != "violet" && value != "blue") {
+                fail(ConfigError::Kind::invalid, path + " must be orange, green, violet, blue or #rrggbb");
+            }
         } else if (it.key() == "theme") {
             if (value.empty()) fail(ConfigError::Kind::invalid, path + " must be a preset name or a theme file path");
         } else {
@@ -976,7 +985,9 @@ nlohmann::json resolve_appearance(const nlohmann::json& input, const fs::path& r
         result[it.key()] = value;
     }
     const auto name = result["theme"].get<std::string>();
-    const auto file = name == "dagent" || name == "midnight" || name == "paper"
+    if (name == "midnight" || name == "paper")
+        fail(ConfigError::Kind::invalid, "/ui/appearance/theme: midnight and paper presets were removed; use dagent or a theme file path");
+    const auto file = name == "dagent"
         ? root / "themes" / (name + ".json") : absolute_under(root, name);
     if (!fs::is_regular_file(file)) fail(ConfigError::Kind::invalid, "/ui/appearance/theme: cannot open " + file.string());
     result["theme"] = file.string();
@@ -989,6 +1000,7 @@ nlohmann::json save_appearance(const fs::path& root, const nlohmann::json& appea
     json document = parse_file(file);
     const auto effective = resolve_appearance(appearance, root, {});
     document["ui"]["appearance"] = appearance;
+    document["ui"]["appearance"]["accent"] = effective["accent"];
     workspace::write_text(file, document.dump(2) + "\n", workspace::Eol::lf, false, workspace::stamp_of(file));
     return effective;
 }

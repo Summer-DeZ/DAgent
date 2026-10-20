@@ -77,8 +77,8 @@ public:
         draw_frame(surface, {0, 0, width, height}, border);
         surface.text(2, 0, fit_columns(" " + title + " ", width - 4), current_theme->text);
         const std::string footer = " enter next/save · shift+tab back · esc cancel ";
-        surface.text(std::max(2, (width - display_width(footer)) / 2), height - 1,
-                     fit_columns(footer, width - 4), current_theme->text_muted);
+        draw_hint(surface, std::max(2, (width - display_width(footer)) / 2), height - 1,
+                  fit_columns(footer, width - 4), current_theme->text_muted, current_theme->text_faint);
     }
 
     void theme(const tui::ThemeTokens& value) {

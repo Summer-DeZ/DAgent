@@ -140,10 +140,10 @@ stdio 项支持 `command`、`args`、`env`、`environment`，HTTP 项支持 `url
 | `web.engines` | 非空的 SearXNG 引擎名称列表；配置中没有端口字段 | yahoo / brave / duckduckgo |
 | `tools.bash_collect_bytes` | 中断时命令输出收集上限 | 4194304 |
 | `ui.theme_file` | 兼容的主题文件路径；appearance.theme 缺省时使用 | themes/dagent.json |
-| `ui.appearance.theme` | dagent / midnight / paper 或相对 Home 的主题路径 | dagent（优先兼容 theme_file） |
+| `ui.appearance.theme` | dagent 或主题文件路径（相对 Home 或绝对路径） | dagent（优先兼容 theme_file） |
 | `ui.appearance.mode` | auto / dark / light | auto |
 | `ui.appearance.background` | solid / transparent / #rrggbb | solid |
-| `ui.appearance.accent` | #rrggbb；省略时使用主题 primary | 省略 |
+| `ui.appearance.accent` | orange / green / violet / blue / #rrggbb | orange |
 | `ui.appearance.panels` | filled / outline | filled |
 | `ui.appearance.density` | comfortable / compact | comfortable |
 | `ui.appearance.icons` | unicode / nerd / ascii | unicode |
@@ -156,6 +156,11 @@ stdio 项支持 `command`、`args`、`env`、`environment`，HTTP 项支持 `url
 `ui.appearance` 整体及各键均可省略；显式提供时必须是对象和合法字符串，错误消息指明
 `/ui/appearance/<key>`。无效枚举、颜色、空主题名或不存在的主题文件为配置错误。
 ConfigurationGateway 向前端返回解析后的有效值，保存入口只重写 ui.appearance，保留其它配置。
+midnight / paper 预设已删除，配置错误提示改用 dagent 或主题文件路径；设置对话框只保留 Mode，不再提供 Theme 行。
+强调色预设按名字保存，按 dark/light 分别解析为 orange `#fe8a4c` / `#a85500`、
+green `#87d787` / `#2a7a1a`、violet `#b9a0ff` / `#6a4bc4`、blue `#7a9cff` / `#3157c8`。
+加载时将旧 hex `#EC5B2B` / `#7fd17f` / `#c792ea` / `#6ba1e6`（不区分大小写）映射为对应名称，
+下次保存写名字；其它 hex 保留输入值，渲染时按 OKLab 明度在浅色压暗、深色提亮至面板上 4.5:1。
 `/settings` 的保存立即生效且跨重启保留；Esc/Ctrl+C 只撤销前端预览。预设主题都随 Home 资源安装。
 
 上下文预算、工具结果与文件大小限制、HTTP/进程超时、日志大小及进度间隔也显式读取对应配置段。

@@ -1,72 +1,77 @@
-# OpenCode 主题分析与 DAgent 配色
+# DAgent 配色与主题文件
 
-2026-09-20 核对本机 `opencode-ai` 1.18.31：`~/.local/state/opencode/kv.json` 的 `theme` 为 `orng`。
-安装包 `~/.nvm/versions/node/v24.17.0/lib/node_modules/opencode-ai/bin/opencode.exe` 内嵌了主题对象和
-组件用色代码；本次直接读取该安装版本，对照 `orng` 与 `opencode` 两套定义，没有修改 OpenCode 配置。
+DAgent 早期配色参考本机 OpenCode `orng`；phase 5a 改为
+[改版计划 §9.3](../../nexttodo/tui-redesign-plan.md#93-配色) 批准的配色。
+只保留 `home/themes/dagent.json`，框架 dark_theme / light_theme 同步提供完整缺省值。
+`midnight.json`、`paper.json` 已删除；`ui.appearance.theme` 接受 `dagent` 或主题文件路径，
+旧预设名称报配置错误，提示使用 dagent 或文件路径。`/settings` 删除 Theme 行，`/theme` 仍定位 Mode。
 
-## 配色的主要关系
+## 配色
 
-两套主题共享暗色的三层中性背景：页面 `#0a0a0a`、面板 `#141414`、元素 `#1e1e1e`。
-正文 `#eeeeee`，次要文字 `#808080`，信息层次主要通过亮度、间距和字重表达。浮层使用面板底色，
-文字按语义引用 text、textMuted 和状态色，不能各自带入页面底色而在面板内形成色块。
-
-`opencode` 默认方案暗色主色为桃色 `#fab283`，accent 为紫色；本机正在使用的 `orng` 把主色替换成
-`#EC5B2B`，secondary 为 `#EE7948`，代码字符串与成功状态用蓝色。其亮色面板采用暖白色，保留橙色识别。
-因此本次采用本机 `orng` 的橙色与中性底色体系。
-
-| 角色 | OpenCode orng 暗色 / 亮色 | DAgent 处理 |
+| 令牌 | dark | light |
 | --- | --- | --- |
-| 主背景 | `#0a0a0a` / `#ffffff` | 保留 |
-| 浮层、侧栏 | `#141414` / `#FFF7F1` | 保留，面板内文字继承该底色 |
-| 输入、选中行 | `#1e1e1e` / `#f5f0eb` | 保留，竖条使用强调色 |
-| 正文 | `#eeeeee` / `#1a1a1a` | 保留 |
-| 次要文字 | `#808080` / `#8a8a8a` | 亮色加深为 `#706b66`，兼顾暖白输入底色 |
-| 主色 | `#EC5B2B` / `#EC5B2B` | 亮色采用原主题的深橙 `#c94d24`，改善小字可读性 |
-| 次强调色 | `#EE7948` / `#EE7948` | 暗色保留，亮色用深橙；用于活动与权限模式竖条 |
-| 成功、字符串 | `#6ba1e6` / `#0062d1` | 保留 |
-| 错误 | `#e06c75` / `#d1383d` | 保留，错误正文加粗 |
-| 边框 | 橙色边框，另有灰色 borderSubtle | 普通框使用灰色 `#3c3c3c` / `#d4d4d4`，活动框 `#606060` / `#a0a0a0` |
+| background / panel / element / selected | `#121212` / `#1c1c1c` / `#262626` / `#303030` | `#ffffff` / `#eeeeee` / `#e4e4e4` / `#dadada` |
+| border / border_active | `#3a3a3a` / `#585858` | `#c6c6c6` / `#9e9e9e` |
+| text / text_muted / text_faint | `#e4e4e4` / `#b2b2b2` / `#8a8a8a` | `#1c1c1c` / `#4e4e4e` / `#6c6c6c` |
+| primary（orange） | `#fe8a4c` | `#a85500` |
+| success / error / warning / info | `#6eb6ff` / `#f24e6f` / `#f1ce59` / `#5ad7d7` | `#0261ca` / `#9b0655` / `#4c4300` / `#007179` |
+| markdown_code | `#d8b0ff` | `#8b3bab` |
+| diff_added / diff_removed | `#abcdff` / `#f68486` | `#005c94` / `#860f23` |
+| diff_added_bg / diff_removed_bg | `#21344f` / `#381617` | `#e1f1ff` / `#facecd` |
+| syntax_keyword / string / number / function / type | `#c592e7` / `#a6d7a0` / `#f7a97c` / `#81a9fd` / `#81dbcb` | `#8639c7` / `#297d0f` / `#9a5505` / `#215fbc` / `#107a6c` |
 
-DAgent 浮层使用完整线框，若直接套用 orng 的橙色 border，会形成大面积橙色边框。因此边框取中性灰，
-橙色集中于选择竖条、操作状态、标题与代码关键字。警告单独使用黄褐色，与橙色主色区分；亮色适当加深。
-文本拖选使用橙色背景配深色/白色前景，菜单选中行仍采用元素底色和橙色竖条。
+accent 为 primary 向 text 混合 20%；selection 为页面色文字、primary 底色。
+error 不加粗，markdown_heading 为 text 加粗，markdown_link 为 info 加下划线，
+syntax_comment 为 text_faint 加斜体；diff_context 为 text、diff_hunk 为 text_faint，markdown_quote 为 text_muted 加斜体。
+三档文字的用途见 [UI 设计](ui.md#2-外观与设置)，text_faint 只用在页面/面板底色上。
 
-## 原有观感问题与实现约束
+## JSON 格式
 
-原配色的页面、面板和输入底色都偏蓝紫，边框也是蓝色。更明显的问题在 256 色输出：RGB 量化把
-每通道当作均匀六档，没有使用 xterm 的 `0,95,135,175,215,255` 色阶，也不为近灰色比较灰阶。
-原 `#1a1b26` 页面和附近面板色会映射成索引 59（`#5f5f5f`），导致暗底变亮、多个层级合并。
-纯白还会被旧灰阶路径降成索引 255（`#eeeeee`）。修正后比较实际色立方与灰阶的 RGB 距离；
-新的暗色三层分别映射到 232、233、234，白色映射到 231。真彩色路径不做量化。
+顶层保留 `name`、`defs`、`dark`、`light`。defs 为颜色别名表；dark/light 的键与 ThemeTokens 字段同名，
+未提供的令牌沿用内置对应明暗主题。新增 text_faint、background_selected、diff_added_bg、diff_removed_bg。
+完整字段表见 [框架主题](tui-framework.md#45-控件与主题l4)。
 
-默认主题颜色继续集中在 `home/themes/dagent.json`；应用层保留同风格后备令牌供未配置文件与缺失令牌使用。
-不改 TUI 公开接口。第一阶段改版新增 midnight/paper 明暗主题，`ui.appearance.theme` 选择文件或预设，
-`mode` 独立选择 auto/dark/light；`/theme` 现在打开 `/settings` 的 Mode 行。
-背景支持透明和自定义颜色，强调色可覆盖；输入框底色改为 panel，元素和 Chip 仍用 element。
-所有外观变换在应用层进行，再走现有 apply_theme/epoch 刷新。保存经后端原子写 config.json。
-支持终端在初始握手之后通过 OSC 11 主动上报背景变化；auto 模式（包括设置预览中的 auto）应用该变化，固定明暗不被覆盖。
-自动切换依赖终端实际发送背景通知；不支持通知的终端可手动选择 dark / light。
+样式可为一个颜色（只设置 fg），或 `{"fg": 颜色, "bg": 颜色, "attrs": [属性名]}`。
+背景令牌的颜色写在 bg。属性包括 bold、dim、italic、underline、blink、reverse、strike。
+普通令牌的默认 fg/bg 在应用时继承正文/页面，浮层继承面板底色；selection 保留独立样式。
 
-## 原主题版本的实际运行记录（改版前）
+颜色接受：
 
-以下记录针对旧 `/theme` 面板；不代表新版 Settings 的 PTY 验收。旧版本通过 dev 构建及真实 DAgent PTY 运行确认（120×36，未调用模型）：
+- `"#rrggbb"`：RGB；无真彩色时自动量化。
+- `0`–`255` 整数：始终使用 xterm 索引。
+- `"default"`：终端默认色。
+- defs 中的名字：引用对应颜色，别名值也可以使用下面的对象形式。
+- `{"rgb": "#21344f", "256": 17}`：真彩色使用 RGB；仅在无真彩色时使用显式索引，索引范围 0–255。
 
-- 菜单仅显示 dark、light、follow terminal；再次打开定位到已确认项。
-- 亮色预览、Esc 恢复、Enter 确认，以及从固定模式切回跟随均正常。
-- 向运行中的终端输入通道发送 OSC 11 背景通知，跟随模式正确重绘；固定暗色模式保持不变。
-- 真彩色首屏实际输出暗色背景 `10/10/10`、侧栏 `20/20/20`、输入框 `30/30/30`，亮色输出对应 RGB。
-- 256 色首屏实际输出背景索引 232、233、234；亮色主背景为 231，暖白面板与元素近似为 255。
-  256 色下暖白的细微色差会合并，精确的三层亮色效果需要真彩色终端。
+例如（部分主题文件）：
 
-运行数据位于 `temp/theme-orng-tJfDMy/`；真实会话记录为
-`01a0bec3-1e77-7aca-9c16-8e9d4b8bdec3`（真彩色）和
-`01a0bec3-ae67-79dd-93c3-3f4624d499ad`（256 色）。未新增测试代码。
+```json
+{
+  "name": "custom",
+  "defs": { "added": { "rgb": "#21344f", "256": 17 } },
+  "dark": {
+    "text_faint": "#8a8a8a",
+    "background_selected": { "bg": "#303030" },
+    "diff_added_bg": { "bg": "added" },
+    "diff_removed_bg": { "bg": { "rgb": "#381617", "256": 52 } }
+  },
+  "light": {
+    "diff_added_bg": { "bg": { "rgb": "#e1f1ff", "256": 195 } },
+    "diff_removed_bg": { "bg": { "rgb": "#facecd", "256": 224 } }
+  }
+}
+```
 
-## 第一阶段主题预设
+未带显式索引时，出帧器比较 xterm 色立方 `0,95,135,175,215,255` 和灰阶的 RGB 距离。
+中性色对齐 xterm 灰阶：暗色四层为 233/234/235/236，亮色为 231/255/254/253。
+solid diff 使用上面的固定底色与索引；transparent / 自定义背景仍动态混合 success/error 的 15%，
+分别以面板/当前页面为基底，生成的 RGB 使用普通量化，不保留 solid 的固定索引。
 
-midnight 暗色为 #0b0b14 / #13131f / #1c1c2b 三层底、#c792ea 主色，亮色为淡紫底与深紫文字。
-paper 亮色为 #fbf8f3 / #f3eee6 / #ebe4d8 三层底、#b5532a 主色，暗色为棕黑底与暖色文字。
-两套主题的 syntax、markdown、diff 按 dagent 的语义映射，成功与增行继续使用蓝色。
-自定义背景采用 sRGB 相对亮度决定变体，再按亮/暗分别向黑/白混合出面板和元素；
-transparent 只将页面背景设为 default，不改变终端的透明度设置。
-本阶段只执行构建检查；新版设置、三种终端宽度和两类颜色输出待真实 PTY 验收。
+## 强调色与验证范围
+
+`ui.appearance.accent` 接受 orange（默认）、green、violet、blue 或自定义 hex。
+预设按名称保存并随明暗解析，值及旧 hex 迁移见 [应用配置](app.md)。
+自定义色在 OKLab 中保持色相、调整明度，在浅色压暗、深色提亮到面板上 4.5:1；
+出色域时降低色度，保存值保持用户输入。secondary accent 继续由最终 primary 混合得到。
+
+phase 5a 只执行指定 CMake 构建。真彩/256 色、深浅色、透明/自定义背景的实际 PTY 颜色与对比度由后续运行验收。

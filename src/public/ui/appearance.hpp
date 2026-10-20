@@ -8,7 +8,7 @@
 
 namespace dagent::ui {
 struct Appearance {
-    std::string theme = "dagent", mode = "auto", background = "solid", accent;
+    std::string theme = "dagent", mode = "auto", background = "solid", accent = "orange";
     std::string panels = "filled", density = "comfortable", icons = "unicode", sidebar = "right";
     std::string diff = "auto", links = "on";
     static Appearance from_json(const nlohmann::json&);
@@ -33,6 +33,7 @@ std::string compact_tokens(std::size_t);
 tui::Color diff_background(const tui::ThemeTokens&, bool added);
 void dim_surface(tui::Surface&, const tui::ThemeTokens&, std::optional<tui::Color> terminal);
 void draw_frame(tui::Surface&, tui::Rect, tui::Style);
+void draw_hint(tui::Surface&, int x, int y, std::string_view, tui::Style, tui::Style separator);
 int chip_width(std::string_view, bool outline);
 int draw_chip(tui::Surface&, int x, int y, std::string_view, tui::Style,
               const tui::ThemeTokens&, bool outline, tui::Color background);

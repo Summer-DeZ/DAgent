@@ -108,7 +108,7 @@ public:
             line(text().login_subscription, t.text_muted);
         }
         const auto hint = fit_columns(" " + std::string(o.error_.empty() ? text().login_footer : text().login_retry_footer) + " ", w - 4);
-        surface.text((w - display_width(hint)) / 2, h - 1, hint, tone(t.text_muted));
+        draw_hint(surface, (w - display_width(hint)) / 2, h - 1, hint, tone(t.text_muted), t.text_faint);
     }
 private:
     ModelPicker& owner_;

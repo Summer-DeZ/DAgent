@@ -75,7 +75,7 @@ public:
         draw_frame(surface, {0, 0, full_width, h}, panel(theme->border_active));
         surface.text(2, 0, fit_columns(" " + title + " ", full_width - 4), panel(theme->text));
         const std::string footer = fit_columns(" " + hint + " ", full_width - 4);
-        surface.text((full_width - display_width(footer)) / 2, h - 1, footer, panel(theme->text_muted));
+        draw_hint(surface, (full_width - display_width(footer)) / 2, h - 1, footer, panel(theme->text_muted), theme->text_faint);
         if (details_) {
             for (int y = 1; y < h - 1; ++y) surface.text(w, y, icons().vertical, panel(theme->border));
             auto detail = surface.view({w + 2, 2, full_width - w - 4, h - 4});
@@ -123,9 +123,9 @@ public:
             const int alias_col = right_col - (right_width ? 2 : 0) - alias_width;
             const int content_end = alias_col - (alias_width ? 2 : 0);
             const bool selected = line.pos == owner->selected_ && row.enabled;
-            if (selected) surface.fill({1, y, w - 2, 1}, U' ', theme->background_element);
+            if (selected) surface.fill({1, y, w - 2, 1}, U' ', theme->background_selected);
             auto style = [&](tui::Style value) {
-                value.bg = selected ? theme->background_element.bg : theme->background_panel.bg; return value;
+                value.bg = selected ? theme->background_selected.bg : theme->background_panel.bg; return value;
             };
             auto tone_style = [&](Tone tone) {
                 switch (tone) {

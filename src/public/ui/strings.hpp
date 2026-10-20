@@ -38,7 +38,6 @@ struct Strings {
     std::string_view hint_cancel;
     std::string_view settings_title;
     std::string_view settings_section;
-    std::string_view settings_theme;
     std::string_view settings_mode;
     std::string_view settings_background;
     std::string_view settings_accent;
@@ -49,7 +48,6 @@ struct Strings {
     std::string_view settings_diff;
     std::string_view settings_links;
     std::string_view settings_custom;
-    std::string_view settings_default;
     std::string_view settings_invalid;
     std::string_view settings_saved;
     std::string_view settings_saving;

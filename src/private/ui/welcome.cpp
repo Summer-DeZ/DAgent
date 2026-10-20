@@ -57,8 +57,8 @@ void WelcomeView::render(tui::Surface& s) {
             const bool current = selected == i;
             auto label = t.text, age = t.text_muted, marker = t.primary;
             if (current) {
-                body.fill({0, y, w, 1}, U' ', t.background_element);
-                label.bg = age.bg = marker.bg = t.background_element.bg; selection_y = y;
+                body.fill({0, y, w, 1}, U' ', t.background_selected);
+                label.bg = age.bg = marker.bg = t.background_selected.bg; selection_y = y;
             }
             body.text(0, y, current ? icons().bar : " ", marker);
             const auto right = fit_columns(sessions[i].age, std::max(0, w / 3));

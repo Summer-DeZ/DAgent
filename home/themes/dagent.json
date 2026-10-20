@@ -1,94 +1,154 @@
 {
   "name": "dagent",
-  "defs": {
-    "ink": "#eeeeee",
-    "ink_muted": "#808080",
-    "ink_faint": "#808080",
-    "blue": "#6ba1e6",
-    "cyan": "#56b6c2",
-    "amber": "#e5c07b",
-    "orange": "#EC5B2B",
-    "orange_soft": "#EE7948",
-    "warm_white": "#FFF7F1",
-    "red": "#e06c75",
-    "line": "#3c3c3c",
-    "line_active": "#606060",
-    "panel": "#141414",
-    "element": "#1e1e1e",
-    "selection": "#EC5B2B",
-
-    "paper_ink": "#1a1a1a",
-    "paper_ink_muted": "#706b66",
-    "paper_ink_faint": "#706b66",
-    "paper_blue": "#0062d1",
-    "paper_cyan": "#318795",
-    "paper_amber": "#8a6415",
-    "paper_orange": "#c94d24",
-    "paper_red": "#d1383d",
-    "paper_line": "#d4d4d4",
-    "paper_line_active": "#a0a0a0",
-    "paper_panel": "#FFF7F1",
-    "paper_element": "#f5f0eb",
-    "paper_selection": "#c94d24"
-  },
+  "defs": {},
   "dark": {
-    "text": "ink",
-    "text_muted": "ink_muted",
-    "primary": "orange",
-    "accent": "orange_soft",
-    "border": "line",
-    "border_active": "line_active",
-    "background": { "bg": "#0a0a0a" },
-    "background_panel": { "bg": "panel" },
-    "background_element": { "bg": "element" },
-    "success": "blue",
-    "warning": "amber",
-    "error": { "fg": "red", "attrs": ["bold"] },
-    "info": "cyan",
-    "diff_added": "blue",
-    "diff_removed": "red",
-    "diff_context": "ink_muted",
-    "diff_hunk": "ink_muted",
-    "syntax_keyword": "orange",
-    "syntax_string": "blue",
-    "syntax_comment": { "fg": "ink_faint", "attrs": ["italic"] },
-    "syntax_number": "warm_white",
-    "syntax_function": "orange_soft",
-    "syntax_type": "amber",
-    "markdown_heading": { "fg": "orange", "attrs": ["bold"] },
-    "markdown_code": "blue",
-    "markdown_link": { "fg": "cyan", "attrs": ["underline"] },
-    "markdown_quote": { "fg": "ink_muted", "attrs": ["italic"] },
-    "selection": { "fg": "#0a0a0a", "bg": "selection" }
+    "text": "#e4e4e4",
+    "text_muted": "#b2b2b2",
+    "text_faint": "#8a8a8a",
+    "primary": "#fe8a4c",
+    "border": "#3a3a3a",
+    "border_active": "#585858",
+    "background": {
+      "bg": "#121212"
+    },
+    "background_panel": {
+      "bg": "#1c1c1c"
+    },
+    "background_element": {
+      "bg": "#262626"
+    },
+    "background_selected": {
+      "bg": "#303030"
+    },
+    "success": "#6eb6ff",
+    "error": "#f24e6f",
+    "warning": "#f1ce59",
+    "info": "#5ad7d7",
+    "diff_added": "#abcdff",
+    "diff_removed": "#f68486",
+    "diff_added_bg": {
+      "bg": {
+        "rgb": "#21344f",
+        "256": 17
+      }
+    },
+    "diff_removed_bg": {
+      "bg": {
+        "rgb": "#381617",
+        "256": 52
+      }
+    },
+    "syntax_keyword": "#c592e7",
+    "syntax_string": "#a6d7a0",
+    "syntax_number": "#f7a97c",
+    "syntax_function": "#81a9fd",
+    "syntax_type": "#81dbcb",
+    "markdown_code": "#d8b0ff",
+    "accent": "#f99c6a",
+    "diff_context": "#e4e4e4",
+    "diff_hunk": "#8a8a8a",
+    "syntax_comment": {
+      "fg": "#8a8a8a",
+      "attrs": [
+        "italic"
+      ]
+    },
+    "markdown_heading": {
+      "fg": "#e4e4e4",
+      "attrs": [
+        "bold"
+      ]
+    },
+    "markdown_link": {
+      "fg": "#5ad7d7",
+      "attrs": [
+        "underline"
+      ]
+    },
+    "markdown_quote": {
+      "fg": "#b2b2b2",
+      "attrs": [
+        "italic"
+      ]
+    },
+    "selection": {
+      "fg": "#121212",
+      "bg": "#fe8a4c"
+    }
   },
   "light": {
-    "text": "paper_ink",
-    "text_muted": "paper_ink_muted",
-    "primary": "paper_orange",
-    "accent": "paper_orange",
-    "border": "paper_line",
-    "border_active": "paper_line_active",
-    "background": { "bg": "#ffffff" },
-    "background_panel": { "bg": "paper_panel" },
-    "background_element": { "bg": "paper_element" },
-    "success": "paper_blue",
-    "warning": "paper_amber",
-    "error": { "fg": "paper_red", "attrs": ["bold"] },
-    "info": "paper_cyan",
-    "diff_added": "paper_blue",
-    "diff_removed": "paper_red",
-    "diff_context": "paper_ink_muted",
-    "diff_hunk": "paper_ink_muted",
-    "syntax_keyword": "paper_orange",
-    "syntax_string": "paper_blue",
-    "syntax_comment": { "fg": "paper_ink_faint", "attrs": ["italic"] },
-    "syntax_number": "paper_orange",
-    "syntax_function": "paper_orange",
-    "syntax_type": "paper_amber",
-    "markdown_heading": { "fg": "paper_orange", "attrs": ["bold"] },
-    "markdown_code": "paper_blue",
-    "markdown_link": { "fg": "paper_cyan", "attrs": ["underline"] },
-    "markdown_quote": { "fg": "paper_ink_muted", "attrs": ["italic"] },
-    "selection": { "fg": "#ffffff", "bg": "paper_selection" }
+    "text": "#1c1c1c",
+    "text_muted": "#4e4e4e",
+    "text_faint": "#6c6c6c",
+    "primary": "#a85500",
+    "border": "#c6c6c6",
+    "border_active": "#9e9e9e",
+    "background": {
+      "bg": "#ffffff"
+    },
+    "background_panel": {
+      "bg": "#eeeeee"
+    },
+    "background_element": {
+      "bg": "#e4e4e4"
+    },
+    "background_selected": {
+      "bg": "#dadada"
+    },
+    "success": "#0261ca",
+    "error": "#9b0655",
+    "warning": "#4c4300",
+    "info": "#007179",
+    "diff_added": "#005c94",
+    "diff_removed": "#860f23",
+    "diff_added_bg": {
+      "bg": {
+        "rgb": "#e1f1ff",
+        "256": 195
+      }
+    },
+    "diff_removed_bg": {
+      "bg": {
+        "rgb": "#facecd",
+        "256": 224
+      }
+    },
+    "syntax_keyword": "#8639c7",
+    "syntax_string": "#297d0f",
+    "syntax_number": "#9a5505",
+    "syntax_function": "#215fbc",
+    "syntax_type": "#107a6c",
+    "markdown_code": "#8b3bab",
+    "accent": "#8c4a06",
+    "diff_context": "#1c1c1c",
+    "diff_hunk": "#6c6c6c",
+    "syntax_comment": {
+      "fg": "#6c6c6c",
+      "attrs": [
+        "italic"
+      ]
+    },
+    "markdown_heading": {
+      "fg": "#1c1c1c",
+      "attrs": [
+        "bold"
+      ]
+    },
+    "markdown_link": {
+      "fg": "#007179",
+      "attrs": [
+        "underline"
+      ]
+    },
+    "markdown_quote": {
+      "fg": "#4e4e4e",
+      "attrs": [
+        "italic"
+      ]
+    },
+    "selection": {
+      "fg": "#ffffff",
+      "bg": "#a85500"
+    }
   }
 }

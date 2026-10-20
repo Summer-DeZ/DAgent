@@ -170,7 +170,14 @@ kitty 键盘协议、字素宽度模式、背景色。
 叠在一起。
 
 框架保留上一帧和本帧两块网格，出帧时逐行比较，只把变化的部分写到终端。支持同步输出的终端上
-整帧一次性显示，不会闪烁。真彩色终端输出 24 位色，其他终端自动换算成 256 色。
+整帧一次性显示，不会闪烁。真彩色终端输出 24 位色，其他终端输出 256 色。
+
+**颜色回退（phase 5a）。** `Color` 增加 `int16_t fallback_256 = -1`；
+`Color::rgb(r, g, b, fallback = -1)` 可携带 0–255 的 xterm 索引。
+仅 RGB 且终端无 truecolor 时，出帧器优先输出该索引；-1 沿用色立方与灰阶的最近距离量化。
+真彩色忽略索引，indexed/default 色行为不变。Color/Style/Cell 的相等比较包含该字段，
+所以单独修改回退索引也能触发重绘。重新混合生成的 RGB 默认不携带固定索引。
+框架不读取主题 JSON；应用层负责解析、校验颜色对象。
 
 **超链接接口（phase 4）。** `Style::hyperlink` 默认为 0（无链接）。渲染线程调用
 `intern_hyperlink(std::string_view uri)` 获取进程内稳定、去重的非零 id，
@@ -223,6 +230,25 @@ SGR 增量逻辑独立保留，输出不依赖 OSC 8 能力探测；忽略 OSC 8
 `primary`、`error`、`border`、`diff_added`、`syntax_keyword`、`markdown_heading`、`selection`。
 换主题就是换一组令牌；改动令牌后要递增其中的 `epoch`，已缓存的渲染结果才会刷新。框架内置暗色、
 亮色两套，`default_theme(背景色)` 按终端背景的明暗自动选择。
+
+phase 5a 的 ThemeTokens 字段按组如下（均为 Style，另有 epoch）：
+
+| 类别 | 字段 |
+| --- | --- |
+| 文字与强调 | text、text_muted、text_faint、primary、accent |
+| 边框与背景 | border、border_active、background、background_panel、background_element、background_selected |
+| 状态 | success、warning、error、info |
+| Diff | diff_added、diff_removed、diff_context、diff_hunk、diff_added_bg、diff_removed_bg |
+| 语法 | syntax_keyword、syntax_string、syntax_comment、syntax_number、syntax_function、syntax_type |
+| Markdown | markdown_heading、markdown_code、markdown_link、markdown_quote |
+| 拖选 | selection |
+
+text_faint 为第三文字层，background_selected 是选中行底色；diff_added_bg / diff_removed_bg 的颜色位于 bg。
+默认 DiffRenderer 在增删文字样式上叠加对应底色。SyntaxRenderer 的默认底色改为页面，gutter 使用 text_faint，
+让注释的第三档颜色落在页面上；应用仍可替换具体背景。
+内置 dark_theme / light_theme 提供完整 RGB 值：error 无 bold，markdown_heading 为 text + bold，
+syntax_comment 为 text_faint + italic，selection 为页面色文字和 primary 底色。
+新增令牌与 fallback 字段均为通用渲染能力，预设名字、自定义 accent 对比度调整、背景推导和设置交互留在 ui/app。
 
 ### 4.6 文档层（L5）
 

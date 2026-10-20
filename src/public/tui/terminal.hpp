@@ -24,13 +24,14 @@ struct Color {
     uint8_t r = 0;
     uint8_t g = 0;
     uint8_t b = 0;
+    int16_t fallback_256 = -1; ///< RGB 在非真彩终端的显式索引；-1 = 自动量化
     bool operator==(const Color&) const noexcept = default;
 
     static constexpr Color indexed(uint8_t i) noexcept {
         return {Kind::indexed, i, 0, 0};
     }
-    static constexpr Color rgb(uint8_t r, uint8_t g, uint8_t b) noexcept {
-        return {Kind::rgb, r, g, b};
+    static constexpr Color rgb(uint8_t r, uint8_t g, uint8_t b, int16_t fallback = -1) noexcept {
+        return {Kind::rgb, r, g, b, fallback};
     }
 };
 

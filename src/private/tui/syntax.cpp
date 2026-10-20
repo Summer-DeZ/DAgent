@@ -748,8 +748,8 @@ size_t SyntaxRenderer::render(const Block& block, int width, const ThemeTokens& 
     const Lang lang = detect_lang(block.meta);
     const Spec sp = spec_of(lang);
 
-    // 代码块底色：令牌没设底色的样式叠上 background_element。
-    const Color bg = theme.background_element.bg;
+    // 代码与注释使用页面底色，保证第三档文字的对比度。
+    const Color bg = theme.background.bg;
     const auto on_bg = [bg](Style s) {
         if (s.bg.kind == Color::Kind::default_) s.bg = bg;
         return s;
@@ -762,7 +762,7 @@ size_t SyntaxRenderer::render(const Block& block, int width, const ThemeTokens& 
     st.string = on_bg(theme.syntax_string);
     st.comment = on_bg(theme.syntax_comment);
     st.number = on_bg(theme.syntax_number);
-    const Style gutter = on_bg(theme.border_active);
+    const Style gutter = on_bg(theme.text_faint);
     const Style pad = on_bg(Style{});
     const int inner = std::max(1, width - k_gutter);
 

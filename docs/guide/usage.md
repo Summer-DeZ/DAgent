@@ -113,14 +113,18 @@ dagent --plan "规划一次模块调整"
 Enter 保存到当前 Home 的 `config/config.json`，Esc 或 Ctrl+C 撤回；保存失败会显示错误并保留设置窗口。
 背景选 custom 或强调色选 custom 后，Enter 编辑 `#rrggbb`，Enter 应用颜色，再次 Enter 保存。
 
-内置 dagent（中性橙）、midnight（冷紫）、paper（暖纸色），均支持 auto、dark、light。
+内置主题只保留 dagent，支持 auto、dark、light。theme 可为 dagent 或主题文件路径；
+midnight / paper 已移除，使用旧名称会报配置错误。设置中不再显示 Theme 行，Mode 仍可切换明暗。
+Accent 按 orange → green → violet → blue → custom 循环，默认 orange；预设按名字保存并随明暗切换。
+自定义 hex 渲染时在浅色压暗、深色提亮，以达到面板上 4.5:1 的对比度，保存值保持原样。
+旧橙/绿/紫/蓝预设 hex（`#EC5B2B` / `#7fd17f` / `#c792ea` / `#6ba1e6`）加载时自动转成名称。
 auto 跟随终端 OSC 11 背景通知；不发送通知的终端可以手动选择明暗。
 可选 filled/outline 面板、comfortable/compact 密度、unicode/nerd/ascii 图标，以及左/右/隐藏侧栏。
 Nerd 图标需要终端字体包含 Nerd Font 字符。Ctrl+T 临时切换侧栏，不改已保存的配置。
 
 透明模式的用法：先在终端中设置背景图片或透明度，再将 Background 设为 transparent。
 页面使用终端默认底色，面板仍保留主题底色；选择 outline 可让栏和输入框也透出终端背景。
-DAgent 本身不加载背景图片。真彩终端显示精确颜色，256 色终端会自动量化。
+DAgent 本身不加载背景图片。真彩终端显示精确颜色，256 色终端优先使用主题颜色中的显式回退索引，否则自动量化。
 
 也可以编辑配置，例如：
 
@@ -129,10 +133,10 @@ DAgent 本身不加载背景图片。真彩终端显示精确颜色，256 色终
   "theme_file": "themes/dagent.json",
   "completion_max_files": 5000,
   "appearance": {
-    "theme": "midnight",
+    "theme": "dagent",
     "mode": "auto",
     "background": "transparent",
-    "accent": "#6ba1e6",
+    "accent": "blue",
     "panels": "filled",
     "density": "compact",
     "icons": "unicode",

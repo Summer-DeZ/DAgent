@@ -98,7 +98,7 @@ void SidePanel::render(tui::Surface& s) {
             const bool done_item = item.state == TodoItem::State::done, doing = item.state == TodoItem::State::doing;
             s.text(x, y, done_item ? icons().check : doing ? icons().current : icons().circle,
                    style(done_item ? t.success : doing ? t.accent : t.text_muted));
-            s.text(x + 2, y++, fit_columns(item.text, width - 2), style(doing ? t.text : t.text_muted));
+            s.text(x + 2, y++, fit_columns(item.text, width - 2), style(t.text));
         }
     }
     if (!agents_.empty()) {
@@ -141,6 +141,6 @@ void SidePanel::render(tui::Surface& s) {
             s.text(w - 2 - display_width(state), y++, state, style(tone));
         }
     }
-    s.text(x, h - 1, fit_columns(version_, width), style(t.text_muted));
+    s.text(x, h - 1, fit_columns(version_, width), style(t.text_faint));
 }
 } // namespace dagent::ui

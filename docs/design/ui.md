@@ -3,7 +3,7 @@
 `dagent` 不带子命令时进入全屏终端界面。公开头文件在 `src/public/ui/`，实现在 `src/private/ui/`，
 库为 `dagent_ui`，只依赖 client、protocol、tui 与 base。界面运行在前端进程，只持有 `client::Client`、协议 DTO
 与页面状态：业务操作都经 [私有协议](protocol.md) 发给自己的后端，执行状态、队列、模式与模型的真值都在后端 runtime。
-它使用 [TUI 框架](tui-framework.md)；phase 4 解冻框架，新增通用超链接样式和块可见性查询，
+它使用 [TUI 框架](tui-framework.md)；phase 4 解冻框架，新增通用超链接样式和块可见性查询；phase 5a 增加颜色令牌与显式 256 色回退，
 双栏 diff、文件解析与阅读栏宽度策略仍放在应用层。
 
 界面 chrome 使用英文，统一来自 `ui/strings.hpp` 的 `Strings` 和 `ui/strings.cpp` 的常量表。
@@ -70,9 +70,10 @@ TranscriptRenderer 在每种块的测量与物化阶段保留该阅读宽度，�
 
 ## 2. 外观与设置
 
-`ui.appearance` 的十个可选字段为 theme、mode、background、accent、panels、density、icons、sidebar、diff、links，
+`ui.appearance` 的十一个可选字段为 theme、mode、background、accent、panels、density、icons、sidebar、diff、links，
 默认值与校验见 [app 配置](app.md)。当 theme 缺省时继续使用 `ui.theme_file`；两者都没有时使用 dagent。
-预设 dagent、midnight、paper 从 Home 的 `themes/<name>.json` 加载；自定义路径相对 Home。
+只保留 dagent，从 Home 的 `themes/dagent.json` 加载；自定义路径相对 Home。
+midnight、paper 名称报配置错误，提示改用 dagent 或主题文件路径。
 文件格式保留 name、defs、dark、light，缺失令牌由应用层 `builtin_theme()` 补足。
 
 外观初始化链路为 config → ConfigurationGateway → `app.initialize.ui.appearance` → Shell；
@@ -80,24 +81,46 @@ TranscriptRenderer 在每种块的测量与物化阶段保留该阅读宽度，�
 前端在首帧前应用；后续所有令牌变更经过 `apply_theme()`，提升 epoch 并刷新控件树与全部 Pane。
 mode=auto 随 OSC 11 背景通知切换；dark/light 固定。自定义背景的相对亮度优先决定主题明暗变体。
 
-三层背景分别为 background（页面）、background_panel（栏与对话框）、background_element（元素）。
+背景令牌为 background（页面）、background_panel（栏与对话框）、background_element（用户消息与 Chip）、
+background_selected（Panel、补全、模型/Agent 选择器、设置和欢迎页会话的选中行）。
 solid 保留主题底色；transparent 只将页面背景设为终端 default，让终端自身的壁纸、透明度或模糊透出。
-`#rrggbb` 背景按 sRGB 相对亮度分为暗色（≤0.5）和亮色：暗色向白混合 5%/10% 得到面板/元素，
-亮色向黑混合 3%/6%；文字与边框使用相应明暗主题。accent 覆盖 primary 与 selection.bg，
-accent 令牌为该颜色向 text 混合 20%。真彩直接输出 RGB，256 色继续沿用框架已有量化。
+`#rrggbb` 背景按现有相对亮度规则分为暗色（≤0.5）和亮色：暗色向白混合 5%/10%/15% 得到面板/元素/选中，
+亮色向黑混合 3%/6%/9%；文字与边框使用相应明暗主题。
 
-filled 使用三层填色；outline 的 HeaderBar、SidePanel、PromptBox、Chip 使用页面底色，
+文字三档：text 用于正文与列表内容；text_muted 用于工具参数、统计、时间戳、分节标题、提示说明、Chip 的次要标签；
+text_faint 用于行号、hunk 行、普通轮次尾行、diff gutter、注释、侧栏版本、提示分隔符、`└` 折叠行和输入占位文字。
+text_faint 只落在页面或面板底色上；元素或选中底色上的次要文字必须用 text_muted。
+代码块使用页面底色，注释为 text_faint 加斜体。markdown_heading 为正文色加粗，error 不加粗，
+markdown_link 为 info 色加下划线。diff_context 为正文色，diff_hunk 为 text_faint。
+
+accent 配置接受 orange（缺省值）、green、violet、blue 或 `#rrggbb`，预设按名字保存：
+
+| 名称 | dark | light |
+| --- | --- | --- |
+| orange | `#fe8a4c` | `#a85500` |
+| green | `#87d787` | `#2a7a1a` |
+| violet | `#b9a0ff` | `#6a4bc4` |
+| blue | `#7a9cff` | `#3157c8` |
+
+旧预设 hex（不区分大小写）`#EC5B2B` / `#7fd17f` / `#c792ea` / `#6ba1e6` 加载时映射为对应名称；
+其它 hex 保留为自定义色。自定义色以 OKLab 固定色相调整明度，浅色压暗、深色提亮，
+用最终量化到 8 位通道的 RGB 检查在 background_panel 上达到 4.5:1；超出 sRGB 色域时降低色度。
+配置仍保存用户原始 hex。primary 使用最终强调色，accent 令牌为 primary 向 text 混合 20%，
+selection 为页面色文字与 primary 底色（透明页面使用该明暗主题的 solid 页面色作文字）。
+真彩直接输出 RGB；256 色优先使用颜色的显式索引，否则按框架规则量化。
+
+filled 使用主题填色，HeaderBar 与 HintBar 均为面板底色；outline 的 HeaderBar、HintBar、SidePanel、PromptBox、Chip 使用页面底色，
 分别画底部分隔线、内侧竖线、圆角框，Chip 只显示标签且相邻间隔两列。浮层始终使用面板填色。
 HeaderBar 的正文仍为一行，outline 另占一行画底线，避免把线画在标题文字上。
 compact 取消 Transcript 块间距和侧栏分节空行，PromptBox 去掉两行 padding；边框占用的行仍保留。
 Ctrl+T 只改变本次会话的侧栏显示状态，不写配置；设置 Esc 撤回也恢复打开前的临时显示状态。
 
 `/settings` 和命令面板的 Settings 打开居中圆角浮层（最大 100×24）。左侧只有 Appearance，
-中间十行选项（新增 Diff 与 Links），右侧是 token 预览；终端少于 80 列时不画预览，短终端滚动选项。
+中间九行选项（Mode 起首，包含 Diff 与 Links，无 Theme 行），右侧是 token 预览；终端少于 80 列时不画预览，短终端滚动选项。
 Diff 行循环 auto / unified，Links 行循环 on / off，均即时预览并走同一保存/撤回路径。
 选中 Diff 时，预览区显示两行双栏样例（增删行与上下文），不受样例窄宽度的实际 diff 阈值限制。
-上下选择，左右循环；背景支持 solid / transparent / custom，强调色向右依次为 theme default →
-orange → blue → violet → green → custom，向左反向；预设显示名称，custom 显示十六进制值。
+上下选择，左右循环；背景支持 solid / transparent / custom，强调色向右依次为
+orange → green → violet → blue → custom，向左反向；预设显示名称，custom 显示十六进制值。
 选中 custom 后 Enter 编辑十六进制字段；不合法的输入以 error 显示且不应用。
 有效颜色 Enter 应用后，再次 Enter 保存；也可移到普通选项行 Enter 保存。
 所有有效更改立即预览；`/theme` 是打开 Settings 并定位 Mode 行的别名。
@@ -108,8 +131,8 @@ Esc / Ctrl+C 还原打开前外观，不写文件。保存请求已发出时锁�
 专用字体码位；ASCII 品牌使用 `*`、分支使用 `|/`，其余使用 `v x - > o # | +` 与 ASCII spinner。应用自己的活动行与框线使用该表，
 正文与工具输出本身不做字体转换。
 
-默认 dagent 的中性黑灰/暖白与橙色来源见 [OpenCode 主题分析](opencode-theme.md)；midnight 为冷紫，
-paper 为暖纸色，均提供明暗变体。层次通过亮度、间距、字重和 Chip 表达。
+dagent 使用计划 §9.3 的中性灰阶与橙色，深浅两套值及文件格式见 [DAgent 配色](opencode-theme.md)。
+层次通过亮度、间距、字重和 Chip 表达；本期只改颜色，后续对话结构与布局另行实施。
 
 ## 3. 线程与生命周期
 
@@ -232,24 +255,24 @@ token 数为零时只显示阶段与耗时（如 `Working · 0.1s`）；有输�
 当前 HistoryItem 没有用户事件时间字段，历史用户消息省略时间，不用恢复时刻替代。
 用户块为时间预留右侧列，长正文折行后仍整行填充元素底色。comfortable 块间一空行，compact 无空行。
 
-工具标题是状态符 + 加粗名称、muted 参数、右对齐统计三段；参数过长时省略。主体每行用 muted 的 `│ `，折叠行独立用 muted 的
+工具标题是状态符 + 加粗名称、muted 参数、右对齐统计三段；参数过长时省略。主体每行用 muted 的 `│ `，折叠行独立用 faint 的
 `└ N more lines · ctrl+o expand` / `└ ctrl+o collapse`；剩余行数按当前宽度的实际显示与折行数计算。
 无折叠行的卡片在两种状态下均不显示折叠块，也不为它留间距；Ctrl+O 往返不改变这些卡片布局。
 同一工具三个块共享 group 且只有标题有上边距。默认折叠：edit/write 20 行、bash 10 行、web 8 行、grep/glob/MCP 5 行、
 非结构化结果 3 行。Read 和 Plan 通常没有主体。edit/write diff 隐藏 `---` / `+++` 文件头；
-hunk 标题独占一行，以 muted 的 `⋯` 加第二个 `@@` 后的函数上下文显示，无上下文则只显示 `⋯`，不加底色。
+hunk 标题独占一行，以 faint 的 `⋯` 加第二个 `@@` 后的函数上下文显示，无上下文则只显示 `⋯`，不加底色。
 唯一 hunk 从第 1 行开始时省略标题（新建/清空文件允许另一侧从 0 开始）。
 正文为 `│ <num> <sign> <code>`：新增与上下文使用新文件行号，删除使用旧文件行号，
-muted 数字列右对齐，列宽取整张卡片最大行号的位数；折行续行保留列宽但不重复行号与符号。
-新增、删除行在 gutter 之后从数字列到行末空白铺满底色，
-分别将 success / error 前景色以 15% 混入 background；transparent 用 background_panel 作混色基底。
-混色读取当前主题令牌，indexed 颜色先转 RGB，再由原终端输出路径量化为 256 色。
+faint 数字列右对齐，列宽取整张卡片最大行号的位数；折行续行保留列宽但不重复行号与符号。
+新增、删除行从符号列到行末空白铺满 diff_added_bg / diff_removed_bg 底色，行号与 gutter 保留页面底色。
+solid 使用主题值（含显式 256 色回退）；自定义背景仍将 success / error 以 15% 混入当前页面底色，
+transparent 使用 background_panel 作混色基底。这些动态颜色清除固定索引，按 RGB 量化。
 
 `ui.appearance.diff` 默认 `auto`：先取主区宽度减 4 列与 176 列的较小值，再扣除各侧右对齐行号、空格、符号列和中央分隔符后，
 两侧各至少 60 个代码列才使用双栏；`unified` 或空间不足时继续使用上述统一视图。
-双栏左为旧文件、右为新文件，中间 muted `│`；上下文在两边显示各自行号，
+双栏左为旧文件、右为新文件，中间 faint `│`；上下文在两边显示各自行号，
 连续删除与紧随其后的连续新增按行配对，较短侧以无底色的空白补齐。
-删除侧使用 `−` 和 15% 删除底色，新增侧使用 `+` 和 15% 新增底色，底色仅覆盖自身一侧。
+删除侧使用 `−` 和 diff_removed_bg，新增侧使用 `+` 和 diff_added_bg，底色仅覆盖自身一侧。
 双栏与统一视图的删除符号均取图标表的 minus：Unicode / Nerd 为 `−`，ASCII 为 `-`。
 长行按字素列宽裁剪并以 `…` 收尾，不折行。hunk 行横跨两侧，以 muted `⋯` 加函数上下文显示，
 省略首 hunk 的规则与统一视图相同。折叠阈值与 footer 剩余数使用双栏配对后的显示行数。
@@ -314,7 +337,7 @@ HeaderBar 左侧为 primary 粗体品牌与首条用户输入的首行（未输�
 用户隐藏侧栏或终端少于 80 列时，右侧保留模型 Chip 与上下文百分比，移除模式和分支；
 标题、模型与长分支都按显示列宽裁剪，避免左右重叠。
 
-HintBar 左侧是缩成 `~` 的项目路径；右侧按 key=text、description=text_muted 绘制，项目间用 ` · `。
+HintBar 左侧是缩成 `~` 的项目路径；右侧按 key=text、description=text_muted 绘制，项目间用 text_faint 的 ` · `。
 空闲显示 ctrl+p commands、ctrl+t sidebar、shift+tab mode；忙碌显示 esc interrupt，
 有排队输入时加 ↑ recall queued，有子 Pane 时加 ctrl+a agents。Panel/Completion 打开时显示
 enter select、esc close；Settings 显示 enter save、esc revert。
@@ -337,7 +360,7 @@ SidePanel 留一行上边距和两列左右留白，章节标题为大写 muted�
 | CHANGED | 当前会话已成功 edit/write 的相对路径和累计 +N −M（分别为 success / error 色，均不加粗）；最多 8 文件，其余 +K more |
 | MCP | 配置的服务器逐项显示名称和 ready/connecting/failed，分别用 success/warning/error 状态符 |
 
-底部固定 DAgent 版本；路径与分支分别交给 HintBar 和 HeaderBar。侧栏隐藏时计划仍在 Transcript 原位显示。
+底部固定 text_faint 的 DAgent 版本；路径与分支分别交给 HintBar 和 HeaderBar。侧栏隐藏时计划仍在 Transcript 原位显示。
 恢复会话通过已有历史投影恢复标题、轮数、计划与文件增删统计，不访问工作树猜测会话改动。
 
 Panel 最大宽 76 列、高度不超过终端 60%，由标题、可选内存过滤、列表、过滤计数与底部提示组成。
@@ -345,7 +368,7 @@ Panel 最大宽 76 列、高度不超过终端 60%，由标题、可选内存过
 每个 Row 可带 group；按组的首次出现顺序归组，组头为大写 muted，不可选择，除首组外前置一空行。
 过滤后没有任何行的组不显示。↑/↓ 仅在可用数据行间循环，滚动按包含组头与空行的实际显示行定位。
 过滤仍为 label 的大小写不敏感子串匹配；label 中匹配的字素使用 primary 加粗。
-选中行填充 background_element，左侧 primary `▌`（ASCII 为 `|`）。
+选中行填充 background_selected，左侧 primary `▌`（ASCII 为 `|`）。
 
 列表列为 label、可选 middle、alias、right：label 使用 text，后三者 muted；right 右对齐，
 alias 与 right 保留独立列宽，right 按当前行内容占用宽度。middle 跟随 label 并使用扣除别名和右列后的剩余宽度，
@@ -412,7 +435,7 @@ MCP 未配置时省略；全部 ready 为 success，失败为 error，其余为 
 `RECENT SESSIONS` 从已有 session.list 返回结果中选取最多五个有标题的非当前会话，跳过空标题会话；
 `/sessions` 仍保留空会话。标题在左，相对时间在右且为 muted：
 `2h ago`、本地日期的 `yesterday`、更早为 `Oct 18`。无符合条件的会话时整节省略；节尾 muted `/sessions all sessions`。
-输入框为空、无排队输入且空闲时 ↑/↓ 循环选中最近会话，选中行使用元素底色和 primary `▌`；
+输入框为空、无排队输入且空闲时 ↑/↓ 循环选中最近会话，选中行使用 background_selected 和 primary `▌`；
 Enter 复用 /sessions 的 session.resume 路径。输入任意文字或粘贴清除选择并交给原 PromptInput 编辑。
 短终端可用 PgUp/PgDn、Home/End 或鼠标滚轮查看余下内容，改变会话选择时让该行可见。
 

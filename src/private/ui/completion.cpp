@@ -29,7 +29,7 @@ public:
         draw_frame(surface, {0, 0, w, h}, border);
         surface.text(2, 0, fit_columns(" " + title + " ", w - 4), panel(theme->text));
         const std::string footer = fit_columns(" " + hint + " ", w - 4);
-        surface.text((w - display_width(footer)) / 2, h - 1, footer, panel(theme->text_muted));
+        draw_hint(surface, (w - display_width(footer)) / 2, h - 1, footer, panel(theme->text_muted), theme->text_faint);
         int label_width = 0;
         bool has_detail = false;
         for (const auto& item : owner->items_) {
@@ -45,9 +45,9 @@ public:
              ++pos, ++y) {
             const auto& item = owner->items_[static_cast<std::size_t>(pos)];
             const bool selected = pos == owner->selected_;
-            if (selected) surface.fill({1, y, w - 2, 1}, U' ', theme->background_element);
+            if (selected) surface.fill({1, y, w - 2, 1}, U' ', theme->background_selected);
             auto row_style = [&](tui::Style style) {
-                style.bg = selected ? theme->background_element.bg : theme->background_panel.bg;
+                style.bg = selected ? theme->background_selected.bg : theme->background_panel.bg;
                 return style;
             };
             surface.text(1, y, selected ? icons().bar : " ", row_style(selected ? theme->primary : theme->text_muted));

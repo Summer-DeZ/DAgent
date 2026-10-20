@@ -9,6 +9,7 @@ struct KeyHint { std::string key, description; bool operator==(const KeyHint&) c
 class HintBar final : public tui::Widget {
 public:
     std::string path;
+    bool outline = false;
     std::function<std::vector<KeyHint>()> hints;
     void set_theme(const tui::ThemeTokens& t) { theme_ = &t; invalidate(); }
     tui::Size measure(tui::Size a) const override { return {a.cols, 1}; }

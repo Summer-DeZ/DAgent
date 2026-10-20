@@ -51,7 +51,7 @@ void append_color(std::string& out, const Color& c, bool foreground,
     }
     const bool use256 = c.kind != Color::Kind::rgb || !truecolor;
     if (use256) {
-        const int idx = c.kind == Color::Kind::rgb ? quantize256(c) : c.r;
+        const int idx = c.kind == Color::Kind::rgb ? (c.fallback_256 >= 0 ? c.fallback_256 : quantize256(c)) : c.r;
         out += foreground ? "\x1b[38;5;" : "\x1b[48;5;";
         append_uint(out, idx);
     } else {

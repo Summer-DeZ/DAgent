@@ -1047,7 +1047,7 @@ private:
         add_command("session.compact", std::string(ui::text().cmd_compact), std::string(ui::text().cmd_session), {}, "/compact", [this] { compact(); });
         add_command("session.list", std::string(ui::text().cmd_sessions), std::string(ui::text().cmd_session), {}, "/sessions", [this] { session_panel(); });
         add_command("model.pick", std::string(ui::text().cmd_model), std::string(ui::text().cmd_session), "ctrl+m", "/model", [this] { model_panel(); }, [this] { return !busy_; });
-        add_command("theme.pick", std::string(ui::text().cmd_theme), std::string(ui::text().cmd_view), {}, "/theme", [this] { settings_panel(1); });
+        add_command("theme.pick", std::string(ui::text().cmd_theme), std::string(ui::text().cmd_view), {}, "/theme", [this] { settings_panel(); });
         add_command("settings.show", std::string(ui::text().settings_title), std::string(ui::text().cmd_view), {}, "/settings", [this] { settings_panel(); });
         add_command("help.show", std::string(ui::text().cmd_help), std::string(ui::text().cmd_view), "ctrl+?", "/help", [this] { help_panel(); });
         add_command("session.exit", std::string(ui::text().cmd_exit), std::string(ui::text().cmd_session), {}, "/exit", [this] { exit(); });
@@ -1498,6 +1498,7 @@ private:
             if (sidebar_changed) sidebar_override_.reset();
             set_icons(value.icons);
             header_->outline = value.panels == "outline"; header_->invalidate_layout();
+            hints_->outline = value.panels == "outline";
             side_->set_appearance(value);
             side_->set_collapsed(sidebar_override_.value_or(value.sidebar == "hidden"));
             workspace_->left = value.sidebar == "left"; workspace_->invalidate_layout();
@@ -1519,8 +1520,7 @@ private:
     void settings_panel(int row = 0) {
         completion_.close(); panel_.close();
         auto current = appearance_;
-        for (const auto name : {"dagent", "midnight", "paper"})
-            if (std::filesystem::path(current.theme) == themes_directory_ / (std::string(name) + ".json")) current.theme = name;
+        if (std::filesystem::path(current.theme) == themes_directory_ / "dagent.json") current.theme = "dagent";
         const auto sidebar = sidebar_override_;
         settings_.open(current, [this](const Appearance& value) { return apply_appearance(value); },
             [this](const Appearance& value) {

@@ -118,12 +118,13 @@ void PromptBox::render(tui::Surface& surface) {
     tui::Style muted = theme_->text_muted;
     muted.bg = (outline_ ? theme_->background : theme_->background_panel).bg;
 
+    auto faint = theme_->text_faint; faint.bg = body.bg;
     const std::string value = text();
     const int width = inner_width(w);
     const int visible = text_rows(h);
     if (value.empty()) {
         if (!ui::text().box_placeholder.empty())
-            surface.text(k_left, this->top(), fit_columns(ui::text().box_placeholder, width), muted);
+            surface.text(k_left, this->top(), fit_columns(ui::text().box_placeholder, width), faint);
     } else {
         const std::vector<Row> rows = wrap(value, width);
         const auto at = caret(rows, value);
@@ -148,7 +149,7 @@ void PromptBox::render(tui::Surface& surface) {
     int x = draw_chip(surface, k_left, y, mode, tone, *theme_, outline_, body.bg) + gap;
     const auto model = fit_columns(model_, std::max(0, k_left + budget - x - (outline_ ? 0 : 2)));
     if (!model.empty()) draw_chip(surface, x, y, model, theme_->text, *theme_, outline_, body.bg);
-    if (show_hint) surface.text(w - k_right - display_width(hint), y, hint, muted);
+    if (show_hint) draw_hint(surface, w - k_right - display_width(hint), y, hint, muted, faint);
 }
 
 } // namespace dagent::ui

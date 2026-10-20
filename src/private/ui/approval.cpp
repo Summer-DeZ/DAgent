@@ -211,7 +211,7 @@ public:
         const int x = surface.text(2, 0, " " + fit_columns(title, w - 6 - category_width) + " ", title_style);
         if (!question) draw_chip(surface, x + 1, 0, fit_columns(category_label, w - x - 5), border,
                                  *current_theme, false, current_theme->background_panel.bg);
-        surface.text(2, h - 2, fit_columns(hint, w - 4), current_theme->text_muted);
+        draw_hint(surface, 2, h - 2, fit_columns(hint, w - 4), current_theme->text_muted, current_theme->text_faint);
     }
     void theme(const tui::ThemeTokens& theme) {
         page_background = theme.background.bg;
