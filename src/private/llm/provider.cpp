@@ -173,6 +173,18 @@ void merge_extra(json& body, const json& extra) {
     for (auto it = extra.begin(); it != extra.end(); ++it)
         if (!body.contains(it.key())) body[it.key()] = it.value();
 }
+
+void append_headers(net::Headers& headers, const ProviderConfig& config, std::string_view session_id) {
+    constexpr std::string_view placeholder = "{session_id}";
+    for (const auto& [name, text] : config.headers) {
+        std::string value = text;
+        for (std::size_t pos = 0; (pos = value.find(placeholder, pos)) != std::string::npos;) {
+            value.replace(pos, placeholder.size(), session_id);
+            pos += session_id.size();
+        }
+        headers.emplace_back(name, std::move(value));
+    }
+}
 } // namespace provider_detail
 } // namespace dagent::llm
 

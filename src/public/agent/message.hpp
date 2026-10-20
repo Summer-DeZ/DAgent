@@ -41,6 +41,7 @@ struct ModelParams {
 };
 
 struct Request {
+    std::string session_id;      ///< 请求所属的 SessionMeta::id；模型对象可由多个会话共享
     std::string model;
     std::vector<Message> messages;
     std::vector<ToolSpec> tools;

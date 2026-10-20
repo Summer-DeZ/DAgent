@@ -66,6 +66,7 @@ public:
         http.url = join_url(config_.base_url, "/messages");
         http.headers = {{"Content-Type", "application/json"}, {"x-api-key", config_.api_key},
                         {"anthropic-version", "2023-06-01"}};
+        append_headers(http.headers, config_, request.session_id);
         http.body = body.dump();
         return http;
     }

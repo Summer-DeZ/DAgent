@@ -1,7 +1,7 @@
 /// @file public_model.hpp
 /// @brief 模型的公开描述：不含密钥与会话状态，装配层、核心与前端展示共用。
 ///
-/// 密钥、extra_body 等适配内部配置只存在于 llm::ProviderConfig（llm/provider.hpp）。
+/// 密钥、headers、extra_body 等适配内部配置只存在于 llm::ProviderConfig（llm/provider.hpp）。
 #pragma once
 
 #include <cstddef>

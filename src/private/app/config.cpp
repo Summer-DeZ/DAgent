@@ -333,6 +333,14 @@ std::map<std::string, llm::ProviderConfig> map_models(const Node& node) {
         model.context_window = value.child("context_window").usize();
         model.send_reasoning_content = value.child("send_reasoning_content").flag();
         model.include_usage = value.child("include_usage").flag(true);
+        if (const Node headers = value.child("headers"); headers.exists()) {
+            if (!headers.raw().is_object()) fail(ConfigError::Kind::type, key + "/headers must be an object");
+            for (const auto& [header, text] : headers.raw().items()) {
+                const std::string field = key + "/headers/" + header;
+                if (!text.is_string()) fail(ConfigError::Kind::type, field + " must be a string");
+                model.headers.emplace(header, expand_env(text.get<std::string>(), field));
+            }
+        }
         if (const Node extra = value.child("extra_body"); extra.has()) {
             if (!extra.raw().is_object()) fail(ConfigError::Kind::type, key + "/extra_body must be an object");
             model.extra_body = extra.raw();
@@ -933,6 +941,7 @@ llm::ProviderConfig add_model(const fs::path& root_path,
     if (!model.api_key.empty()) entry["api_key"] = model.api_key;
     if (model.temperature >= 0.0) entry["temperature"] = model.temperature;
     if (!model.extra_body.empty()) entry["extra_body"] = model.extra_body;
+    if (!model.headers.empty()) entry["headers"] = model.headers;
     models[model.name] = std::move(entry);
 
     const auto parsed = map_models(Node(models, "/models"));

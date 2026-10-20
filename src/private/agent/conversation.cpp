@@ -77,10 +77,12 @@ std::size_t Conversation::tokens() const {
 }
 
 Request Conversation::build(const std::string& system, const std::vector<ToolSpec>& tools,
-                            const ModelParams& params, std::string_view turn_context) const {
+                            const ModelParams& params, std::string_view session_id,
+                            std::string_view turn_context) const {
     assert(!validate().has_value());
 
     Request request;
+    request.session_id = session_id;
     request.model = params.model;
     request.max_tokens = params.max_tokens;
     request.temperature = params.temperature;

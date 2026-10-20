@@ -111,6 +111,7 @@ public:
         http.headers.push_back({"Content-Type", "application/json"});
         http.headers.push_back({"Accept", request.stream ? "text/event-stream" : "application/json"});
         if (!opt_.api_key.empty()) http.headers.push_back({"Authorization", "Bearer " + opt_.api_key});
+        append_headers(http.headers, opt_, request.session_id);
         http.body = body.dump();
         return http;
     }

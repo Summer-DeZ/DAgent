@@ -58,12 +58,12 @@ ModelParams Session::model_params() const {
 
 RequestShape Session::request_shape() const {
     return RequestShape{config_.system_prompt, catalog_.specs(),
-                        run_ ? run_->skills().context() : std::string{}, model_params()};
+                        run_ ? run_->skills().context() : std::string{}, model_params(), meta_.id};
 }
 
 Request Session::build_request() const {
     const RequestShape shape = request_shape();
-    return conversation_.build(shape.system, shape.tools, shape.params, shape.turn_context);
+    return conversation_.build(shape.system, shape.tools, shape.params, shape.session_id, shape.turn_context);
 }
 
 ToolResult Session::activate_skill(std::string_view name) {
@@ -89,7 +89,7 @@ ToolResult Session::activate_skill(std::string_view name) {
         if (it->message.role == Role::user) { input = it->message.content; break; }
     }
     minimum.add_user(std::move(input));
-    if (estimator_.estimate(minimum.build(config_.system_prompt, catalog_.specs(), model_params(),
+    if (estimator_.estimate(minimum.build(config_.system_prompt, catalog_.specs(), model_params(), meta_.id,
                                            candidate.context())) > compactor_.budget().limit) {
         result.is_error = true;
         result.model_text = "Skill instructions exceed the context budget: " + skill->name +

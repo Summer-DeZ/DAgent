@@ -17,6 +17,7 @@ std::string_view role_name(agent::Role);
 nlohmann::json encode_tools(const std::vector<agent::ToolSpec>&);
 Error classify_http(const net::HttpResponse&, std::string_view api_key);
 void merge_extra(nlohmann::json&, const nlohmann::json&);
+void append_headers(net::Headers&, const ProviderConfig&, std::string_view session_id);
 std::unique_ptr<Codec> make_chat(const ProviderConfig&);
 std::unique_ptr<Codec> make_anthropic(const ProviderConfig&);
 std::unique_ptr<Codec> make_ollama(const ProviderConfig&);

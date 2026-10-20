@@ -22,6 +22,7 @@ struct RequestShape {
     std::vector<ToolSpec> tools;
     std::string turn_context;
     ModelParams params; ///< 中立模型参数（model / max_tokens / temperature）
+    std::string session_id;
 };
 
 struct Budget {

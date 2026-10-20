@@ -10,7 +10,7 @@ Home 必须可写；前后端二进制始终放在同一目录。配置文件各
 | 文件 | 用途 |
 | --- | --- |
 | `config/config.json` | 权限、工具预算、网页引擎与缓存、上下文、超时、UI 和日志 |
-| `config/models.json` | 模型配置名、协议、地址、模型 ID、密钥及默认模型 |
+| `config/models.json` | 模型配置名、协议、地址、模型 ID、密钥、自定义请求头及默认模型 |
 | `config/mcp.json` | MCP 连接、环境与显式权限 profile |
 | `config/runtime.json` | 托管工具、依赖版本和锁文件 |
 | `agents/*.md` | 子 Agent 的工具名单、权限上限、模型和预算 |
@@ -18,6 +18,26 @@ Home 必须可写；前后端二进制始终放在同一目录。配置文件各
 安装会把 `models.example.json`、`mcp.example.json` 转为缺失的配置文件；开发源码树需自行从示例准备。
 模型和 MCP 配置要求权限为 `0600`。不要把真实密钥放进示例文件。
 配置中的相对路径通常相对于 Home；沙箱额外路径相对于工作目录。详见 [配置契约](../design/app.md#2-配置与提示词)。
+
+每个模型条目可添加 `headers` 对象，值必须是字符串。例如在 `models` 下添加 OpenCode Go：
+
+```json
+"opencode-go": {
+  "kind": "openai-chat",
+  "base_url": "https://opencode.ai/inference/go/openai/v1",
+  "model": "your-opencode-model-id",
+  "api_key": "env:OPENCODE_API_KEY",
+  "max_tokens": 8192,
+  "headers": {"x-opencode-session": "{session_id}"}
+}
+```
+
+将 `model` 改为实际模型 ID，并在启动前设置 `OPENCODE_API_KEY`，用 `--model opencode-go` 选择。
+请求头值支持 `${ENV}`（例如 `"x-routing-token": "${ROUTING_TOKEN}"`），加载配置时从进程环境展开，
+变量未设置或为空会报错。`{session_id}` 在每次请求时替换为当前 DAgent 会话 ID；恢复会话保持该 ID，
+子 agent 使用自己的 ID，父级审阅使用父会话 ID。此功能适用于全部生成模型协议；`decision_models` 不支持。
+自定义头追加在内置头之后，应避免同名；值可能包含凭据，不会显示在模型列表或写入会话记录。
+修改配置后重启后端生效。
 
 ```bash
 dagent --list-models

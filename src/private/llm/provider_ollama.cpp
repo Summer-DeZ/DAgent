@@ -57,6 +57,7 @@ public:
         http.method = "POST";
         http.url = join_url(config_.base_url, "/api/chat");
         http.headers = {{"Content-Type", "application/json"}};
+        append_headers(http.headers, config_, request.session_id);
         http.body = body.dump();
         return http;
     }

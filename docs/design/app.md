@@ -68,6 +68,14 @@
       "model": "Qwen3.6-35B-A3B",
       "context_window": 131072,
       "max_tokens": 8192
+    },
+    "opencode-go": {
+      "kind": "openai-chat",
+      "base_url": "https://opencode.ai/inference/go/openai/v1",
+      "model": "your-opencode-model-id",
+      "api_key": "env:OPENCODE_API_KEY",
+      "max_tokens": 8192,
+      "headers": {"x-opencode-session": "{session_id}"}
     }
   }
 }
@@ -76,11 +84,18 @@
 模型的 `api_key` 可以直接保存，也可以写成 `env:VARIABLE_NAME`。启动时只从进程环境解析后一种形式。任何模型
 列表只显示 key 的有无，不输出值。`models.json` 不是严格 0600 时拒绝启动并给出 `chmod 600` 提示。
 
+每个 `models` 条目可选 `headers` 对象，缺省为空，所有值必须为字符串；其他类型（包括 null）使配置加载失败。
+值中的 `${ENV}` 复用 MCP 请求头的环境展开规则，在加载时解析；变量未设置或为空时报错。
+字面量 `{session_id}` 留到每次模型请求时替换为所属 DAgent 会话的既有 ID，同一会话的轮次、压缩与重试保持一致，
+子会话使用自己的 ID。上述 OpenCode Go 示例需将 model 替换成实际模型 ID，并设置 `OPENCODE_API_KEY`。
+请求头值仅存于内部 `ProviderConfig`，不会投影到公开模型信息、UI、日志、`workspace.info` 或会话记录。
+本字段适用于 openai-chat、anthropic 和 ollama，不适用于独立的 `decision_models`。
+
 交互界面的 `/model` 面板可按 `a` 添加模型。表单收集 kind、配置名、base URL、模型 ID、密钥、输出上限和
 上下文窗口；支持 `openai-chat`、`anthropic`、`ollama`。后端在落盘前用与启动相同的解析器校验全部模型，拒绝
 重名或缺失必填字段，然后通过同目录临时文件、fsync、rename 原子更新 `models.json`，保留其 0600 权限。
 整个「重读 → 校验 → 写入」由安装根 `run/models.lock` 的短期 flock 包围，两个前端同时添加模型不会丢失另一项。
-添加成功后当前会话立即切换到新模型，`default` 不自动改变。`temperature`、`extra_body` 等高级字段仍可直接编辑 JSON。
+添加成功后当前会话立即切换到新模型，`default` 不自动改变。`headers`、`temperature`、`extra_body` 等高级字段仍可直接编辑 JSON。
 
 `config/mcp.json` 独立保存 `mcpServers`、`connect_timeout_ms` 和 `probe_timeout_ms`，要求 0600。
 stdio 项支持 `command`、`args`、`env`、`environment`，HTTP 项支持 `url`、`headers`；`${VAR}` 从进程环境展开。

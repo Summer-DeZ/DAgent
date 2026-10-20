@@ -23,10 +23,20 @@ Request → encode → HTTP → SSE / NDJSON → decode → StreamEvent → Mode
 | `llm/llm.hpp` | `to_public`：ProviderConfig → 无凭据的 `agent::PublicModel` |
 | `provider.cpp` / `provider_chat.cpp` / `provider_ollama.cpp` / `provider_anthropic.cpp` | kind 注册表、工厂、通用 HTTP 错误分类；各协议的 encode、decode、classify |
 
-`ProviderConfig` 包括 kind、配置名字、base_url、model、api_key、max_tokens、temperature、context_window、
+`ProviderConfig` 包括 kind、配置名字、base_url、model、api_key、headers、max_tokens、temperature、context_window、
 send_reasoning_content、include_usage 和 extra_body。它只存在于 app 装配与 llm 内部：app 解析 `env:` 密钥后调用
 `make_session` 得到已配置的 `ModelSession`，核心、runtime 和前端只见 `PublicModel`（has_key 表示是否有密钥）。
 Codec 有流状态，不能跨请求复用。
+
+`headers` 是可选的字符串映射，默认空；app 使用 MCP 头相同的 `expand_env` 在加载时展开值中的 `${ENV}`，
+环境变量未设置或为空、headers 不是对象或任一值不是字符串时加载失败。header 值可能包含密钥，
+不进入 `to_public`、UI、模型列表、日志、`workspace.info` 或会话记录。
+
+三个生成 provider 都先组装协议内置头，再通过公共 `append_headers` 追加配置头。
+每次 `encode` 将值中所有字面量 `{session_id}` 替换成当前 `Request::session_id`，不修改配置模板。
+例如 OpenCode Go 使用 `base_url: "https://opencode.ai/inference/go/openai/v1"`、`kind: "openai-chat"`
+和 `"headers": {"x-opencode-session": "{session_id}"}`；同样的机制可用于其他网关的会话或路由头。
+自定义头按配置追加，应避免与内置头同名；Ollama 也可通过它配置鉴权头。
 
 `ProviderInfo` 声明默认端点、SSE/NDJSON 分帧、是否必须提供 key/max_tokens。
 `make_codec` 对未知 kind 抛 `invalid_argument`。不探测模型能力或上下文窗口。
@@ -37,6 +47,12 @@ Message 保留 role、content、reasoning_content、tool_calls、tool_call_id，
 `reasoning_signature`（无校验串时为空）。内容块、厂商字段名和 URL 不进入消息模型。
 `ReasoningDelta` 的可选 signature 增量由 Model 累积到 Message，界面只显示文本。
 会话 assistant 记录必须包含 `reasoning_signature`；没有校验串时写空字符串，缺失字段直接报错。
+
+`Request::session_id` 来自请求所属会话的 `SessionMeta::id`，不绑定到可共享的 `ModelSession`。
+主轮次经 `Session::request_shape` / `Conversation::build` 传递，压缩摘要沿用同一 RequestShape 的 ID，
+父级审阅使用执行审阅的父会话 ID；子 agent 的轮次和压缩使用自己的会话 ID。
+重试保留请求 ID，恢复会话沿用存储中的 ID，新会话使用装配层已有的 ID 生成流程。
+此字段仅用于请求头替换，不进入发给模型的消息或 JSON 正文；独立 `decision_models` 不支持本配置。
 
 StreamEvent 仍是 TextDelta、ReasoningDelta、ToolCallBegin/Delta/End、Usage 和 Finish。
 Finish 只分 stop、length、tool_calls、content_filter、error；未知原因保存原文到 raw，并归 error。
@@ -71,7 +87,7 @@ POST `{base_url}/chat/completions`，非空 key 使用 Bearer 头。
 
 ### ollama
 
-POST `{base_url}/api/chat`，不添加鉴权头。
+POST `{base_url}/api/chat`，默认不添加鉴权头。
 工具参数转换成对象；服务端没有调用 ID，适配器生成每次请求唯一的前缀与顺序号，
 回传历史时由 ID 找工具名并按原顺序发送 tool 消息。这样不会覆盖界面中更早的工具卡片。
 message.content / thinking 映射为文本/思考增量；done=true 时交付 usage 和 finish。

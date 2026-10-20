@@ -50,9 +50,10 @@ std::size_t summary_cut(const Conversation& conversation, std::size_t protection
 }
 
 Request summary_request(const Conversation& conversation, std::size_t cut,
-                         const ModelParams& params, const std::string& prompt,
+                         const ModelParams& params, std::string_view session_id, const std::string& prompt,
                          TokenEstimator& estimator, std::size_t limit) {
     Request request;
+    request.session_id = session_id;
     request.model = params.model;
     request.max_tokens = params.max_tokens;
     request.temperature = params.temperature;
@@ -146,7 +147,7 @@ std::optional<CompactionChange> Compactor::compact(Mode mode, const Conversation
                                                    std::stop_token stop) {
     check_stop(stop);
     const auto estimate = [&](const Conversation& c) {
-        return estimator.estimate(c.build(shape.system, shape.tools, shape.params, shape.turn_context));
+        return estimator.estimate(c.build(shape.system, shape.tools, shape.params, shape.session_id, shape.turn_context));
     };
     const auto before = estimate(conversation);
     if (budget_.limit == 0 && !conversation.entries().empty()) {
@@ -189,7 +190,7 @@ std::optional<CompactionChange> Compactor::compact(Mode mode, const Conversation
         if (cut > 0) {
             try {
                 // 第一级尚未提交的裁剪也保留原文供摘要读取；更早已经裁剪的内容不会恢复。
-                Request request = summary_request(conversation, cut, shape.params, prompt_,
+                Request request = summary_request(conversation, cut, shape.params, shape.session_id, prompt_,
                                                    estimator, budget_.limit);
                 const Reply reply = model.complete(request, [](const StreamEvent&) {},
                                                     [](const RetryInfo&) {}, stop);

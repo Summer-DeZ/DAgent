@@ -141,6 +141,7 @@ Decision ParentReviewer::review(const Approval& approval, std::stop_token reques
         evidence["paths"].push_back({{"path", path.path.string()},
                                      {"access", path.access == Access::write ? "write" : "read"}});
     Request request;
+    request.session_id = session_.meta().id;
     const auto params = session_.model_params();
     request.model = params.model;
     request.max_tokens = params.max_tokens;

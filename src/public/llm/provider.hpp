@@ -16,6 +16,7 @@ struct ProviderConfig {
     std::string base_url;
     std::string model;
     std::string api_key; ///< app 解析密钥；不进入记录
+    std::map<std::string, std::string> headers; ///< app 展开环境变量；值不进入公开信息或记录
     std::size_t max_tokens = 0;
     double temperature = -1.0;
     std::size_t context_window = 0;
