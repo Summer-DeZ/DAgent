@@ -51,6 +51,20 @@
 
 ## 2. 配置与提示词
 
+配置对外接口仍集中在 `app/config.hpp`，实现按变化原因拆在 `src/private/app/`：
+
+| 文件 | 职责 |
+| --- | --- |
+| `config.cpp` | config.json 主流程、选项映射、覆写与未知键告警、MCP 配置解析及工具环境装配 |
+| `models.cpp` | models.json 加载、生成/决策模型映射、模型添加，以及共享写锁的实现 |
+| `subagents.cpp` | 子 Agent 文件加载、原有 frontmatter 字段解析与行号诊断 |
+| `appearance_config.cpp` | 外观与布局解析、外观配置保存 |
+| `config_document.cpp` | `detail::ConfigDocument`：保留原文格式的 JSON 文档编辑，供模型添加和外观保存共用 |
+| `config_detail.cpp` | 跨文件共用的配置读取、错误、路径、数值及环境变量辅助 |
+
+内部共享声明位于 `src/public/app/config_detail.hpp` 的 `dagent::app::detail` 命名空间。
+模型添加与外观保存继续使用同一个 `ModelWriteLock` 和 `run/models.lock`；各入口的锁范围不变。
+
 `config/config.json` 由用户维护，包含权限、UI、HTTP、网页搜索/抓取、记忆、上下文、工具、进程和日志策略；`config/models.json` 保存模型
 条目和默认模型。加载不做分层合并，不读项目配置、`.mcp.json`、`.env` 或 XDG 路径，也没有信任子系统。
 `prompts.system` 和 `prompts.compact` 分别指定主提示词与上下文压缩提示词；相对路径以安装根为准，默认是

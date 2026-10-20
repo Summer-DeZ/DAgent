@@ -304,6 +304,11 @@ add_library(dagent_app_config STATIC
     private/app/searxng.cpp
     private/app/sandbox_status.cpp
     private/app/config.cpp
+    private/app/config_detail.cpp
+    private/app/config_document.cpp
+    private/app/models.cpp
+    private/app/subagents.cpp
+    private/app/appearance_config.cpp
     private/app/decision_profile.cpp
     private/app/bootstrap.cpp
     private/app/session_assembly.cpp
