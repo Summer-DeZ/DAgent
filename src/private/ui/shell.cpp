@@ -25,6 +25,7 @@
 #include "base/overloaded.hpp"
 #include "tui/document.hpp"
 #include "ui/approval.hpp"
+#include "ui/callback_gate.hpp"
 #include "ui/center.hpp"
 #include "ui/completion_controller.hpp"
 #include "ui/model_dialog.hpp"
@@ -34,6 +35,7 @@
 #include "ui/prompt_box.hpp"
 #include "ui/prompt_input.hpp"
 #include "ui/header_bar.hpp"
+#include "ui/history_pager.hpp"
 #include "ui/hint_bar.hpp"
 #include "ui/settings_dialog.hpp"
 #include "ui/theme_config.hpp"
@@ -50,12 +52,6 @@ namespace dagent::ui {
 namespace {
 using Clock = std::chrono::steady_clock;
 using namespace std::chrono_literals;
-
-/// @brief 异步回调的寿命闸门：Shell 析构后回调直接丢弃，不再触碰页面或 Runtime。
-struct CallbackGate {
-    std::mutex mutex;
-    bool open = true;
-};
 
 std::string local_time() {
     const auto now = std::time(nullptr);
@@ -290,120 +286,6 @@ std::string relative_age(std::chrono::system_clock::time_point when) {
     if (seconds < 3600) return format_text(ui::text().panel_minutes, seconds / 60);
     if (seconds < 86400) return format_text(ui::text().panel_hours, seconds / 3600);
     return format_text(ui::text().panel_days, seconds / 86400);
-}
-
-/// @brief 只读历史分页：每页结果经 rt.post 回到渲染线程；关闭/离开时释放未读完游标。
-class HistoryPager : public std::enable_shared_from_this<HistoryPager> {
-public:
-    HistoryPager(client::Client& client, tui::Runtime& rt, std::shared_ptr<CallbackGate> gate,
-                 std::string session_id)
-        : client_(client), rt_(rt), gate_(std::move(gate)), session_id_(std::move(session_id)) {}
-
-    std::function<void(const protocol::HistoryItem&)> on_item;
-    std::function<void(std::string)> on_error;
-    std::function<void()> on_done;
-
-    void start() { request(); }
-    void cancel() {
-        std::string cursor;
-        {
-            const std::lock_guard lock(mutex_);
-            cancelled_ = true;
-            cursor = std::exchange(cursor_, {});
-        }
-        close_cursor(cursor);
-    }
-
-private:
-    void close_cursor(const std::string& cursor) {
-        if (!cursor.empty())
-            client_.call_async("session.history_close", {{"cursor", cursor}},
-                               [](std::expected<nlohmann::json, protocol::RpcError>) {});
-    }
-
-    void request() {
-        nlohmann::json params{{"session_id", session_id_}, {"limit", 100}};
-        {
-            const std::lock_guard lock(mutex_);
-            if (cancelled_) return;
-            // 从这里到响应到达，游标归在途请求所有；cancel 由 handle 关闭响应中的新游标。
-            if (!cursor_.empty()) params["cursor"] = std::exchange(cursor_, {});
-        }
-        auto self = shared_from_this();
-        client_.call_async("session.history", std::move(params),
-                           [self](std::expected<nlohmann::json, protocol::RpcError> response) {
-                               self->handle(std::move(response));
-                           });
-    }
-
-    void handle(std::expected<nlohmann::json, protocol::RpcError> response) {
-        const std::lock_guard gate_lock(gate_->mutex);
-        if (!response) {
-            if (!gate_->open || cancelled()) return;
-            auto self = shared_from_this();
-            rt_.post([self, message = response.error().message] {
-                const std::lock_guard lock(self->gate_->mutex);
-                if (!self->gate_->open || self->cancelled()) return;
-                if (self->on_error) self->on_error(message);
-            });
-            return;
-        }
-        std::vector<protocol::HistoryItem> items;
-        for (const auto& item : response->value("items", nlohmann::json::array()))
-            items.push_back(item.get<protocol::HistoryItem>());
-        std::string next;
-        if (const auto it = response->find("next_cursor"); it != response->end() && it->is_string())
-            next = it->get<std::string>();
-        bool discard;
-        {
-            const std::lock_guard lock(mutex_);
-            discard = cancelled_ || !gate_->open;
-            if (!discard) cursor_ = next;
-        }
-        if (discard) { close_cursor(next); return; }
-        auto self = shared_from_this();
-        rt_.post([self, items = std::move(items), done = next.empty()]() mutable {
-            const std::lock_guard lock(self->gate_->mutex);
-            if (!self->gate_->open || self->cancelled()) return;
-            for (const auto& item : items) {
-                if (self->on_item) self->on_item(item);
-            }
-            if (!done) self->request();
-            else if (self->on_done) self->on_done();
-        });
-    }
-
-    bool cancelled() {
-        const std::lock_guard lock(mutex_);
-        return cancelled_;
-    }
-
-    client::Client& client_;
-    tui::Runtime& rt_;
-    std::shared_ptr<CallbackGate> gate_;
-    std::string session_id_;
-    std::mutex mutex_;
-    std::string cursor_;
-    bool cancelled_ = false;
-};
-
-std::vector<protocol::HistoryItem> load_history(client::Client& client, const std::string& session_id) {
-    std::vector<protocol::HistoryItem> items;
-    std::string cursor;
-    for (;;) {
-        nlohmann::json params{{"session_id", session_id}, {"limit", 100}};
-        if (!cursor.empty()) params["cursor"] = cursor;
-        const nlohmann::json page = client.call("session.history", std::move(params));
-        for (const auto& item : page.value("items", nlohmann::json::array())) {
-            items.push_back(item.get<protocol::HistoryItem>());
-        }
-        if (const auto it = page.find("next_cursor"); it != page.end() && it->is_string()) {
-            cursor = it->get<std::string>();
-        } else {
-            break;
-        }
-    }
-    return items;
 }
 
 } // namespace

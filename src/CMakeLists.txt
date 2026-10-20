@@ -40,6 +40,7 @@ add_library(dagent_ui STATIC
     private/ui/theme_config.cpp
     private/ui/projection.cpp
     private/ui/shell.cpp
+    private/ui/history_pager.cpp
     private/ui/turn_meter.cpp
     private/ui/transcript.cpp
     private/ui/prompt_input.cpp

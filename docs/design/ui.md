@@ -197,10 +197,10 @@ dagent 使用计划 §9.3 的中性灰阶与橙色，深浅两套值及文件格
 控件、Document、浮层和事件处理器只由渲染线程访问。前端没有业务工作线程：
 
 - 输入、命令、权限切换、回答等发 RPC；同步等待只用于启动阶段，运行中都用 `call_async`，结果 `post` 回渲染线程。
-- 后端事件由 Client 读线程经 `FrontendBridge` post 到渲染线程；`CallbackGate` 保证 Shell 析构后在途回调不再触碰页面。
+- 后端事件由 Client 读线程经 `FrontendBridge` post 到渲染线程；Shell 与 HistoryPager 共用 `ui/callback_gate.hpp` 中的 `CallbackGate`，保证 Shell 析构后在途回调不再触碰页面。
 - Shell 记录当前 session_id 与 generation，丢弃旧 generation 的事件；`session.changed` 后取 `session.snapshot` 刷新标签。
   new/resume 时清空投影并用 `session.history` 分页回放；切模型保留 Transcript，只更新标签与上下文。
-- 列表、历史、项目信息与文件补全都是后端查询；主会话与子 Pane 各有一个历史分页器，关闭页面时发 `session.history_close`。
+- 列表、历史、项目信息与文件补全都是后端查询；主会话与子 Pane 各有一个 `HistoryPager`，关闭页面时发 `session.history_close`。分页器与启动时同步加载历史的 `load_history` 位于 `ui/history_pager.hpp/.cpp`。
 
 Shell 进入全屏后调用 `Terminal::set_mouse(true)` 打开鼠标上报，ScrollbackMouse 才收得到滚轮、
 拖选与双击；退出时的终端还原由框架处理。
