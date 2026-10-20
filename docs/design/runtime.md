@@ -81,6 +81,12 @@ stateDiagram-v2
 - **drain**：Run 收尾时先把状态置回 ready 再发布 `TurnEnded`；无论 status 为何都继续出队下一条。手动压缩完成发
   `operation_finished` 后同样继续（B06）。
 
+`drain` 与 worker 的输入分支共用 `take_input_locked`：先将队首输入赋给调用方的 optional，
+再移除队首，最后通过 `begin_execution_locked("turn")` 切换 executing 并创建 Run 身份；
+compact 共用 `begin_execution_locked("compact")`。两个方法均要求调用方持有 `mutex_`，
+自身不加锁、不发布、不执行任务。资格判断、命令优先选择以及锁外的快照同步和执行仍留在调用方；
+worker 的出队与 Run 创建仍在外层 try 之前，两个 catch 的收尾保持各自语义。
+
 ### 替换会话
 
 new/resume/切模型先在旧会话空闲时准备候选（`PendingReplace`），失败时旧会话保持并发 `failed` 控制事件；成功后在一个锁边界内

@@ -115,6 +115,10 @@ private:
     void worker(std::stop_token stop);
     void execute_command(const Command& command);
     bool front_ready_locked() const { return !queue_.empty() && queue_.front().ready; }
+    /// 调用方持有 mutex_；只转换控制状态，不加锁、不发布、不执行任务。
+    void begin_execution_locked(std::string operation);
+    /// 调用方持有 mutex_ 且已确认可出队；先赋 destination，再 pop，再创建 Run。
+    void take_input_locked(std::optional<QueuedInput>& destination);
     void drain();
     void run_input(const QueuedInput& input);
     void run_compact();

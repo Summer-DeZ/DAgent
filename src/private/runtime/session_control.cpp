@@ -630,8 +630,7 @@ void Runtime::execute_command(const Command& command) {
         {
             const std::lock_guard lock(mutex_);
             if (state_ != State::ready) return;
-            state_ = State::executing;
-            run_ = CurrentRun{next_run_id(), "compact", std::make_shared<RunControl>()};
+            begin_execution_locked("compact");
         }
         sync_control_snapshot();
         run_compact();
@@ -794,16 +793,24 @@ void Runtime::run_compact() {
     publish(EventPayload{finished}, session_id, generation);
 }
 
+void Runtime::begin_execution_locked(std::string operation) {
+    state_ = State::executing;
+    run_ = CurrentRun{next_run_id(), std::move(operation), std::make_shared<RunControl>()};
+}
+
+void Runtime::take_input_locked(std::optional<QueuedInput>& destination) {
+    destination = std::move(queue_.front().input);
+    queue_.pop_front();
+    begin_execution_locked("turn");
+}
+
 void Runtime::drain() {
     for (;;) {
         std::optional<QueuedInput> next;
         {
             const std::lock_guard lock(mutex_);
             if (closed_ || state_ != State::ready || pending_permission_ || !front_ready_locked()) return;
-            next = std::move(queue_.front().input);
-            queue_.pop_front();
-            state_ = State::executing;
-            run_ = CurrentRun{next_run_id(), "turn", std::make_shared<RunControl>()};
+            take_input_locked(next);
         }
         sync_control_snapshot();
         run_input(*next);
@@ -825,10 +832,7 @@ void Runtime::worker(std::stop_token stop) {
                 command = std::move(commands_.front());
                 commands_.pop_front();
             } else {
-                input = std::move(queue_.front().input);
-                queue_.pop_front();
-                state_ = State::executing;
-                run_ = CurrentRun{next_run_id(), "turn", std::make_shared<RunControl>()};
+                take_input_locked(input);
             }
         }
         try {
