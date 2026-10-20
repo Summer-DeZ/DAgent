@@ -825,8 +825,9 @@ Transcript::Transcript(tui::Document& doc, std::function<void(const TodoList&)> 
 void Transcript::install_renderers() {
     const auto install = [&](tui::BlockKind kind, std::unique_ptr<tui::BlockRenderer> renderer) {
         doc_.set_renderer(kind, std::make_unique<TranscriptRenderer>(std::move(renderer),
-            kind == tui::BlockKind::diff && auto_diff_ && !unified_,
-            links_ && kind != tui::BlockKind::output && kind != tui::BlockKind::diff, project_));
+            kind == tui::BlockKind::diff && render_options_.auto_diff && !render_options_.unified,
+            render_options_.links && kind != tui::BlockKind::output && kind != tui::BlockKind::diff,
+            render_options_.project));
     };
     install(tui::BlockKind::text, std::make_unique<ChatRenderer>(frame_, doc_));
     install(tui::BlockKind::output, std::make_unique<UserRenderer>());
@@ -836,17 +837,20 @@ void Transcript::install_renderers() {
     install(tui::BlockKind::table, std::make_unique<GutterRenderer>(std::make_unique<tui::TableRenderer>(), assistant_starts_));
 }
 
-void Transcript::set_render_options(bool auto_diff, bool unified, bool links, std::filesystem::path project) {
-    if (auto_diff_ == auto_diff && unified_ == unified && links_ == links && project_ == project) return;
-    auto_diff_ = auto_diff; unified_ = unified; links_ = links;
+void Transcript::set_render_options(RenderOptions options) {
+    if (render_options_.auto_diff == options.auto_diff && render_options_.unified == options.unified &&
+        render_options_.links == options.links && render_options_.project == options.project) return;
+    render_options_.auto_diff = options.auto_diff;
+    render_options_.unified = options.unified;
+    render_options_.links = options.links;
     std::error_code ec;
-    project_ = std::filesystem::canonical(project, ec);
-    if (ec) project_.clear();
+    render_options_.project = std::filesystem::canonical(options.project, ec);
+    if (ec) render_options_.project.clear();
     install_renderers();
 }
 
 bool Transcript::can_switch_diff(const tui::Scrollback& scroll, bool visible_only) const {
-    if (!auto_diff_) return false;
+    if (!render_options_.auto_diff) return false;
     const int width = DiffBodyRenderer::available_width(scroll.rect().w);
     return std::ranges::any_of(tools_, [&](const auto& entry) {
         const auto& tool = entry.second;

@@ -1204,7 +1204,7 @@ private:
         add_command("diff.toggle", std::string(ui::text().cmd_diff), std::string(ui::text().cmd_transcript), "ctrl+d", {}, [this] {
             unified_diff_ = !unified_diff_;
             for (auto& pane : panes_)
-                pane.transcript->set_render_options(appearance_.diff == "auto", unified_diff_, appearance_.links == "on", project_root_);
+                pane.transcript->set_render_options(render_options());
         }, [this] { return active_transcript().can_switch_diff(active_scroll(), false); });
         add_command("thoughts.toggle", std::string(ui::text().cmd_thoughts), std::string(ui::text().cmd_transcript), "ctrl+r", {}, [this] { active_transcript().toggle_thoughts(); });
         add_command("navigator.toggle", std::string(ui::text().settings_navigator), std::string(ui::text().cmd_view), "ctrl+b", {}, [this] { toggle_navigator(); });
@@ -1280,6 +1280,13 @@ private:
     void bind_active_mouse() { rt_.bind_mouse(active_scroll(), *panes_[active_].mouse); }
     void unbind_active_mouse() { rt_.unbind_mouse(active_scroll()); }
 
+    RenderOptions render_options() const {
+        return {.auto_diff = appearance_.diff == "auto",
+                .unified = unified_diff_,
+                .links = appearance_.links == "on",
+                .project = project_root_};
+    }
+
     std::size_t add_pane(std::string title, std::string session_id, std::string call_id) {
         tui::Scrollback& scroll = frame_->create();
         const std::size_t index = panes_.size();
@@ -1292,7 +1299,7 @@ private:
                 if (index != 0) return;
                 side_->user_turn(input); header_->title = side_->title(); header_->invalidate();
             });
-        transcript->set_render_options(appearance_.diff == "auto", unified_diff_, appearance_.links == "on", project_root_);
+        transcript->set_render_options(render_options());
         transcript->set_compact(appearance_.density == "compact");
         transcript->set_session(mode_label(), model_label_);
         scroll.set_theme(theme_);
@@ -1674,7 +1681,7 @@ private:
             queue_label_->outline = value.panels == "outline";
             frame_->welcome.appearance = value; frame_->welcome.invalidate();
             for (auto& pane : panes_) {
-                pane.transcript->set_render_options(value.diff == "auto", unified_diff_, value.links == "on", project_root_);
+                pane.transcript->set_render_options(render_options());
                 pane.transcript->set_compact(value.density == "compact");
                 if (icons_changed) pane.transcript->refresh_icons();
             }

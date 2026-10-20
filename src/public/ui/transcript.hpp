@@ -15,6 +15,13 @@
 
 namespace dagent::ui {
 
+struct RenderOptions {
+    bool auto_diff = true; ///< 配置允许按可用宽度使用双栏 diff
+    bool unified = false; ///< 本次前端会话临时切换为统一 diff
+    bool links = true;
+    std::filesystem::path project;
+};
+
 /// 只在渲染线程使用；实时和恢复历史共用这一个文档投影。
 class Transcript {
 public:
@@ -37,7 +44,7 @@ public:
     void set_compact(bool);
     void refresh_icons();
     void tick();
-    void set_render_options(bool auto_diff, bool unified, bool links, std::filesystem::path project);
+    void set_render_options(RenderOptions options);
     bool can_switch_diff(const tui::Scrollback&, bool visible_only = true) const;
 
     void apply_child(const std::string& call_id, const Event&, const Transcript& child);
@@ -81,8 +88,7 @@ private:
 
     void refresh_density();
     void install_renderers();
-    bool auto_diff_ = true, unified_ = false, links_ = true;
-    std::filesystem::path project_;
+    RenderOptions render_options_;
     int frame_ = 0;
     tui::Document& doc_;
     std::map<uint64_t, uint8_t> margins_;

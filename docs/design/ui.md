@@ -351,6 +351,10 @@ Ctrl+D 在本次前端会话切换，主/子 Pane 共用临时状态，不改保
 命令面板 Transcript 分组登记 `Toggle side-by-side diff`。空闲 HintBar 仅在当前视口有可切换 diff 主体时
 增加 `ctrl+d unified` / `ctrl+d side by side`，滚动、切 Pane、侧栏移动和终端缩放后随可见性更新。
 
+Shell 通过统一的 `render_options()` 生成 `ui/transcript.hpp` 中的 `RenderOptions`，
+供新建 Pane、Ctrl+D 和外观更新调用 `Transcript::set_render_options`。
+其中 `auto_diff` 表示 diff 配置，`unified` 表示临时切换状态，两者独立；另携带 `links` 和项目路径 `project`。
+
 `ui.appearance.links` 默认 `on`，`off` 禁用对话中的 OSC 8 链接。assistant 与工具文本中的裸 http(s) URL、
 Markdown 链接文本可点击；Markdown 表格也保留源偏移，因此同样支持链接与原文复制。
 assistant 文件引用、工具标题/参数中的文件引用，以及 edit/write 的文件名，仅在解析为项目内现存普通文件时
