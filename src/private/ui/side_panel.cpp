@@ -96,9 +96,14 @@ void SidePanel::render(tui::Surface& s) {
         for (const auto& item : items_) {
             if (y >= h - 2) break;
             const bool done_item = item.state == TodoItem::State::done, doing = item.state == TodoItem::State::doing;
-            s.text(x, y, done_item ? icons().check : doing ? icons().current : icons().circle,
+            const auto symbol = done_item ? icons().done : icons().todo;
+            const int indent = display_width(symbol) + 1;
+            auto body = doing ? t.text : t.text_muted;
+            if (doing) body.attrs = body.attrs | tui::Attr::bold;
+            if (item.state == TodoItem::State::dropped) body.attrs = body.attrs | tui::Attr::strike;
+            s.text(x, y, symbol,
                    style(done_item ? t.success : doing ? t.accent : t.text_muted));
-            s.text(x + 2, y++, fit_columns(item.text, width - 2), style(t.text));
+            s.text(x + indent, y++, fit_columns(item.text, width - indent), style(body));
         }
     }
     if (!agents_.empty()) {

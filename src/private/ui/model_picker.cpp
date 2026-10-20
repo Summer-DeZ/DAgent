@@ -287,7 +287,7 @@ void ModelPicker::start_login() {
         code_ = value.at("user_code").get<std::string>(); expires_at_ = value.at("expires_at").get<std::int64_t>();
         browser_opened_ = open_browser(url_); login_view_->invalidate();
         timer_ = rt_.every(100ms, [this] {
-            frame_ = (frame_ + 1) % 10;
+            frame_ = (frame_ + 1) % icons().spinner.size();
             if (now_seconds() >= expires_at_) {
                 cancel_login(std::exchange(login_id_, {}));
                 login_error(std::string(text().login_expired)); return false;

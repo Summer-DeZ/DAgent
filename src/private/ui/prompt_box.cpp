@@ -8,8 +8,8 @@
 
 namespace dagent::ui {
 namespace {
-constexpr int k_left = 2;   ///< 竖条 + 一列间隙
-constexpr int k_right = 1;  ///< 右侧留白
+constexpr int k_left = 4;   ///< 边框、留白、提示符与间隙
+constexpr int k_right = 2;  ///< 右侧留白
 
 }
 
@@ -104,19 +104,14 @@ std::optional<tui::Point> PromptBox::cursor() const {
 void PromptBox::render(tui::Surface& surface) {
     const int w = surface.cols(), h = surface.rows();
     if (w <= 0 || h <= 0) return;
-    surface.fill({0, 0, w, h}, U' ', (outline_ ? theme_->background : theme_->background_panel));
+    surface.fill({0, 0, w, h}, U' ', theme_->background);
+    auto border = theme_->border_active; border.bg = theme_->background.bg;
+    draw_frame(surface, {0, 0, w, h}, border);
+    auto prefix = theme_->accent; prefix.bg = theme_->background.bg;
+    surface.text(2, top(), icons().user, prefix);
 
-    tui::Style bar = active_ ? theme_->primary : theme_->accent; // 忙碌时换色，其余时候常亮
-    bar.bg = (outline_ ? theme_->background : theme_->background_panel).bg;
-    if (outline_) {
-        auto border = theme_->border; border.bg = theme_->background.bg;
-        draw_frame(surface, {0, 0, w, h}, border);
-    } else for (int y = 0; y < h; ++y) surface.put(0, y, icons().bar, bar);
-
-    tui::Style body = theme_->text;
-    body.bg = (outline_ ? theme_->background : theme_->background_panel).bg;
-    tui::Style muted = theme_->text_muted;
-    muted.bg = (outline_ ? theme_->background : theme_->background_panel).bg;
+    tui::Style body = theme_->text; body.bg = theme_->background.bg;
+    tui::Style muted = theme_->text_muted; muted.bg = body.bg;
 
     auto faint = theme_->text_faint; faint.bg = body.bg;
     const std::string value = text();
@@ -138,7 +133,7 @@ void PromptBox::render(tui::Surface& surface) {
             surface.text(k_left, this->top() + i, line, body);
         }
     }
-    const int y = h - 1 - (outline_ ? 1 : 0), gap = outline_ ? 2 : 1;
+    const int y = h - 2, gap = outline_ ? 2 : 1;
     const auto tone = footer_error_ ? theme_->error : footer_accent_ ? theme_->accent : muted;
     const std::string hint = format_text(busy_ ? ui::text().prompt_queue : ui::text().prompt_send,
                                          icons().enter, icons().newline, icons().separator);

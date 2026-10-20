@@ -4,7 +4,8 @@
 库为 `dagent_ui`，只依赖 client、protocol、tui 与 base。界面运行在前端进程，只持有 `client::Client`、协议 DTO
 与页面状态：业务操作都经 [私有协议](protocol.md) 发给自己的后端，执行状态、队列、模式与模型的真值都在后端 runtime。
 它使用 [TUI 框架](tui-framework.md)；phase 4 解冻框架，新增通用超链接样式和块可见性查询；phase 5a 增加颜色令牌与显式 256 色回退，
-双栏 diff、文件解析与阅读栏宽度策略仍放在应用层。
+phase 5b 的对话结果挂钩、卡片、圆角输入框与未读提示也全部在应用层完成，没有新增框架接口。
+双栏 diff、文件解析与阅读栏宽度策略仍放在应用层；导航栏、自适应正文宽度与 Layout 设置属于 phase 5c。
 
 界面 chrome 使用英文，统一来自 `ui/strings.hpp` 的 `Strings` 和 `ui/strings.cpp` 的常量表。
 `text()` 只返回英文表的常量引用；字段全为 `string_view`，格式串使用显式参数索引，由 `format_text()` 格式化。
@@ -22,7 +23,7 @@
 | --- | --- |
 | `Shell` | 控件寿命、命令映射到 RPC、事件分派、快照/generation 跟踪、页面状态和退出 |
 | `Transcript` | 协议事件与历史条目到 Document 块的投影：`apply_live` 处理实时事件，`append_history` 回放历史且不触发当前 Run 收尾 |
-| `PromptBox`、`PromptInput` | 自动折行、按行数增高的多行输入；左侧竖条与框内尾行；发送、排队和取回 |
+| `PromptBox`、`PromptInput` | 自动折行、按行数增高的多行输入；圆角边框、提示符与框内尾行；发送、排队和取回 |
 | `HeaderBar` | 顶部品牌、会话标题、权限/模型 Chip 与 git 分支；侧栏隐藏时显示模型与上下文百分比 |
 | `AgentTabs` | HeaderBar 下方的主会话与子 Agent 标签、状态、选中下划线与鼠标切换；无子 Pane 时隐藏 |
 | `Activity`、`QueueLabel` | 当前轮耗时、输出 token 与生成速率；单行队列 Chip 和取回提示 |
@@ -45,10 +46,10 @@ LayerStack
    ├─ AgentTabs                         content，有子 Pane 时 2 行（标签 + primary 下划线）
    ├─ Workspace(horizontal)             主区 + SidePanel（可左右交换）
    │  ├─ Container(vertical)            主区
-   │  │  ├─ ScrollFrame                 flex 1，主区全宽；WelcomeView / Scrollback
+   │  │  ├─ ScrollFrame                 flex 1，主区全宽；WelcomeView / Scrollback；有未读时底部独占提示行
    │  │  ├─ Center(Activity)            content，空闲高度 0
    │  │  ├─ Center(QueueLabel)          content，有排队输入时 1 行，最多 3 个 Chip + 余数
-   │  │  └─ Center(PromptBox)           content，1–8 行正文；密度/面板样式决定留白与边框
+   │  │  └─ Center(PromptBox)           content，1–8 行正文；始终圆角边框，密度决定留白
    │  └─ SidePanel                      content，26/30 列或宽 0
    └─ HintBar                           fixed 1，铺满终端
 浮层：Completion、Panel、ModelPicker（含 Sign-in）、ModelDialog、SettingsDialog、ApprovalDialog、ToastStack
@@ -66,7 +67,9 @@ TranscriptRenderer 在每种块的测量与物化阶段保留该阅读宽度，�
 首次提交普通消息或收到 turn_started 时隐藏，恢复会话时也不显示。内容栏少于 60 列或 ASCII 图标集时使用单行字标。
 历史 `turn_end` 保留在协议与存储中；历史 DTO 没有轮次耗时，回放不伪造实时尾行。
 文本显示宽度和带省略号的裁剪统一使用 `ui/display`；工具折叠提示在极窄宽度仍按列硬裁剪。
-恢复会话改画恢复 id 与回放事件数。Scrollback 不贴底时，右下角覆盖显示未读行数，End 回到底部。
+恢复会话改画恢复 id 与回放事件数。Scrollback 不贴底且有未读行时，ScrollFrame 在其底部独占一行显示
+`N new lines · End to jump`，从实际滚动视口扣除这一行，不覆盖内容；没有未读行时不占空间。
+该行位于活动行、队列与输入框上方，End 回到底部后消失，切换 Pane 时取当前 Pane 的未读数。
 
 ## 2. 外观与设置
 
@@ -88,7 +91,7 @@ solid 保留主题底色；transparent 只将页面背景设为终端 default，
 亮色向黑混合 3%/6%/9%；文字与边框使用相应明暗主题。
 
 文字三档：text 用于正文与列表内容；text_muted 用于工具参数、统计、时间戳、分节标题、提示说明、Chip 的次要标签；
-text_faint 用于行号、hunk 行、普通轮次尾行、diff gutter、注释、侧栏版本、提示分隔符、`└` 折叠行和输入占位文字。
+text_faint 用于行号、hunk 行、普通轮次尾行、diff gutter、注释、侧栏版本、提示分隔符、`⎿` 结果挂钩、`…` 折叠行和输入占位文字。
 text_faint 只落在页面或面板底色上；元素或选中底色上的次要文字必须用 text_muted。
 代码块使用页面底色，注释为 text_faint 加斜体。markdown_heading 为正文色加粗，error 不加粗，
 markdown_link 为 info 色加下划线。diff_context 为正文色，diff_hunk 为 text_faint。
@@ -109,10 +112,11 @@ accent 配置接受 orange（缺省值）、green、violet、blue 或 `#rrggbb`�
 selection 为页面色文字与 primary 底色（透明页面使用该明暗主题的 solid 页面色作文字）。
 真彩直接输出 RGB；256 色优先使用颜色的显式索引，否则按框架规则量化。
 
-filled 使用主题填色，HeaderBar 与 HintBar 均为面板底色；outline 的 HeaderBar、HintBar、SidePanel、PromptBox、Chip 使用页面底色，
-分别画底部分隔线、内侧竖线、圆角框，Chip 只显示标签且相邻间隔两列。浮层始终使用面板填色。
+filled 使用主题填色，HeaderBar 与 HintBar 均为面板底色；PromptBox 在两种模式下始终使用页面底色与 border_active 圆角边框。
+outline 的 HeaderBar、HintBar、SidePanel、Chip 使用页面底色，
+分别画底部分隔线、内侧竖线，Chip 只显示标签且相邻间隔两列。浮层始终使用面板填色。
 HeaderBar 的正文仍为一行，outline 另占一行画底线，避免把线画在标题文字上。
-compact 取消 Transcript 块间距和侧栏分节空行，PromptBox 去掉两行 padding；边框占用的行仍保留。
+compact 取消 Transcript 用户消息前的轮间空行和侧栏分节空行；PromptBox 在两种密度下均不加上下 padding，保留边框行。
 Ctrl+T 只改变本次会话的侧栏显示状态，不写配置；设置 Esc 撤回也恢复打开前的临时显示状态。
 
 `/settings` 和命令面板的 Settings 打开居中圆角浮层（最大 100×24）。左侧只有 Appearance，
@@ -127,12 +131,25 @@ orange → green → violet → blue → custom，向左反向；预设显示名
 Enter 保存经 `ui.appearance.save`，成功关闭并提示 Appearance saved；失败保留对话框并弹错误 toast。
 Esc / Ctrl+C 还原打开前外观，不写文件。保存请求已发出时锁定编辑直到收到结果。
 
-应用图标集中在 `ui/appearance` 的一张表：Unicode 为默认，Nerd 使用品牌、分支、勾、叉、点和文件夹
-专用字体码位；ASCII 品牌使用 `*`、分支使用 `|/`，其余使用 `v x - > o # | +` 与 ASCII spinner。应用自己的活动行与框线使用该表，
+应用图标集中在 `ui/appearance` 的一张表，所有动画调用者使用同一组四帧及其长度。
+Unicode 为默认；Nerd 在以下对话图标上与 Unicode 相同，品牌、分支、勾、叉、文件夹继续使用专用字体码位。
+ASCII 的结果挂钩多占一列，后续结果与折叠行按实际图标宽度对齐。
+
+| 角色 | Unicode / Nerd | ASCII |
+| --- | --- | --- |
+| item | `●` | `*` |
+| running | `◐ ◓ ◑ ◒` | `\| / - \` |
+| result | `⎿` | `` `- `` |
+| thought | `✻` | `~` |
+| user / prompt | `›` | `>` |
+| todo | `☐` | `[ ]` |
+| done | `☒` | `[x]` |
+
+旧方框消息图标已移除。活动行、工具调用、子任务、AgentTabs、侧栏 Agent 状态和登录等待使用统一 spinner。
 正文与工具输出本身不做字体转换。
 
 dagent 使用计划 §9.3 的中性灰阶与橙色，深浅两套值及文件格式见 [DAgent 配色](opencode-theme.md)。
-层次通过亮度、间距、字重和 Chip 表达；本期只改颜色，后续对话结构与布局另行实施。
+层次通过亮度、间距、字重和 Chip 表达；phase 5a 实现颜色，phase 5b 实现下述对话结构。
 
 ## 3. 线程与生命周期
 
@@ -153,13 +170,16 @@ toast 使用一次性五秒定时器，文件补全使用一次性 80 ms 防抖�
 
 ## 4. 输入、补全与排队
 
-PromptBox 保留左侧 `▌` 与 `background_panel` 底纹，正文上方及尾行前各留一行 padding。
+PromptBox 在 filled / outline 两种面板模式下都画 `border_active` 圆角线框，内部保留页面背景，
+首行以 accent 的 `› ` 引出输入，续行与输入正文对齐，占位文字使用 text_faint。
 尾行左侧复用 Chip helper 绘制权限模式、模型：模式与 HeaderBar 同色（普通 muted、plan 为 accent、
 unrestricted 为 error），模型为 text。右侧 muted 显示 `↵ send · ⇧↵ newline`，忙时为
 `↵ queue · ⇧↵ newline`；ASCII 图标集改用 `enter` / `shift+enter`。窄宽度先裁剪模型，
 不足以同时容纳标签和完整快捷键时省略快捷键，不重叠绘制。
-正文按内容栏宽度折行，正文高度为 1–8 行，超出后滚动并保持光标可见。
-comfortable 保留两行 padding，compact 去掉；outline 沿用 phase 1 的页面底色、边框和无填色 Chip。
+正文按框内可用宽度折行，正文高度为 1–8 行，超出后滚动并保持光标可见。
+comfortable 和 compact 均只在框内绘制输入行与标签/提示尾行，不加上下 padding；
+单行输入时为上框线、输入、尾行、下框线共四行，多行输入按实际正文行数增高。
+filled 的 Chip 保留元素底色，outline 继续使用无填色 Chip。
 
 欢迎页的状态 Chip 包含模型；模型同时保留在 HeaderBar、输入框尾行和消息尾行。
 
@@ -181,6 +201,7 @@ Activity 位于对话和队列之间，忙时一行，空闲零高度。左侧�
 token 数为零时只显示阶段与耗时（如 `Working · 0.1s`）；有输出量且有流式用时后才显示速率。
 宽度不足时依次整项省略速率、token 数、`esc interrupt`，不截断指标。
 耗时从本轮开始累计，跨多次模型调用和工具执行不重置；重试、压缩及等待审批沿用相应阶段名称。
+问答对话框打开时显示 `waiting for answer`，审批仍显示 `waiting for approval`。
 输出量累计本轮各次模型调用的 `context.completion`，当前调用未报告 usage 时由已流出的正文与思考
 按约四个 Unicode 码点一个 token 估计，任何估计部分用 `~` 标记；收到真实 usage 即替换该调用估计。
 速率分母是各调用从首次流式输出（含工具调用开始）到完成的时间之和，工具执行、等待首 token、
@@ -232,43 +253,53 @@ token 数为零时只显示阶段与耗时（如 `Working · 0.1s`）；有输�
 
 ## 5. 对话投影
 
-每个逻辑块左侧有两列装订线。装饰符、底纹补空格、工具右侧统计使用 `k_no_src`，
-拖选仍得到原始用户输入、Markdown 或工具主体。普通 Markdown、代码、表格和工具主体在原渲染器外套一层 gutter，
-折行宽度与实际绘制宽度一致。
+每个顶层对话项左侧有两列 gutter。Assistant 正文首行是 text 色 `● `，后续 Markdown、代码、表格与续行缩进两列。
+装饰符、底纹补空格、工具右侧统计使用 `k_no_src`；可见正文 span 保留源偏移，继续支持拖选与链接。
+结果首行以两列缩进后的 text_faint `⎿ ` 挂在调用下方，正文起于第 4 列；后续结果行缩进 4 列。
+ASCII 挂钩为 `` `- ``，相应缩进为 5 列。计数、折行和物化绘制使用同一可用宽度。
 
 | meta / Event | 显示 |
 | --- | --- |
-| 恢复提示 | 恢复 id 与回放事件数的单行系统块；新会话欢迎页不进入 Document |
-| `turn_started` / 历史 user | primary `▌`、正文和整行 `background_element`；首行右侧 muted 本地 `HH:MM`，历史无时间则留空 |
-| `TextDelta` | `MarkdownStream`，正文前留两列 |
-| `ReasoningDelta` / `thought` | 思考中显示 `· Thinking...`；正文开始或一轮结束时定稿成 `+ Thought: N.Ns`（accent），正文块收起 |
-| `ToolStarted` | 建立同组标题、开放主体和折叠行；accent spinner、粗体名称、muted 参数，按调用 id 保存 |
-| `ToolOutput` | 追加到对应开放主体，并行调用不会串卡 |
-| `ToolFinished` | success 勾 / error 叉；结构化 View 定稿名称、参数、右对齐统计和主体，edit/write 的 +N −M 分别为 success / error 色且均不加粗 |
-| `Compacted` | 永久的压缩前后 token 系统块 |
-| `Notice` | error 留永久块；`persistent=true` 的审批审计留正文；其它 info/warn 进 toast |
+| 恢复提示 | `●` 系统块，恢复 id 与回放事件数；新会话欢迎页不进入 Document |
+| `turn_started` / 历史 user | muted `› `、正文和整行 `background_element`；首行右侧 muted 本地 `HH:MM`，历史无时间则留空 |
+| `TextDelta` | `MarkdownStream`，本段首行 text `●`，续行缩进两列 |
+| `ReasoningDelta` / `thought` | `✻ Thinking…`，符号 accent；结束为 `✻ Thought for N.Ns`，muted 斜体；无正文不显示 |
+| `ToolStarted` | 建立同组标题、开放主体和折叠行；accent 四帧 spinner、粗体名称、两空格、muted 参数 |
+| `ToolOutput` | 追加到对应主体，`⎿` 首行及缩进续行；并行调用不会串卡 |
+| `ToolFinished` | success / error 的 `●`；结构化 View 定稿名称、参数、右对齐 muted 统计，edit/write 的 +N −M 分别为 success / error 色且均不加粗 |
+| `TodoView` | `● Plan  done / total`，条目挂在标题下方；侧栏仍同步最新列表 |
+| 问答请求 / `AskView` | 运行中 spinner / 完成后 `●` 加 `Ask  <header>`，问题在 `⎿` 后只出现一次；完成后下一行起绘制选项 Chip |
+| `Compacted` | 永久的压缩前后 token 系统块，使用 `●` gutter |
+| `Notice` | error 留永久块；persistent 审批审计保留内容；匹配级别色的 `●`，多行详情在 `⎿` 下；其它 info/warn 进 toast |
 | 带 parent_session_id 的事件 | 按 model_call_id 归位：先更新子会话 Pane，再复用其工具标题与统计原位更新父 task 的嵌套工具行 |
-| `TurnEnded` | interrupted/denied/limit/failed 留系统块；done 追加 `▣ 模式 · 模型 · 耗时`，有 usage 时加 ` · 2.1k out` |
+| `TurnEnded` | done 追加两列缩进的 faint `模式 · 模型 · 耗时 · 2.1k out`，无 usage 时省略 out；interrupted 为 error `✗ interrupted · 耗时`；denied/limit/failed 保留系统提示 |
 
 实时主会话消息使用前端 `input.submit` 时记录的本地提交时间，排队期间不改为执行时间；
 子会话输入使用收到其 `turn_started` 的时间。时间在用户块 meta 中，不插入可复制的原文。
 当前 HistoryItem 没有用户事件时间字段，历史用户消息省略时间，不用恢复时刻替代。
-用户块为时间预留右侧列，长正文折行后仍整行填充元素底色。comfortable 块间一空行，compact 无空行。
+用户块为时间预留右侧列，长正文折行后仍整行填充元素底色，续行不重复提示符。
+comfortable 仅在用户消息前留一空行，首条用户消息除外；compact 取消这一空行。
+一轮内思考、正文、工具调用、结果和尾行紧接，不添加块间距；正文自身的段落与空行仍保留。
+普通尾行不再带图标或模式色；中断只追加带耗时的错误尾行，不向正在生成的回答追加中断说明。
 
-工具标题是状态符 + 加粗名称、muted 参数、右对齐统计三段；参数过长时省略。主体每行用 muted 的 `│ `，折叠行独立用 faint 的
-`└ N more lines · ctrl+o expand` / `└ ctrl+o collapse`；剩余行数按当前宽度的实际显示与折行数计算。
-无折叠行的卡片在两种状态下均不显示折叠块，也不为它留间距；Ctrl+O 往返不改变这些卡片布局。
-同一工具三个块共享 group 且只有标题有上边距。默认折叠：edit/write 20 行、bash 10 行、web 8 行、grep/glob/MCP 5 行、
-非结构化结果 3 行。Read 和 Plan 通常没有主体。edit/write diff 隐藏 `---` / `+++` 文件头；
-hunk 标题独占一行，以 faint 的 `⋯` 加第二个 `@@` 后的函数上下文显示，无上下文则只显示 `⋯`，不加底色。
-唯一 hunk 从第 1 行开始时省略标题（新建/清空文件允许另一侧从 0 开始）。
-正文为 `│ <num> <sign> <code>`：新增与上下文使用新文件行号，删除使用旧文件行号，
-faint 数字列右对齐，列宽取整张卡片最大行号的位数；折行续行保留列宽但不重复行号与符号。
-新增、删除行从符号列到行末空白铺满 diff_added_bg / diff_removed_bg 底色，行号与 gutter 保留页面底色。
+工具标题是状态符 + 加粗名称、两空格、muted 参数、右对齐统计；参数过长时省略，窄屏统计也按剩余列裁剪。
+工具主体使用 text_muted，失败与中断输出使用 error；bash、文件列表、grep 和 web 结果均不再画竖线 gutter。
+折叠行与结果文字对齐，使用 text_faint：`… N more lines · ctrl+o expand` / `… ctrl+o collapse`；
+剩余行数按当前宽度的实际显示行数计算。没有超过折叠阈值的卡片不显示折叠行，也不留空白。
+同一工具三个块共享 group。默认折叠：edit/write 20 行、bash/task 10 行、web search 8 行、grep/glob/MCP 5 行、
+非结构化结果 3 行；成功 web fetch 正文默认全收起，仅显示 `⎿ N lines · ctrl+o expand`。
+Read 通常没有主体。结果首行仅重复标题参数（含 `URL: <参数>` 这样的标签）时删除这一行，其余内容保留。
+
+edit/write diff 隐藏 `---` / `+++` 文件头；hunk 标题独占一行，以 faint 的 `⋯` 加第二个 `@@` 后的函数上下文显示，
+无上下文则只显示 `⋯`，不加底色。唯一 hunk 从第 1 行开始时省略标题（新建/清空文件允许另一侧从 0 开始）。
+统一 diff 首行使用相同 `⎿` 挂钩，后续行与结果文字对齐：`<num> <sign> <code>`。
+新增与上下文使用新文件行号，删除使用旧文件行号，faint 数字列右对齐，列宽取整张卡片最大行号的位数；
+折行续行保留列宽但不重复行号与符号。新增、删除行从符号列到行末空白铺满 diff_added_bg / diff_removed_bg 底色，
+行号与 gutter 保留页面底色。双栏 diff 仍可突破正文宽度，主体从同一结果行开始，也使用挂钩与续行缩进。
 solid 使用主题值（含显式 256 色回退）；自定义背景仍将 success / error 以 15% 混入当前页面底色，
 transparent 使用 background_panel 作混色基底。这些动态颜色清除固定索引，按 RGB 量化。
 
-`ui.appearance.diff` 默认 `auto`：先取主区宽度减 4 列与 176 列的较小值，再扣除各侧右对齐行号、空格、符号列和中央分隔符后，
+`ui.appearance.diff` 默认 `auto`：先取主区宽度减 4 列与 176 列的较小值，再扣除结果缩进、各侧右对齐行号、空格、符号列和中央分隔符后，
 两侧各至少 60 个代码列才使用双栏；`unified` 或空间不足时继续使用上述统一视图。
 双栏左为旧文件、右为新文件，中间 faint `│`；上下文在两边显示各自行号，
 连续删除与紧随其后的连续新增按行配对，较短侧以无底色的空白补齐。
@@ -287,29 +318,42 @@ assistant 文件引用、工具标题/参数中的文件引用，以及 edit/wri
 路径中需要转义的字节使用百分号编码，`:42` 等行号后缀只保留显示，不放进文件链接。
 链接保持原有颜色，仅 Markdown 链接文本和裸 URL 加下划线，文件名不额外加下划线。
 链接识别在块物化时进行，流式文本变化会刷新当前块的链接；用户消息、diff 代码不额外识别链接。
-工具原始输出继续保留原有排版，行内 Markdown 链接的 label 可点击；assistant Markdown 仍隐藏链接标记。
+工具原始输出继续保留原有排版，行内 Markdown 链接的 label 可点击；assistant 和 Task 最终结果的 Markdown 隐藏链接标记。
 OSC 8 的协议白名单、控制字符与长度限制由框架统一执行。
 
 Task 运行中与结束后共用标题：状态符、粗体 `Task`、两空格、text 色的 Agent 名、
-两空格、muted 任务描述，最右为 `N steps · M tools · S.Ss`；数量为 1 时分别使用 `1 step` / `1 tool`。
-描述按列省略并优先为统计让位。
-运行中按已收到的子工具完成摘要数与调用数更新 steps/tools，耗时每 100 ms 更新；结束后使用 TaskView 的最终统计。
-运行中主体逐工具原位更新为
-`│ ✓ Grep  parse_date  6 matches`：状态图标、粗体名称、muted 参数与统计；运行中 spinner、失败或中断用叉。
-结束后保留子工具摘要，去掉结果文本首尾空白行；两者均存在时 comfortable 恰好留一行 `│`，
-compact 不留空行。历史 TaskView 的子工具步骤只保存 summary/is_error，
-回放忠实使用这些摘要，不能从旧记录补出缺失的结构化参数和统计。Grep/Glob 统计在数量为 1 时显示
-`1 match` / `1 file`；实时嵌套子工具行复用相同的标题与统计。
+两空格、muted 任务描述，最右为 `N tools · S.Ss`；数量为 1 时使用 `1 tool`。
+描述按列省略并为统计让位；运行中按已收到的子工具调用计数，耗时每 100 ms 更新，结束后使用 TaskView 的最终统计。
+子工具首行是 `⎿ ● Grep  "…"  6 matches`，后续子工具行与第一个子工具 bullet 对齐：
+状态 bullet 按成功/失败着色、运行中为 accent spinner，名称加粗、参数 muted、统计 faint。
+结束后保留子工具摘要，最终结果去掉首尾空白行；两者均存在时 comfortable 留一空行，compact 不留。
+最终结果复用 assistant 的 MarkdownStream 与 Markdown、代码、表格渲染器，支持行内代码、强调、列表、
+标题、代码块与链接；正文仍为 muted，结果行保持在子工具下方并沿用结果缩进（Unicode 4 列、ASCII 5 列）。
+整个 Task 主体按渲染后的行数折叠，Markdown span 保留对应原文偏移，继续支持选择与链接。
+历史 TaskView 的子工具步骤只保存 summary/is_error，回放忠实使用这些摘要，不能补出缺失的参数和统计。
+Grep/Glob 统计在数量为 1 时显示 `1 match` / `1 file`。
 
 `WebView` 的卡片名称为 `Web search` / `Web fetch`，参数显示搜索词或最终 URL，统计显示 HTTP 状态和耗时；
 抓取另显示字节范围/正文总量、cached 和 truncated 标记。状态 0 表示尚未取得可显示的 HTTP 状态，应查看正文中的失败原因。
-搜索摘要与抓取正文都可展开；卡片恢复自历史记录不会重新联网，也不会重建分页缓存。
+抓取默认显示行数摘要，Ctrl+O 展开后查看剩余元信息与正文，不再重复标题中的 URL。
+搜索摘要和错误正文继续显示折叠预览；恢复历史不会重新联网，也不会重建分页缓存。
 
-思考正文默认收起（`collapsed_rows = 0`），Ctrl+R 统一展开或收起本会话的全部思考，标题前缀随之在 `+` 与 `-` 之间切换。
+思考正文默认收起（`collapsed_rows = 0`），Ctrl+R 统一展开/收起已完成及正在流式生成的思考。
+标题始终为 `✻`，不再使用 +/-；无正文或仅空白的思考不显示。
+展开后的正文为 text_muted 斜体，缩进 4 列，第二列的 `│` 使用 text_faint；只有思考展开保留这条竖线。
+历史没有思考耗时，继续使用回放投影的耗时；不伪造历史轮次尾行。
 
-`TodoView` 到达时，Transcript 把整份列表交给 SidePanel，对话只留下 Plan 工具标题；全部完成的首次更新追加一条
-`plan complete` 系统块。宽度少于 80 列或侧栏被隐藏时 SidePanel 让位，Transcript 原位替换一个计划块，不为每次更新新增消息；
-宽度恢复后该块清空并由侧栏接管。`/new` 清空列表，恢复会话依靠最后一次 TodoView 自然重建。
+Ask 运行中和完成后共用 `Ask  <header>` 标题，仅状态符由 spinner 变为 `●`，不把问题摘要拼入标题。
+开始事件尚无 header 时只显示 Ask；收到问答请求后按未完成调用的问题匹配卡片，填入 header 与 `⎿` 下的问题正文。
+问题仅在结果首行出现一次。
+下一行起选项按内容宽度同行排列，放不下则换行；过长单个选项内部折行。
+选中项使用 background_selected 和 success 的 `✓ `，其他项使用 background_element 与 text_muted；
+自由输入作为选中的 Other 标签，取消状态放在标题统计处。问题仍开放时原模态对话框和键位保持不变。
+
+每次 `TodoView` 都在对应 Plan 工具下保留列表快照，不再随侧栏宽度迁移或额外追加 plan complete 系统块。
+完成项为 success `☒` 与 muted 正文；当前项为 accent `☐` 与粗体正文；待办为 muted `☐`，
+已放弃项保留 muted 复选框及删除线。Plan 和 Ask 完整显示，不参与 Ctrl+O 折叠。
+SidePanel 同步最新计划，`/new` 清空，恢复会话依靠最后一次 TodoView 重建；侧栏隐藏不会删除对话内列表。
 
 ### 子会话 Pane
 
@@ -355,12 +399,12 @@ SidePanel 留一行上边距和两列左右留白，章节标题为大写 muted�
 | --- | --- |
 | SESSION | 首次用户输入标题，最多两行；会话 UUIDv7 创建时间转本地 HH:MM、回放和实时 user 轮数（窄栏自动折行） |
 | CONTEXT | 标题右侧百分比、primary/border 用量条、简写的 used / limit tokens；达到压缩阈值用 warning |
-| PLAN | 仅收到 TodoView 后显示；done/total；完成勾 success、当前箭头 accent、未完成圆圈 muted |
+| PLAN | 仅收到 TodoView 后显示；done/total；与 Plan 卡片共用图标表：完成 `☒` success、正文 muted；当前 `☐` accent、正文加粗；待办 `☐` 与正文均 muted；ASCII 使用 `[x]` / `[ ]`，按图标宽度缩进正文 |
 | AGENTS | 位于 PLAN 与 CHANGED 之间，仅有任务时显示；左侧状态图标和 Agent 名，右侧耗时，运行中随动画刷新 |
 | CHANGED | 当前会话已成功 edit/write 的相对路径和累计 +N −M（分别为 success / error 色，均不加粗）；最多 8 文件，其余 +K more |
 | MCP | 配置的服务器逐项显示名称和 ready/connecting/failed，分别用 success/warning/error 状态符 |
 
-底部固定 text_faint 的 DAgent 版本；路径与分支分别交给 HintBar 和 HeaderBar。侧栏隐藏时计划仍在 Transcript 原位显示。
+底部固定 text_faint 的 DAgent 版本；路径与分支分别交给 HintBar 和 HeaderBar。计划卡片始终保留在 Transcript 中。
 恢复会话通过已有历史投影恢复标题、轮数、计划与文件增删统计，不访问工作树猜测会话改动。
 
 Panel 最大宽 76 列、高度不超过终端 60%，由标题、可选内存过滤、列表、过滤计数与底部提示组成。
@@ -422,7 +466,7 @@ Question 使用同一骨架，primary 边框、原 header 标题和原选项列�
 问题正文按内容行数占位，正文与选项间只留一行间距。数字/上下键选择、Enter 确认、
 多选空格、Other 自由输入、Esc 取消保持不变，unrestricted 确认默认取消，Shift+Tab 仍可穿透循环权限。
 权限与问题互斥。`/permissions` 复用 Panel 显示内存授权，Enter 撤销；空列表只显示不可选提示。
-unrestricted 的输入/消息尾行使用 error，plan 使用 accent。
+unrestricted 的输入框模式 Chip 使用 error，plan 使用 accent；普通轮次尾行统一使用 text_faint。
 
 ### 欢迎页
 
@@ -526,4 +570,5 @@ Enter 发 `provider.model.add`，由后端保存缺少的 `opencode-go/<model>` 
 
 历史加载各自拥有条目缓冲和分页游标；切换会话会取消旧加载，完成或失败即释放。主会话实时事件始终进入主文档，子事件按会话身份进入子文档。
 
-phase 2a（会话区）和 phase 2b（浮层与欢迎页）已实现；本阶段仅构建验证，真实 PTY 视觉与交互验收仍由用户执行。
+phase 2a（会话区）、phase 2b（浮层与欢迎页）、phase 5a（配色）和 phase 5b（对话区）已实现。
+phase 5b 仅构建验证，不添加测试代码或模拟入口；深浅主题、多终端宽度、ASCII/compact 与真实工具交互的 PTY 验收由用户执行。

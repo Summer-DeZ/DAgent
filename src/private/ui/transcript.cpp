@@ -18,7 +18,6 @@ template<class... T> struct Overloaded : T... { using T::operator()...; };
 
 // 核心生成的“未执行/被拒绝”结果文本前缀（agent/conversation.hpp 的 texts）：
 // UI 只据此决定卡片显示为 stopped，不改变结果本身。
-constexpr std::string_view kInterrupted = "\n\n[response interrupted by the user]";
 constexpr std::string_view kDenied =
     "The user denied this call. Do not work around it; wait for further instructions.";
 constexpr std::string_view kDeniedWithFeedback = "The user denied this call and said: ";
@@ -46,10 +45,10 @@ std::string clean_field(std::string value) {
     return value;
 }
 
-std::string task_stats(std::size_t steps, std::size_t tools, double seconds) {
+std::string task_stats(std::size_t tools, double seconds) {
     const auto& text = ui::text();
-    return format_text(text.card_task_stats, steps, steps == 1 ? text.card_task_step : text.card_task_steps,
-                       tools, tools == 1 ? text.card_task_tool : text.card_task_tools, seconds);
+    return format_text(text.card_task_stats, tools, tools == 1 ? text.card_task_tool : text.card_task_tools,
+                       seconds, icons().separator);
 }
 
 std::string trim_blank_lines(std::string_view value) {
@@ -66,6 +65,15 @@ std::string trim_blank_lines(std::string_view value) {
     return std::string(value);
 }
 
+// 文本结果沿用 Task 的源前缀约定，使 measure 与 render 使用相同的缩进。
+std::string result_prefix() { return "  " + std::string(icons().result) + " "; }
+int result_indent() { return display_width(result_prefix()); }
+void hang_result(tui::Line& line, bool first, const tui::ThemeTokens& theme) {
+    const auto prefix = first ? result_prefix() : std::string(static_cast<size_t>(result_indent()), ' ');
+    line.spans.insert(line.spans.begin(), {prefix, theme.text_faint, tui::k_no_src});
+    line.width += result_indent();
+}
+
 // 用户原文独立使用 output 槽位，时间放在 meta，避免复制消息时带出显示时间。
 class UserRenderer final : public tui::BlockRenderer {
 public:
@@ -79,8 +87,8 @@ public:
         for (size_t i = valid; i < count; ++i) {
             auto& line = out[i];
             for (auto& span : line.spans) span.style.bg = theme.background_element.bg;
-            auto bar = theme.primary; bar.bg = theme.background_element.bg;
-            line.spans.insert(line.spans.begin(), {std::string(icons().bar) + " ", bar, tui::k_no_src});
+            auto bar = theme.text_muted; bar.bg = theme.background_element.bg;
+            line.spans.insert(line.spans.begin(), {i == 0 ? std::string(icons().user) + " " : "  ", bar, tui::k_no_src});
             auto muted = theme.text_muted; muted.bg = theme.background_element.bg;
             const auto stamp = i == 0 && width >= 8 ? time : std::string_view{};
             line.spans.push_back({std::string(static_cast<size_t>(std::max(0, width - line.width - 2 - display_width(stamp))), ' '), muted, tui::k_no_src});
@@ -97,15 +105,20 @@ public:
     tui::WrapResult measure(std::string_view source, size_t from, int width) const override {
         if (from >= source.size()) return {};
         if (source.starts_with('\x1c')) {
-            size_t rows = 0;
-            for (size_t at = 1; at < source.size();) {
-                const auto end = std::min(source.find('\n', at), source.size());
-                const auto value = source.substr(at, end - at);
-                rows += value.starts_with('\x1e') ? 1 : std::max(size_t{1}, tui::wrap_measure_from(value, 0, std::max(1, width - 2)).rows);
-                at = end + 1;
-            }
-            return {rows, 0, 0};
+            tui::Block block; block.source = source;
+            std::vector<tui::Line> lines;
+            render_task(block, width, tui::dark_theme(), lines);
+            return {lines.size(), 0, 0};
         }
+        if (source.starts_with('\x1a') || source.starts_with('\x19') || source.starts_with('\x18')) {
+            tui::Block block; block.source = source;
+            std::vector<tui::Line> lines;
+            render_details(block, width, tui::dark_theme(), lines);
+            return {lines.size(), 0, 0};
+        }
+        if (source.starts_with('\x1d') || source.starts_with('\x1b'))
+            return {tui::wrap_measure_from(source.substr(1), 0,
+                std::max(1, width - (source.front() == '\x1b' ? 4 : result_indent()))).rows, 0, 0};
         if (const std::size_t marker = source.find("BANNER_END\n"); marker != std::string_view::npos) {
             std::string visible(source);
             if (width < 60 || icons().bar == "|") visible.erase(0, marker + 11);
@@ -124,46 +137,26 @@ public:
                   size_t from, size_t valid, std::vector<tui::Line>& out) const override {
         if (block.source.empty()) { out.clear(); return 0; }
         if (block.source.starts_with('\x1c')) return render_task(block, width, theme, out);
-        if (block.meta.starts_with("tool.body"))
-            return render_body(block, width, theme, from, valid, out);
+        if (block.source.starts_with('\x1a') || block.source.starts_with('\x19') || block.source.starts_with('\x18'))
+            return render_details(block, width, theme, out);
+        if (block.source.starts_with('\x1d') || block.source.starts_with('\x1b'))
+            return render_body(block, width, theme, out);
         if (block.meta.starts_with("tool.")) return render_tool(block, width, theme, out);
         if (block.meta == "banner") return render_banner(block, width, theme, from, valid, out);
 
-        tui::Style style = theme.text;
-        std::string first = "  ", next = "  ";
-        if (block.meta == "user") first = next = std::string(icons().bar) + " ";
-        else if (block.meta == "thought") style = theme.accent;
-        else if (block.meta == "msg.footer.error") style = theme.error;
-        else if (block.meta == "msg.footer.plan") style = theme.accent;
-        else if (block.meta == "msg.footer") style = theme.text_faint;
-        else if (block.meta == "thought.body") { // 与 Thought 标题同列，不再加符号
+        auto style = block.meta.starts_with("msg.footer") ? theme.text_faint : theme.text_muted;
+        std::string first = "  ";
+        auto prefix_style = style;
+        if (block.meta == "thought" || block.meta == "thought.live") {
             style = theme.text_muted; style.attrs = style.attrs | tui::Attr::italic;
-        } else if (block.meta == "system.error") { style = theme.error; first = std::string(icons().cross) + " "; }
-        else if (block.meta.starts_with("system.")) {
-            style = theme.text_muted;
-            if (block.meta == "system.stopped") first = std::string(icons().circle) + " ";
-        }
-        else if (block.meta == "todo") first = next = std::string(icons().bar) + " ";
-
-        if (block.meta.starts_with("msg.footer")) first = std::string(icons().message) + " ";
-        const int gutter = display_width(first);
-        const size_t count = tui::TextRenderer(&tui::ThemeTokens::text).render(
-            block, std::max(1, width - gutter), theme, from, valid, out);
+            first = std::string(icons().thought) + " ";
+            prefix_style = block.meta == "thought.live" ? theme.accent : theme.text_muted;
+        } else if (block.meta == "msg.footer.error") style = theme.error;
+        const size_t count = tui::TextRenderer().render(block, std::max(1, width - 2), theme, from, valid, out);
         for (size_t i = valid; i < count; ++i) {
-            auto& line = out[i];
-            for (auto& span : line.spans) span.style = style;
-            if (block.meta == "user") {
-                for (auto& span : line.spans) span.style.bg = theme.background_element.bg;
-                const int fill_columns = std::max(0, width - line.width - gutter);
-                line.spans.push_back({std::string(static_cast<std::size_t>(fill_columns), ' '),
-                                      theme.background_element, tui::k_no_src});
-            }
-            const std::string& prefix = i == 0 ? first : next;
-            tui::Style prefix_style = block.meta == "user" || block.meta == "todo"
-                                                ? theme.primary : style;
-            if (block.meta == "user") prefix_style.bg = theme.background_element.bg;
-            line.spans.insert(line.spans.begin(), {prefix, prefix_style, tui::k_no_src});
-            line.width = block.meta == "user" ? width : line.width + gutter;
+            for (auto& span : out[i].spans) span.style = style;
+            out[i].spans.insert(out[i].spans.begin(), {i == 0 ? first : "  ", prefix_style, tui::k_no_src});
+            out[i].width += 2;
         }
         return count;
     }
@@ -174,40 +167,168 @@ private:
     size_t render_task(const tui::Block& block, int width, const tui::ThemeTokens& theme,
                        std::vector<tui::Line>& out) const {
         out.clear();
-        for (size_t at = 1; at < block.source.size();) {
+        const int room = std::max(1, width - result_indent());
+        size_t at = 1;
+        for (; at < block.source.size() && block.source[at] == '\x1e';) {
             const auto end = std::min(block.source.find('\n', at), block.source.size());
             tui::Block row; row.source = block.source.substr(at, end - at);
             std::vector<tui::Line> lines;
-            if (row.source.starts_with('\x1e')) {
-                const char state = row.source[1]; row.source.erase(1, 1);
-                row.meta = state == 'R' ? "tool.running" : state == 'E' ? "tool.error" : "tool.done";
-                render_tool(row, std::max(1, width - 2), theme, lines, true);
-            } else {
-                if (row.source.empty()) row.source = " ";
-                row.row_count = tui::wrap_measure_from(row.source, 0, std::max(1, width - 2)).rows;
-                tui::TextRenderer().render(row, std::max(1, width - 2), theme, 0, 0, lines);
-            }
+            const char state = row.source[1]; row.source.erase(1, 1);
+            row.meta = state == 'R' ? "tool.running" : state == 'E' ? "tool.error" : "tool.done";
+            render_tool(row, room, theme, lines, true);
             for (auto& line : lines) {
                 line.offset += at;
-                for (auto& span : line.spans) if (span.src != tui::k_no_src)
-                    span.src += at + (block.source[at] == '\x1e' ? 1 : 0);
-                line.spans.insert(line.spans.begin(), {std::string(icons().vertical) + " ", theme.text_muted, tui::k_no_src});
-                line.width += 2; out.push_back(std::move(line));
+                for (auto& span : line.spans) if (span.src != tui::k_no_src) span.src += at + 1;
+                hang_result(line, out.empty(), theme);
+                out.push_back(std::move(line));
             }
             at = end + 1;
+        }
+        if (at < block.source.size() && block.source[at] == '\n') {
+            tui::Line line; line.offset = at++;
+            hang_result(line, out.empty(), theme);
+            out.push_back(std::move(line));
+        }
+        // 与 assistant 共用 Markdown 分块及渲染器，保留 Task 单一主体的折叠和源偏移。
+        tui::Document result;
+        tui::MarkdownStream markdown(result);
+        markdown.feed(std::string_view(block.source).substr(std::min(at, block.source.size())));
+        markdown.finish();
+        const auto end = result.append_block(tui::BlockKind::text);
+        auto body_theme = theme;
+        body_theme.text = block.meta == "tool.body.error" ? theme.error : theme.text_muted;
+        for (uint64_t id = 1; id < end; ++id) {
+            tui::Block part = *result.find(id);
+            if (part.source.empty()) continue;
+            // 分块原文均从逻辑行首开始；跳过围栏语言等行内的同名片段。
+            auto offset = block.source.find(part.source, at);
+            while (offset > at && block.source[offset - 1] != '\n')
+                offset = block.source.find(part.source, offset + 1);
+            const auto& renderer = result.renderer(part.kind);
+            part.row_count = renderer.measure(part.source, 0, room).rows;
+            std::vector<tui::Line> lines;
+            const auto count = renderer.render(part, room, body_theme, 0, 0, lines);
+            for (size_t i = 0; i < count; ++i) {
+                auto& line = lines[i];
+                line.offset += offset;
+                for (auto& span : line.spans) if (span.src != tui::k_no_src) span.src += offset;
+                hang_result(line, out.empty(), theme);
+                out.push_back(std::move(line));
+            }
+            at = offset + part.source.size();
         }
         if (block.collapsed && out.size() > block.collapsed_rows) out.resize(block.collapsed_rows);
         return out.size();
     }
     size_t render_body(const tui::Block& block, int width, const tui::ThemeTokens& theme,
-                       size_t from, size_t valid, std::vector<tui::Line>& out) const {
-        const size_t count = tui::TextRenderer().render(block, std::max(1, width - 2),
-                                                        theme, from, valid, out);
-        for (size_t i = valid; i < count; ++i) {
-            out[i].spans.insert(out[i].spans.begin(), {std::string(icons().vertical) + " ", theme.text_muted, tui::k_no_src});
-            out[i].width += 2;
+                       std::vector<tui::Line>& out) const {
+        const bool thought = block.source.front() == '\x1b';
+        const int indent = thought ? 4 : result_indent();
+        tui::Block body = block; body.source.erase(0, 1);
+        auto style = block.meta == "tool.body.error" ? theme.error : theme.text_muted;
+        if (thought) style.attrs = style.attrs | tui::Attr::italic;
+        out.clear();
+        const auto count = tui::TextRenderer().render(body, std::max(1, width - indent), theme, 0, 0, out);
+        for (auto& line : out) {
+            ++line.offset;
+            for (auto& span : line.spans) { span.style = style; if (span.src != tui::k_no_src) ++span.src; }
+            if (thought) {
+                line.spans.insert(line.spans.begin(), {"  " + std::string(icons().vertical) + " ", theme.text_faint, tui::k_no_src});
+                line.width += indent;
+            } else hang_result(line, &line == &out.front(), theme);
         }
         return count;
+    }
+
+    // Ask、Plan 与系统提示的布局同时用于计数和绘制，保持窄屏折行一致。
+    size_t render_details(const tui::Block& block, int width, const tui::ThemeTokens& theme,
+                          std::vector<tui::Line>& out) const {
+        out.clear();
+        const auto append = [&](std::string_view value, size_t offset, int indent, tui::Style style,
+                                std::string prefix, tui::Style prefix_style) {
+            size_t at = 0;
+            do {
+                const auto edge = tui::wrap_next_row(value, at, std::max(1, width - indent));
+                tui::Line line; line.offset = offset + at;
+                line.spans.push_back({at == 0 ? prefix : std::string(static_cast<size_t>(indent), ' '), prefix_style, tui::k_no_src});
+                std::string text; tui::expand_row(text, value, at, edge.end);
+                line.spans.push_back({std::move(text), style, offset + at});
+                line.width = indent + edge.width; out.push_back(std::move(line));
+                at = edge.next;
+            } while (at < value.size());
+        };
+        const char kind = block.source.front();
+        const int indent = result_indent();
+        if (kind == '\x18') {
+            const auto end = std::min(block.source.find('\n', 1), block.source.size());
+            const auto tone = block.meta == "system.error" || block.meta == "system.stopped" ? theme.error
+                : block.meta == "system.warning" ? theme.warning : theme.info;
+            append(std::string_view(block.source).substr(1, end - 1), 1, 2,
+                   block.meta == "system.error" ? theme.error : theme.text_muted,
+                   std::string(icons().item) + " ", tone);
+            if (end < block.source.size()) append(std::string_view(block.source).substr(end + 1), end + 1,
+                indent, block.meta == "system.error" ? theme.error : theme.text_muted, result_prefix(), theme.text_faint);
+        } else if (kind == '\x19') {
+            for (size_t at = 1; at < block.source.size();) {
+                const auto end = std::min(block.source.find('\n', at), block.source.size());
+                const char state = block.source[at];
+                const auto symbol = state == 'D' ? icons().done : icons().todo;
+                const auto tone = state == 'D' ? theme.success : state == 'A' ? theme.accent : theme.text_muted;
+                auto style = state == 'A' ? theme.text : theme.text_muted;
+                if (state == 'A') style.attrs = style.attrs | tui::Attr::bold;
+                if (state == 'X') style.attrs = style.attrs | tui::Attr::strike;
+                const size_t first = out.size();
+                append(std::string_view(block.source).substr(at + 1, end - at - 1), at + 1,
+                       indent + display_width(symbol) + 1, style,
+                       (out.empty() ? result_prefix() : std::string(static_cast<size_t>(indent), ' ')) + std::string(symbol) + " ", tone);
+                // 结果挂钩与复选框分别使用 faint / 状态色。
+                auto& spans = out[first].spans;
+                spans.front().text = std::string(symbol) + " ";
+                spans.insert(spans.begin(), {first == 0 ? result_prefix() : std::string(static_cast<size_t>(indent), ' '), theme.text_faint, tui::k_no_src});
+                at = end + 1;
+            }
+        } else {
+            const auto options = std::min(block.source.find('\x1e', 1), block.source.size());
+            auto question = std::string_view(block.source).substr(1, options - 1);
+            if (question.ends_with('\n')) question.remove_suffix(1);
+            append(question, 1, indent, theme.text_muted, result_prefix(), theme.text_faint);
+            const int room = std::max(1, width - indent);
+            int used = room;
+            for (size_t at = options; at < block.source.size();) {
+                const auto end = std::min(block.source.find('\n', at), block.source.size());
+                const bool chosen = block.source[at + 1] == 'S';
+                const auto label = std::string_view(block.source).substr(at + 2, end - at - 2);
+                const std::string check = chosen ? std::string(icons().check) + " " : "";
+                const int chip = 2 + display_width(check) + display_width(label);
+                if (used + 1 + chip > room) used = room;
+                size_t pos = 0;
+                do {
+                    if (used == room) {
+                        tui::Line line; line.offset = at + 2 + pos;
+                        line.spans.push_back({std::string(static_cast<size_t>(indent), ' '), theme.text_faint, tui::k_no_src});
+                        line.width = indent; out.push_back(std::move(line)); used = 0;
+                    }
+                    auto& line = out.back();
+                    if (used) { line.spans.push_back({" ", theme.text_muted, tui::k_no_src}); ++used; ++line.width; }
+                    auto style = theme.text_muted;
+                    style.bg = chosen ? theme.background_selected.bg : theme.background_element.bg;
+                    const auto prefix = pos == 0 ? check : std::string{};
+                    const int budget = std::max(1, room - used - 2 - display_width(prefix));
+                    const auto edge = tui::wrap_next_row(label, pos, budget);
+                    line.spans.push_back({" ", style, tui::k_no_src});
+                    if (!prefix.empty()) { auto tick = theme.success; tick.bg = style.bg; line.spans.push_back({prefix, tick, tui::k_no_src}); }
+                    std::string text; tui::expand_row(text, label, pos, edge.end);
+                    line.spans.push_back({std::move(text), style, at + 2 + pos});
+                    line.spans.push_back({" ", style, tui::k_no_src});
+                    const int added = 2 + display_width(prefix) + edge.width;
+                    used += added; line.width += added; pos = edge.next;
+                    if (pos < label.size()) used = room;
+                } while (pos < label.size());
+                at = end + 1;
+            }
+        }
+        if (block.collapsed && out.size() > block.collapsed_rows) out.resize(block.collapsed_rows);
+        return out.size();
     }
 
     size_t render_tool(const tui::Block& block, int width, const tui::ThemeTokens& theme,
@@ -218,11 +339,14 @@ private:
             const auto& body = *doc_.find(std::stoull(block.source.substr(1)));
             if (body.row_count <= body.collapsed_rows) { out.clear(); return 0; }
             const std::string value = body.collapsed
-                ? format_text(ui::text().card_folded, body.row_count - body.collapsed_rows, icons().separator)
+                ? format_text(body.collapsed_rows == 0 ? ui::text().card_lines : ui::text().card_folded,
+                              body.row_count - body.collapsed_rows, icons().separator)
                 : std::string(ui::text().card_collapse);
-            line.spans.push_back({std::string(icons().elbow) + " ", theme.text_faint, tui::k_no_src});
-            line.spans.push_back({fit(value, width - 2), theme.text_faint, tui::k_no_src});
-            line.width = std::min(width, 2 + display_width(value));
+            const auto prefix = body.collapsed && body.collapsed_rows == 0 ? result_prefix()
+                : std::string(static_cast<size_t>(result_indent()), ' ') + (icons().item == "*" ? "... " : "… ");
+            line.spans.push_back({prefix, theme.text_faint, tui::k_no_src});
+            line.spans.push_back({fit(value, width - display_width(prefix)), theme.text_faint, tui::k_no_src});
+            line.width = std::min(width, display_width(prefix) + display_width(value));
             return 1;
         }
         const std::size_t begin = block.source.starts_with('\x1e') ? 1 : 0;
@@ -234,18 +358,20 @@ private:
             : block.source.substr(first_tab + 1, second_tab - first_tab - 1);
         const auto third_tab = second_tab == std::string::npos ? std::string::npos
             : block.source.find('\t', second_tab + 1);
-        const std::string stat = second_tab == std::string::npos ? ""
+        std::string stat = second_tab == std::string::npos ? ""
             : block.source.substr(second_tab + 1, third_tab - second_tab - 1);
         const std::string task = third_tab == std::string::npos ? "" : block.source.substr(third_tab + 1);
         std::string symbol = std::string(icons().spinner[frame_]) + " "; tui::Style symbol_style = theme.accent;
-        if (block.meta == "tool.done") { symbol = std::string(icons().check) + " "; symbol_style = theme.success; }
-        else if (block.meta == "tool.error") { symbol = std::string(icons().cross) + " "; symbol_style = theme.error; }
-        else if (block.meta == "tool.stopped") { symbol = std::string(icons().cross) + " "; symbol_style = theme.error; }
+        if (block.meta == "tool.done") { symbol = std::string(icons().item) + " "; symbol_style = theme.success; }
+        else if (block.meta == "tool.error") { symbol = std::string(icons().item) + " "; symbol_style = theme.error; }
+        else if (block.meta == "tool.stopped") { symbol = std::string(icons().item) + " "; symbol_style = theme.error; }
         line.spans.push_back({std::string(symbol), symbol_style, tui::k_no_src});
         tui::Style heading = theme.text; heading.attrs = heading.attrs | tui::Attr::bold;
         const auto shown_name = fit_columns(name, std::max(0, width - display_width(symbol)));
         line.spans.push_back({shown_name, heading, begin});
         int used = display_width(symbol) + display_width(shown_name);
+        const int param_room = param.empty() ? 0 : std::min(16, std::max(0, width - used) / 2);
+        stat = fit_columns(stat, std::max(0, width - used - 2 - param_room));
         const int stat_width = display_width(stat);
         const int room = std::max(0, width - used - stat_width - (stat.empty() ? 0 : 2));
         if (!param.empty() && room > 2) {
@@ -272,7 +398,7 @@ private:
                 line.spans.push_back({stat.substr(0, split), added, tui::k_no_src});
                 line.spans.push_back({" ", theme.text_muted, tui::k_no_src});
                 line.spans.push_back({std::string(icons().minus) + stat.substr(split + 2), removed, tui::k_no_src});
-            } else line.spans.push_back({stat, theme.text_muted, tui::k_no_src});
+            } else line.spans.push_back({stat, nested ? theme.text_faint : theme.text_muted, tui::k_no_src});
             used = nested ? used + 2 + stat_width : width;
         }
         line.width = used;
@@ -404,7 +530,7 @@ class DiffBodyRenderer final : public tui::BlockRenderer {
                                       theme.text_faint, tui::k_no_src});
             } else {
                 side(line, pair.left, false, left_width);
-                line.spans.push_back({"│", theme.text_faint, tui::k_no_src});
+                line.spans.push_back({std::string(icons().vertical), theme.text_faint, tui::k_no_src});
                 side(line, pair.right, true, width - left_width - 1);
             }
             line.width = width;
@@ -415,36 +541,40 @@ class DiffBodyRenderer final : public tui::BlockRenderer {
     }
 public:
     static int available_width(int width) { return std::clamp(width - 4, 0, 176); }
-    static int required_width(std::string_view source) { return 2 * (parse(source).side_digits + 63) + 1; }
+    static int required_width(std::string_view source) { return result_indent() + 2 * (parse(source).side_digits + 63) + 1; }
     tui::WrapResult measure(std::string_view source, size_t from, int width) const override {
         if (from >= source.size()) return {};
         const auto diff = parse(source);
-        if ((width - 1) / 2 - diff.side_digits - 3 >= 60) return {pair_rows(diff).size(), 0, 0};
+        if (width >= required_width(source)) return {pair_rows(diff).size(), 0, 0};
         size_t rows = 0;
         for (const auto& row : diff.rows)
             rows += row.hunk ? 1 : std::max(size_t{1}, tui::wrap_measure_from(
-                row.code, 0, std::max(1, width - 2 - (row.number ? diff.side_digits + 3 : 0))).rows);
+                row.code, 0, std::max(1, width - result_indent() - (row.number ? diff.digits + 3 : 0))).rows);
         return {rows, 0, 0};
     }
     size_t render(const tui::Block& block, int width, const tui::ThemeTokens& theme,
                   size_t, size_t, std::vector<tui::Line>& out) const override {
         out.clear();
         const auto diff = parse(block.source);
-        if ((width - 1) / 2 - diff.side_digits - 3 >= 60) return render_split(block, width, theme, diff, out);
+        if (width >= required_width(block.source)) {
+            render_split(block, width - result_indent(), theme, diff, out);
+            for (auto& line : out) hang_result(line, &line == &out.front(), theme);
+            return out.size();
+        }
         for (const auto& row : diff.rows) {
-            const int prefix = 2 + (row.number ? diff.digits + 3 : 0);
+            const int prefix = result_indent() + (row.number ? diff.digits + 3 : 0);
             const int room = std::max(1, width - prefix);
             size_t at = 0;
             do {
                 tui::Line line;
                 line.offset = row.offset + at;
-                line.spans.push_back({std::string(icons().vertical) + " ", theme.text_faint, tui::k_no_src});
+                line.spans.push_back({out.empty() ? result_prefix() : std::string(static_cast<size_t>(result_indent()), ' '), theme.text_faint, tui::k_no_src});
                 if (row.hunk) {
                     const auto value = std::string(icons().vertical == "|" ? "..." : "⋯") +
                         (row.code.empty() ? "" : " " + std::string(row.code));
-                    const auto shown = fit_columns(value, std::max(0, width - 2));
+                    const auto shown = fit_columns(value, std::max(0, width - result_indent()));
                     line.spans.push_back({shown, theme.text_faint, tui::k_no_src});
-                    line.width = 2 + display_width(shown);
+                    line.width = result_indent() + display_width(shown);
                     out.push_back(std::move(line));
                     break;
                 }
@@ -480,17 +610,17 @@ public:
 
 class GutterRenderer final : public tui::BlockRenderer {
 public:
-    explicit GutterRenderer(std::unique_ptr<tui::BlockRenderer> inner) : inner_(std::move(inner)) {}
+    GutterRenderer(std::unique_ptr<tui::BlockRenderer> inner, const std::set<uint64_t>& starts)
+        : inner_(std::move(inner)), starts_(starts) {}
     tui::WrapResult measure(std::string_view source, size_t from, int width) const override {
         return inner_->measure(source, from, std::max(1, width - 2));
     }
     size_t render(const tui::Block& block, int width, const tui::ThemeTokens& theme,
                   size_t from, size_t valid, std::vector<tui::Line>& out) const override {
-        const bool tool = block.meta.starts_with("tool.body");
         const size_t count = inner_->render(block, std::max(1, width - 2), theme, from, valid, out);
         for (size_t i = valid; i < count; ++i) {
             out[i].spans.insert(out[i].spans.begin(),
-                                {tool ? std::string(icons().vertical) + " " : "  ", tool ? theme.text_muted : theme.text,
+                                {i == 0 && starts_.contains(block.id) ? std::string(icons().item) + " " : "  ", theme.text,
                                  tui::k_no_src});
             out[i].width += 2;
         }
@@ -498,6 +628,7 @@ public:
     }
 private:
     std::unique_ptr<tui::BlockRenderer> inner_;
+    const std::set<uint64_t>& starts_;
 };
 
 struct LinkRange {
@@ -673,12 +804,12 @@ bool not_executed(std::string_view text) {
 }
 tui::BlockKind body_kind(std::string_view name) {
     if (name == "edit" || name == "write") return tui::BlockKind::diff;
-    if (name == "grep" || name == "glob") return tui::BlockKind::code;
     return tui::BlockKind::text;
 }
 std::string title_name(std::string_view name) {
     if (name.empty()) return std::string(ui::text().card_tool);
     if (name == "todo") return std::string(ui::text().card_plan);
+    if (name == "ask_user") return "Ask";
     std::string value(name);
     value.front() = static_cast<char>(std::toupper(static_cast<unsigned char>(value.front())));
     return value;
@@ -701,9 +832,9 @@ void Transcript::install_renderers() {
     install(tui::BlockKind::text, std::make_unique<ChatRenderer>(frame_, doc_));
     install(tui::BlockKind::output, std::make_unique<UserRenderer>());
     install(tui::BlockKind::diff, std::make_unique<DiffBodyRenderer>());
-    install(tui::BlockKind::code, std::make_unique<GutterRenderer>(std::make_unique<tui::SyntaxRenderer>()));
-    install(tui::BlockKind::markdown, std::make_unique<GutterRenderer>(std::make_unique<tui::MarkdownRenderer>()));
-    install(tui::BlockKind::table, std::make_unique<GutterRenderer>(std::make_unique<tui::TableRenderer>()));
+    install(tui::BlockKind::code, std::make_unique<GutterRenderer>(std::make_unique<tui::SyntaxRenderer>(), assistant_starts_));
+    install(tui::BlockKind::markdown, std::make_unique<GutterRenderer>(std::make_unique<tui::MarkdownRenderer>(), assistant_starts_));
+    install(tui::BlockKind::table, std::make_unique<GutterRenderer>(std::make_unique<tui::TableRenderer>(), assistant_starts_));
 }
 
 void Transcript::set_render_options(bool auto_diff, bool unified, bool links, std::filesystem::path project) {
@@ -726,7 +857,6 @@ bool Transcript::can_switch_diff(const tui::Scrollback& scroll, bool visible_onl
 
 void Transcript::refresh_icons() {
     for (const auto& [id, source] : icon_sources_) doc_.replace(id, source());
-    update_todo_block();
 }
 
 void Transcript::set_compact(bool value) {
@@ -752,11 +882,16 @@ void Transcript::refresh_density() {
     const auto end = doc_.append_block(tui::BlockKind::text);
     for (auto id = density_end_ + 1; id < end; ++id) {
         if (const auto* found = doc_.find(id)) {
-            margins_[id] = found->margin_top;
-            if (compact_ && found->margin_top) {
-                auto& block = const_cast<tui::Block&>(*found);
-                block.margin_top = 0; doc_.replace(id, block.source);
+            const bool assistant = found->kind == tui::BlockKind::markdown ||
+                found->kind == tui::BlockKind::code || found->kind == tui::BlockKind::table;
+            if (assistant && assistant_start_pending_) {
+                assistant_starts_.insert(id); assistant_start_pending_ = false;
             }
+            const uint8_t margin = found->meta.starts_with("user:") ? found->margin_top : 0;
+            margins_[id] = margin;
+            auto& block = const_cast<tui::Block&>(*found);
+            block.margin_top = compact_ ? 0 : margin;
+            doc_.replace(id, block.source);
         }
     }
     density_end_ = end;
@@ -765,39 +900,38 @@ void Transcript::refresh_density() {
 
 uint64_t Transcript::text(std::string source, std::string meta, bool open) {
     tui::Block block;
+    if (meta.starts_with("system.")) source.insert(0, 1, '\x18');
     block.source = std::move(source); block.meta = std::move(meta);
-    block.margin_top = 1; block.open = open;
+    block.open = open;
     return doc_.append_block(std::move(block));
 }
 void Transcript::finish_message() {
-    if (markdown_) { markdown_->finish(); markdown_.reset(); }
+    if (markdown_) { markdown_->finish(); refresh_density(); markdown_.reset(); }
     finish_thought();
-    has_text_ = false;
 }
 
-// 思考定稿：标题换成 +/- Thought: Ns，正文按当前展开状态收起。
+// 无正文不留标题；流式与历史思考使用相同的展开状态。
 void Transcript::finish_thought() {
     if (!thought_title_) return;
     const double seconds = std::chrono::duration<double>(
         std::chrono::steady_clock::now() - thought_began_).count();
-    doc_.replace(thought_title_, format_text(thoughts_expanded_ ? ui::text().thought_open
-                                                                : ui::text().thought_closed, seconds));
+    const auto* body = doc_.find(reasoning_);
+    const bool empty = !body || body->source.substr(1).find_first_not_of(" \t\r\n") == std::string::npos;
+    doc_.set_meta(thought_title_, "thought");
+    doc_.replace(thought_title_, empty ? "" : format_text(ui::text().thought_closed, seconds));
     if (reasoning_) {
+        if (empty) doc_.replace(reasoning_, {});
         doc_.close_block(reasoning_);
         doc_.set_collapsed(reasoning_, !thoughts_expanded_, 0);
-        thoughts_.push_back({thought_title_, reasoning_, seconds});
+        if (!empty) thoughts_.push_back({thought_title_, reasoning_, seconds});
     }
     thought_title_ = 0; reasoning_ = 0;
 }
 
 void Transcript::toggle_thoughts() {
     thoughts_expanded_ = !thoughts_expanded_;
-    for (const Thought& thought : thoughts_) {
-        doc_.replace(thought.title, format_text(thoughts_expanded_ ? ui::text().thought_open
-                                                                   : ui::text().thought_closed,
-                                                thought.seconds));
-        doc_.set_collapsed(thought.body, !thoughts_expanded_, 0);
-    }
+    for (const Thought& thought : thoughts_) doc_.set_collapsed(thought.body, !thoughts_expanded_, 0);
+    if (reasoning_) doc_.set_collapsed(reasoning_, !thoughts_expanded_, 0);
 }
 
 void Transcript::set_session(std::string mode, std::string model) {
@@ -818,14 +952,20 @@ Transcript::ToolBlocks& Transcript::tool(const std::string& id, const std::strin
             } else blocks.task_description = clean_field(summary);
         }
         tui::Block title_block;
-        title_block.source = "\x1e" + title_name(name) + "\t" + clean_field(summary) + "\t";
-        title_block.meta = "tool.running"; title_block.margin_top = 1; title_block.group = blocks.group;
+        if (name == "ask_user") {
+            const std::string_view prefix = "Ask the user: ";
+            blocks.ask_prompt = clean_field(summary.starts_with(prefix) ? summary.substr(prefix.size()) : summary);
+        }
+        title_block.source = "\x1e" + title_name(name) + "\t" +
+            (name == "ask_user" ? "" : clean_field(summary)) + "\t";
+        title_block.meta = "tool.running"; title_block.group = blocks.group;
         blocks.title = doc_.append_block(std::move(title_block));
         tui::Block body_block;
         body_block.kind = body_kind(name); body_block.open = true;
+        if (body_block.kind == tui::BlockKind::text) body_block.source = "\x1d";
         body_block.meta = "tool.body"; body_block.group = blocks.group;
         blocks.body = doc_.append_block(std::move(body_block));
-        if (body_kind(name) == tui::BlockKind::diff) blocks.diff_width = 129;
+        if (body_kind(name) == tui::BlockKind::diff) blocks.diff_width = DiffBodyRenderer::required_width("");
         tui::Block fold_block;
         fold_block.meta = "tool.fold"; fold_block.group = blocks.group;
         blocks.fold = doc_.append_block(std::move(fold_block));
@@ -834,11 +974,22 @@ Transcript::ToolBlocks& Transcript::tool(const std::string& id, const std::strin
     return it->second;
 }
 
+void Transcript::show_question(const QuestionRequest& question) {
+    const auto prompt = clean_field(question.prompt);
+    // 问答 DTO 不带 call_id，以当前未完成 Ask 的问题匹配对应卡片。
+    for (auto& [id, blocks] : tools_) {
+        if (blocks.finished || blocks.ask_prompt != prompt) continue;
+        blocks.label = "\x1e" "Ask\t" + clean_field(question.header) + "\t";
+        doc_.replace(blocks.title, blocks.label);
+        doc_.replace(blocks.body, "\x1a" + question.prompt + "\n");
+        break;
+    }
+}
+
 void Transcript::finished(const ToolFinished& event) {
     finish_message();
     ToolBlocks& blocks = tool(event.id, event.name, event.summary);
     std::string name = title_name(event.name), param = clean_field(event.summary), stat, body;
-    std::function<std::string()> icon_source;
     uint32_t rows = 3;
     const auto elapsed = std::chrono::duration<double>(std::chrono::steady_clock::now() - blocks.began).count();
     stat = format_text(ui::text().card_elapsed, elapsed);
@@ -879,7 +1030,7 @@ void Transcript::finished(const ToolFinished& event) {
             stat = std::format("HTTP {} · {:.1f}s{}{}", v.status, v.elapsed_ms / 1000.0,
                 v.cached ? " · cached" : "", v.truncated ? " · truncated" : "");
             if (v.operation == "fetch") stat += std::format(" · {}–{}/{} bytes", v.offset, v.next_offset, v.total_bytes);
-            body = v.output; rows = 8;
+            body = v.output; rows = v.operation == "fetch" && !event.is_error ? 0 : 8;
         },
         [&](const McpView& v) {
             name = v.server + "." + v.tool; param.clear();
@@ -891,36 +1042,30 @@ void Transcript::finished(const ToolFinished& event) {
             rows = 5;
         },
         [&](const TodoList& v) {
-            name = std::string(ui::text().card_plan); param = format_text(ui::text().card_items, v.size());
+            name = std::string(ui::text().card_plan);
             const auto done = std::ranges::count_if(v, [](const TodoItem& item) {
                 return item.state == TodoItem::State::done;
             });
-            stat = format_text(ui::text().card_done, done, stat);
-            todo_ = v; if (on_todo_) on_todo_(v); update_todo_block();
-            const bool complete = !v.empty() && done == static_cast<std::ptrdiff_t>(v.size());
-            if (complete && !todo_complete_) {
-                std::string summary = format_text(ui::text().card_plan_complete, done, v.size());
-                for (const auto& item : v) summary += " · " + item.text;
-                text(std::move(summary), "system.todo");
+            param = std::format("{} / {}", done, v.size()); stat.clear();
+            body = "\x19";
+            for (const auto& item : v) {
+                const char state = item.state == TodoItem::State::done ? 'D' : item.state == TodoItem::State::doing ? 'A'
+                    : item.state == TodoItem::State::dropped ? 'X' : 'P';
+                body += state + clean_field(item.text) + "\n";
             }
-            todo_complete_ = complete;
+            rows = UINT32_MAX;
+            if (on_todo_) on_todo_(v);
         },
         [&](const AskView& v) {
-            name = v.header.empty() ? "Question" : v.header;
-            param = clean_field(v.prompt);
-            icon_source = [v] {
-            std::string result = v.prompt + "\n";
+            name = "Ask"; param = clean_field(v.header);
+            body = "\x1a" + v.prompt + "\n";
             for (std::size_t i = 0; i < v.options.size(); ++i) {
                 const bool chosen = std::ranges::find(v.selected, static_cast<int>(i)) != v.selected.end();
-                result += std::format("{} {} — {}\n", chosen ? icons().check : icons().circle,
-                                    v.options[i].label, v.options[i].description);
+                body += std::string("\x1e") + (chosen ? "S" : "P") + clean_field(v.options[i].label) + "\n";
             }
-            if (!v.other.empty()) result += std::string(icons().check) + " Other — " + v.other + "\n";
-            if (v.cancelled) result += "Cancelled\n";
-                return result;
-            };
-            body = icon_source();
-            rows = 8;
+            if (!v.other.empty()) body += "\x1eSOther: " + clean_field(v.other) + "\n";
+            if (v.cancelled) stat = "Cancelled";
+            rows = UINT32_MAX;
         },
         [&](const MemoryView& v) {
             name = "memory"; param = v.op + " " + v.scope + "/" + v.name;
@@ -937,7 +1082,7 @@ void Transcript::finished(const ToolFinished& event) {
             blocks.task_agent = param = clean_field(v.agent);
             if (!v.task.empty()) blocks.task_description = clean_field(v.task);
             blocks.task_result = trim_blank_lines(v.result);
-            stat = task_stats(v.steps.size(), v.tool_calls, v.seconds);
+            stat = task_stats(v.tool_calls, v.seconds);
             for (auto& [id, child] : blocks.children) {
                 if (child[1] == 'R') child[1] = 'E';
             }
@@ -957,17 +1102,34 @@ void Transcript::finished(const ToolFinished& event) {
     doc_.set_meta(blocks.title, event.interrupted || skipped ? "tool.stopped"
                                : event.is_error ? "tool.error" : "tool.done");
     doc_.replace(blocks.title, blocks.label);
+    if (blocks.diff_width && !std::holds_alternative<FileChangeView>(event.view)) {
+        auto& block = const_cast<tui::Block&>(*doc_.find(blocks.body));
+        block.kind = tui::BlockKind::text; blocks.diff_width = 0;
+    }
     if (blocks.task) refresh_task_body(blocks);
-    else doc_.replace(blocks.body, base::to_valid_utf8(body));
+    else {
+        const bool structured = std::holds_alternative<AskView>(event.view) || std::holds_alternative<TodoList>(event.view);
+        if (!blocks.diff_width && !structured) {
+            // 只删完全重复参数的首行，保留真正的结果及错误细节。
+            const auto end = std::min(body.find('\n'), body.size());
+            const auto first = std::string_view(body).substr(0, end);
+            const auto label = first.find(": ");
+            if (!param.empty() && (first == param ||
+                (label != std::string_view::npos && first.substr(label + 2) == param)))
+                body.erase(0, std::min(end + 1, body.size()));
+            body.insert(0, 1, '\x1d');
+        }
+        doc_.replace(blocks.body, base::to_valid_utf8(body));
+    }
+    if (event.is_error || event.interrupted) doc_.set_meta(blocks.body, "tool.body.error");
     doc_.close_block(blocks.body);
     if (blocks.diff_width) blocks.diff_width = DiffBodyRenderer::required_width(doc_.find(blocks.body)->source);
-    if (icon_source) icon_sources_[blocks.body] = std::move(icon_source);
     blocks.rows = rows; blocks.finished = true;
     collapse(blocks);
 }
 
 void Transcript::tick() {
-    frame_ = (frame_ + 1) % 10;
+    frame_ = (frame_ + 1) % icons().spinner.size();
     for (auto& [id, blocks] : tools_) if (!blocks.finished) {
         if (blocks.task) refresh_task_title(blocks);
         else if (const auto* block = doc_.find(blocks.title)) doc_.replace(blocks.title, block->source);
@@ -975,10 +1137,9 @@ void Transcript::tick() {
     }
 }
 void Transcript::refresh_task_title(ToolBlocks& blocks) {
-    const auto steps = std::ranges::count_if(blocks.children, [](const auto& child) { return child.second[1] != 'R'; });
     const auto seconds = std::chrono::duration<double>(std::chrono::steady_clock::now() - blocks.began).count();
     blocks.label = "\x1e" + std::string(ui::text().card_task) + "\t" + blocks.task_agent + "\t" +
-        task_stats(steps, blocks.children.size(), seconds) + "\t" + blocks.task_description;
+        task_stats(blocks.children.size(), seconds) + "\t" + blocks.task_description;
     doc_.replace(blocks.title, blocks.label);
 }
 void Transcript::refresh_task_body(ToolBlocks& blocks) {
@@ -1020,12 +1181,10 @@ void Transcript::apply_child(const std::string& call_id, const Event& event, con
 void Transcript::apply_live(const Event& event) {
     apply(event);
     if (const auto* ended = std::get_if<TurnEnded>(&event.payload)) {
-        if (live_step_ && reasoning_ && ended->status == TurnStatus::interrupted) doc_.replace(reasoning_, {});
-        if (live_step_ && has_text_ && markdown_ && ended->status == TurnStatus::interrupted)
-            markdown_->feed(kInterrupted);
         finish_message();
         for (auto& [id, blocks] : tools_) if (!blocks.finished) {
             doc_.set_meta(blocks.title, "tool.stopped");
+            doc_.set_meta(blocks.body, "tool.body.error");
             doc_.close_block(blocks.body); blocks.finished = true;
             if (!blocks.children.empty()) {
                 std::string body = "\x1c";
@@ -1037,7 +1196,14 @@ void Transcript::apply_live(const Event& event) {
             }
         }
         switch (ended->status) {
-        case TurnStatus::interrupted: text(std::string(ui::text().card_turn_interrupted), "system.stopped"); break;
+        case TurnStatus::interrupted: {
+            const double seconds = std::chrono::duration<double>(std::chrono::steady_clock::now() - turn_began_).count();
+            auto source = [seconds] { return std::string(icons().cross) + " " + std::string(ui::text().card_turn_interrupted)
+                + std::string(icons().separator) + format_text(ui::text().card_elapsed, seconds); };
+            const auto id = text(source(), "msg.footer.error");
+            icon_sources_[id] = std::move(source);
+            break;
+        }
         case TurnStatus::denied: text(std::string(ui::text().card_denied), "system.stopped"); break;
         case TurnStatus::limit: text(std::string(ui::text().card_limit), "system.stopped"); break;
         case TurnStatus::failed: text(ended->error, "system.error"); break;
@@ -1045,11 +1211,9 @@ void Transcript::apply_live(const Event& event) {
             if (live_step_ && !model_.empty()) {
                 const double seconds = std::chrono::duration<double>(
                     std::chrono::steady_clock::now() - turn_began_).count();
-                const std::string meta = mode_ == "unrestricted" ? "msg.footer.error"
-                                       : mode_ == "plan" ? "msg.footer.plan" : "msg.footer";
                 auto footer = format_text(ui::text().turn_footer, mode_, model_, seconds, icons().separator);
                 if (ended->output) footer += std::string(icons().separator) + format_text(ui::text().turn_output, compact_tokens(*ended->output));
-                text(std::move(footer), meta);
+                text(std::move(footer), "msg.footer");
             }
             break;
         }
@@ -1059,6 +1223,7 @@ void Transcript::apply_live(const Event& event) {
 
 void Transcript::append_history(const protocol::HistoryItem& item) {
     for (const Event& event : decode_history(item)) apply(event);
+    if (item.kind == "assistant") finish_message();
     refresh_density();
 }
 
@@ -1069,35 +1234,37 @@ void Transcript::apply(const Event& event) {
             finish_message(); live_step_ = false; turn_began_ = std::chrono::steady_clock::now();
             tui::Block block;
             block.kind = tui::BlockKind::output; block.meta = "user:" + e.time;
-            block.source = e.input; block.margin_top = 1;
+            block.source = e.input; block.margin_top = has_user_ ? 1 : 0; has_user_ = true;
             doc_.append_block(std::move(block));
         },
         [&](const StepStarted&) {
             finish_message(); live_step_ = true;
             step_start_ = doc_.append_block(tui::BlockKind::text);
-            markdown_ = std::make_unique<tui::MarkdownStream>(doc_, 1);
+            markdown_ = std::make_unique<tui::MarkdownStream>(doc_); assistant_start_pending_ = true;
         },
         [&](const TextDelta& e) {
             if (!e.text.empty()) finish_thought();
-            has_text_ = has_text_ || !e.text.empty();
-            if (!markdown_) markdown_ = std::make_unique<tui::MarkdownStream>(doc_, 1);
+            if (!markdown_) { markdown_ = std::make_unique<tui::MarkdownStream>(doc_); assistant_start_pending_ = true; }
             markdown_->feed(e.text);
         },
         [&](const ReasoningDelta& e) {
+            if (e.text.empty()) return;
             if (!reasoning_) {
+                if (e.text.find_first_not_of(" \t\r\n") == std::string::npos) return;
                 thought_began_ = std::chrono::steady_clock::now();
-                thought_title_ = text(std::string(ui::text().thought_live), "thought");
+                thought_title_ = text(std::string(ui::text().thought_live), "thought.live");
                 tui::Block body;
-                body.meta = "thought.body"; body.open = true;
+                body.meta = "thought.body"; body.open = true; body.source = "\x1b";
+                body.collapsed = !thoughts_expanded_; body.collapsed_rows = 0;
                 reasoning_ = doc_.append_block(std::move(body));
             }
             doc_.append(reasoning_, e.text);
         },
         [&](const StreamReset&) {
-            markdown_.reset(); reasoning_ = 0; thought_title_ = 0; has_text_ = false;
+            markdown_.reset(); reasoning_ = 0; thought_title_ = 0;
             if (step_start_) doc_.erase_from(step_start_);
             step_start_ = doc_.append_block(tui::BlockKind::text);
-            markdown_ = std::make_unique<tui::MarkdownStream>(doc_, 1);
+            markdown_ = std::make_unique<tui::MarkdownStream>(doc_); assistant_start_pending_ = true;
         },
         [&](const ToolStarted& e) { finish_message(); tool(e.id, e.name, e.summary); },
         [&](const ToolOutput& e) {
@@ -1115,18 +1282,19 @@ void Transcript::apply(const Event& event) {
         [&](const ModeChanged& e) { mode_ = e.planning ? "plan" : e.mode; },
         [&](const Notice& e) {
             if (e.level == NoticeLevel::error) text(e.text, "system.error");
-            else if (e.persistent) text(e.text, "system.status");
+            else if (e.persistent) text(e.text, e.level == NoticeLevel::warn ? "system.warning" : "system.status");
         },
         [](const auto&) {}
     }, event.payload);
 }
 
 void Transcript::clear() {
-    margins_.clear(); icon_sources_.clear();
-    markdown_.reset(); reasoning_ = step_start_ = todo_block_ = thought_title_ = 0;
+    margins_.clear(); icon_sources_.clear(); assistant_starts_.clear();
+    has_user_ = false; assistant_start_pending_ = true; density_end_ = 0;
+    markdown_.reset(); reasoning_ = step_start_ = thought_title_ = 0;
     thoughts_.clear(); tools_.clear(); tasks_.clear(); doc_.clear();
-    todo_.clear(); todo_complete_ = false; next_group_ = 1;
-    if (on_todo_) on_todo_(todo_);
+    next_group_ = 1;
+    if (on_todo_) on_todo_({});
 }
 void Transcript::info(std::string value) { text(std::move(value), "system.status"); refresh_density(); }
 void Transcript::banner(std::string version, std::string cwd, std::string branch,
@@ -1160,36 +1328,6 @@ void Transcript::toggle_tools() {
 void Transcript::collapse(ToolBlocks& blocks) {
     doc_.set_collapsed(blocks.body, !expanded_, blocks.rows);
     doc_.replace(blocks.fold, std::string(1, '\x1f') + std::to_string(blocks.body));
-}
-void Transcript::set_todo_narrow(bool value) {
-    if (todo_narrow_ == value) return;
-    todo_narrow_ = value;
-    update_todo_block();
-}
-void Transcript::set_todo_collapsed(bool value) {
-    if (todo_collapsed_ == value) return;
-    todo_collapsed_ = value;
-    update_todo_block();
-}
-void Transcript::update_todo_block() {
-    if (todo_.empty() && !todo_block_) return;
-    std::string value;
-    const auto done = std::ranges::count_if(todo_, [](const TodoItem& item) {
-        return item.state == TodoItem::State::done;
-    });
-    if (todo_narrow_ && !todo_.empty()) {
-        value = format_text(ui::text().status_plan, done, todo_.size());
-        if (todo_collapsed_) value += std::string(ui::text().todo_expand);
-        else for (const auto& item : todo_) {
-            const std::string_view symbol = item.state == TodoItem::State::done ? icons().check
-                : item.state == TodoItem::State::doing ? icons().current
-                : item.state == TodoItem::State::dropped ? icons().cross : icons().circle;
-            value += "\n" + std::string(symbol) + " " + item.text;
-        }
-    }
-    if (!todo_block_) todo_block_ = text(std::move(value), "todo");
-    else doc_.replace(todo_block_, std::move(value));
-    refresh_density();
 }
 
 } // namespace dagent::ui

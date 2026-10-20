@@ -23,9 +23,10 @@ tui::ThemeTokens appearance_theme(const Appearance&, const std::filesystem::path
 struct Icons {
     std::string_view brand, branch, check, cross, current, dot, circle, folder, message, bar, meter, vertical, elbow;
     std::string_view horizontal, top_left, top_right, bottom_left, bottom_right, up, down, warning, minus, separator, enter, newline;
-    std::array<std::string_view, 10> spinner;
+    std::array<std::string_view, 4> spinner;
     std::string_view toast_info, toast_warning;
     std::string_view right, chevron;
+    std::string_view item, result, thought, user, todo, done;
 };
 const Icons& icons();
 void set_icons(std::string_view);
@@ -56,7 +57,7 @@ public:
         action_ = std::move(value); tokens_ = std::move(tokens); rate_ = std::move(rate);
         invalidate_layout();
     }
-    void tick() { frame_ = (frame_ + 1) % 10; invalidate(); }
+    void tick() { frame_ = (frame_ + 1) % icons().spinner.size(); invalidate(); }
     void set_theme(const tui::ThemeTokens& theme) { theme_ = &theme; invalidate(); }
     tui::Size measure(tui::Size available) const override { return {available.cols, action_.empty() ? 0 : 1}; }
     void render(tui::Surface&) override;

@@ -11,7 +11,7 @@
 
 namespace dagent::ui {
 
-/// 输入框：左侧竖条 + 底纹，内容自动折行并按折行后的行数增高，
+/// 输入框：圆角边框 + 页面底色，内容自动折行并按折行后的行数增高，
 /// 框内最后一行显示当前模式与模型。
 ///
 /// @note 本控件自绘，不调用 tui::InputBox::render，因此基类内部的横竖滚动量恒为 0；
@@ -24,7 +24,7 @@ public:
     void set_footer_tone(bool error, bool accent);
     void set_active(bool);
     void set_theme(const tui::ThemeTokens&);
-    void set_appearance(const Appearance& a) { compact_ = a.density == "compact"; outline_ = a.panels == "outline"; invalidate_layout(); }
+    void set_appearance(const Appearance& a) { outline_ = a.panels == "outline"; invalidate_layout(); }
 
     tui::Size measure(tui::Size available) const override;
     std::optional<tui::Point> cursor() const override;
@@ -40,12 +40,12 @@ private:
     /// 光标所在的折行行号与该行内的显示列；没有光标时返回 nullopt。
     std::optional<std::pair<int, int>> caret(const std::vector<Row>& rows,
                                              std::string_view value) const;
-    int text_rows(int height) const noexcept; ///< 去掉底部一行后的正文高度
+    int text_rows(int height) const noexcept; ///< 去掉上下框线和尾行后的正文高度
     int inner_width(int cols) const noexcept;
 
-    int top() const { return outline_ || !compact_ ? 1 : 0; }
-    int chrome() const { return top() + (compact_ ? 0 : 1) + 1 + (outline_ ? 1 : 0); }
-    bool compact_ = false, outline_ = false;
+    int top() const { return 1; }
+    int chrome() const { return 3; }
+    bool outline_ = false;
     std::string mode_, model_;
     bool busy_ = false;
     bool footer_error_ = false, footer_accent_ = false;

@@ -75,6 +75,7 @@ struct Strings {
     std::string_view act_preparing;
     std::string_view act_running;
     std::string_view act_waiting;
+    std::string_view act_waiting_answer;
     std::string_view act_line;
     std::string_view act_compacting;
     std::string_view act_resuming;
@@ -146,6 +147,7 @@ struct Strings {
     std::string_view card_denied;
     std::string_view card_limit;
     std::string_view card_collapse;
+    std::string_view card_lines;
     std::string_view card_folded;
     std::string_view banner_hint;
     std::string_view banner_resumed;
@@ -173,7 +175,6 @@ struct Strings {
     std::string_view panel_permissions_footer;
     std::string_view card_task;
     std::string_view card_task_stats;
-    std::string_view card_task_step, card_task_steps;
     std::string_view card_task_tool, card_task_tools;
     std::string_view cmd_agents;
     std::string_view panel_agents;
@@ -219,7 +220,6 @@ struct Strings {
     std::string_view prompt_send, prompt_queue, queue_label, queue_recall, agent_switch, agent_task, activity_working, activity_retrying, activity_elapsed, activity_tokens, activity_rate, turn_output;
     std::string_view turn_footer;
     std::string_view thought_live;
-    std::string_view thought_open;
     std::string_view thought_closed;
     std::string_view cmd_thoughts;
     std::string_view status_hint;

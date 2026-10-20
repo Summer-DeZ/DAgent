@@ -1,6 +1,7 @@
 #pragma once
 
 #include <map>
+#include <set>
 #include <vector>
 #include <memory>
 #include <string>
@@ -40,14 +41,13 @@ public:
     bool can_switch_diff(const tui::Scrollback&, bool visible_only = true) const;
 
     void apply_child(const std::string& call_id, const Event&, const Transcript& child);
+    void show_question(const QuestionRequest&);
     void toggle_tools();
     void toggle_thoughts();
     void set_session(std::string mode, std::string model);
     void info(std::string text);
     void banner(std::string version, std::string cwd, std::string branch, int mcp_servers);
     void resumed(std::string id, std::size_t messages, std::string age);
-    void set_todo_narrow(bool);
-    void set_todo_collapsed(bool);
     const std::vector<TaskRef>& tasks() const { return tasks_; }
 
 private:
@@ -59,6 +59,7 @@ private:
         bool finished = false;
         bool task = false;
         std::string label;
+        std::string ask_prompt;
         std::string task_agent, task_description, task_result;
         std::vector<std::pair<std::string, std::string>> children;
         std::chrono::steady_clock::time_point began{};
@@ -77,7 +78,6 @@ private:
     void collapse(ToolBlocks&);
     void refresh_task_title(ToolBlocks&);
     void refresh_task_body(ToolBlocks&);
-    void update_todo_block();
 
     void refresh_density();
     void install_renderers();
@@ -86,6 +86,8 @@ private:
     int frame_ = 0;
     tui::Document& doc_;
     std::map<uint64_t, uint8_t> margins_;
+    std::set<uint64_t> assistant_starts_;
+    bool assistant_start_pending_ = true, has_user_ = false;
     std::map<uint64_t, std::function<std::string()>> icon_sources_;
     uint64_t density_end_ = 0;
     bool compact_ = false;
@@ -98,14 +100,11 @@ private:
     std::chrono::steady_clock::time_point thought_began_{}, turn_began_{};
     std::string mode_, model_;
     bool expanded_ = false, thoughts_expanded_ = false;
-    bool live_step_ = false, has_text_ = false;
+    bool live_step_ = false;
     std::map<std::string, ToolBlocks> tools_;
     std::vector<TaskRef> tasks_;
     std::function<void(const TodoList&)> on_todo_;
-    TodoList todo_;
-    uint64_t todo_block_ = 0;
     uint32_t next_group_ = 1;
-    bool todo_narrow_ = false, todo_collapsed_ = false, todo_complete_ = false;
 };
 
 } // namespace dagent::ui

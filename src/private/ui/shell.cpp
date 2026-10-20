@@ -222,14 +222,24 @@ public:
             welcome.render(view); welcome.clear_dirty(); clear_dirty(); return;
         }
         if (current_ == nullptr) return;
-        if (current_->dirty_tree()) {
-            current_->render(surface); current_->clear_dirty();
-        }
-        if (!current_->pinned() && current_->unseen_rows() > 0 && surface.rows() > 0) {
-            const std::string text = format_text(ui::text().card_unseen, current_->unseen_rows());
+        // 提示独占滚动区下方一行；先按完整视口判断，避免提示自身制造未读行。
+        auto& doc = current_->document();
+        doc.begin_frame(surface.cols(), current_->theme().epoch);
+        const auto anchor = doc.anchor();
+        const auto top = anchor.pinned_to_bottom ? doc.total_rows()
+            : doc.row_of(anchor.block_id, anchor.byte_in_block, current_->theme()).value_or(0);
+        const bool hint = !anchor.pinned_to_bottom && surface.rows() > 1 &&
+            doc.total_rows() > top + static_cast<size_t>(surface.rows());
+        const int height = surface.rows() - (hint ? 1 : 0);
+        if (current_->rect().h != height) current_->layout({0, 0, surface.cols(), height});
+        auto content = surface.view({0, 0, surface.cols(), height});
+        current_->render(content); current_->clear_dirty();
+        if (hint) {
+            surface.fill({0, height, surface.cols(), 1}, U' ', current_->theme().background);
             const int width = reading_width(surface.cols());
+            const auto text = fit_columns(format_text(ui::text().card_unseen, current_->unseen_rows()), width);
             const int x = (surface.cols() - width) / 2 + std::max(0, width - display_width(text));
-            surface.text(x, surface.rows() - 1, text, current_->theme().text_muted);
+            surface.text(x, height, text, current_->theme().text_faint);
         }
         clear_dirty();
     }
@@ -533,7 +543,6 @@ public:
 
     bool on_event(const tui::Event& event) override {
         if (event.kind == tui::Event::Kind::resize) {
-            active_transcript().set_todo_narrow(event.size.cols < 80);
             update_todo_status(event.size.cols);
         }
         return keys_.on_event(event);
@@ -778,7 +787,7 @@ private:
             turn_begin_ = Clock::now(); phase_ = std::string(ui::text().activity_working);
             output_ = estimated_ = stream_chars_ = 0; stream_seconds_ = 0; streaming_.reset();
             activity_timer_ = rt_.every(100ms, [this] {
-                activity(); activity_->tick(); animation_ = (animation_ + 1) % 10;
+                activity(); activity_->tick(); animation_ = (animation_ + 1) % icons().spinner.size();
                 for (auto& pane : panes_) pane.transcript->tick();
                 refresh_agents(); return true;
             });
@@ -978,7 +987,8 @@ private:
         const double streaming = stream_seconds_ + (streaming_ ? std::chrono::duration<double>(now - *streaming_).count() : 0);
         const auto tokens = std::string(estimated_ || streaming_ || stream_chars_ ? "~" : "") + compact_tokens(count);
         activity_->set_action(format_text(ui::text().activity_elapsed,
-            dialog_.active() ? std::string(ui::text().act_waiting) : phase_, seconds, icons().separator),
+            dialog_.active() ? std::string(interaction_kind_ == "question" && !permission_dialog_open_
+                ? ui::text().act_waiting_answer : ui::text().act_waiting) : phase_, seconds, icons().separator),
             count > 0 ? format_text(ui::text().activity_tokens, tokens) : "",
             count > 0 && streaming > 0 ? format_text(ui::text().activity_rate, count / streaming) : "");
     }
@@ -993,7 +1003,7 @@ private:
         main->add({tui::Sizing::flex, 1}, std::move(frame));
         add_centered(activity_, {tui::Sizing::content});
         add_centered(queue_label_, {tui::Sizing::content});
-        add_centered(input_, {tui::Sizing::content, 0, 2, PromptBox::k_max_rows + 4});
+        add_centered(input_, {tui::Sizing::content, 0, 2, PromptBox::k_max_rows + 5});
 
         auto workspace = std::make_unique<Workspace>(); workspace_ = workspace.get();
         workspace->add({tui::Sizing::flex, 1}, std::move(main));
@@ -1216,7 +1226,6 @@ private:
     void update_todo_status(int columns) {
         const bool hidden = side_->collapsed() || columns < 80;
         header_->sidebar = !hidden; header_->invalidate();
-        for (auto& pane : panes_) pane.transcript->set_todo_narrow(hidden);
     }
     void toggle_todo() {
         sidebar_override_ = !side_->collapsed();
@@ -1738,7 +1747,11 @@ private:
                 answer_interaction(id, {{"decision", decision}, {"feedback", answer.feedback}});
             });
         } else {
-            dialog_.open(decode_question(request.payload),
+            const auto question = decode_question(request.payload);
+            if (request.session_id == id_) panes_.front().transcript->show_question(question);
+            else for (auto& pane : panes_) if (pane.session_id == request.session_id)
+                pane.transcript->show_question(question);
+            dialog_.open(question,
                          [this, id = request.interaction_id](QuestionAnswer answer) {
                 active_interaction_.clear();
                 answer_interaction(id, {{"selected", answer.selected},
