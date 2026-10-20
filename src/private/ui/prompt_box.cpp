@@ -8,8 +8,8 @@
 
 namespace dagent::ui {
 namespace {
-constexpr int k_left = 4;   ///< 边框、留白、提示符与间隙
-constexpr int k_right = 2;  ///< 右侧留白
+constexpr int k_left = 5;   ///< 边框、两格留白、提示符与间隙
+constexpr int k_right = 3;  ///< 右侧两格留白与边框
 
 }
 
@@ -108,7 +108,7 @@ void PromptBox::render(tui::Surface& surface) {
     auto border = theme_->border_active; border.bg = theme_->background.bg;
     draw_frame(surface, {0, 0, w, h}, border);
     auto prefix = theme_->accent; prefix.bg = theme_->background.bg;
-    surface.text(2, top(), icons().user, prefix);
+    surface.text(3, top(), icons().user, prefix);
 
     tui::Style body = theme_->text; body.bg = theme_->background.bg;
     tui::Style muted = theme_->text_muted; muted.bg = body.bg;

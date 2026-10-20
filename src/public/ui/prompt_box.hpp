@@ -25,7 +25,9 @@ public:
     void set_active(bool);
     void set_welcome(bool value) { welcome_ = value; invalidate(); }
     void set_theme(const tui::ThemeTokens&);
-    void set_appearance(const Appearance& a) { outline_ = a.panels == "outline"; invalidate_layout(); }
+    void set_appearance(const Appearance& a) {
+        outline_ = a.panels == "outline"; compact_ = a.density == "compact"; invalidate_layout();
+    }
 
     tui::Size measure(tui::Size available) const override;
     std::optional<tui::Point> cursor() const override;
@@ -45,8 +47,8 @@ private:
     int inner_width(int cols) const noexcept;
 
     int top() const { return 1; }
-    int chrome() const { return 3; }
-    bool outline_ = false;
+    int chrome() const { return compact_ ? 3 : 4; } ///< 上下框线、尾行；comfortable 时正文与尾行之间再留一行
+    bool outline_ = false, compact_ = false;
     std::string mode_, model_;
     bool busy_ = false;
     bool footer_error_ = false, footer_accent_ = false;

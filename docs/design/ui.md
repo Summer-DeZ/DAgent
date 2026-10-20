@@ -214,8 +214,9 @@ unrestricted 为 error），模型为 text。右侧 muted 显示 `↵ send · �
 `↵ queue · ⇧↵ newline`；ASCII 图标集改用 `enter` / `shift+enter`。窄宽度先裁剪模型，
 不足以同时容纳标签和完整快捷键时省略快捷键，不重叠绘制。
 正文按框内可用宽度折行，正文高度为 1–8 行，超出后滚动并保持光标可见。
-comfortable 和 compact 均只在框内绘制输入行与标签/提示尾行，不加上下 padding；
-单行输入时为上框线、输入、尾行、下框线共四行，多行输入按实际正文行数增高。
+框内左右各留两格，标签与输入文字左对齐。comfortable 在输入与尾行之间留一行空行，
+单行输入时共五行（上框线、输入、空行、尾行、下框线）；compact 去掉这行空行，共四行。
+多行输入按实际正文行数增高。
 filled 的 Chip 保留元素底色，outline 继续使用无填色 Chip。
 
 欢迎页的状态 Chip 包含模型；模型同时保留在 HeaderBar、输入框尾行和消息尾行。
