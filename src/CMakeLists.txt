@@ -220,6 +220,7 @@ add_library(dagent_agent STATIC
     private/agent/session.cpp
     private/agent/compaction.cpp
     private/agent/dispatch.cpp
+    private/agent/authorization.cpp
     private/agent/parent_review.cpp
     private/agent/model_budget.cpp
     private/agent/turn_runner.cpp

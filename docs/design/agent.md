@@ -40,6 +40,7 @@ flowchart TD
 | `TurnRunner` | `turn_runner.hpp` | 阻塞循环算法与唯一收尾；无跨会话状态，只经 Session/Run/RunServices 工作 |
 | `ActionCatalog` | `catalog.hpp` | 稳定的动作顺序与准备入口：普通工具、控制动作、动态 MCP |
 | `ActionDispatcher` | `dispatch.hpp` | 一批调用的准备、权限、分组执行与有序提交 |
+| `ApprovalSupport` / `ActionAuthorizer` / `ExecutionAuthorizer` | `authorization.hpp` | 共用审批步骤与身份、执行前动作授权、单次执行的网络/网页授权及结果扫描 |
 | `ExecutionMailbox` / `ParentReviewer` | `execution_mailbox.hpp` / `parent_review.hpp` | worker 向所属 Dispatcher 交接事件；父等待 task 时串行审阅子权限请求 |
 | `BudgetedModel` | `model_budget.hpp` | 普通模型请求、父审阅、摘要与实际重试的共享预算 |
 | `ControlActionExecutor` | `control.hpp` | ask / exit_plan / todo / task / skill 的类型化规则 |
@@ -215,9 +216,18 @@ TurnEnded
 工具语义见 [tools](tools.md)。ActionDispatcher 只决定顺序、权限和并行：
 
 `ActionDispatcher::dispatch` 构造并运行 `dispatch.cpp` 内部的 `DispatchBatch`。批次持有定长槽位、
-并行组、提交进度、邮箱及父审批/决策审阅状态；原调度步骤作为批次成员函数执行。所有 worker join、
+并行组、提交进度、邮箱及父审批/决策审阅状态；准备、分组、邮箱驱动及按序提交仍在批次中。所有 worker join、
 邮箱处理完成后批次才销毁，父审批回调的复位守卫保持原析构顺序。整轮标识仍由 ActionDispatcher 持有，
 execution/approval 编号仍共用进程级序列。
+
+授权逻辑位于 `authorization.hpp/.cpp`：`ApprovalSupport` 持有明确注入的 Policy、Committer、
+审批器、审阅器、review gate、取消令牌及会话信息，并管理批次内的 execution_id 映射。
+DecisionReviewer 与 ReviewContext 仍由批次按原顺序构造，Support 借用可空审阅器。
+`ActionAuthorizer` 返回授权或带停止原因的失败结果，由批次更新 outcome。
+`ExecutionAuthorizer` 在普通工具的 `executions.begin` 后从该槽位构造，持有 ToolCall、PreparedTool
+引用、同一个 ActiveExecution 的 shared_ptr 和目标判定缓存，不持有批次或槽位索引。
+其方法经批次邮箱调用；web 连接检查回调沿用执行线程调用。协作者在 worker join、邮箱处理完成后、
+`finish_execution` 之前销毁，保持 `executions.end` 和槽位 reset 的时机。
 
 ```text
 tool_calls → ActionCatalog.prepare → 普通 PreparedTool ── PreparedIntent → Policy
