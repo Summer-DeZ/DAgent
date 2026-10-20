@@ -1,4 +1,5 @@
 #include "storage/storage.hpp"
+#include "storage/sqlite.hpp"
 
 #include <algorithm>
 #include <array>
@@ -32,9 +33,8 @@ namespace {
 
 using nlohmann::json;
 
-[[noreturn]] void fail(StorageError::Kind kind, const std::string& what) {
-    throw StorageError(kind, what);
-}
+using detail::Statement;
+using detail::fail;
 
 std::int64_t now_ms() {
     return std::chrono::duration_cast<std::chrono::milliseconds>(
@@ -66,55 +66,6 @@ std::string title_from(const json& payload) {
     title.resize(std::min(pos, title.size()));
     return title;
 }
-
-class Statement {
-public:
-    Statement(sqlite3* db, std::string_view sql) : db_(db) {
-        const int rc = sqlite3_prepare_v2(db_, sql.data(), static_cast<int>(sql.size()), &stmt_, nullptr);
-        if (rc != SQLITE_OK) fail(StorageError::Kind::io, sqlite3_errmsg(db_));
-    }
-    ~Statement() { sqlite3_finalize(stmt_); }
-    Statement(const Statement&) = delete;
-    Statement& operator=(const Statement&) = delete;
-
-    void text(int index, std::string_view value) {
-        check(sqlite3_bind_text(stmt_, index, value.data(), static_cast<int>(value.size()), SQLITE_TRANSIENT));
-    }
-    void integer(int index, std::int64_t value) { check(sqlite3_bind_int64(stmt_, index, value)); }
-    void blob(int index, std::string_view value) {
-        check(sqlite3_bind_blob(stmt_, index, value.data(), static_cast<int>(value.size()), SQLITE_TRANSIENT));
-    }
-    void null(int index) { check(sqlite3_bind_null(stmt_, index)); }
-    bool row() {
-        const int rc = sqlite3_step(stmt_);
-        if (rc == SQLITE_ROW) return true;
-        if (rc == SQLITE_DONE) return false;
-        check(rc);
-        return false;
-    }
-    void done() {
-        if (row()) fail(StorageError::Kind::corrupt, "unexpected row from SQLite statement");
-    }
-    std::string string(int column) const {
-        const auto* value = sqlite3_column_text(stmt_, column);
-        const int size = sqlite3_column_bytes(stmt_, column);
-        return value == nullptr ? std::string{} : std::string(reinterpret_cast<const char*>(value), size);
-    }
-    std::string bytes(int column) const {
-        const auto* value = sqlite3_column_blob(stmt_, column);
-        const int size = sqlite3_column_bytes(stmt_, column);
-        return value == nullptr ? std::string{} : std::string(static_cast<const char*>(value), size);
-    }
-    std::int64_t integer(int column) const { return sqlite3_column_int64(stmt_, column); }
-    bool is_null(int column) const { return sqlite3_column_type(stmt_, column) == SQLITE_NULL; }
-
-private:
-    void check(int rc) {
-        if (rc != SQLITE_OK) fail(StorageError::Kind::io, sqlite3_errmsg(db_));
-    }
-    sqlite3* db_ = nullptr;
-    sqlite3_stmt* stmt_ = nullptr;
-};
 
 enum class Access { read_write, read_only };
 
@@ -152,15 +103,7 @@ public:
     Database(const Database&) = delete;
     Database& operator=(const Database&) = delete;
     sqlite3* get() const { return db_; }
-    void exec(std::string_view sql) {
-        char* message = nullptr;
-        const int rc = sqlite3_exec(db_, std::string(sql).c_str(), nullptr, nullptr, &message);
-        if (rc != SQLITE_OK) {
-            const std::string text = message == nullptr ? sqlite3_errmsg(db_) : message;
-            sqlite3_free(message);
-            fail(StorageError::Kind::io, text);
-        }
-    }
+    void exec(std::string_view sql) { detail::exec(db_, sql); }
 
 private:
     void open(bool read_only) {

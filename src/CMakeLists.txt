@@ -120,6 +120,7 @@ target_link_libraries(dagent_workspace
 
 # 会话存储：单个 SQLite 数据库、脱敏、按 cwd 列表与顺序回放。
 add_library(dagent_storage STATIC
+    private/storage/sqlite.cpp
     private/storage/storage.cpp
     private/storage/decision_store.cpp
     public/lib/sqlite/sqlite3.c

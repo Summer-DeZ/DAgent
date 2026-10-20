@@ -19,6 +19,7 @@
 
 #include "base/json.hpp"
 #include "storage/storage.hpp"
+#include "storage/sqlite.hpp"
 
 #include "agent/decision_types.hpp"
 #include "lib/sqlite/sqlite3.h"
@@ -30,9 +31,8 @@ namespace {
 using nlohmann::json;
 using namespace dagent::agent;
 
-[[noreturn]] void fail(StorageError::Kind kind, const std::string& what) {
-    throw StorageError(kind, what);
-}
+using detail::Statement;
+using detail::fail;
 
 std::int64_t now_ms() {
     return std::chrono::duration_cast<std::chrono::milliseconds>(
@@ -99,58 +99,14 @@ Direction direction_from(std::string_view name) {
     fail(StorageError::Kind::corrupt, "unknown decision direction: " + std::string(name));
 }
 
-// ---- SQLite 连接与语句（沿用 storage.cpp 的风格） ----
+double threshold_real(const Statement& statement, int column) {
+    const int type = statement.column_type(column);
+    if (type != SQLITE_INTEGER && type != SQLITE_FLOAT)
+        fail(StorageError::Kind::corrupt, "decision threshold is not numeric");
+    return statement.real(column);
+}
 
-class Statement {
-public:
-    Statement(sqlite3* db, std::string_view sql) : db_(db) {
-        const int rc = sqlite3_prepare_v2(db_, sql.data(), static_cast<int>(sql.size()), &stmt_, nullptr);
-        if (rc != SQLITE_OK) fail(StorageError::Kind::io, sqlite3_errmsg(db_));
-    }
-    ~Statement() { sqlite3_finalize(stmt_); }
-    Statement(const Statement&) = delete;
-    Statement& operator=(const Statement&) = delete;
-
-    void text(int index, std::string_view value) {
-        // 空视图的 data() 可能为空指针；绑成空串而不是 NULL，才能匹配 '' 的列值。
-        static const std::string empty;
-        check(sqlite3_bind_text(stmt_, index, value.empty() ? empty.data() : value.data(),
-                                static_cast<int>(value.size()), SQLITE_TRANSIENT));
-    }
-    void integer(int index, std::int64_t value) { check(sqlite3_bind_int64(stmt_, index, value)); }
-    void real(int index, double value) { check(sqlite3_bind_double(stmt_, index, value)); }
-    void null(int index) { check(sqlite3_bind_null(stmt_, index)); }
-    bool row() {
-        const int rc = sqlite3_step(stmt_);
-        if (rc == SQLITE_ROW) return true;
-        if (rc == SQLITE_DONE) return false;
-        check(rc);
-        return false;
-    }
-    void done() {
-        if (row()) fail(StorageError::Kind::corrupt, "unexpected row from SQLite statement");
-    }
-    std::string string(int column) const {
-        const auto* value = sqlite3_column_text(stmt_, column);
-        const int size = sqlite3_column_bytes(stmt_, column);
-        return value == nullptr ? std::string{} : std::string(reinterpret_cast<const char*>(value), size);
-    }
-    std::int64_t integer(int column) const { return sqlite3_column_int64(stmt_, column); }
-    double real(int column) const {
-        const int type = sqlite3_column_type(stmt_, column);
-        if (type != SQLITE_INTEGER && type != SQLITE_FLOAT)
-            fail(StorageError::Kind::corrupt, "decision threshold is not numeric");
-        return sqlite3_column_double(stmt_, column);
-    }
-    bool is_null(int column) const { return sqlite3_column_type(stmt_, column) == SQLITE_NULL; }
-
-private:
-    void check(int rc) {
-        if (rc != SQLITE_OK) fail(StorageError::Kind::io, sqlite3_errmsg(db_));
-    }
-    sqlite3* db_ = nullptr;
-    sqlite3_stmt* stmt_ = nullptr;
-};
+// ---- 决策库连接与初始化 ----
 
 class Database {
 public:
@@ -175,15 +131,7 @@ public:
     Database(const Database&) = delete;
     Database& operator=(const Database&) = delete;
     sqlite3* get() const { return db_; }
-    void exec(std::string_view sql) {
-        char* message = nullptr;
-        const int rc = sqlite3_exec(db_, std::string(sql).c_str(), nullptr, nullptr, &message);
-        if (rc != SQLITE_OK) {
-            const std::string text = message == nullptr ? sqlite3_errmsg(db_) : message;
-            sqlite3_free(message);
-            fail(StorageError::Kind::io, text);
-        }
-    }
+    void exec(std::string_view sql) { detail::exec(db_, sql); }
 
 private:
     void open() {
@@ -431,7 +379,7 @@ public:
             Statement query(db_.get(),
                             "SELECT scene,dimension,direction,pass,strict,relaxed,current,revision "
                             "FROM thresholds WHERE version_key=?");
-            query.text(1, key);
+            query.text_or_empty(1, key);
             while (query.row()) {
                 found = true;
                 ThresholdKey threshold_key;
@@ -445,9 +393,9 @@ public:
                     fail(StorageError::Kind::corrupt, "invalid decision threshold pass");
                 threshold.pass = pass == "at_most" ? AdaptiveThreshold::Pass::at_most
                                                               : AdaptiveThreshold::Pass::at_least;
-                threshold.strict_value = query.real(4);
-                threshold.relaxed_value = query.real(5);
-                threshold.current_value = query.real(6);
+                threshold.strict_value = threshold_real(query, 4);
+                threshold.relaxed_value = threshold_real(query, 5);
+                threshold.current_value = threshold_real(query, 6);
                 profile.adaptive.emplace(threshold_key, threshold);
                 if (query.integer(7) < 0) fail(StorageError::Kind::corrupt, "negative threshold revision");
                 const auto revision = static_cast<std::uint64_t>(query.integer(7));
@@ -456,11 +404,11 @@ public:
         }
         {
             Statement query(db_.get(), "SELECT name,value FROM fixed_thresholds WHERE version_key=?");
-            query.text(1, key);
+            query.text_or_empty(1, key);
             while (query.row()) {
                 found = true;
                 const std::string name = query.string(0);
-                const double value = query.real(1);
+                const double value = threshold_real(query, 1);
                 if (name == "net_change_low") profile.net_change_low = value;
                 else if (name == "net_change_high") profile.net_change_high = value;
                 else if (name == "injection_limit") profile.injection_limit = value;
@@ -498,18 +446,18 @@ public:
                          "INSERT INTO reviews(id,approval_request_id,session_id,call_id,execution_id,"
                          "root_turn_id,scene,version_key,state,reason,failed,payload,created_ms) "
                          "VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?)");
-        insert.text(1, record.id);
-        insert.text(2, record.identity.request_id);
-        insert.text(3, session);
-        insert.text(4, record.identity.call_id);
-        insert.text(5, record.identity.execution_id);
-        insert.text(6, record.root_turn_id);
-        insert.text(7, scene);
-        insert.text(8, record.version.key());
-        insert.text(9, state);
-        insert.text(10, record.result.reason);
-        insert.text(11, failed_checks_json(record.result.failed_checks).dump());
-        insert.text(12, record_json(record).dump());
+        insert.text_or_empty(1, record.id);
+        insert.text_or_empty(2, record.identity.request_id);
+        insert.text_or_empty(3, session);
+        insert.text_or_empty(4, record.identity.call_id);
+        insert.text_or_empty(5, record.identity.execution_id);
+        insert.text_or_empty(6, record.root_turn_id);
+        insert.text_or_empty(7, scene);
+        insert.text_or_empty(8, record.version.key());
+        insert.text_or_empty(9, state);
+        insert.text_or_empty(10, record.result.reason);
+        insert.text_or_empty(11, failed_checks_json(record.result.failed_checks).dump());
+        insert.text_or_empty(12, record_json(record).dump());
         insert.integer(13, now_ms());
         insert.done();
     }
@@ -523,10 +471,10 @@ public:
                              "final_authority,decision,created_ms) VALUES(?,?,?,?,?)");
             json review_ids = json::array();
             for (const std::string& id : feedback.review_ids) review_ids.push_back(id);
-            insert.text(1, feedback.approval_request_id);
-            insert.text(2, review_ids.dump());
-            insert.text(3, to_string(feedback.final_authority));
-            insert.text(4, feedback.approved ? "approved" : "denied");
+            insert.text_or_empty(1, feedback.approval_request_id);
+            insert.text_or_empty(2, review_ids.dump());
+            insert.text_or_empty(3, to_string(feedback.final_authority));
+            insert.text_or_empty(4, feedback.approved ? "approved" : "denied");
             insert.integer(5, now_ms());
             insert.done();
         }
@@ -562,11 +510,11 @@ private:
             Statement insert(db_.get(),
                 "INSERT INTO thresholds(version_key,scene,dimension,direction,pass,strict,relaxed,current,revision) "
                 "VALUES(?,?,?,?,?,?,?,?,0)");
-            insert.text(1, profile.version.key());
-            insert.text(2, to_string(key.scene));
-            insert.text(3, to_string(key.dimension));
-            insert.text(4, key.direction ? to_string(*key.direction) : std::string_view{});
-            insert.text(5, pass_name(value.pass));
+            insert.text_or_empty(1, profile.version.key());
+            insert.text_or_empty(2, to_string(key.scene));
+            insert.text_or_empty(3, to_string(key.dimension));
+            insert.text_or_empty(4, key.direction ? to_string(*key.direction) : std::string_view{});
+            insert.text_or_empty(5, pass_name(value.pass));
             insert.real(6, value.strict_value);
             insert.real(7, value.relaxed_value);
             insert.real(8, value.current_value);
@@ -574,15 +522,15 @@ private:
         }
         const auto fixed = [&](std::string_view name, double value) {
             Statement query(db_.get(), "SELECT value FROM fixed_thresholds WHERE version_key=? AND name=?");
-            query.text(1, profile.version.key());
-            query.text(2, name);
+            query.text_or_empty(1, profile.version.key());
+            query.text_or_empty(2, name);
             if (query.row()) {
-                if (query.real(0) != value) conflict();
+                if (threshold_real(query, 0) != value) conflict();
                 return;
             }
             Statement insert(db_.get(), "INSERT INTO fixed_thresholds(version_key,name,value) VALUES(?,?,?)");
-            insert.text(1, profile.version.key());
-            insert.text(2, name);
+            insert.text_or_empty(1, profile.version.key());
+            insert.text_or_empty(2, name);
             insert.real(3, value);
             insert.done();
         };
@@ -611,7 +559,7 @@ private:
         std::vector<MergedCheck> checks;
         for (const std::string& id : feedback.review_ids) {
             Statement query(db_.get(), "SELECT version_key,failed,payload FROM reviews WHERE id=?");
-            query.text(1, id);
+            query.text_or_empty(1, id);
             if (!query.row()) return; // 不完整的审阅链不能归因到唯一维度。
             {
                 const std::string version_key = query.string(0);
@@ -655,14 +603,14 @@ private:
             Statement query(db_.get(),
                             "SELECT strict,relaxed,current,revision,pass FROM thresholds "
                             "WHERE version_key=? AND scene=? AND dimension=? AND direction=?");
-            query.text(1, unique->version_key);
-            query.text(2, to_string(unique->check.scene));
-            query.text(3, to_string(unique->check.dimension));
-            query.text(4, unique->check.direction ? to_string(*unique->check.direction) : std::string_view{});
+            query.text_or_empty(1, unique->version_key);
+            query.text_or_empty(2, to_string(unique->check.scene));
+            query.text_or_empty(3, to_string(unique->check.dimension));
+            query.text_or_empty(4, unique->check.direction ? to_string(*unique->check.direction) : std::string_view{});
             if (!query.row()) return; // 该维度未标定：跳过，不新建行
-            strict = query.real(0);
-            relaxed = query.real(1);
-            current = query.real(2);
+            strict = threshold_real(query, 0);
+            relaxed = threshold_real(query, 1);
+            current = threshold_real(query, 2);
             revision = query.integer(3);
             const auto pass = query.string(4);
             if (pass != "at_most" && pass != "at_least")
@@ -693,10 +641,10 @@ private:
                          "WHERE version_key=? AND scene=? AND dimension=? AND direction=?");
         update.real(1, next);
         update.integer(2, revision + 1);
-        update.text(3, unique->version_key);
-        update.text(4, to_string(unique->check.scene));
-        update.text(5, to_string(unique->check.dimension));
-        update.text(6, unique->check.direction ? to_string(*unique->check.direction) : std::string_view{});
+        update.text_or_empty(3, unique->version_key);
+        update.text_or_empty(4, to_string(unique->check.scene));
+        update.text_or_empty(5, to_string(unique->check.dimension));
+        update.text_or_empty(6, unique->check.direction ? to_string(*unique->check.direction) : std::string_view{});
         update.done();
     }
 

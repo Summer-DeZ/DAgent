@@ -3,7 +3,15 @@
 头文件在 `src/public/storage/`，实现在 `src/private/storage/`，构建为 `dagent_storage`，命名空间 `dagent::storage`。
 它实现核心定义的存储端口（`agent/port_journal.hpp`、`agent/port_store.hpp`、`agent/port_lease.hpp`），只依赖 agent 与 base；
 记录的字段与编解码由核心 `RecordCodec` 负责，本模块把 payload 当作不透明 JSON。SQLite amalgamation 随仓库放在
-`src/public/lib/sqlite/`，以 `SQLITE_OMIT_LOAD_EXTENSION`、`SQLITE_DQS=0`、`SQLITE_THREADSAFE=1` 编译；SQLite 类型不出现在公共接口里。
+`src/public/lib/sqlite/`，以 `SQLITE_OMIT_LOAD_EXTENSION`、`SQLITE_DQS=0`、`SQLITE_THREADSAFE=1` 编译；SQLite 类型不出现在对外存储接口里。
+
+`storage/sqlite.hpp` 与 `private/storage/sqlite.cpp` 提供 `dagent::storage::detail` 内部共用的
+`Statement`、`exec` 和错误抛出辅助。`storage.cpp`、`decision_store.cpp` 各自保留数据库打开方式、
+schema 初始化、版本与业务校验。
+`Statement::text` 保留原始指针绑定语义（空指针绑定 NULL）；决策库显式使用 `text_or_empty`，
+将空视图绑定为 `''`。BLOB 仍直接传递原始指针与字节数。
+通用 `real` 读取只做 SQLite 数值转换；决策库的 `threshold_real` 先检查列类型，
+非 INTEGER/FLOAT 时仍抛出 `corrupt`，文案为 `decision threshold is not numeric`。
 
 ## 1. 公共接口
 
