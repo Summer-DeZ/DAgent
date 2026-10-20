@@ -1,6 +1,6 @@
 # TUI 改版计划
 
-设计日期：2026-10-20。状态：已完成（第 1–4 期）。效果预览：[DAgent TUI 新界面设计](https://claude.ai/artifact/QVi4ezzk4oJpudJgZrESuB)（10 个画板）；OpenCode Go 登录与选模型见 [模型登录与请求头计划](model-auth-plan.md)。
+设计日期：2026-10-20。状态：进行中（第 1–4 期已完成，第 5 期进行中）。效果预览：[DAgent TUI 新界面设计](https://claude.ai/artifact/QVi4ezzk4oJpudJgZrESuB)（画板 1–10 为第 1–4 期，11–16 为第 5 期）；OpenCode Go 登录与选模型见 [模型登录与请求头计划](model-auth-plan.md)。
 
 ## 1. 目标
 
@@ -54,14 +54,14 @@
 
 | 键 | 取值 | 说明 |
 | --- | --- | --- |
-| `theme` | `dagent`、`midnight`、`paper` 或主题文件路径 | 预设放在 `home/themes/`，`/settings` 列出 |
+| `theme` | `dagent` 或主题文件路径 | 第 5 期起只保留 DAgent 一套（深色、浅色），见第 9 节 |
 | `mode` | `dark`、`light`、`auto` | `auto` 跟随终端背景（现有行为） |
 | `background` | `solid`、`transparent`、`#rrggbb` | `transparent` 使用终端默认背景，让终端自己的壁纸、毛玻璃或透明度透出；自定义颜色时面板与元素底色按亮度自动推算 |
-| `accent` | `#rrggbb` | 覆盖主题的强调色 |
+| `accent` | `orange`、`green`、`violet`、`blue` 或 `#rrggbb` | 预设按名字保存，深浅各一组取值；自定义色在浅色下自动压暗到 4.5:1 |
 | `panels` | `filled`、`outline` | `outline` 时面板不填底色、改画线框 |
 | `density` | `comfortable`、`compact` | 紧凑模式减少块间空行与标题栏高度 |
 | `icons` | `unicode`、`nerd`、`ascii` | |
-| `sidebar` | `right`、`left`、`hidden` | |
+| `sidebar` | `right`、`left`、`hidden` | 第 5 期并入 `ui.layout.status_panel`，旧键仍可读 |
 | `diff` | `auto`、`unified` | `auto` 在宽屏时用左右对比 |
 
 `/settings` 中的修改立即生效；Enter 写回 `config.json` 的 `ui.appearance`（经后端写入），Esc 恢复打开前的状态。终端不支持真彩色时，自定义颜色按现有 256 色量化规则输出。
@@ -74,6 +74,7 @@
 | 2 对话与浮层 | 工具卡片、活动行与排队、Panel 分组与高亮、命令面板、浮层变暗、审批框、toast、欢迎页、子 Agent 标签页 | 不改框架 |
 | 3 模型与登录 | 两栏模型选择，按 [model-auth 计划](model-auth-plan.md) 实现 OpenCode Go 登录与模型列表、凭据与请求头 | 不改框架 |
 | 4 宽屏增强 | 左右对比 diff；终端可点击链接（OSC 8） | 解冻 TUI 框架，按需扩展渲染与单元格属性 |
+| 5 宽屏布局、对话区与配色 | 正文自适应宽度、左侧导航栏、可配置板块；对话区按 Claude Code 的写法打磨；DAgent 配色重做，删除其它预设（第 9 节） | 按需 |
 
 每期在 `feat/tui-redesign` 分支上完成并验收后提交，合入 `master` 由用户决定。
 
@@ -90,3 +91,54 @@
 - `/settings` 修改后重启仍生效；Esc 撤回不写文件。
 - `transparent` 模式下输出的背景为终端默认色。
 - 不新增测试代码、模拟服务或测试目标。
+
+## 9. 第 5 期设计
+
+设计日期：2026-10-20。预览为画板 11–16。
+
+### 9.1 布局
+
+- 正文宽度 `ui.layout.width`：`auto`（默认，随主区域在 88–120 列之间伸缩，两侧至少留 4 列）、`compact`（88）、`wide`（最多 160）或列数；左右对比 diff 仍可突破正文宽度。
+- 导航栏（新增，默认在状态栏的另一侧）：`ui.layout.navigator` 为 `auto`（终端不少于 170 列时显示）、`always`、`hidden`。板块：SESSIONS（本项目会话，标题、时间、轮数，当前会话高亮，Enter 或点击切换，`+ new session`）、GIT（分支、领先/落后、改动文件与增删行数）、SKILLS、AGENTS（可用子 Agent）。
+- 状态栏（原信息栏）：`ui.layout.status_panel` 为 `right`、`left`、`hidden`，取代 `ui.appearance.sidebar`；运行中子 Agent 的板块改名 RUNNING AGENTS。
+- 板块可配置：`ui.layout.navigator_sections`、`ui.layout.status_sections` 为有序列表；`/settings` 新增 Layout 分节，↑↓ 选板块，←→ 在导航栏、状态栏、隐藏之间移动，shift+↑↓ 排序，Enter 保存，Esc 撤回。
+- 键位：Ctrl+B 打开并聚焦导航栏（↑↓ 选择、Enter 打开、Tab 下一板块、Esc 回到输入框），已打开时再按关闭；Ctrl+T 开关状态栏。
+- 宽度不够时先收起导航栏，再收起状态栏。
+
+### 9.2 对话区
+
+- 每一项以 `●` 开头，颜色表示状态（成功、失败；运行中为动画）；工具结果用 `⎿` 挂在调用下方，不再用 `│` 竖线；diff 行保留行号与增删底色。
+- 思考一行 `✻ Thought for N.Ns`，紧贴后面的内容；没有内容的思考不显示；展开后为缩进斜体。
+- 用户消息为元素底色行，`›` 前缀，右侧时间，是一轮的开头；轮与轮之间留一行，一轮之内各项之间不加空行（`compact` 时轮间也不留）。
+- 轮次尾行紧贴回答，不带图标；被中断时为 `✗ interrupted · 时长`。
+- 问答卡片的问题只出现一次，选项为标签块，选中项高亮并带 ✓；Web fetch 等结果只给一行摘要，不重复标题里的信息。
+- 计划条目用 `☐` / `☒`；输入框为圆角线框。
+- 图标：去掉 `▣`；新增 `● ◐ ⎿ ✻ › ☐ ☒`，ASCII 备用依次为 `*`、`| / - \`、`` `- ``、`~`、`>`、`[ ]`、`[x]`。
+- 修复：`N new lines · End to jump` 不压在卡片内容上。
+
+### 9.3 配色
+
+只保留 DAgent 一套主题（深色、浅色，随终端或手动切换）；删除 `midnight`、`paper` 预设，`theme` 仍可指向自定义主题文件。
+
+| 令牌 | 深色 | 浅色 |
+| --- | --- | --- |
+| 页面 / 面板 / 元素 / 选中 | `#121212` / `#1c1c1c` / `#262626` / `#303030` | `#ffffff` / `#eeeeee` / `#e4e4e4` / `#dadada` |
+| 边框 / 激活边框 | `#3a3a3a` / `#585858` | `#c6c6c6` / `#9e9e9e` |
+| 正文 / 次要 / 更次要 | `#e4e4e4` / `#b2b2b2` / `#8a8a8a` | `#1c1c1c` / `#4e4e4e` / `#6c6c6c` |
+| 强调（橙，默认） | `#fe8a4c` | `#a85500` |
+| 成功 / 错误 / 警告 / 信息与链接 | `#6eb6ff` / `#f24e6f` / `#f1ce59` / `#5ad7d7` | `#0261ca` / `#9b0655` / `#4c4300` / `#007179` |
+| 行内代码 | `#d8b0ff` | `#8b3bab` |
+| diff 新增 / 删除文字 | `#abcdff` / `#f68486` | `#005c94` / `#860f23` |
+| diff 新增 / 删除底色 | `#21344f` / `#381617`（256 色：17 / 52） | `#e1f1ff` / `#facecd`（256 色：195 / 224） |
+| 关键字 / 字符串 / 数字 / 函数 / 类型 | `#c592e7` / `#a6d7a0` / `#f7a97c` / `#81a9fd` / `#81dbcb` | `#8639c7` / `#297d0f` / `#9a5505` / `#215fbc` / `#107a6c` |
+| 注释 | 更次要色，斜体 | 更次要色，斜体 |
+
+强调色预设：orange `#fe8a4c` / `#a85500`，green `#87d787` / `#2a7a1a`，violet `#b9a0ff` / `#6a4bc4`，blue `#7a9cff` / `#3157c8`（深色 / 浅色）。标题用正文色加粗。
+
+规则：
+
+- 中性色对齐 xterm 灰阶，256 色输出与真彩色一致。
+- 文字三档在页面上的对比度：深色 14.7 / 8.8 / 5.4，浅色 17.0 / 8.3 / 5.3；更次要色只用于页面与面板，元素底色上的次要文字用次要色。
+- 所有角色色在面板上不低于 4.5:1；diff 文字在增删底色上不低于 6:1。
+- 成功/错误、警告/错误、强调/错误、强调/警告、新增/删除在红色盲、绿色盲、蓝黄色盲模拟下色差（OKLab ΔE×100）不低于 7；浅色的暖色组合受对比度限制最低约 8.7，状态色出现时都配图标。
+- 验收时用 `temp/` 下的脚本复算对比度、256 色量化与色盲模拟。
