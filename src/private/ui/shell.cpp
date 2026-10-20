@@ -40,6 +40,7 @@
 #include "ui/toast.hpp"
 #include "ui/side_panel.hpp"
 #include "ui/transcript.hpp"
+#include "ui/turn_meter.hpp"
 
 #ifndef DAGENT_VERSION
 #define DAGENT_VERSION "dev"
@@ -640,7 +641,7 @@ private:
         }
         set_busy(snapshot.busy);
         if (snapshot.current_operation && snapshot.current_operation->kind == "compact")
-            phase_ = std::string(ui::text().act_compacting);
+            turn_meter_.set_phase(std::string(ui::text().act_compacting));
         refresh_queue();
         refresh_mcp();
         update_todo_status(terminal_.size().cols);
@@ -735,15 +736,14 @@ private:
         panes_.front().transcript->apply_live(event);
         std::visit(base::Overloaded{
                        [&](const TurnStarted&) {
-                           turn_begin_ = Clock::now(); output_ = estimated_ = stream_chars_ = 0;
-                           streaming_.reset(); stream_seconds_ = 0;
+                           turn_meter_.start_turn();
                            if (update_state) { set_busy(true); refresh_snapshot(); }
                        },
-                       [&](const StepStarted&) { phase_ = std::string(ui::text().activity_working); stream_chars_ = 0; },
-                       [&](const TextDelta& e) { streamed(e.text); },
-                       [&](const ReasoningDelta& e) { streamed(e.text); },
-                       [&](const ToolPending&) { phase_ = std::string(ui::text().activity_working); if (!streaming_) streaming_ = Clock::now(); },
-                       [&](const StreamReset&) { stream_chars_ = 0; streaming_.reset(); },
+                       [&](const StepStarted&) { turn_meter_.start_step(); },
+                       [&](const TextDelta& e) { turn_meter_.streamed(e.text); },
+                       [&](const ReasoningDelta& e) { turn_meter_.streamed(e.text); },
+                       [&](const ToolPending&) { turn_meter_.tool_pending(); },
+                       [&](const StreamReset&) { turn_meter_.reset_stream(); },
                        [&](const ToolFinished& e) {
                            for (auto& pane : panes_) if (pane.call_id == e.id) {
                                pane.state = e.is_error || e.interrupted ? AgentState::failed : AgentState::done;
@@ -752,17 +752,12 @@ private:
                            refresh_agents();
                        },
                        [&](const ContextUpdate& e) {
-                           if (streaming_) stream_seconds_ += std::chrono::duration<double>(Clock::now() - *streaming_).count();
-                           streaming_.reset();
-                           if (e.output) output_ += *e.output;
-                           else estimated_ += (stream_chars_ + 3) / 4;
-                           stream_chars_ = 0;
+                           turn_meter_.complete_call(e.output);
                            if (!update_state) return;
                            update_context(e.used, e.limit);
                        },
                        [&](const Retrying& e) {
-                           phase_ = std::string(ui::text().activity_retrying);
-                           streaming_.reset();
+                           turn_meter_.retry();
                            toast(format_text(ui::text().toast_retry, e.reason, e.wait_ms / 1000.0,
                                              e.attempt, e.max_attempts),
                                  tui::Notice::Severity::warn);
@@ -800,8 +795,7 @@ private:
         busy_ = value; rt_.cancel(activity_timer_); activity_timer_ = 0;
         input_->set_active(!value && active_ == 0); update_prompt_footer();
         if (value) {
-            turn_begin_ = Clock::now(); phase_ = std::string(ui::text().activity_working);
-            output_ = estimated_ = stream_chars_ = 0; stream_seconds_ = 0; streaming_.reset();
+            turn_meter_.start_activity();
             activity_timer_ = rt_.every(100ms, [this] {
                 activity(); activity_->tick(); animation_ = (animation_ + 1) % icons().spinner.size();
                 for (auto& pane : panes_) pane.transcript->tick();
@@ -1129,25 +1123,13 @@ private:
         model_picker_.set_theme(theme_, appearance_.panels == "outline");
         root_.invalidate_tree();
     }
-    void streamed(std::string_view text) {
-        if (text.empty()) return;
-        phase_ = std::string(ui::text().activity_working);
-        if (!streaming_) streaming_ = Clock::now();
-        // 四个 Unicode 码点约一个 token；是显示估计，收到 usage 后即替换。
-        stream_chars_ += std::ranges::count_if(text, [](unsigned char c) { return (c & 0xc0) != 0x80; });
-    }
     void activity() {
         if (!busy_) { activity_->set_action({}); return; }
-        const auto now = Clock::now();
-        const auto seconds = std::chrono::duration<double>(now - turn_begin_).count();
-        const auto count = output_ + estimated_ + (stream_chars_ + 3) / 4;
-        const double streaming = stream_seconds_ + (streaming_ ? std::chrono::duration<double>(now - *streaming_).count() : 0);
-        const auto tokens = std::string(estimated_ || streaming_ || stream_chars_ ? "~" : "") + compact_tokens(count);
+        const auto meter = turn_meter_.display();
         activity_->set_action(format_text(ui::text().activity_elapsed,
             dialog_.active() ? std::string(interaction_kind_ == "question" && !permission_dialog_open_
-                ? ui::text().act_waiting_answer : ui::text().act_waiting) : phase_, seconds, icons().separator),
-            count > 0 ? format_text(ui::text().activity_tokens, tokens) : "",
-            count > 0 && streaming > 0 ? format_text(ui::text().activity_rate, count / streaming) : "");
+                ? ui::text().act_waiting_answer : ui::text().act_waiting) : turn_meter_.phase(), meter.seconds, icons().separator),
+            meter.tokens, meter.rate);
     }
 
     std::unique_ptr<tui::Widget> layout() {
@@ -1467,7 +1449,7 @@ private:
     void compact() {
         if (busy_) return;
         request("session.compact", target(), [this](const nlohmann::json&) {
-            set_busy(true); phase_ = std::string(ui::text().act_compacting); activity();
+            set_busy(true); turn_meter_.set_phase(std::string(ui::text().act_compacting)); activity();
         }, command_failure());
     }
     void new_session() {
@@ -1475,7 +1457,7 @@ private:
         request("session.new", target(), [this](const nlohmann::json& value) {
             apply_snapshot(value.get<protocol::SessionSnapshot>());
         }, command_failure());
-        set_busy(true); phase_ = std::string(ui::text().act_resuming); activity();
+        set_busy(true); turn_meter_.set_phase(std::string(ui::text().act_resuming)); activity();
     }
     void resume_session(std::string id) {
         if (busy_) return;
@@ -1484,7 +1466,7 @@ private:
         request("session.resume", std::move(params), [this](const nlohmann::json& value) {
             apply_snapshot(value.get<protocol::SessionSnapshot>());
         }, command_failure());
-        set_busy(true); phase_ = std::string(ui::text().act_resuming) + id.substr(0, 8); activity();
+        set_busy(true); turn_meter_.set_phase(std::string(ui::text().act_resuming) + id.substr(0, 8)); activity();
     }
 
     void model_panel() {
@@ -1513,7 +1495,7 @@ private:
                 if (selected) toast(std::string(ui::text().toast_model_added) + value["model"].value("name", ""));
                 else toast(error.empty() ? "model switch failed" : error, tui::Notice::Severity::warn);
             }, command_failure());
-            set_busy(true); phase_ = std::string(ui::text().act_adding_model); activity();
+            set_busy(true); turn_meter_.set_phase(std::string(ui::text().act_adding_model)); activity();
         });
     }
     void switch_model(const std::string& name) {
@@ -1523,7 +1505,7 @@ private:
         request("session.select_model", std::move(params), [this](const nlohmann::json& value) {
             apply_snapshot(value.get<protocol::SessionSnapshot>());
         }, command_failure());
-        set_busy(true); phase_ = std::string(ui::text().act_switching_model); activity();
+        set_busy(true); turn_meter_.set_phase(std::string(ui::text().act_switching_model)); activity();
     }
 
     void command_panel() {
@@ -1991,7 +1973,7 @@ private:
     ModelPicker model_picker_;
     std::string interaction_kind_;
     Completion completion_;
-    std::string id_, error_, phase_, project_path_, branch_, completion_kind_;
+    std::string id_, error_, project_path_, branch_, completion_kind_;
     std::filesystem::path project_root_;
     std::string active_interaction_, model_name_, model_label_;
     bool permission_prompt_ = false; ///< 本会话已就当前 pending 弹出过确认框
@@ -2002,10 +1984,7 @@ private:
     std::size_t window_tokens_ = 0;
     std::vector<McpStatus> mcp_states_;
     std::vector<CommandUi> command_ui_;
-    Clock::time_point turn_begin_{};
-    std::optional<Clock::time_point> streaming_;
-    double stream_seconds_ = 0;
-    std::size_t output_ = 0, estimated_ = 0, stream_chars_ = 0;
+    TurnMeter turn_meter_;
     int animation_ = 0;
     struct Submitted { std::size_t id; std::string text, time; };
     std::vector<Submitted> submitted_;

@@ -41,7 +41,6 @@ struct Icons {
 };
 const Icons& icons();
 void set_icons(std::string_view);
-std::string compact_tokens(std::size_t);
 tui::Color diff_background(const tui::ThemeTokens&, bool added);
 void dim_surface(tui::Surface&, const tui::ThemeTokens&, std::optional<tui::Color> terminal);
 void draw_frame(tui::Surface&, tui::Rect, tui::Style);

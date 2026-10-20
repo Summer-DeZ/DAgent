@@ -1,10 +1,16 @@
 #include "ui/display.hpp"
 
 #include <algorithm>
+#include <format>
 
 #include "tui/grapheme.hpp"
 
 namespace dagent::ui {
+std::string compact_tokens(std::size_t n) {
+    if (n < 1000) return std::to_string(n);
+    return n % 1000 == 0 ? std::format("{}k", n / 1000) : std::format("{:.1f}k", n / 1000.0);
+}
+
 int display_width(std::string_view text) {
     int width = 0;
     tui::unicode::Grapheme g;

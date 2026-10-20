@@ -220,10 +220,6 @@ int draw_chip(tui::Surface& s, int x, int y, std::string_view label, tui::Style 
     style.bg = outline ? background : t.background_element.bg;
     return s.text(x, y, outline ? std::string(label) : " " + std::string(label) + " ", style);
 }
-std::string compact_tokens(std::size_t n) {
-    if (n < 1000) return std::to_string(n);
-    return n % 1000 == 0 ? std::format("{}k", n / 1000) : std::format("{:.1f}k", n / 1000.0);
-}
 tui::Color diff_background(const tui::ThemeTokens& t, bool added) {
     return (added ? t.diff_added_bg : t.diff_removed_bg).bg;
 }

@@ -22,6 +22,7 @@ phase 5c 的自适应阅读宽度、双侧分节栏、导航焦点与 Layout 设
 | 部件 | 职责 |
 | --- | --- |
 | `Shell` | 控件寿命、命令映射到 RPC、事件分派、快照/generation 跟踪、页面状态和退出 |
+| `TurnMeter` | 独立值类型：回合与流式计时、输出量累加、阶段和计量文本；不持有控件、计时器或 Runtime |
 | `Transcript` | 协议事件与历史条目到 Document 块的投影：`apply_live` 处理实时事件，`append_history` 回放历史且不触发当前 Run 收尾 |
 | `PromptBox`、`PromptInput` | 自动折行、按行数增高的多行输入；圆角边框、提示符与框内尾行；发送、排队和取回 |
 | `HeaderBar` | 顶部品牌、会话标题、权限/模型 Chip 与 git 分支；侧栏隐藏时显示模型与上下文百分比 |
@@ -237,6 +238,10 @@ muted 的 `QUEUED`、按 FIFO 顺序最多三个 Chip、其余 `+N`，右侧 mut
 
 Activity 位于对话和队列之间，忙时一行，空闲零高度。左侧为 accent spinner 与
 `Working · 23.4s · 1.8k tokens · 64 tok/s`，右侧 muted 的 `esc interrupt`。
+计量状态与计算位于 `ui/turn_meter.hpp` / `private/ui/turn_meter.cpp`；TurnMeter 内部按原条件取
+steady clock 时间，每个 `TurnStarted` 都重置计量但不改阶段，Shell 仅在 busy 从 false 变为 true 时
+调用另一重置入口并设置 Working。计时器、控件更新、弹窗等待文案覆盖及 Pane 状态仍由 Shell 管理。
+压缩、恢复和模型切换的阶段由 Shell 设置，TurnMeter 保存；token 简写共用 `ui/display.hpp` 的 `compact_tokens`。
 token 数为零时只显示阶段与耗时（如 `Working · 0.1s`）；有输出量且有流式用时后才显示速率。
 宽度不足时依次整项省略速率、token 数、`esc interrupt`，不截断指标。
 耗时从本轮开始累计，跨多次模型调用和工具执行不重置；重试、压缩及等待审批沿用相应阶段名称。
