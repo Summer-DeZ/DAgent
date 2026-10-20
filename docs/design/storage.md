@@ -8,6 +8,10 @@
 `storage/sqlite.hpp` 与 `private/storage/sqlite.cpp` 提供 `dagent::storage::detail` 内部共用的
 `Statement`、`exec` 和错误抛出辅助。`storage.cpp`、`decision_store.cpp` 各自保留数据库打开方式、
 schema 初始化、版本与业务校验。
+`storage/platform.hpp` 声明模块内部的 `SessionFileLock` 与 `make_decision_file_private`。
+会话锁原生实现位于 `storage_posix.cpp`，决策库权限操作位于 `decision_store_posix.cpp`，
+CMake 分别通过 `storage_${DAGENT_PLATFORM}.cpp` 和 `decision_store_${DAGENT_PLATFORM}.cpp` 选择。
+决策库仍在 SQLite 打开成功后、设置 busy timeout 前调用权限辅助；chmod(0600) 的返回值仍忽略。
 `Statement::text` 保留原始指针绑定语义（空指针绑定 NULL）；决策库显式使用 `text_or_empty`，
 将空视图绑定为 `''`。BLOB 仍直接传递原始指针与字节数。
 通用 `real` 读取只做 SQLite 数值转换；决策库的 `threshold_real` 先检查列类型，
@@ -117,6 +121,14 @@ web 结果使用现有 tool 记录保存 `WebView` 和该次返回的正文，�
 - 同一进程内按路径复用同一个句柄，同会话切模型不会再次加锁；FD 为 CLOEXEC，工具子进程不继承。
 - 锁随所有者析构或进程退出释放；锁文件不 unlink，也不根据 PID 猜测或杀死其他进程。
 - 只读查询不取锁。不同会话可以由不同后端同时写入。
+
+`storage.cpp` 保留注册表与互斥锁：键仍是未经额外规范化的 `path.string()`，值仍为 `weak_ptr<void>`。
+查到活跃 State 时只创建租约包装并共享 State，不创建目录、打开文件或重新加锁；过期条目先删除。
+新锁仍在同一互斥范围内创建父目录、分配共享 State、保存 session_id，再构造不透明 `SessionFileLock`。
+其 Impl 在 open 前分配；open 使用 `O_RDWR | O_CREAT | O_CLOEXEC`、`0600`，随后一次 `flock(LOCK_EX | LOCK_NB)`，
+不重试 EINTR。open 失败保留原错误文本；flock 失败先 close、置 -1，再报会话占用错误。
+取得锁后才登记 State 并返回租约。最后一个共享 State 销毁时，其 SessionFileLock 先 `LOCK_UN` 再 close，
+注册表不持有强引用；登记或租约分配失败时也由该 State 的析构释放锁。
 
 ## 5. 读取
 

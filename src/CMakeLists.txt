@@ -113,6 +113,7 @@ target_link_libraries(dagent_web PUBLIC dagent_exec PRIVATE lexbor_static)
 # 工作区：文件原语、ripgrep 搜索、unified diff、项目上下文（git/AGENTS.md/模板）。
 add_library(dagent_workspace STATIC
     private/workspace/files.cpp
+    private/workspace/files_${DAGENT_PLATFORM}.cpp
     private/workspace/search.cpp
     private/workspace/diff.cpp
     private/workspace/git.cpp
@@ -132,7 +133,9 @@ target_link_libraries(dagent_workspace
 add_library(dagent_storage STATIC
     private/storage/sqlite.cpp
     private/storage/storage.cpp
+    private/storage/storage_${DAGENT_PLATFORM}.cpp
     private/storage/decision_store.cpp
+    private/storage/decision_store_${DAGENT_PLATFORM}.cpp
     public/lib/sqlite/sqlite3.c
 )
 

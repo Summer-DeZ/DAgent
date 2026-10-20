@@ -37,6 +37,12 @@ public:
 
 ## 2. 文件原语（files.hpp）
 
+`files.cpp` 保留路径解析、路径包含判断、符号链接目标计算和 BOM/EOL/UTF-8 编解码。
+`files_detail.hpp` 声明模块内部的 `fail`、`through_symlink`、`decode_text`、`encode_text` 与
+`encode_reference_text`，不传递原生句柄或 stat 类型。两条编码函数分别保留原 reserve/逐字符追加方式。
+`files_posix.cpp` 实现文件 I/O、权限、原子替换和 `FileReference` 的全部原生状态；
+CMake 通过 `files_${DAGENT_PLATFORM}.cpp` 选择它，`files.hpp` 的对外接口不变。
+
 ### 路径解析：resolve
 
 把用户路径解析成绝对路径：相对路径基于 `root`；两侧都用 `weakly_canonical` 规范化并解析符号链接
@@ -57,6 +63,16 @@ public:
   新建文件使用 `RENAME_NOREPLACE`，避免覆盖准备后出现的同名文件。
 - `Stamp` 包含 mtime、size、device、inode；预览和写入都核对，FileTracker 不能代替访问授权。
 
+`read()` 先 validate、确认普通文件，再以 `O_RDONLY | O_CLOEXEC` 打开固定 inode 的 `/proc/self/fd` 路径，
+执行 fstat、限长读取和共享解码，返回时关闭读取句柄；原生锚点与目标句柄的持有期不变。
+
+`write()` 先 validate、检查大小与普通文件类型，再复制锚点句柄，逐级 mkdirat/openat2 创建并固定父目录。
+首次 expect 校验后调用 `encode_reference_text`，在 `/proc/self/fd/<目录>/.dagent-XXXXXX` 创建临时文件，
+旧文件权限保留 `0777`，新文件使用缓存的默认权限。写入遇 EINTR 重试，零字节或其他失败均报 io。
+文件 fsync 后再次 validate 和 expect 校验，再 renameat2；同步目录、fstat 临时文件句柄取得返回 Stamp。
+临时文件句柄一直保持打开，退出作用域时先关闭同步目录句柄，再 unlinkat 临时名称、关闭临时文件与父目录句柄；
+失败路径使用相同清理对象，不提前关闭或增加重试。
+
 下文 `probe/read_text/write_text` 是装配等受信任调用使用的通用原语，不具备上述审批对象固定契约。
 
 ### 通用读取：probe / read_text
@@ -72,15 +88,16 @@ public:
 
 ### 通用写入：write_text
 
-1. 目标是符号链接时，`through_symlink` 落到它指向的真实文件（相对链接相对链接所在目录解析）；找不到
+1. 检查 `max_write_bytes`。目标是符号链接时，`through_symlink` 落到它指向的真实文件（相对链接相对链接所在目录解析）；找不到
    目标时保持原样，让后续步骤给出真实的 I/O 错误。
-2. 有 `expect` 时，先 `stat` 当前文件并与 `expect` 比较，不一致（文件被改过或消失）就抛 `stale`。
-3. 临时文件建在**同一目录**下（`.{文件名}.dagent-XXXXXX`，`mkstemp` 生成），继承已存在文件的权限位；
-   新文件按进程 `umask`（从 `/proc/self/status` 读，不调用会改变全局状态的 `umask()`）计算，和 shell
-   重定向的默认权限一致。
-4. LF 内容按目标的 `eol`/`bom` 还原（`crlf` 时把每个 `\n` 前插入 `\r`），写入临时文件，`fsync` 文件，
-   `rename` 到目标路径，再 `fsync` 打开的父目录 fd（文件系统不支持时忽略，不报错）。
-5. 父目录不存在时自动创建（`create_directories`）。
+2. `create_directories` 创建父目录，再调用 `encode_text` 按 `eol`/`bom` 编码（`crlf` 时把每个 `\n` 前插入 `\r`）。
+3. `stat` 当前文件，拒绝目录；有 `expect` 时比较 Stamp，不一致（文件被改过或消失）就抛 `stale`。
+4. 临时文件建在**同一目录**下（`.{文件名}.dagent-XXXXXX`，`mkstemp` 生成），用 fchmod 保留旧文件 `07777` 权限位。
+   新文件按进程 umask 取 `0666`；`default_file_mode` 从 `/proc/self/status` 读取并静态缓存，失败回退 `0644`，
+   不调用会改变全局状态的 umask。两条写入路径共用这份缓存。
+5. 写入遇 EINTR 重试，其他负返回报 io；零字节返回仍按原循环处理，不新增报错。
+   `fsync` 文件后显式 `close`，即使 close 报错也先将持有值置为 -1；随后 `rename` 到目标并标记保留。
+6. 打开父目录并 `fsync`（打开或同步失败均忽略）。失败清理保持先关闭仍持有的临时句柄、再 unlink 临时路径。
 
 `stamp_of` 返回当前文件指纹，文件不存在时返回 `nullopt`（不抛异常），用于写入前的比对或核心自己判断
 文件是否被外部改动。

@@ -15,11 +15,10 @@
 #include <utility>
 #include <vector>
 
-#include <sys/stat.h>
-
 #include "base/json.hpp"
 #include "storage/storage.hpp"
 #include "storage/sqlite.hpp"
+#include "storage/platform.hpp"
 
 #include "agent/decision_types.hpp"
 #include "lib/sqlite/sqlite3.h"
@@ -145,7 +144,7 @@ private:
             fail(StorageError::Kind::io, text);
         }
         // 审阅数据含用户原话与命令原文：仅本人可读；不支持 chmod 时忽略。
-        ::chmod(file_.c_str(), 0600);
+        detail::make_decision_file_private(file_);
         sqlite3_busy_timeout(db_, 5000);
     }
     void configure() {

@@ -15,8 +15,8 @@
   termios、sigset_t 等原生类型；资源状态用不透明类型表示。标准库类型可用于中立接口。
 - 平台提取保留原操作、标志、顺序、错误和日志文本、超时、权限与参数；格式化和业务失败策略留在调用方。
 
-这是逐步落实的源码边界约定。当前已提取跨模块小原语、workspace 的 OS 描述、入口与宿主辅助、IPC、TUI 和 exec/SRT，尚未完成全仓 I1/I2：
-工作区文件操作、配置/凭据/会话锁与监听等仍有共享实现中的平台代码；
+这是逐步落实的源码边界约定。当前已提取跨模块小原语、workspace 文件操作与 OS 描述、入口与宿主辅助、IPC、TUI、exec/SRT 和存储平台操作，尚未完成全仓 I1/I2：
+配置/凭据锁、监听与 sandbox status 等仍有共享实现中的平台代码；
 ModelWriteLock 仍含原生状态。下面只列已落地的平台文件。
 
 ## 当前平台文件与接口
@@ -35,6 +35,9 @@ ModelWriteLock 仍含原生状态。下面只列已落地的平台文件。
 | `src/private/ipc/channel_posix.cpp` | `src/public/ipc/channel.hpp` | `InheritedEndpoint` 参数解析、`Channel` 原生状态与传输、`BackendProcess` 不透明进程标识、`spawn_backend`、`wait_or_terminate` |
 | `src/private/tui/terminal_posix.cpp` | `src/public/tui/terminal.hpp`、`src/public/tui/event_wait.hpp` | Terminal 生命周期、原生状态、尺寸、字节写入、输入恢复与信号；EventWait 的等待、输入读取、唤醒及排空 |
 | `src/private/exec/platform_posix.cpp` | `src/public/exec/detail.hpp`、`src/public/exec/platform.hpp`、`src/public/exec/process.hpp` | 环境枚举/匹配、执行权限、SIGPIPE、ProcessGroup、退出状态、spawn_command/spawn_child、InheritedResources、SrtControl、默认 SRT 可读目录 |
+| `src/private/workspace/files_posix.cpp` | `src/public/workspace/files.hpp` | `probe`、`read_text`、`write_text`、`stamp_of`、FileReference 原生状态与操作 |
+| `src/private/storage/storage_posix.cpp` | `src/public/storage/platform.hpp` | `detail::SessionFileLock` |
+| `src/private/storage/decision_store_posix.cpp` | `src/public/storage/platform.hpp` | `detail::make_decision_file_private` |
 
 `executable_path` 的两个重载分别保留 filesystem 的抛异常和 error_code 行为，供 IPC、sandbox status、
 SearXNG 定位程序资源。安装根的固定缓冲区 readlink 和 InstallError 在 `app/paths_posix.cpp` 中保持独立；
@@ -77,3 +80,12 @@ SrtControl 用 optional 延迟到原 socketpair 位置构造，不把连接创�
 设置 Command 继承清单时，在已有控制连接上分配共享元数据及原有 fd 列表存储，均在 fork 前；失败走原资源清理路径。
 环境枚举使用借用 span，不新增值复制或容器分配。fork 后钩子不展开不透明对象、不新增分配。
 SRT 配置 JSON、控制帧和线程编排保持共享，各控制 I/O 方法保留原短写、EINTR、EPIPE 与关闭语义。
+
+workspace 的路径和文本编解码通过 `files_detail.hpp` 供平台文件调用，不暴露原生句柄或 stat。
+两条写入路径保持独立：通用 write_text 保留 `07777`、显式 close 后 rename；FileReference::write 保留 `0777`，
+文件句柄保持打开直到 renameat2、同步目录和读取返回 Stamp 后清理。两者共用原 umask 静态缓存，
+零字节写处理与异常清理顺序见 [workspace](workspace.md#2-文件原语fileshpp)。
+
+SessionFileLock 的 Impl 在保存会话 ID 后、open 锁文件前分配；同进程租约注册表与互斥范围仍在 storage.cpp。
+锁保持非阻塞、无 EINTR 重试，最后共享 State 销毁时 UNLOCK+close。决策库 chmod(0600) 仍忽略返回值，
+不与其他模块的锁或权限策略合并，详见 [storage](storage.md#4-写所有权)。

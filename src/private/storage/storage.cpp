@@ -1,12 +1,11 @@
 #include "storage/storage.hpp"
+#include "storage/platform.hpp"
 #include "storage/sqlite.hpp"
 
 #include <algorithm>
 #include <array>
-#include <cerrno>
 #include <chrono>
 #include <cstdint>
-#include <cstring>
 #include <format>
 #include <map>
 #include <memory>
@@ -15,10 +14,6 @@
 #include <random>
 #include <string>
 #include <utility>
-
-#include <fcntl.h>
-#include <sys/file.h>
-#include <unistd.h>
 
 #include "agent/port_store.hpp"
 #include "base/platform.hpp"
@@ -281,14 +276,10 @@ fs::path lock_path(const Options& options, std::string_view session_id) {
 
 struct SessionWriteLease::State {
     std::string session_id;
-    int fd = -1;
+    detail::SessionFileLock file_lock;
 
-    ~State() {
-        if (fd >= 0) {
-            ::flock(fd, LOCK_UN);
-            ::close(fd);
-        }
-    }
+    State(const fs::path& path, std::string_view id)
+        : session_id(id), file_lock(path, id) {}
 };
 
 namespace {
@@ -326,19 +317,7 @@ std::shared_ptr<SessionWriteLease> SessionWriteLease::acquire(const Options& opt
     std::error_code ec;
     fs::create_directories(path.parent_path(), ec);
     if (ec) fail(StorageError::Kind::io, std::format("cannot create session lock directory: {}", ec.message()));
-    auto state = std::make_shared<State>();
-    state->session_id = std::string(session_id);
-    state->fd = ::open(path.c_str(), O_RDWR | O_CREAT | O_CLOEXEC, 0600);
-    if (state->fd < 0) {
-        fail(StorageError::Kind::io,
-             std::format("cannot open session lock {}: {}", path.string(), std::strerror(errno)));
-    }
-    if (::flock(state->fd, LOCK_EX | LOCK_NB) != 0) {
-        ::close(state->fd);
-        state->fd = -1;
-        fail(StorageError::Kind::io,
-             std::format("session {} is already in use by another process", session_id));
-    }
+    auto state = std::make_shared<State>(path, session_id);
     registry[key] = state;
     return std::shared_ptr<SessionWriteLease>(new SessionWriteLease(std::move(state)));
 }
