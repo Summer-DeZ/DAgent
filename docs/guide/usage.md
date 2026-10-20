@@ -68,6 +68,44 @@ dagent --plan "规划一次模块调整"
 `/compact` 压缩上下文、`/new` 创建会话。完整键位与页面行为见 [UI](../design/ui.md)。
 需要人工批准的任务应使用交互界面，`run` 没有人工审批入口。权限细节见 [权限与沙箱](permissions.md)。
 
+## 自定义外观
+
+输入 `/settings` 打开外观设置，`/theme` 直接定位 Mode。上下选择、左右切换，立即预览全界面。
+Enter 保存到当前 Home 的 `config/config.json`，Esc 或 Ctrl+C 撤回；保存失败会显示错误并保留设置窗口。
+背景选 custom 或强调色选 custom 后，Enter 编辑 `#rrggbb`，Enter 应用颜色，再次 Enter 保存。
+
+内置 dagent（中性橙）、midnight（冷紫）、paper（暖纸色），均支持 auto、dark、light。
+auto 跟随终端 OSC 11 背景通知；不发送通知的终端可以手动选择明暗。
+可选 filled/outline 面板、comfortable/compact 密度、unicode/nerd/ascii 图标，以及左/右/隐藏侧栏。
+Nerd 图标需要终端字体包含 Nerd Font 字符。Ctrl+T 临时切换侧栏，不改已保存的配置。
+
+透明模式的用法：先在终端中设置背景图片或透明度，再将 Background 设为 transparent。
+页面使用终端默认底色，面板仍保留主题底色；选择 outline 可让栏和输入框也透出终端背景。
+DAgent 本身不加载背景图片。真彩终端显示精确颜色，256 色终端会自动量化。
+
+也可以编辑配置，例如：
+
+```json
+"ui": {
+  "theme_file": "themes/dagent.json",
+  "completion_max_files": 5000,
+  "appearance": {
+    "theme": "midnight",
+    "mode": "auto",
+    "background": "transparent",
+    "accent": "#6ba1e6",
+    "panels": "filled",
+    "density": "compact",
+    "icons": "unicode",
+    "sidebar": "left"
+  }
+}
+```
+
+每个 appearance 字段均可省略；不写 appearance.theme 时继续使用旧 ui.theme_file。
+自定义主题文件路径相对 Home，格式见 [UI 设计](../design/ui.md#2-外观与设置)。
+直接编辑文件后重启生效；通过设置对话框保存无需重启。
+
 ## 网页调研
 
 `web_search` 和 `web_fetch` 是模型可调用的内置工具，支持搜索、静态页面阅读与会话内分页缓存。

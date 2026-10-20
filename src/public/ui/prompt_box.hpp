@@ -7,6 +7,7 @@
 
 #include "tui/widget.hpp"
 #include "ui/strings.hpp"
+#include "ui/appearance.hpp"
 
 namespace dagent::ui {
 
@@ -23,6 +24,7 @@ public:
     void set_footer_tone(bool error, bool accent);
     void set_active(bool);
     void set_theme(const tui::ThemeTokens&);
+    void set_appearance(const Appearance& a) { compact_ = a.density == "compact"; outline_ = a.panels == "outline"; invalidate_layout(); }
 
     tui::Size measure(tui::Size available) const override;
     std::optional<tui::Point> cursor() const override;
@@ -38,9 +40,12 @@ private:
     /// 光标所在的折行行号与该行内的显示列；没有光标时返回 nullopt。
     std::optional<std::pair<int, int>> caret(const std::vector<Row>& rows,
                                              std::string_view value) const;
-    static int text_rows(int height) noexcept; ///< 去掉底部一行后的正文高度
+    int text_rows(int height) const noexcept; ///< 去掉底部一行后的正文高度
     int inner_width(int cols) const noexcept;
 
+    int top() const { return outline_ || !compact_ ? 1 : 0; }
+    int chrome() const { return top() + (compact_ ? 0 : 1) + 1 + (outline_ ? 1 : 0); }
+    bool compact_ = false, outline_ = false;
     std::string footer_;
     bool footer_error_ = false, footer_accent_ = false;
     bool active_ = false;

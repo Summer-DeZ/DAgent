@@ -1,6 +1,7 @@
 #include "ui/transcript.hpp"
 #include "ui/display.hpp"
 #include "ui/strings.hpp"
+#include "ui/appearance.hpp"
 
 #include <algorithm>
 #include <cctype>
@@ -49,7 +50,7 @@ public:
         if (source.empty()) return {};
         if (const std::size_t marker = source.find("BANNER_END\n"); marker != std::string_view::npos) {
             std::string visible(source);
-            if (width < 60) visible.erase(0, marker + 11);
+            if (width < 60 || icons().bar == "|") visible.erase(0, marker + 11);
             else visible.erase(marker, 11);
             return tui::wrap_measure_from(visible, from, std::max(1, width - 2));
         }
@@ -67,17 +68,21 @@ public:
 
         tui::Style style = theme.text;
         std::string first = "  ", next = "  ";
-        if (block.meta == "user") first = next = width < 60 ? "▌" : "▌ ";
+        if (block.meta == "user") first = next = std::string(icons().bar) + (width < 60 ? "" : " ");
         else if (block.meta == "thought") style = theme.accent;
         else if (block.meta == "msg.footer.error") style = theme.error;
         else if (block.meta == "msg.footer.plan") style = theme.accent;
         else if (block.meta == "msg.footer") style = theme.text_muted;
         else if (block.meta == "thought.body") { // 与 Thought 标题同列，不再加符号
             style = theme.text_muted; style.attrs = style.attrs | tui::Attr::italic;
-        } else if (block.meta == "system.error") style = theme.error;
-        else if (block.meta.starts_with("system.")) style = theme.text_muted;
-        else if (block.meta == "todo") first = next = width < 60 ? "▌" : "▌ ";
+        } else if (block.meta == "system.error") { style = theme.error; first = std::string(icons().cross) + " "; }
+        else if (block.meta.starts_with("system.")) {
+            style = theme.text_muted;
+            if (block.meta == "system.stopped") first = std::string(icons().circle) + " ";
+        }
+        else if (block.meta == "todo") first = next = std::string(icons().bar) + (width < 60 ? "" : " ");
 
+        if (block.meta.starts_with("msg.footer")) first = std::string(icons().message) + " ";
         const int gutter = display_width(first);
         const size_t count = tui::TextRenderer(&tui::ThemeTokens::text).render(
             block, std::max(1, width - gutter), theme, from, valid, out);
@@ -105,7 +110,7 @@ private:
         const size_t count = tui::TextRenderer().render(block, std::max(1, width - 2),
                                                         theme, from, valid, out);
         for (size_t i = valid; i < count; ++i) {
-            out[i].spans.insert(out[i].spans.begin(), {"│ ", theme.border, tui::k_no_src});
+            out[i].spans.insert(out[i].spans.begin(), {std::string(icons().vertical) + " ", theme.border, tui::k_no_src});
             out[i].width += 2;
         }
         return count;
@@ -118,7 +123,7 @@ private:
         if (block.meta == "tool.fold") {
             const std::string_view value = block.source.starts_with('\x1f')
                 ? std::string_view(block.source).substr(1) : std::string_view(block.source);
-            line.spans.push_back({"└ ", theme.text_muted, tui::k_no_src});
+            line.spans.push_back({std::string(icons().elbow) + " ", theme.text_muted, tui::k_no_src});
             line.spans.push_back({fit(value, width - 2), theme.text_muted, 1});
             line.width = std::min(width, 2 + display_width(value));
             return 1;
@@ -131,10 +136,10 @@ private:
         const std::string param = first_tab == std::string::npos ? ""
             : block.source.substr(first_tab + 1, second_tab - first_tab - 1);
         const std::string stat = second_tab == std::string::npos ? "" : block.source.substr(second_tab + 1);
-        std::string_view symbol = "● "; tui::Style symbol_style = theme.accent;
-        if (block.meta == "tool.done") { symbol = "✓ "; symbol_style = theme.success; }
-        else if (block.meta == "tool.error") { symbol = "✗ "; symbol_style = theme.error; }
-        else if (block.meta == "tool.stopped") { symbol = "◌ "; symbol_style = theme.text_muted; }
+        std::string symbol = std::string(icons().dot) + " "; tui::Style symbol_style = theme.accent;
+        if (block.meta == "tool.done") { symbol = std::string(icons().check) + " "; symbol_style = theme.success; }
+        else if (block.meta == "tool.error") { symbol = std::string(icons().cross) + " "; symbol_style = theme.error; }
+        else if (block.meta == "tool.stopped") { symbol = std::string(icons().circle) + " "; symbol_style = theme.text_muted; }
         line.spans.push_back({std::string(symbol), symbol_style, tui::k_no_src});
         tui::Style heading = theme.text; heading.attrs = heading.attrs | tui::Attr::bold;
         line.spans.push_back({name, heading, begin});
@@ -160,7 +165,7 @@ private:
     size_t render_banner(const tui::Block& block, int width, const tui::ThemeTokens& theme,
                          size_t from, size_t valid, std::vector<tui::Line>& out) const {
         std::string source = block.source;
-        if (width < 60) {
+        if (width < 60 || icons().bar == "|") {
             const std::size_t marker = source.find("BANNER_END\n");
             if (marker != std::string::npos) source.erase(0, marker + 11);
         } else {
@@ -171,7 +176,7 @@ private:
         const size_t count = tui::TextRenderer(&tui::ThemeTokens::text_muted).render(
             copy, std::max(1, width - 2), theme, from, valid, out);
         for (size_t i = valid; i < count; ++i) {
-            if (i < 6 && width >= 60) for (auto& span : out[i].spans) span.style = theme.primary;
+            if (i < 6 && width >= 60 && icons().bar != "|") for (auto& span : out[i].spans) span.style = theme.primary;
             out[i].spans.insert(out[i].spans.begin(), {"  ", theme.text_muted, tui::k_no_src});
             out[i].width += 2;
         }
@@ -191,7 +196,7 @@ public:
         const size_t count = inner_->render(block, std::max(1, width - 2), theme, from, valid, out);
         for (size_t i = valid; i < count; ++i) {
             out[i].spans.insert(out[i].spans.begin(),
-                                {tool ? "│ " : "  ", tool ? theme.border : theme.text,
+                                {tool ? std::string(icons().vertical) + " " : "  ", tool ? theme.border : theme.text,
                                  tui::k_no_src});
             out[i].width += 2;
         }
@@ -227,8 +232,10 @@ std::string title_name(std::string_view name) {
 }
 } // namespace
 
-Transcript::Transcript(tui::Document& doc, std::function<void(const TodoList&)> todo)
-    : doc_(doc), on_todo_(std::move(todo)) {
+Transcript::Transcript(tui::Document& doc, std::function<void(const TodoList&)> todo,
+                       std::function<void(const FileChangeView&)> changed,
+                       std::function<void(const std::string&)> user)
+    : doc_(doc), on_changed_(std::move(changed)), on_user_(std::move(user)), on_todo_(std::move(todo)) {
     doc_.set_renderer(tui::BlockKind::text, std::make_unique<ChatRenderer>());
     doc_.set_renderer(tui::BlockKind::output,
                       std::make_unique<GutterRenderer>(std::make_unique<tui::TextRenderer>()));
@@ -240,6 +247,41 @@ Transcript::Transcript(tui::Document& doc, std::function<void(const TodoList&)> 
                       std::make_unique<GutterRenderer>(std::make_unique<tui::MarkdownRenderer>()));
     doc_.set_renderer(tui::BlockKind::table,
                       std::make_unique<GutterRenderer>(std::make_unique<tui::TableRenderer>()));
+}
+
+void Transcript::refresh_icons() {
+    for (const auto& [id, source] : icon_sources_) doc_.replace(id, source());
+    update_todo_block();
+}
+
+void Transcript::set_compact(bool value) {
+    if (compact_ == value) return;
+    compact_ = value;
+    refresh_density();
+    for (const auto& [id, margin] : margins_) {
+        if (const auto* found = doc_.find(id)) {
+            auto& block = const_cast<tui::Block&>(*found);
+            block.margin_top = compact_ ? 0 : margin;
+            doc_.replace(id, block.source);
+        }
+    }
+}
+void Transcript::refresh_density() {
+    // Document owns mutable Blocks; notify it through replace after changing the public
+    // layout metadata, so both row counts and materialized rows are invalidated.
+    // An empty end marker bounds blocks added by MarkdownStream without changing its API.
+    const auto end = doc_.append_block(tui::BlockKind::text);
+    for (auto id = density_end_ + 1; id < end; ++id) {
+        if (const auto* found = doc_.find(id)) {
+            margins_[id] = found->margin_top;
+            if (compact_ && found->margin_top) {
+                auto& block = const_cast<tui::Block&>(*found);
+                block.margin_top = 0; doc_.replace(id, block.source);
+            }
+        }
+    }
+    density_end_ = end;
+    doc_.erase_from(end);
 }
 
 uint64_t Transcript::text(std::string source, std::string meta, bool open) {
@@ -307,6 +349,7 @@ void Transcript::finished(const ToolFinished& event) {
     finish_message();
     ToolBlocks& blocks = tool(event.id, event.name, event.summary);
     std::string name = title_name(event.name), param = clean_field(event.summary), stat, body;
+    std::function<std::string()> icon_source;
     uint32_t rows = 3;
     const auto elapsed = std::chrono::duration<double>(std::chrono::steady_clock::now() - blocks.began).count();
     stat = format_text(ui::text().card_elapsed, elapsed);
@@ -317,6 +360,7 @@ void Transcript::finished(const ToolFinished& event) {
             if (!v.directory) stat = format_text(ui::text().card_read_range, v.start_line, v.end_line, stat);
         },
         [&](const FileChangeView& v) {
+            if (on_changed_ && !event.is_error && !event.interrupted) on_changed_(v);
             name = v.created ? std::string(ui::text().card_write) : std::string(ui::text().card_edit); param = v.path;
             stat = format_text(ui::text().card_changes, v.added, v.removed, stat); body = v.diff; rows = 20;
         },
@@ -374,14 +418,18 @@ void Transcript::finished(const ToolFinished& event) {
         [&](const AskView& v) {
             name = v.header.empty() ? "Question" : v.header;
             param = clean_field(v.prompt);
-            body = v.prompt + "\n";
+            icon_source = [v] {
+            std::string result = v.prompt + "\n";
             for (std::size_t i = 0; i < v.options.size(); ++i) {
                 const bool chosen = std::ranges::find(v.selected, static_cast<int>(i)) != v.selected.end();
-                body += std::format("{} {} — {}\n", chosen ? "✓" : "○",
+                result += std::format("{} {} — {}\n", chosen ? icons().check : icons().circle,
                                     v.options[i].label, v.options[i].description);
             }
-            if (!v.other.empty()) body += "✓ Other — " + v.other + "\n";
-            if (v.cancelled) body += "Cancelled\n";
+            if (!v.other.empty()) result += std::string(icons().check) + " Other — " + v.other + "\n";
+            if (v.cancelled) result += "Cancelled\n";
+                return result;
+            };
+            body = icon_source();
             rows = 8;
         },
         [&](const MemoryView& v) {
@@ -397,10 +445,15 @@ void Transcript::finished(const ToolFinished& event) {
             name = std::string(ui::text().card_task);
             param = v.agent;
             stat = format_text(ui::text().card_task_stats, v.steps.size(), v.tool_calls, v.seconds);
+            icon_source = [v] {
+                std::string result;
             for (const TaskStep& step : v.steps)
-                body += (step.is_error ? "✗ " : "● ") + step.summary + "\n";
-            if (!v.steps.empty()) body += "\n";
-            body += v.result;
+                result += std::string(step.is_error ? icons().cross : icons().dot) + " " + step.summary + "\n";
+            if (!v.steps.empty()) result += "\n";
+            result += v.result;
+                return result;
+            };
+            body = icon_source();
             rows = 10;
             tasks_.push_back({v.agent, v.session_id, event.id});
         }
@@ -412,6 +465,7 @@ void Transcript::finished(const ToolFinished& event) {
                                : event.is_error ? "tool.error" : "tool.done");
     doc_.replace(blocks.title, blocks.label);
     doc_.replace(blocks.body, base::to_valid_utf8(body)); doc_.close_block(blocks.body);
+    if (icon_source) icon_sources_[blocks.body] = std::move(icon_source);
     blocks.rows = rows; blocks.finished = true; blocks.foldable = line_count(body) > rows;
     collapse(blocks);
 }
@@ -424,10 +478,10 @@ void Transcript::apply_live(const Event& event) {
             markdown_->feed(kInterrupted);
         finish_message();
         switch (ended->status) {
-        case TurnStatus::interrupted: text(std::string(ui::text().card_turn_interrupted), "system.status"); break;
-        case TurnStatus::denied: text(std::string(ui::text().card_denied), "system.status"); break;
-        case TurnStatus::limit: text(std::string(ui::text().card_limit), "system.status"); break;
-        case TurnStatus::failed: text("✗ " + ended->error, "system.error"); break;
+        case TurnStatus::interrupted: text(std::string(ui::text().card_turn_interrupted), "system.stopped"); break;
+        case TurnStatus::denied: text(std::string(ui::text().card_denied), "system.stopped"); break;
+        case TurnStatus::limit: text(std::string(ui::text().card_limit), "system.stopped"); break;
+        case TurnStatus::failed: text(ended->error, "system.error"); break;
         case TurnStatus::done:
             if (live_step_ && !model_.empty()) {
                 const double seconds = std::chrono::duration<double>(
@@ -439,15 +493,18 @@ void Transcript::apply_live(const Event& event) {
             break;
         }
     }
+    refresh_density();
 }
 
 void Transcript::append_history(const protocol::HistoryItem& item) {
     for (const Event& event : decode_history(item)) apply(event);
+    refresh_density();
 }
 
 void Transcript::apply(const Event& event) {
     std::visit(Overloaded{
         [&](const TurnStarted& e) {
+            if (on_user_) on_user_(e.input);
             finish_message(); live_step_ = false; turn_began_ = std::chrono::steady_clock::now();
             text(e.input, "user");
         },
@@ -488,7 +545,7 @@ void Transcript::apply(const Event& event) {
         },
         [&](const ModelChanged& e) { model_ = e.model; },
         [&](const Notice& e) {
-            if (e.level == NoticeLevel::error) text("✗ " + e.text, "system.error");
+            if (e.level == NoticeLevel::error) text(e.text, "system.error");
             else if (e.persistent) text(e.text, "system.status");
         },
         [](const auto&) {}
@@ -496,12 +553,13 @@ void Transcript::apply(const Event& event) {
 }
 
 void Transcript::clear() {
+    margins_.clear(); icon_sources_.clear();
     markdown_.reset(); reasoning_ = step_start_ = todo_block_ = thought_title_ = 0;
     thoughts_.clear(); tools_.clear(); tasks_.clear(); doc_.clear();
     todo_.clear(); todo_complete_ = false; next_group_ = 1;
     if (on_todo_) on_todo_(todo_);
 }
-void Transcript::info(std::string value) { text(std::move(value), "system.status"); }
+void Transcript::info(std::string value) { text(std::move(value), "system.status"); refresh_density(); }
 void Transcript::banner(std::string version, std::string cwd, std::string branch,
                         int mcp_servers) {
     static constexpr std::string_view logo =
@@ -512,11 +570,16 @@ void Transcript::banner(std::string version, std::string cwd, std::string branch
         "██████╔╝██║  ██║╚██████╔╝███████╗██║ ╚████║   ██║\n"
         "╚═════╝ ╚═╝  ╚═╝ ╚═════╝ ╚══════╝╚═╝  ╚═══╝   ╚═╝\n"
         "BANNER_END\n";
-    std::string value(logo);
-    value += format_text(ui::text().banner_identity, version, cwd,
-                         branch.empty() ? "" : "   ⎇ " + branch, mcp_servers);
-    value += std::string(ui::text().banner_hint);
-    text(std::move(value), "banner");
+    auto source = [version = std::move(version), cwd = std::move(cwd), branch = std::move(branch), mcp_servers] {
+        std::string value(logo);
+        value += format_text(ui::text().banner_identity, version, cwd,
+                             branch.empty() ? "" : "   " + std::string(icons().branch) + " " + branch, mcp_servers);
+        value += std::string(ui::text().banner_hint);
+        return value;
+    };
+    const auto id = text(source(), "banner");
+    icon_sources_[id] = std::move(source);
+    refresh_density();
 }
 void Transcript::resumed(std::string id, std::size_t messages, std::string age) {
     text(format_text(ui::text().banner_resumed, id.substr(0, 8), messages, age), "system.status");
@@ -551,14 +614,15 @@ void Transcript::update_todo_block() {
         value = format_text(ui::text().status_plan, done, todo_.size());
         if (todo_collapsed_) value += std::string(ui::text().todo_expand);
         else for (const auto& item : todo_) {
-            const std::string_view symbol = item.state == TodoItem::State::done ? "✓"
-                : item.state == TodoItem::State::doing ? "●"
-                : item.state == TodoItem::State::dropped ? "✗" : "○";
+            const std::string_view symbol = item.state == TodoItem::State::done ? icons().check
+                : item.state == TodoItem::State::doing ? icons().current
+                : item.state == TodoItem::State::dropped ? icons().cross : icons().circle;
             value += "\n" + std::string(symbol) + " " + item.text;
         }
     }
     if (!todo_block_) todo_block_ = text(std::move(value), "todo");
     else doc_.replace(todo_block_, std::move(value));
+    refresh_density();
 }
 
 } // namespace dagent::ui

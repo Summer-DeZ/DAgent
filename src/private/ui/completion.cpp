@@ -1,3 +1,4 @@
+#include "ui/appearance.hpp"
 #include "ui/completion.hpp"
 #include "ui/display.hpp"
 
@@ -25,12 +26,7 @@ public:
         if (w < 4 || h < 2) return;
         auto panel = [&](tui::Style style) { style.bg = theme->background_panel.bg; return style; };
         const tui::Style border = panel(theme->border_active);
-        surface.fill({1, 0, w - 2, 1}, U'─', border);
-        surface.fill({1, h - 1, w - 2, 1}, U'─', border);
-        surface.fill({0, 1, 1, h - 2}, U'│', border);
-        surface.fill({w - 1, 1, 1, h - 2}, U'│', border);
-        surface.put(0, 0, "╭", border); surface.put(w - 1, 0, "╮", border);
-        surface.put(0, h - 1, "╰", border); surface.put(w - 1, h - 1, "╯", border);
+        draw_frame(surface, {0, 0, w, h}, border);
         surface.text(2, 0, fit_columns(" " + title + " ", w - 4), panel(theme->text));
         const std::string footer = fit_columns(" " + hint + " ", w - 4);
         surface.text((w - display_width(footer)) / 2, h - 1, footer, panel(theme->text_muted));
@@ -54,7 +50,7 @@ public:
                 style.bg = selected ? theme->background_element.bg : theme->background_panel.bg;
                 return style;
             };
-            surface.text(1, y, selected ? "▌" : " ", row_style(selected ? theme->primary : theme->text_muted));
+            surface.text(1, y, selected ? icons().bar : " ", row_style(selected ? theme->primary : theme->text_muted));
             int col = 2;
             const std::string label = fit_columns(item.label, label_width);
             std::string_view rest = label;

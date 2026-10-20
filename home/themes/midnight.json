@@ -1,0 +1,131 @@
+{
+  "name": "midnight",
+  "dark": {
+    "background": {
+      "bg": "#0b0b14"
+    },
+    "background_panel": {
+      "bg": "#13131f"
+    },
+    "background_element": {
+      "bg": "#1c1c2b"
+    },
+    "text": "#e8e6f0",
+    "text_muted": "#8b89a0",
+    "primary": "#c792ea",
+    "accent": "#d7a8f0",
+    "border": "#2e2e44",
+    "border_active": "#4a4a66",
+    "success": "#82aaff",
+    "error": {
+      "fg": "#f07178",
+      "attrs": [
+        "bold"
+      ]
+    },
+    "warning": "#ffcb6b",
+    "info": "#89ddff",
+    "diff_added": "#82aaff",
+    "diff_removed": "#f07178",
+    "diff_context": "#8b89a0",
+    "diff_hunk": "#8b89a0",
+    "syntax_keyword": "#c792ea",
+    "syntax_string": "#82aaff",
+    "syntax_comment": {
+      "fg": "#8b89a0",
+      "attrs": [
+        "italic"
+      ]
+    },
+    "syntax_number": "#e8e6f0",
+    "syntax_function": "#d7a8f0",
+    "syntax_type": "#ffcb6b",
+    "markdown_heading": {
+      "fg": "#c792ea",
+      "attrs": [
+        "bold"
+      ]
+    },
+    "markdown_code": "#82aaff",
+    "markdown_link": {
+      "fg": "#89ddff",
+      "attrs": [
+        "underline"
+      ]
+    },
+    "markdown_quote": {
+      "fg": "#8b89a0",
+      "attrs": [
+        "italic"
+      ]
+    },
+    "selection": {
+      "fg": "#0b0b14",
+      "bg": "#c792ea"
+    }
+  },
+  "light": {
+    "background": {
+      "bg": "#faf7ff"
+    },
+    "background_panel": {
+      "bg": "#f1ebf8"
+    },
+    "background_element": {
+      "bg": "#e7dfef"
+    },
+    "text": "#292235",
+    "text_muted": "#665a74",
+    "primary": "#704095",
+    "accent": "#80529b",
+    "border": "#d5cadd",
+    "border_active": "#afa0bd",
+    "success": "#245a9b",
+    "error": {
+      "fg": "#ac3043",
+      "attrs": [
+        "bold"
+      ]
+    },
+    "warning": "#79591a",
+    "info": "#216e7b",
+    "diff_added": "#245a9b",
+    "diff_removed": "#ac3043",
+    "diff_context": "#665a74",
+    "diff_hunk": "#665a74",
+    "syntax_keyword": "#704095",
+    "syntax_string": "#245a9b",
+    "syntax_comment": {
+      "fg": "#665a74",
+      "attrs": [
+        "italic"
+      ]
+    },
+    "syntax_number": "#704095",
+    "syntax_function": "#80529b",
+    "syntax_type": "#79591a",
+    "markdown_heading": {
+      "fg": "#704095",
+      "attrs": [
+        "bold"
+      ]
+    },
+    "markdown_code": "#245a9b",
+    "markdown_link": {
+      "fg": "#216e7b",
+      "attrs": [
+        "underline"
+      ]
+    },
+    "markdown_quote": {
+      "fg": "#665a74",
+      "attrs": [
+        "italic"
+      ]
+    },
+    "selection": {
+      "fg": "#faf7ff",
+      "bg": "#704095"
+    }
+  }
+}

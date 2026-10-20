@@ -174,7 +174,7 @@ runtime::Assembled assemble_backend(const runtime::BootstrapOptions& options) {
 
     const ModelFactory make_session = make_model_factory(config);
     auto configuration =
-        std::make_shared<Configuration>(options.root, options.overrides, config.models, config.ui.theme_file, make_session);
+        std::make_shared<Configuration>(options.root, options.overrides, config.models, config.ui.theme_file, config.ui.appearance, make_session);
 
     auto skills = std::make_shared<agent::SkillCatalog>(*load_skills(paths.skills, config.files));
     for (auto& skill : skills->definitions) {

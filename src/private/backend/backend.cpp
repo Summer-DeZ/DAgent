@@ -481,7 +481,7 @@ void Backend::dispatch(const protocol::Request& request) {
         return;
     }
     if (method == "session.new" || method == "session.resume" || method == "session.select_model" ||
-        method == "model.add" || method == "session.compact") {
+        method == "model.add" || method == "ui.appearance.save" || method == "session.compact") {
         push_command(Job{id, method, params});
         return;
     }
@@ -533,6 +533,16 @@ void Backend::handle_command(Job job) {
             select_model(job.id, job.params);
         } else if (job.method == "model.add") {
             add_model(job.id, job.params);
+        } else if (job.method == "ui.appearance.save") {
+            try {
+                respond(job.id, {{"appearance", configuration_->save_appearance(job.params.at("appearance"))}});
+            } catch (const std::exception& error) {
+                protocol::RpcError rpc;
+                rpc.code = protocol::rpc_code::kBusinessError;
+                rpc.kind = protocol::error_kind::kConfigError;
+                rpc.message = error.what();
+                fail(job.id, rpc);
+            }
         } else if (job.method == "session.compact") {
             compact(job.id, job.params);
         }
@@ -630,7 +640,8 @@ void Backend::initialize(const std::string& id, const nlohmann::json& params) {
         }
         session_json = nlohmann::json(to_protocol(runtime_->snapshot()));
     }
-    configuration_ = assembled.configuration;
+    configuration_ = std::dynamic_pointer_cast<ConfigurationGateway>(assembled.configuration);
+    if (!configuration_) throw std::runtime_error("backend configuration gateway is unavailable");
     initialized_ = true;
 
     nlohmann::json theme = nullptr;
@@ -638,7 +649,8 @@ void Backend::initialize(const std::string& id, const nlohmann::json& params) {
     respond(id, {{"mode", mode_},
                  {"session", std::move(session_json)},
                  {"resumed", resumed},
-                 {"ui", {{"theme_file", std::move(theme)}}},
+                 {"ui", {{"theme_file", std::move(theme)}, {"appearance", configuration_->appearance()},
+                         {"themes_directory", configuration_->themes_directory().string()}}},
                  {"progress_interval_ms", progress_interval_ms_}});
 }
 

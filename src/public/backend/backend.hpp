@@ -16,6 +16,7 @@
 #include <thread>
 
 #include "backend/publisher.hpp"
+#include "backend/configuration.hpp"
 #include "ipc/channel.hpp"
 #include "lib/nlohmann/json.hpp"
 #include "protocol/rpc.hpp"
@@ -81,7 +82,7 @@ private:
     std::unique_ptr<Publisher> publisher_;
     std::unique_ptr<runtime::Runtime> runtime_;
     std::shared_ptr<runtime::QueryGateway> queries_;
-    std::shared_ptr<runtime::ConfigurationGateway> configuration_;
+    std::shared_ptr<ConfigurationGateway> configuration_;
     bool initialized_ = false;
     std::string mode_;
     std::string default_model_;

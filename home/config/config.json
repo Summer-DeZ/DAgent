@@ -91,6 +91,15 @@
     "read_max_line_bytes": 2000
   },
   "ui": {
+    "appearance": {
+      "theme": "dagent",
+      "mode": "auto",
+      "background": "solid",
+      "panels": "filled",
+      "density": "comfortable",
+      "icons": "unicode",
+      "sidebar": "right"
+    },
     "completion_max_files": 5000,
     "theme_file": "themes/dagent.json"
   },

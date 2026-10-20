@@ -254,7 +254,9 @@ const std::set<std::string>& known_keys() {
         "subagents.approval.review_timeout_ms", "subagents.approval.failure",
         "session.redact_fields", "session.history_scan_limit", "log.max_file_bytes",
         "log.max_files", "log.level", "log.also_stderr", "progress.interval_ms",
-        "permissions", "ui.theme_file", "ui.completion_max_files", "sandbox.version", "sandbox.backend",
+        "permissions", "ui.theme_file", "ui.completion_max_files", "ui.appearance.theme", "ui.appearance.mode",
+        "ui.appearance.background", "ui.appearance.accent", "ui.appearance.panels",
+        "ui.appearance.density", "ui.appearance.icons", "ui.appearance.sidebar", "sandbox.version", "sandbox.backend",
         "sandbox.host_access", "sandbox.startup_timeout_ms", "sandbox.network_approval_timeout_ms",
         "sandbox.max_network_requests_per_execution", "sandbox.allowed_targets", "sandbox.denied_targets",
         "mcp.connect_timeout_ms", "mcp.probe_timeout_ms",
@@ -799,6 +801,9 @@ Config load_config(const LoadOptions& options) {
     config.decision_models = std::move(catalog.decision_models);
     config.decision = std::move(catalog.selected_decision);
     config.ui.theme_file = node.child("ui").child("theme_file").str();
+    const auto appearance = node.child("ui").child("appearance");
+    config.ui.appearance = resolve_appearance(appearance.exists() ? appearance.raw() : json::object(),
+                                              config.root, config.ui.theme_file);
     config.ui.completion_max_files = size_option(node.required("ui"), "completion_max_files");
     config.system_prompt_file = node.child("prompts").child("system").str((paths.prompts / "system.md").string());
     config.compact_prompt_file = node.child("prompts").child("compact").str((paths.prompts / "compact.md").string());
@@ -916,6 +921,57 @@ std::vector<agent::SubagentDef> load_subagents(
         out.push_back(std::move(def));
     }
     return out;
+}
+
+nlohmann::json resolve_appearance(const nlohmann::json& input, const fs::path& root,
+                                   const fs::path& legacy_theme) {
+    if (!input.is_object()) fail(ConfigError::Kind::type, "/ui/appearance must be an object");
+    json result{{"theme", legacy_theme.empty() ? "dagent" : legacy_theme.string()},
+                {"mode", "auto"}, {"background", "solid"}, {"panels", "filled"},
+                {"density", "comfortable"}, {"icons", "unicode"}, {"sidebar", "right"}};
+    const auto hex = [](const std::string& value) {
+        return value.size() == 7 && value[0] == '#' &&
+            std::ranges::all_of(value.substr(1), [](unsigned char c) { return std::isxdigit(c); });
+    };
+    const std::map<std::string, std::vector<std::string>> choices{
+        {"mode", {"auto", "dark", "light"}}, {"panels", {"filled", "outline"}},
+        {"density", {"comfortable", "compact"}}, {"icons", {"unicode", "nerd", "ascii"}},
+        {"sidebar", {"right", "left", "hidden"}}};
+    for (auto it = input.begin(); it != input.end(); ++it) {
+        const auto path = "/ui/appearance/" + it.key();
+        if (!it->is_string()) fail(ConfigError::Kind::type, path + " must be a string");
+        const auto value = it->get<std::string>();
+        if (const auto c = choices.find(it.key()); c != choices.end()) {
+            if (std::ranges::find(c->second, value) == c->second.end())
+                fail(ConfigError::Kind::invalid, path + ": invalid value '" + value + "'");
+        } else if (it.key() == "background") {
+            if (value != "solid" && value != "transparent" && !hex(value))
+                fail(ConfigError::Kind::invalid, path + " must be solid, transparent or #rrggbb");
+        } else if (it.key() == "accent") {
+            if (!hex(value)) fail(ConfigError::Kind::invalid, path + " must be #rrggbb");
+        } else if (it.key() == "theme") {
+            if (value.empty()) fail(ConfigError::Kind::invalid, path + " must be a preset name or a theme file path");
+        } else {
+            fail(ConfigError::Kind::invalid, "unknown appearance key: " + path);
+        }
+        result[it.key()] = value;
+    }
+    const auto name = result["theme"].get<std::string>();
+    const auto file = name == "dagent" || name == "midnight" || name == "paper"
+        ? root / "themes" / (name + ".json") : absolute_under(root, name);
+    if (!fs::is_regular_file(file)) fail(ConfigError::Kind::invalid, "/ui/appearance/theme: cannot open " + file.string());
+    result["theme"] = file.string();
+    return result;
+}
+
+nlohmann::json save_appearance(const fs::path& root, const nlohmann::json& appearance) {
+    ModelWriteLock lock(root);
+    const fs::path file = root / "config" / "config.json";
+    json document = parse_file(file);
+    const auto effective = resolve_appearance(appearance, root, {});
+    document["ui"]["appearance"] = appearance;
+    workspace::write_text(file, document.dump(2) + "\n", workspace::Eol::lf, false, workspace::stamp_of(file));
+    return effective;
 }
 
 llm::ProviderConfig add_model(const fs::path& root_path,

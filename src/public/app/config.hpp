@@ -33,6 +33,7 @@ namespace dagent::app {
 struct Config {
     struct Ui {
         std::filesystem::path theme_file;
+        nlohmann::json appearance;
         std::size_t completion_max_files = 0;
     } ui;
     std::map<std::string, llm::ProviderConfig> models;
@@ -108,6 +109,10 @@ std::vector<agent::SubagentDef> load_subagents(const std::filesystem::path& dir,
 /// 返回值中的 env:KEY 已解析，供当前进程立即切换使用。
 llm::ProviderConfig add_model(const std::filesystem::path& root,
                                 const llm::ProviderConfig& model);
+
+nlohmann::json resolve_appearance(const nlohmann::json&, const std::filesystem::path& root,
+                                   const std::filesystem::path& legacy_theme);
+nlohmann::json save_appearance(const std::filesystem::path& root, const nlohmann::json&);
 
 /// @brief git 根（`git rev-parse --show-toplevel`），不在仓库里或 git 不可用时退回 cwd。
 std::filesystem::path project_root(const std::filesystem::path& cwd, const exec::Options& process = {});

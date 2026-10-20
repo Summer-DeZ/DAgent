@@ -40,7 +40,10 @@ add_library(dagent_ui STATIC
     private/ui/shell.cpp
     private/ui/transcript.cpp
     private/ui/prompt_input.cpp
-    private/ui/status_line.cpp
+    private/ui/header_bar.cpp
+    private/ui/hint_bar.cpp
+    private/ui/appearance.cpp
+    private/ui/settings_dialog.cpp
     private/ui/approval.cpp
     private/ui/center.cpp
     private/ui/toast.cpp

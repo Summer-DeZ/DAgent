@@ -1,3 +1,4 @@
+#include "ui/appearance.hpp"
 #include "ui/model_dialog.hpp"
 
 #include <algorithm>
@@ -10,6 +11,7 @@
 #include <utility>
 
 #include "ui/display.hpp"
+#include "ui/theme_config.hpp"
 
 namespace dagent::ui {
 namespace {
@@ -35,7 +37,7 @@ std::optional<std::size_t> positive_number(std::string_view text) {
 class ModelDialog::View final : public tui::Container {
 public:
     tui::Text *prompt = nullptr, *error = nullptr;
-    tui::InputBox* input = nullptr;
+    DialogInput* input = nullptr;
     std::unique_ptr<tui::InputBoxHandler> edit;
     const tui::ThemeTokens* current_theme = &tui::dark_theme();
     std::string title;
@@ -44,7 +46,7 @@ public:
         add({tui::Sizing::fixed, 1}, std::make_unique<tui::Text>());
         auto prompt_widget = std::make_unique<tui::Text>(); prompt = prompt_widget.get();
         add({tui::Sizing::content, 0, 1, 2}, std::move(prompt_widget));
-        auto input_widget = std::make_unique<tui::InputBox>(); input = input_widget.get();
+        auto input_widget = std::make_unique<DialogInput>(); input = input_widget.get();
         add({tui::Sizing::fixed, 3}, std::move(input_widget));
         auto error_widget = std::make_unique<tui::Text>(); error = error_widget.get();
         add({tui::Sizing::fixed, 1}, std::move(error_widget));
@@ -71,14 +73,8 @@ public:
         tui::Container::render(surface);
         const int width = surface.cols(), height = surface.rows();
         if (width < 4 || height < 3) return;
-        surface.fill({1, 0, width - 2, 1}, U'─', current_theme->border_active);
-        surface.fill({1, height - 1, width - 2, 1}, U'─', current_theme->border_active);
-        surface.fill({0, 1, 1, height - 2}, U'│', current_theme->border_active);
-        surface.fill({width - 1, 1, 1, height - 2}, U'│', current_theme->border_active);
-        surface.put(0, 0, "╭", current_theme->border_active);
-        surface.put(width - 1, 0, "╮", current_theme->border_active);
-        surface.put(0, height - 1, "╰", current_theme->border_active);
-        surface.put(width - 1, height - 1, "╯", current_theme->border_active);
+        auto border = current_theme->border_active; border.bg = current_theme->background_panel.bg;
+        draw_frame(surface, {0, 0, width, height}, border);
         surface.text(2, 0, fit_columns(" " + title + " ", width - 4), current_theme->text);
         const std::string footer = " enter next/save · shift+tab back · esc cancel ";
         surface.text(std::max(2, (width - display_width(footer)) / 2), height - 1,
@@ -116,7 +112,7 @@ void ModelDialog::close() {
 }
 
 void ModelDialog::set_theme(const tui::ThemeTokens& theme) {
-    theme_ = theme;
+    theme_ = panel_theme(theme);
     if (view_) { view_->theme(theme_); view_->invalidate_tree(); }
 }
 

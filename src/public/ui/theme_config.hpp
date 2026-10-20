@@ -43,5 +43,7 @@ ThemeSet load_theme(const std::filesystem::path& file);
 tui::ThemeTokens builtin_theme(bool light);
 /// 未指定背景的文字令牌继承主题底色，保留 selection 的叠加语义。
 tui::ThemeTokens resolve_theme(tui::ThemeTokens);
+/// 浮层内部的普通文本与框架控件继承 panel 底色。
+tui::ThemeTokens panel_theme(tui::ThemeTokens);
 
 } // namespace dagent::ui

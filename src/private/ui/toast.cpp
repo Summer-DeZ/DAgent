@@ -1,3 +1,4 @@
+#include "ui/appearance.hpp"
 #include "ui/toast.hpp"
 #include "ui/display.hpp"
 
@@ -39,15 +40,11 @@ public:
             const int w = surface.cols();
             auto panel = [&](tui::Style style) { style.bg = theme->background_panel.bg; return style; };
             const tui::Style border = panel(theme->border);
-            surface.fill({1, y, w - 2, 1}, U'─', border);
-            surface.fill({1, y + 2, w - 2, 1}, U'─', border);
-            surface.put(0, y, "╭", border); surface.put(w - 1, y, "╮", border);
-            surface.put(0, y + 1, "│", border); surface.put(w - 1, y + 1, "│", border);
-            surface.put(0, y + 2, "╰", border); surface.put(w - 1, y + 2, "╯", border);
-            std::string_view prefix = "· ";
+            draw_frame(surface, {0, y, w, 3}, border);
+            std::string prefix = std::string(icons().dot) + " ";
             tui::Style style = theme->text_muted;
-            if (entry.severity == tui::Notice::Severity::warn) { prefix = "⚠ "; style = theme->warning; }
-            if (entry.severity == tui::Notice::Severity::error) { prefix = "✗ "; style = theme->error; }
+            if (entry.severity == tui::Notice::Severity::warn) { prefix = std::string(icons().warning) + " "; style = theme->warning; }
+            if (entry.severity == tui::Notice::Severity::error) { prefix = std::string(icons().cross) + " "; style = theme->error; }
             style = panel(style);
             int x = surface.text(2, y + 1, prefix, style);
             surface.text(x, y + 1, fit_columns(entry.text, w - x - 2), style);

@@ -134,8 +134,22 @@ stdio 项支持 `command`、`args`、`env`、`environment`，HTTP 项支持 `url
 | `web.cache_bytes` | 每个 Context 的页面缓存预算，至少等于下载上限 | 16777216 |
 | `web.engines` | 非空的 SearXNG 引擎名称列表；配置中没有端口字段 | yahoo / brave / duckduckgo |
 | `tools.bash_collect_bytes` | 中断时命令输出收集上限 | 4194304 |
+| `ui.theme_file` | 兼容的主题文件路径；appearance.theme 缺省时使用 | themes/dagent.json |
+| `ui.appearance.theme` | dagent / midnight / paper 或相对 Home 的主题路径 | dagent（优先兼容 theme_file） |
+| `ui.appearance.mode` | auto / dark / light | auto |
+| `ui.appearance.background` | solid / transparent / #rrggbb | solid |
+| `ui.appearance.accent` | #rrggbb；省略时使用主题 primary | 省略 |
+| `ui.appearance.panels` | filled / outline | filled |
+| `ui.appearance.density` | comfortable / compact | comfortable |
+| `ui.appearance.icons` | unicode / nerd / ascii | unicode |
+| `ui.appearance.sidebar` | right / left / hidden | right |
 | `ui.completion_max_files` | 每次文件补全扫描上限；每次查询读取当前目录 | 5000 |
 | `session.history_scan_limit` | 每页历史最多扫描的记录数 | 100 |
+
+`ui.appearance` 整体及各键均可省略；显式提供时必须是对象和合法字符串，错误消息指明
+`/ui/appearance/<key>`。无效枚举、颜色、空主题名或不存在的主题文件为配置错误。
+ConfigurationGateway 向前端返回解析后的有效值，保存入口只重写 ui.appearance，保留其它配置。
+`/settings` 的保存立即生效且跨重启保留；Esc/Ctrl+C 只撤销前端预览。预设主题都随 Home 资源安装。
 
 上下文预算、工具结果与文件大小限制、HTTP/进程超时、日志大小及进度间隔也显式读取对应配置段。
 `process.kill_grace_ms`、`process.drain_after_exit_ms`、`process.env_deny` 与 `log.also_stderr` 已列入配置文件。

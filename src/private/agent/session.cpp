@@ -128,7 +128,7 @@ SessionSnapshot Session::snapshot() {
     snapshot.planning = policy_.planning();
     snapshot.plan = plan_.view();
     snapshot.grants = policy_.session_grants();
-    snapshot.used_tokens = estimated_tokens_.load();
+    snapshot.used_tokens = estimated_tokens();
     snapshot.token_limit = compactor_.budget().limit;
     return snapshot;
 }

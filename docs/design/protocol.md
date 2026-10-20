@@ -25,7 +25,7 @@ sequenceDiagram
     F->>B: socketpair + fork/exec（同目录、独立进程组、--ipc-fd 3）
     F->>B: backend.hello（10 秒超时）
     F->>B: app.initialize（root、cwd、mode、覆写、权限/只读/plan、resume/continue）
-    B-->>F: session 快照、resumed、theme_file、progress_interval_ms
+    B-->>F: session 快照、resumed、ui.appearance、ui.themes_directory、progress_interval_ms
     F->>B: session.history / input.submit / …
     B-->>F: event / interaction.requested / 响应
     F->>B: backend.shutdown
@@ -62,7 +62,7 @@ sequenceDiagram
 | 方法 | 执行位置 | 结果 |
 | --- | --- | --- |
 | `backend.hello` | 读线程 | 协议版本、后端版本、backend_instance_id |
-| `app.initialize` | 命令线程，只允许一次 | mode、session 快照或 null（查询模式）、resumed、`ui.theme_file`、progress_interval_ms |
+| `app.initialize` | 命令线程，只允许一次 | mode、session 快照或 null（查询模式）、resumed、`ui.theme_file`、`ui.appearance`、`ui.themes_directory`、progress_interval_ms |
 | `backend.shutdown` | 读线程 | 实际收尾后返回 closed=true；重复关闭幂等 |
 | `session.snapshot` | 读线程 | SessionSnapshot |
 | `input.submit` / `input.recall_last` | 读线程 | input_id（仅表示入队）/ 取回的最后一条排队输入或 null |
@@ -72,11 +72,33 @@ sequenceDiagram
 | `session.revoke_grant` | 读线程校验后走即时控制路径 | 提交撤销记录、终止使用旧授权的活跃执行后返回 removed（运行中也可用） |
 | `model.list` | 读线程 | 公开模型、provider 种类、default_name、selected_name |
 | `session.new` / `resume` / `select_model`、`model.add`、`session.compact` | 命令线程 | 成功返回快照；`model.add` 返回 model/selected/selection_error；compact 返回 operation_id，完成走 `operation.finished` |
+| `ui.appearance.save` | 命令线程 | `{appearance}`：校验、原子保存后返回生效的 appearance；失败为 config_error |
 | `memory.list` / `memory.view` / `memory.delete` | 查询线程 | 全局与当前项目条目元数据 / 正文 / 删除结果；详见 [memory](memory.md#5-用户管理) |
 | `session.list` / `children` / `history` / `history_close`、`workspace.info` / `complete` | 查询线程 | 会话列表、子会话、HistoryItem 页与游标、项目信息、文件候选 |
 
 读线程只做校验与即时操作，不会被模型调用阻塞；耗时命令与只读查询各有一个工作线程，查询失败不影响执行中的 Run。
 请求字段类型不匹配返回 `invalid_params`（-32602），不会终止后端连接。
+
+### 外观初始化与保存（协议 minor 3）
+
+initialize 的 `ui.appearance` 是补齐默认值的外观对象：theme 为已解析的绝对主题文件路径，
+mode/background/panels/density/icons/sidebar 均为有效配置值，accent 未覆盖时省略。
+`ui.themes_directory` 是 Home/themes 的绝对路径，用于前端切换预设；旧 `ui.theme_file` 字段保留。
+前端在第一帧前应用这个对象。字段的合法取值见 [UI](ui.md#2-外观与设置)。
+
+```json
+{"method":"ui.appearance.save","params":{"appearance":{
+  "theme":"midnight","mode":"auto","background":"transparent",
+  "panels":"filled","density":"comfortable","icons":"unicode","sidebar":"right"
+}}}
+```
+
+方法无需 SessionTarget，运行中也可保存；仅作用于当前后端的 Home。
+后端持配置写锁，重新读取 config.json、保留其它键、替换 ui.appearance，沿用模型添加的
+workspace::write_text 原子写与文件 stamp 检查；内存生效值只在写入成功后更新。
+成功返回 `{"appearance": {...}}`，theme 解析为绝对路径；校验和 I/O 失败返回业务错误 config_error，
+不关闭连接。前端收到成功后关闭设置并显示 Appearance saved；失败保留对话框。
+其它已打开的前端不会被广播更新，下一次启动读取保存值。
 
 `session.history` 首次调用捕获高水位，返回不透明游标；每页最多扫描 `session.history_scan_limit` 条记录（随附值 100），读完、`history_close` 或连接关闭时释放，
 每页分配连接内唯一、单次消费且绑定 session_id 的游标。跨会话、已消费或已释放游标返回 `invalid_state`。历史查询不取写锁、不恢复会话、不构造模型或 MCP（记录路线 L22）。

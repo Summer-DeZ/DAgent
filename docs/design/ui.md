@@ -22,58 +22,81 @@
 | `Shell` | 控件寿命、命令映射到 RPC、事件分派、快照/generation 跟踪、页面状态和退出 |
 | `Transcript` | 协议事件与历史条目到 Document 块的投影：`apply_live` 处理实时事件，`append_history` 回放历史且不触发当前 Run 收尾 |
 | `PromptBox`、`PromptInput` | 自动折行、按行数增高的多行输入；左侧竖条与框内尾行；发送、排队和取回 |
-| `StatusLine` | 底部一行：项目路径、上下文用量与命令面板提示 |
+| `HeaderBar` | 顶部品牌、会话标题、权限/模型 Chip 与 git 分支；侧栏隐藏时显示模型与上下文百分比 |
+| `HintBar` | 底部项目路径与随浮层、审批、运行状态变化的键位提示 |
+| `Chip` / `appearance` | 标签绘制、外观令牌变换、统一 Unicode/Nerd/ASCII 图标表 |
+| `SettingsDialog` | 外观选项、即时预览、后端保存与撤回 |
 | `Completion` | `/` 命令、`@` 文件和 `$` 技能的贴输入框补全浮层 |
-| `Panel` | 命令、会话、主题和帮助共用的居中列表浮层 |
+| `Panel` | 命令、会话和帮助共用的居中列表浮层 |
 | `ToastStack` | 右上角最多三条、五秒到期的瞬时通知 |
-| `SidePanel` | 右侧常驻信息栏：会话标题、上下文用量、MCP、最近一份 `TodoView`、项目与版本 |
+| `SidePanel` | 可左右放置或隐藏的 SESSION / CONTEXT / PLAN / CHANGED / MCP 分节栏与底部版本 |
 | `ApprovalDialog` | 权限审批与选项提问共用的模态骨架与输入；回答经 `interaction.answer` 提交 |
 | `projection` | 协议 DTO / View JSON → UI 实际消费的字段；子事件由 Shell 按协议信封路由，解码后直接投影，不重复包装身份 |
 
 ```text
 LayerStack
 └─ Container(vertical)
-   ├─ Container(horizontal)             主区 + 计划栏
+   ├─ HeaderBar                         content，filled 1 行；outline 加 1 行底部分隔线
+   ├─ Workspace(horizontal)             主区 + SidePanel（可左右交换）
    │  ├─ Container(vertical)            主区
    │  │  ├─ Center(Scrollback)          flex 1，内容栏最大 88 列
    │  │  ├─ Center(Activity)            content，空闲高度 0
    │  │  ├─ Center(QueueLabel)          content，最多 3 行
-   │  │  └─ Center(PromptBox)           content，1–8 行正文 + 3 行留白与尾行
+   │  │  └─ Center(PromptBox)           content，1–8 行正文；密度/面板样式决定留白与边框
    │  └─ SidePanel                      content，26/30 列或宽 0
-   └─ StatusLine                        fixed 1，铺满终端
-浮层：Completion、Panel、ApprovalDialog、ToastStack
+   └─ HintBar                           fixed 1，铺满终端
+浮层：Completion、Panel、SettingsDialog、ApprovalDialog、ToastStack
 ```
 
 `centered()` 在主区至少留四列边距，内容栏最大 88 列；主区窄于 44 列时取消边距。
 对话、活动、排队和输入使用同一宽度与左缘。侧栏被收起或终端少于 80 列时宽度为 0；
-80–99 列占 26 列，至少 100 列占 30 列。状态栏始终在计划栏之外铺满。
+80–99 列占 26 列，至少 100 列占 30 列。HeaderBar 与 HintBar 始终铺满终端；Sidebar 左右交换不影响主区的居中规则。
 
 新会话的第一个 Document 块是欢迎头，包含版本、项目、git 分支和 MCP 数量；内容栏少于 60 列时只画单行字标。
 历史 `turn_end` 保留在协议与存储中，UI 不将其转换为无人消费的结束事件。
 文本显示宽度和带省略号的裁剪统一使用 `ui/display`；工具折叠提示的硬裁剪保留原行为。
 恢复会话改画恢复 id 与回放事件数。Scrollback 不贴底时，右下角覆盖显示未读行数，End 回到底部。
 
-## 2. 主题
+## 2. 外观与设置
 
-`ui.theme_file` 指向 JSON 主题；文件在内置 dark / light 令牌上覆盖同名项，支持顶层 `name`、`defs`、
-`dark` 和 `light`。默认文件为 `home/themes/dagent.json`，启动时加载，不扫描同目录的其他文件。
+`ui.appearance` 的八个可选字段为 theme、mode、background、accent、panels、density、icons、sidebar，
+默认值与校验见 [app 配置](app.md)。当 theme 缺省时继续使用 `ui.theme_file`；两者都没有时使用 dagent。
+预设 dagent、midnight、paper 从 Home 的 `themes/<name>.json` 加载；自定义路径相对 Home。
+文件格式保留 name、defs、dark、light，缺失令牌由应用层 `builtin_theme()` 补足。
 
-Shell 的所有主题变更都经过 `apply_theme()`：复制令牌、递增 `epoch`，再依次刷新 Scrollback、Activity、
-排队行、PromptBox、StatusLine、SidePanel、ToastStack、Panel、模型表单、ApprovalDialog 和 Completion。
-`/theme` 面板只提供 `dark`、`light`、`follow terminal`：均使用当前配置文件的明暗配色，无文件时才使用
-应用层后备色。启动默认跟随终端；打开时选中已确认模式，不触发预览。移动选择使用已加载令牌即时预览，
-Enter 保留，Esc / Ctrl+C 恢复已确认模式。预览期间暂停终端背景驱动的切换；退出预览后，跟随模式仍会
-响应终端背景变化，手动 dark / light 不受影响。模式选择仅在当前进程生效。
-内置明暗主题显式设置底色和正文前景；普通文字令牌继承主题底色，状态栏、面板、toast 和计划栏继承各自
-panel 背景，不在底纹上打孔；底部状态栏沿用主背景。切换时使整个控件树失效，两侧留白也使用新底色。
+外观初始化链路为 config → ConfigurationGateway → `app.initialize.ui.appearance` → Shell；
+后端返回补齐默认值且 theme 为绝对路径的对象，并提供 `ui.themes_directory`。
+前端在首帧前应用；后续所有令牌变更经过 `apply_theme()`，提升 epoch 并刷新控件树与全部 Pane。
+mode=auto 随 OSC 11 背景通知切换；dark/light 固定。自定义背景的相对亮度优先决定主题明暗变体。
 
-视觉角色只使用 `ThemeTokens`：正文 `text`，次要信息 `text_muted`，用户竖条与选中项 `primary`，
-进行中与自动编辑 `accent`，工具完成/失败分别用 `success`/`error`，上下文阈值和重试用 `warning`。
-用户消息、输入框和选中行用 `background_element`；侧栏和浮层用 `background_panel`。
+三层背景分别为 background（页面）、background_panel（栏与对话框）、background_element（元素）。
+solid 保留主题底色；transparent 只将页面背景设为终端 default，让终端自身的壁纸、透明度或模糊透出。
+`#rrggbb` 背景按 sRGB 相对亮度分为暗色（≤0.5）和亮色：暗色向白混合 5%/10% 得到面板/元素，
+亮色向黑混合 3%/6%；文字与边框使用相应明暗主题。accent 覆盖 primary 与 selection.bg，
+accent 令牌为该颜色向 text 混合 20%。真彩直接输出 RGB，256 色继续沿用框架已有量化。
 
-默认配色依据 2026-09-20 调研时 OpenCode 1.18.31 的 `orng` 主题，采用中性黑灰/暖白底色和橙色强调。
-来源、语义映射和适配取舍见 [OpenCode 主题分析](opencode-theme.md)。256 色终端按 xterm 实际色阶比较
-色立方与灰阶的距离，保留深色背景层次，并正确处理纯黑、纯白；真彩终端直接输出 RGB。
+filled 使用三层填色；outline 的 HeaderBar、SidePanel、PromptBox、Chip 使用页面底色，
+分别画底部分隔线、内侧竖线、圆角框，Chip 只显示标签且相邻间隔两列。浮层始终使用面板填色。
+HeaderBar 的正文仍为一行，outline 另占一行画底线，避免把线画在标题文字上。
+compact 取消 Transcript 块间距和侧栏分节空行，PromptBox 去掉两行 padding；边框占用的行仍保留。
+Ctrl+T 只改变本次会话的侧栏显示状态，不写配置；设置 Esc 撤回也恢复打开前的临时显示状态。
+
+`/settings` 和命令面板的 Settings 打开居中圆角浮层（最大 100×24）。左侧只有 Appearance，
+中间八行选项，右侧是静态 token 预览；终端少于 80 列时不画预览，短终端滚动选项。
+上下选择，左右循环；背景支持 solid / transparent / custom，强调色向右依次为 theme default →
+orange → blue → violet → green → custom，向左反向；预设显示名称，custom 显示十六进制值。
+选中 custom 后 Enter 编辑十六进制字段；不合法的输入以 error 显示且不应用。
+有效颜色 Enter 应用后，再次 Enter 保存；也可移到普通选项行 Enter 保存。
+所有有效更改立即预览；`/theme` 是打开 Settings 并定位 Mode 行的别名。
+Enter 保存经 `ui.appearance.save`，成功关闭并提示 Appearance saved；失败保留对话框并弹错误 toast。
+Esc / Ctrl+C 还原打开前外观，不写文件。保存请求已发出时锁定编辑直到收到结果。
+
+应用图标集中在 `ui/appearance` 的一张表：Unicode 为默认，Nerd 使用品牌、分支、勾、叉、点和文件夹
+专用字体码位；ASCII 品牌使用 `*`、分支使用 `|/`，其余使用 `v x - > o # | +` 与 ASCII spinner。应用自己的活动行与框线使用该表，
+框架接口保持冻结。正文与工具输出本身不做字体转换。
+
+默认 dagent 的中性黑灰/暖白与橙色来源见 [OpenCode 主题分析](opencode-theme.md)；midnight 为冷紫，
+paper 为暖纸色，均提供明暗变体。层次通过亮度、间距、字重和 Chip 表达。
 
 ## 3. 线程与生命周期
 
@@ -93,7 +116,7 @@ toast 使用一次性五秒定时器，文件补全使用一次性 80 ms 防抖�
 
 ## 4. 输入、补全与排队
 
-PromptBox 左侧是一根竖条（忙碌时换成 `primary`），底纹用 `background_element`，正文上方留一行、
+PromptBox 左侧是一根竖条（忙碌时换成 `primary`），底纹用 `background_panel`，正文上方留一行、
 与框内最后一行之间再留一行，输入时不贴着上面的对话；最后一行显示 `权限模式 · 模型`。正文按内容栏宽度折行，控件高度跟着折行结果在 1–8 行之间变化（加上三行留白与尾行，整体 4–11 行），超过 8 行在框内滚动并保证
 光标可见；空输入显示占位文字，占位文字不属于 `text()`。
 
@@ -108,7 +131,7 @@ PromptBox 左侧是一根竖条（忙碌时换成 `primary`），底纹用 `back
 普通输入经 `input.submit` 进入后端内存 FIFO，忙时也立即提交；QueueLabel 按快照里的队列显示数量与最近两条的首行预览。
 输入框为空时 ↑ 发 `input.recall_last`，把最后一条仍排队的输入取回输入框。后端在 `turn_ended` 或压缩完成后自行处理下一条。
 斜杠命令不进队列，立即分派：业务命令（new、sessions、model、compact、plan、permissions）按原 busy 条件发请求，
-本地视图命令（theme、help、agents、exit、折叠与侧栏）在前端执行。
+本地视图命令（settings、theme、help、agents、exit、折叠与侧栏）在前端执行。
 
 | 按键 | 行为 |
 | --- | --- |
@@ -120,7 +143,7 @@ PromptBox 左侧是一根竖条（忙碌时换成 `primary`），底纹用 `back
 | Ctrl+G | 进入或退出 plan 模式 |
 | Ctrl+O | Expand tool output（已完成工具输出展开/折叠） |
 | Ctrl+R | Expand thoughts（全部思考展开/折叠） |
-| Ctrl+T | 收起或展开右侧信息栏 |
+| Ctrl+T | 收起或展开信息栏 |
 | Ctrl+A | Switch agent view（主会话与子 Agent Pane 切换） |
 | Ctrl+P | Command palette（命令面板） |
 | Ctrl+? | Keys and commands（帮助面板） |
@@ -142,7 +165,8 @@ PromptBox 左侧是一根竖条（忙碌时换成 `primary`），底纹用 `back
 | `/permissions` | 查看当前会话授权，Enter 撤销；运行中也可用 |
 | `/skills` | 浏览技能和发现诊断，选择后插入 `$name` |
 | `/plan` | 进入或退出只读规划模式；新会话不继承 plan |
-| `/theme` | Switch theme（即时预览并切换） |
+| `/settings` | Settings（实时预览外观，Enter 保存，Esc 撤回） |
+| `/theme` | 打开 Settings 并定位 Mode 行 |
 | `/help` | Keys and commands（打开只读帮助） |
 | `/exit` | Exit（退出） |
 
@@ -178,7 +202,7 @@ PromptBox 左侧是一根竖条（忙碌时换成 `primary`），底纹用 `back
 思考正文默认收起（`collapsed_rows = 0`），Ctrl+R 统一展开或收起本会话的全部思考，标题前缀随之在 `+` 与 `-` 之间切换。
 
 `TodoView` 到达时，Transcript 把整份列表交给 SidePanel，对话只留下 Plan 工具标题；全部完成的首次更新追加一条
-`plan complete` 系统块。宽度少于 80 列时 SidePanel 让位，Transcript 原位替换一个计划块，不为每次更新新增消息；
+`plan complete` 系统块。宽度少于 80 列或侧栏被隐藏时 SidePanel 让位，Transcript 原位替换一个计划块，不为每次更新新增消息；
 宽度恢复后该块清空并由侧栏接管。`/new` 清空列表，恢复会话依靠最后一次 TodoView 自然重建。
 
 ### 子会话 Pane
@@ -194,12 +218,29 @@ Ctrl+C 或再次切换回到主会话。
 
 ## 6. 状态、浮层与权限
 
-StatusLine 左段是缩成 `~` 的项目路径，右段右对齐显示上下文用量（`14.1k (12%)`，超过触发百分比转 warning）
-与 `ctrl+p commands`；侧栏收起或窄屏时在用量前加计划进度。模型、权限模式在输入框尾行与消息尾行里显示，
-会话标题、MCP 与项目分支在 SidePanel 里显示。
+HeaderBar 左侧为 primary 粗体品牌与首条用户输入的首行（未输入时为 muted 的 new session）。
+右侧为权限模式 Chip、模型 Chip 与 muted 的分支；unrestricted 用 error，plan 用 accent。
+用户隐藏侧栏或终端少于 80 列时，右侧保留模型 Chip 与上下文百分比，移除模式和分支；
+标题、模型与长分支都按显示列宽裁剪，避免左右重叠。
 
-SidePanel 自上而下是会话标题（首条输入的首行）、`Context` 与 token 用量、MCP ready/总数、当前计划，
-底部两行固定为 `路径:分支` 与版本号；左缘一列是与主区的分隔线。Ctrl+T 收起或展开整个侧栏。
+HintBar 左侧是缩成 `~` 的项目路径；右侧按 key=text、description=text_muted 绘制，项目间用 ` · `。
+空闲显示 ctrl+p commands、ctrl+t sidebar、shift+tab mode；忙碌显示 esc interrupt，
+有排队输入时加 ↑ recall queued，有子 Pane 时加 ctrl+a agents。Panel/Completion 打开时显示
+enter select、esc close；Settings 显示 enter save、esc revert。审批显示 y allow、n deny、esc deny，
+问题显示 enter confirm、esc cancel。上下文与计划进度不再占用底栏。
+
+SidePanel 留一行上边距和两列左右留白，章节标题为大写 muted，comfortable 章节间空一行：
+
+| 节 | 内容 |
+| --- | --- |
+| SESSION | 首次用户输入标题，最多两行；会话 UUIDv7 创建时间转本地 HH:MM、回放和实时 user 轮数（窄栏自动折行） |
+| CONTEXT | 标题右侧百分比、primary/border 用量条、简写的 used / limit tokens；达到压缩阈值用 warning |
+| PLAN | 仅收到 TodoView 后显示；done/total；完成勾 success、当前箭头 accent、未完成圆圈 muted |
+| CHANGED | 当前会话已成功 edit/write 的相对路径和累计 +N −M；最多 8 文件，其余 +K more |
+| MCP | 配置的服务器逐项显示名称和 ready/connecting/failed，分别用 success/warning/error 状态符 |
+
+底部固定 DAgent 版本；路径与分支分别交给 HintBar 和 HeaderBar。侧栏隐藏时计划仍在 Transcript 原位显示。
+恢复会话通过已有历史投影恢复标题、轮数、计划与文件增删统计，不访问工作树猜测会话改动。
 
 Panel 由标题、可选内存过滤、三列列表和底部提示组成，最大宽 76 列、高度不超过终端 60%。上下移动跳过不可用项，
 Enter 执行，Esc 关闭。会话列表和文件候选的 I/O 不发生在渲染线程。

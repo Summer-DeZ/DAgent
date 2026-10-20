@@ -1,6 +1,8 @@
+#include "ui/appearance.hpp"
 #include "ui/approval.hpp"
 #include "ui/strings.hpp"
 #include "ui/display.hpp"
+#include "ui/theme_config.hpp"
 
 #include <algorithm>
 #include <format>
@@ -8,7 +10,7 @@
 
 namespace dagent::ui {
 namespace {
-class FeedbackInput final : public tui::InputBox {
+class FeedbackInput final : public DialogInput {
 public:
     bool visible = false;
     tui::Size measure(tui::Size available) const override {
@@ -82,14 +84,8 @@ public:
         tui::Container::render(surface);
         const int w = surface.cols(), h = surface.rows();
         if (w < 4 || h < 3) return;
-        surface.fill({1, 0, w - 2, 1}, U'─', current_theme->border_active);
-        surface.fill({1, h - 1, w - 2, 1}, U'─', current_theme->border_active);
-        surface.fill({0, 1, 1, h - 2}, U'│', current_theme->border_active);
-        surface.fill({w - 1, 1, 1, h - 2}, U'│', current_theme->border_active);
-        surface.put(0, 0, "╭", current_theme->border_active);
-        surface.put(w - 1, 0, "╮", current_theme->border_active);
-        surface.put(0, h - 1, "╰", current_theme->border_active);
-        surface.put(w - 1, h - 1, "╯", current_theme->border_active);
+        auto border = current_theme->border_active; border.bg = current_theme->background_panel.bg;
+        draw_frame(surface, {0, 0, w, h}, border);
         surface.text(2, 0, (question ? "Choose — " : std::string(ui::text().approve_title)) + tool + via + " ",
                      current_theme->text);
         surface.text(std::max(2, (w - display_width(ui::text().approve_cancel)) / 2), h - 1, std::string(ui::text().approve_cancel), current_theme->text_muted);
@@ -169,7 +165,7 @@ void ApprovalDialog::refresh_question() {
     std::string choices;
     for (std::size_t i = 0; i < question_.options.size(); ++i) {
         const bool current = question_cursor_ == static_cast<int>(i);
-        choices += current ? "▌" : " ";
+        choices += current ? icons().bar : " ";
         if (question_.multi_select) choices += selected_[i] ? "[x] " : "[ ] ";
         choices += std::format("{}  {}", i + 1, question_.options[i].label);
         if (!question_.options[i].description.empty())
@@ -177,7 +173,7 @@ void ApprovalDialog::refresh_question() {
         choices += '\n';
     }
     if (question_.allow_other) {
-        choices += question_cursor_ == static_cast<int>(question_.options.size()) ? "▌" : " ";
+        choices += question_cursor_ == static_cast<int>(question_.options.size()) ? icons().bar : " ";
         choices += std::format("{}  Other…", question_.options.size() + 1);
     }
     panel_->summary->set_text("");
@@ -190,7 +186,12 @@ void ApprovalDialog::close() {
     rt_.close_overlay(overlay_); overlay_ = 0; panel_ = nullptr; answer_ = {}; question_answer_ = {};
 }
 void ApprovalDialog::set_theme(const tui::ThemeTokens& theme) {
-    theme_ = theme; if (panel_) panel_->theme(theme_);
+    theme_ = panel_theme(theme);
+    if (panel_) {
+        panel_->theme(theme_);
+        if (question_answer_) refresh_question();
+        panel_->invalidate_tree();
+    }
 }
 void ApprovalDialog::answer(ApprovalAnswer decision) {
     auto callback = std::move(answer_); close(); if (callback) callback(std::move(decision));

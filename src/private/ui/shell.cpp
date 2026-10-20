@@ -29,7 +29,9 @@
 #include "ui/panel.hpp"
 #include "ui/prompt_box.hpp"
 #include "ui/prompt_input.hpp"
-#include "ui/status_line.hpp"
+#include "ui/header_bar.hpp"
+#include "ui/hint_bar.hpp"
+#include "ui/settings_dialog.hpp"
 #include "ui/theme_config.hpp"
 #include "ui/toast.hpp"
 #include "ui/side_panel.hpp"
@@ -55,6 +57,20 @@ class QueueLabel final : public tui::Text {
 public:
     tui::Size measure(tui::Size available) const override {
         return text().empty() ? tui::Size{} : tui::Text::measure(available);
+    }
+};
+
+class Workspace final : public tui::Container {
+public:
+    Workspace() : tui::Container(Direction::horizontal) {}
+    bool left = false;
+    void layout(tui::Rect area) override {
+        tui::Container::layout(area);
+        if (left) {
+            const auto main = child(0).rect(), side = child(1).rect();
+            child(1).layout({0, 0, side.w, area.h});
+            child(0).layout({side.w, 0, main.w, area.h});
+        }
     }
 };
 
@@ -289,22 +305,25 @@ std::vector<protocol::HistoryItem> load_history(client::Client& client, const st
 class Shell final : public tui::EventHandler {
 public:
     Shell(client::Client& client, FrontendBridge& bridge, const protocol::SessionSnapshot& initial,
-          std::vector<protocol::HistoryItem> history, std::optional<ThemeSet> themes,
+          std::vector<protocol::HistoryItem> history,
           const InteractiveOptions& options, std::filesystem::path project_root, std::string branch)
-        : client_(client), bridge_(bridge), themes_(std::move(themes)),
+        : client_(client), bridge_(bridge), appearance_(Appearance::from_json(options.appearance)),
+          themes_directory_(options.themes_directory),
           resumed_(options.resumed), history_(std::move(history)),
           initial_prompt_(options.initial_prompt), root_(layout()), rt_(terminal_, root_),
           prompt_(*input_, [this](std::string text) { submit(std::move(text)); },
                   [this] { recall(); }, [this] { prompt_changed(); },
                   [this] { return completion_.visible(); }),
           dialog_(rt_, [this] { interrupt(); }), model_dialog_(rt_),
-          toasts_(rt_), panel_(rt_),
+          toasts_(rt_), panel_(rt_), settings_(rt_),
           completion_(rt_, *input_, [this] { completion_kind_.clear(); }),
           branch_(std::move(branch)), project_root_(std::move(project_root)) {
         apply_snapshot(initial);
         project_path_ = display_path(project_root_);
-        status_->project(project_path_);
-        side_->set_project(project_path_, branch_);
+        hints_->path = project_path_;
+        side_->set_project_root(project_root_);
+        header_->branch = branch_;
+        hints_->hints = [this] { return key_hints(); };
         side_->set_version(DAGENT_VERSION);
         add_pane("main", id_, {});
         update_prompt_footer();
@@ -312,9 +331,9 @@ public:
         terminal_.set_mouse(true); // 不开这一行，滚轮与拖选的转义序列根本不会上报
         bind_active_mouse();
         register_commands();
-        apply_theme(theme_for(theme_choice_));
+        apply_appearance(appearance_);
         rt_.on_caps([this](const tui::Terminal::Caps&) {
-            if (theme_choice_ == "follow" && !theme_preview_) apply_theme(theme_for(theme_choice_));
+            if (appearance_.mode == "auto") apply_appearance(appearance_);
         });
         refresh_models();
         reset_transcript(resumed_, history_.size());
@@ -439,6 +458,13 @@ private:
         });
     }
 
+    void update_context(std::size_t used, std::size_t limit) {
+        worked_tokens_ = used;
+        token_limit_ = limit;
+        header_->used = used; header_->limit = limit; header_->invalidate();
+        side_->set_context(used, limit);
+    }
+
     void apply_snapshot(const protocol::SessionSnapshot& snapshot) {
         if (snapshot.session_generation < generation_ || snapshot.state_seq < state_seq_) return;
         state_seq_ = snapshot.state_seq;
@@ -450,14 +476,12 @@ private:
         planning_ = snapshot.planning;
         mode_ = snapshot.permission_mode;
         read_only_ = snapshot.read_only;
-        worked_tokens_ = snapshot.context.used;
-        token_limit_ = snapshot.context.limit;
         window_tokens_ = snapshot.context.window;
         mcp_states_ = decode_mcp(snapshot.mcp);
-        side_->set_mcp(mcp_label(mcp_states_));
-        status_->set_trigger(snapshot.context.trigger_percent);
-        status_->context(worked_tokens_, token_limit_);
-        side_->set_context(worked_tokens_, token_limit_);
+        side_->set_mcp(mcp_states_);
+        header_->trigger = snapshot.context.trigger_percent;
+        side_->set_trigger(snapshot.context.trigger_percent);
+        update_context(snapshot.context.used, snapshot.context.limit);
         if (!panes_.empty()) {
             active_transcript().set_session(mode_label(), model_label_);
             update_prompt_footer();
@@ -465,8 +489,7 @@ private:
         set_busy(snapshot.busy);
         refresh_queue();
         refresh_mcp();
-        const auto [done, total] = side_->progress();
-        status_->todo(done, total, total > 0 && (side_->collapsed() || terminal_.size().cols < 80));
+        update_todo_status(terminal_.size().cols);
         maybe_prompt_permission(snapshot);
     }
 
@@ -548,8 +571,7 @@ private:
                        },
                        [&](const ContextUpdate& e) {
                            if (!update_state) return;
-                           status_->context(e.used, e.limit);
-                           side_->set_context(e.used, e.limit);
+                           update_context(e.used, e.limit);
                        },
                        [&](const Retrying& e) {
                            toast(format_text(ui::text().toast_retry, e.reason, e.wait_ms / 1000.0,
@@ -628,7 +650,7 @@ private:
         request("workspace.info", {{"session_id", id}}, [this, id](const nlohmann::json& value) {
             if (id_ != id) return;
             branch_ = value.value("branch", "");
-            side_->set_project(project_path_, branch_);
+            header_->branch = branch_; header_->invalidate();
         });
     }
 
@@ -663,7 +685,7 @@ private:
         });
     }
     void refresh_mcp() {
-        side_->set_mcp(mcp_label(mcp_states_));
+        side_->set_mcp(mcp_states_);
         if (!mcp_pending() && !busy_) return;
         if (mcp_timer_) return;
         mcp_timer_ = rt_.every(200ms, [this] {
@@ -692,9 +714,10 @@ private:
         for (Pane& pane : panes_) pane.scroll->set_theme(theme_);
         activity_->set_theme(theme_);
         queue_label_->set_theme(theme_); queue_label_->set_style(theme_.text_muted);
-        input_->set_theme(theme_); status_->set_theme(theme_);
+        input_->set_theme(theme_); header_->set_theme(theme_); hints_->set_theme(theme_);
         side_->set_theme(theme_); toasts_.set_theme(theme_); panel_.set_theme(theme_);
         dialog_.set_theme(theme_); model_dialog_.set_theme(theme_); completion_.set_theme(theme_);
+        settings_.set_theme(theme_);
         root_.invalidate_tree();
     }
     void activity() {
@@ -717,17 +740,19 @@ private:
         main->add({tui::Sizing::flex, 1}, centered(std::move(frame), 88, theme_));
         add_centered(activity_, {tui::Sizing::content});
         add_centered(queue_label_, {tui::Sizing::content, 0, 0, 3});
-        add_centered(input_, {tui::Sizing::content, 0, 4, PromptBox::k_max_rows + 3});
+        add_centered(input_, {tui::Sizing::content, 0, 2, PromptBox::k_max_rows + 4});
 
-        auto workspace = std::make_unique<tui::Container>(tui::Container::Direction::horizontal);
+        auto workspace = std::make_unique<Workspace>(); workspace_ = workspace.get();
         workspace->add({tui::Sizing::flex, 1}, std::move(main));
         auto side = std::make_unique<SidePanel>(); side_ = side.get();
         workspace->add({tui::Sizing::content}, std::move(side));
 
         auto page = std::make_unique<tui::Container>();
+        auto header = std::make_unique<HeaderBar>(); header_ = header.get();
+        page->add({tui::Sizing::content}, std::move(header));
         page->add({tui::Sizing::flex, 1}, std::move(workspace));
-        auto status = std::make_unique<StatusLine>(); status_ = status.get();
-        page->add({tui::Sizing::fixed, 1}, std::move(status));
+        auto hints = std::make_unique<HintBar>(); hints_ = hints.get();
+        page->add({tui::Sizing::fixed, 1}, std::move(hints));
         return page;
     }
 
@@ -760,7 +785,8 @@ private:
         add_command("session.compact", std::string(ui::text().cmd_compact), std::string(ui::text().cmd_session), {}, "/compact", [this] { compact(); });
         add_command("session.list", std::string(ui::text().cmd_sessions), std::string(ui::text().cmd_session), {}, "/sessions", [this] { session_panel(); });
         add_command("model.pick", std::string(ui::text().cmd_model), std::string(ui::text().cmd_session), "ctrl+m", "/model", [this] { model_panel(); }, [this] { return !busy_; });
-        add_command("theme.pick", std::string(ui::text().cmd_theme), std::string(ui::text().cmd_view), {}, "/theme", [this] { theme_panel(); });
+        add_command("theme.pick", std::string(ui::text().cmd_theme), std::string(ui::text().cmd_view), {}, "/theme", [this] { settings_panel(1); });
+        add_command("settings.show", std::string(ui::text().settings_title), std::string(ui::text().cmd_view), {}, "/settings", [this] { settings_panel(); });
         add_command("help.show", std::string(ui::text().cmd_help), std::string(ui::text().cmd_view), "ctrl+?", "/help", [this] { help_panel(); });
         add_command("session.exit", std::string(ui::text().cmd_exit), std::string(ui::text().cmd_session), {}, "/exit", [this] { exit(); });
     }
@@ -774,10 +800,11 @@ private:
     void reset_transcript(bool resumed = false, std::size_t messages = 0) {
         close_child_panes();
         active_transcript().clear();
+        side_->start_session(id_); header_->title.clear(); header_->invalidate();
         if (resumed) active_transcript().resumed(id_, messages, std::string(ui::text().panel_just_now));
         else active_transcript().banner(DAGENT_VERSION, project_path_, branch_,
                                         static_cast<int>(mcp_states_.size()));
-        active_transcript().set_todo_narrow(terminal_.size().cols < 80);
+        update_todo_status(terminal_.size().cols);
     }
 
     // ---- 子会话 Pane：索引 0 恒为主会话，task 的子 Agent 各占一个 Pane ----
@@ -799,7 +826,13 @@ private:
         auto transcript = std::make_unique<Transcript>(
             scroll.document(), [this, index](const TodoList& value) {
                 if (index == 0) update_todo(value);
+            }, [this, index](const FileChangeView& value) {
+                if (index == 0) side_->changed(value);
+            }, [this, index](const std::string& input) {
+                if (index != 0) return;
+                side_->user_turn(input); header_->title = side_->title(); header_->invalidate();
             });
+        transcript->set_compact(appearance_.density == "compact");
         transcript->set_session(mode_label(), model_label_);
         scroll.set_theme(theme_);
         auto mouse = std::make_unique<tui::ScrollbackMouse>(rt_, scroll);
@@ -884,12 +917,13 @@ private:
         update_todo_status(terminal_.size().cols);
     }
     void update_todo_status(int columns) {
-        const auto [done, total] = side_->progress();
-        status_->todo(done, total, total > 0 && (side_->collapsed() || columns < 80));
+        const bool hidden = side_->collapsed() || columns < 80;
+        header_->sidebar = !hidden; header_->invalidate();
+        for (auto& pane : panes_) pane.transcript->set_todo_narrow(hidden);
     }
     void toggle_todo() {
-        side_->set_collapsed(!side_->collapsed());
-        active_transcript().set_todo_collapsed(side_->collapsed());
+        sidebar_override_ = !side_->collapsed();
+        side_->set_collapsed(*sidebar_override_);
         update_todo_status(terminal_.size().cols);
     }
     /// 输入框尾行与消息尾行共用同一份「模式 · 模型」。
@@ -900,6 +934,7 @@ private:
         return std::string(mode_ == "workspace" ? ui::text().status_auto_edit : ui::text().status_ask);
     }
     void update_prompt_footer() {
+        header_->mode = planning_ ? "plan" : mode_; header_->model = model_label_; header_->invalidate();
         input_->set_footer(format_text(ui::text().box_footer, mode_label(), model_label_));
         input_->set_footer_tone(!planning_ && mode_ == "unrestricted", planning_);
     }
@@ -934,7 +969,6 @@ private:
             toast(std::string(ui::text().toast_subview_readonly), tui::Notice::Severity::warn);
             return;
         }
-        set_session_title(text);
         nlohmann::json params = target();
         params["text"] = std::move(text);
         request("input.submit", std::move(params), [this](const nlohmann::json&) {
@@ -942,13 +976,6 @@ private:
         }, [this](const protocol::RpcError& error) {
             toast(error.message, tui::Notice::Severity::warn);
         });
-    }
-    /// 侧栏标题取本会话第一条真实输入的首行。
-    void set_session_title(const std::string& input) {
-        if (titled_) return;
-        const std::string line = input.substr(0, input.find('\n'));
-        if (line.empty()) return;
-        side_->set_title(fit_columns(line, 40)); titled_ = true;
     }
     void command(const std::string& text) {
         const auto ui = std::ranges::find_if(command_ui_, [&](const CommandUi& item) { return item.alias == text; });
@@ -1113,7 +1140,7 @@ private:
                 offset = edge.next;
             }
             panel_.open("Memory · " + scope + "/" + name, std::move(rows),
-                        "↑↓ scroll · Enter select · Esc close", false);
+                        std::string(ui::text().panel_session_footer), false);
         }, [this](const protocol::RpcError& error) { memory_error(error); });
     }
     void session_panel() {
@@ -1168,37 +1195,67 @@ private:
             panel_.open("Session permissions", std::move(rows), std::string(ui::text().panel_permissions_footer), false);
         });
     }
-    tui::ThemeTokens theme_for(std::string_view choice) const {
-        if (choice == "follow" && themes_) return themes_->pick(terminal_.caps().background);
-        const bool light = choice == "light" || (choice == "follow" &&
-            &tui::default_theme(terminal_.caps().background) == &tui::light_theme());
-        return themes_ ? (light ? themes_->light : themes_->dark) : builtin_theme(light);
-    }
-    void theme_panel() {
-        completion_.close();
-        panel_.close();
-        theme_preview_ = true;
-        const std::vector<std::pair<std::string_view, std::string_view>> choices = {
-            {ui::text().panel_dark, "dark"}, {ui::text().panel_light, "light"},
-            {ui::text().panel_follow, "follow"}};
-        int initial = 0;
-        std::vector<Panel::Row> rows;
-        for (int i = 0; i < static_cast<int>(choices.size()); ++i) {
-            const auto [name, id] = choices[i];
-            const bool current = id == theme_choice_;
-            if (current) initial = i;
-            rows.push_back({std::string(name), {}, current ? std::string(ui::text().panel_current) : "",
-                true, [this, id] {
-                    theme_choice_ = id;
-                    apply_theme(theme_for(id));
-                }});
+    bool apply_appearance(const Appearance& value) {
+        try {
+            const auto selected = appearance_theme(value, themes_directory_, terminal_.caps().background);
+            const bool sidebar_changed = value.sidebar != appearance_.sidebar;
+            const bool icons_changed = value.icons != appearance_.icons;
+            appearance_ = value;
+            if (sidebar_changed) sidebar_override_.reset();
+            set_icons(value.icons);
+            header_->outline = value.panels == "outline"; header_->invalidate_layout();
+            side_->set_appearance(value);
+            side_->set_collapsed(sidebar_override_.value_or(value.sidebar == "hidden"));
+            workspace_->left = value.sidebar == "left"; workspace_->invalidate_layout();
+            input_->set_appearance(value);
+            for (auto& pane : panes_) {
+                pane.transcript->set_compact(value.density == "compact");
+                if (icons_changed) pane.transcript->refresh_icons();
+            }
+            update_todo_status(terminal_.size().cols);
+            apply_theme(selected);
+            return true;
+        } catch (const std::exception& error) {
+            toast(error.what(), tui::Notice::Severity::error); return false;
         }
-        panel_.open(std::string(ui::text().panel_theme), std::move(rows), std::string(ui::text().panel_theme_footer), false,
-            [this, choices](int i) { apply_theme(theme_for(choices[i].second)); },
-            [this](bool committed) {
-                theme_preview_ = false;
-                if (!committed) apply_theme(theme_for(theme_choice_));
-            }, initial);
+    }
+    void settings_panel(int row = 0) {
+        completion_.close(); panel_.close();
+        auto current = appearance_;
+        for (const auto name : {"dagent", "midnight", "paper"})
+            if (std::filesystem::path(current.theme) == themes_directory_ / (std::string(name) + ".json")) current.theme = name;
+        const auto sidebar = sidebar_override_;
+        settings_.open(current, [this](const Appearance& value) { return apply_appearance(value); },
+            [this](const Appearance& value) {
+                request("ui.appearance.save", {{"appearance", value.json()}},
+                    [this](const nlohmann::json&) {
+                        settings_.saved(); toast(std::string(ui::text().settings_saved));
+                    }, [this](const protocol::RpcError& error) {
+                        settings_.failed(); toast(error.message, tui::Notice::Severity::error);
+                    });
+            }, row, [this, sidebar] {
+                sidebar_override_ = sidebar;
+                side_->set_collapsed(sidebar_override_.value_or(appearance_.sidebar == "hidden"));
+                update_todo_status(terminal_.size().cols);
+            });
+    }
+    std::vector<KeyHint> key_hints() const {
+        const auto hint = [](std::string_view key, std::string_view label) { return KeyHint{std::string(key), std::string(label)}; };
+        if (dialog_.active()) {
+            if (interaction_kind_ == "approval" && !permission_dialog_open_)
+                return {hint("y", ui::text().hint_allow), hint("n", ui::text().hint_deny), hint("esc", ui::text().hint_deny)};
+            return {hint("enter", ui::text().hint_confirm), hint("esc", ui::text().hint_cancel)};
+        }
+        if (settings_.active()) return {hint("enter", ui::text().hint_save), hint("esc", ui::text().hint_revert)};
+        if (panel_.visible() || completion_.visible() || model_dialog_.active())
+            return {hint("enter", ui::text().hint_select), hint("esc", ui::text().hint_close)};
+        if (busy_) {
+            std::vector<KeyHint> out{hint("esc", ui::text().hint_interrupt)};
+            if (!snapshot_.queue.empty()) out.push_back(hint(icons().up, ui::text().hint_recall));
+            if (panes_.size() > 1) out.push_back(hint("ctrl+a", ui::text().hint_agents));
+            return out;
+        }
+        return {hint("ctrl+p", ui::text().hint_commands), hint("ctrl+t", ui::text().hint_sidebar), hint("shift+tab", ui::text().hint_mode)};
     }
 
     void prompt_changed() { update_completion();  }
@@ -1362,6 +1419,7 @@ private:
     }
 
     void show_interaction(const protocol::InteractionRequest& request) {
+        interaction_kind_ = request.kind;
         active_interaction_ = request.interaction_id;
         // 后端交互对话框会替换本地 unrestricted 确认框；此时不再由快照关闭它。
         permission_dialog_open_ = false;
@@ -1400,7 +1458,10 @@ private:
     client::Client& client_;
     FrontendBridge& bridge_;
     std::shared_ptr<CallbackGate> gate_ = std::make_shared<CallbackGate>();
-    std::optional<ThemeSet> themes_;
+    Appearance appearance_;
+    std::filesystem::path themes_directory_;
+    std::optional<bool> sidebar_override_;
+    Workspace* workspace_ = nullptr;
     bool resumed_ = false;
     std::vector<protocol::HistoryItem> history_;
     std::string initial_prompt_;
@@ -1410,15 +1471,13 @@ private:
     std::shared_ptr<HistoryPager> history_pager_;
     tui::ThemeTokens theme_ = tui::dark_theme();
     uint32_t theme_epoch_ = 0;
-    std::string theme_choice_ = "follow";
-    bool theme_preview_ = false;
     ScrollFrame* frame_ = nullptr;
-    tui::Activity* activity_ = nullptr;
+    Activity* activity_ = nullptr;
     QueueLabel* queue_label_ = nullptr;
     PromptBox* input_ = nullptr;
-    StatusLine* status_ = nullptr;
+    HeaderBar* header_ = nullptr;
+    HintBar* hints_ = nullptr;
     SidePanel* side_ = nullptr;
-    bool titled_ = false;
     tui::Terminal terminal_;
     tui::LayerStack root_;
     tui::Runtime rt_;
@@ -1431,6 +1490,8 @@ private:
     ModelDialog model_dialog_;
     ToastStack toasts_;
     Panel panel_;
+    SettingsDialog settings_;
+    std::string interaction_kind_;
     Completion completion_;
     std::string id_, error_, phase_, project_path_, branch_, completion_kind_;
     std::filesystem::path project_root_;
@@ -1502,8 +1563,6 @@ void FrontendBridge::disconnected(const std::string& message) {
 
 int run_interactive(client::Client& client, FrontendBridge& bridge, const InteractiveOptions& options,
                     std::stop_token stop) {
-    std::optional<ThemeSet> themes;
-    if (!options.theme_file.empty()) themes = load_theme(options.theme_file);
 
     std::filesystem::path project_root;
     std::string branch;
@@ -1527,7 +1586,7 @@ int run_interactive(client::Client& client, FrontendBridge& bridge, const Intera
         }
     }
 
-    Shell shell(client, bridge, options.initial, std::move(history), std::move(themes), options,
+    Shell shell(client, bridge, options.initial, std::move(history), options,
                 std::move(project_root), std::move(branch));
     bridge.attach(shell);
     return shell.run(stop);

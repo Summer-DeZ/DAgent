@@ -21,12 +21,16 @@ public:
         std::string agent, session_id, call_id;
     };
 
-    explicit Transcript(tui::Document&, std::function<void(const TodoList&)> todo = {});
+    explicit Transcript(tui::Document&, std::function<void(const TodoList&)> todo = {},
+                        std::function<void(const FileChangeView&)> changed = {},
+                        std::function<void(const std::string&)> user = {});
     /// @brief 实时事件：当前 Run 的流式投影。
     void apply_live(const Event&);
     /// @brief 历史条目：静态投影，不触发当前 Run 的收尾/计时语义。
     void append_history(const protocol::HistoryItem&);
     void clear();
+    void set_compact(bool);
+    void refresh_icons();
     void toggle_tools();
     void toggle_thoughts();
     void set_session(std::string mode, std::string model);
@@ -61,7 +65,14 @@ private:
     void collapse(ToolBlocks&);
     void update_todo_block();
 
+    void refresh_density();
     tui::Document& doc_;
+    std::map<uint64_t, uint8_t> margins_;
+    std::map<uint64_t, std::function<std::string()>> icon_sources_;
+    uint64_t density_end_ = 0;
+    bool compact_ = false;
+    std::function<void(const FileChangeView&)> on_changed_;
+    std::function<void(const std::string&)> on_user_;
     std::unique_ptr<tui::MarkdownStream> markdown_;
     uint64_t reasoning_ = 0, step_start_ = 0;
     uint64_t thought_title_ = 0;

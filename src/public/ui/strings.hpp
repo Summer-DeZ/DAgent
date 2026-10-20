@@ -8,6 +8,58 @@ namespace dagent::ui {
 
 // 只收全屏界面文案；模型文本、日志和 CLI 不属于这张表。
 struct Strings {
+    std::string_view brand;
+    std::string_view new_session;
+    std::string_view section_session;
+    std::string_view section_context;
+    std::string_view section_plan;
+    std::string_view section_changed;
+    std::string_view section_mcp;
+    std::string_view session_started;
+    std::string_view session_started_one;
+    std::string_view context_tokens;
+    std::string_view changed_more;
+    std::string_view hint_commands;
+    std::string_view hint_sidebar;
+    std::string_view hint_mode;
+    std::string_view hint_interrupt;
+    std::string_view hint_recall;
+    std::string_view hint_agents;
+    std::string_view hint_select;
+    std::string_view hint_close;
+    std::string_view hint_save;
+    std::string_view hint_revert;
+    std::string_view hint_allow;
+    std::string_view hint_deny;
+    std::string_view hint_confirm;
+    std::string_view hint_cancel;
+    std::string_view settings_title;
+    std::string_view settings_section;
+    std::string_view settings_theme;
+    std::string_view settings_mode;
+    std::string_view settings_background;
+    std::string_view settings_accent;
+    std::string_view settings_panels;
+    std::string_view settings_density;
+    std::string_view settings_icons;
+    std::string_view settings_sidebar;
+    std::string_view settings_custom;
+    std::string_view settings_default;
+    std::string_view settings_invalid;
+    std::string_view settings_saved;
+    std::string_view settings_saving;
+    std::string_view settings_preview;
+    std::string_view settings_sample_user;
+    std::string_view settings_sample_tool;
+    std::string_view settings_sample_added;
+    std::string_view settings_sample_assistant;
+    std::string_view settings_sample_prompt;
+    std::string_view settings_footer;
+    std::string_view settings_hex_footer;
+    std::string_view mcp_ready;
+    std::string_view mcp_connecting;
+    std::string_view mcp_failed;
+
     std::string_view status_mcp;
     std::string_view status_tokens;
     std::string_view card_elapsed;

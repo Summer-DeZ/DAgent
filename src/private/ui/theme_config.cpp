@@ -154,6 +154,16 @@ tui::ThemeTokens builtin_theme(bool light) {
     return theme;
 }
 
+tui::ThemeTokens panel_theme(tui::ThemeTokens theme) {
+    const auto page = theme.background.bg;
+    for (const auto& token : k_tokens) {
+        if (token.field == &ThemeTokens::selection) continue;
+        auto& style = theme.*token.field;
+        if (style.bg == page) style.bg = theme.background_panel.bg;
+    }
+    return theme;
+}
+
 tui::ThemeTokens resolve_theme(tui::ThemeTokens theme) {
     for (const auto& token : k_tokens) {
         if (token.field == &ThemeTokens::selection) continue;
