@@ -25,7 +25,7 @@ sequenceDiagram
     F->>B: socketpair + fork/exec（同目录、独立进程组、--ipc-fd 3）
     F->>B: backend.hello（10 秒超时）
     F->>B: app.initialize（root、cwd、mode、覆写、权限/只读/plan、resume/continue）
-    B-->>F: session 快照、resumed、ui.appearance、ui.themes_directory、progress_interval_ms
+    B-->>F: session 快照、resumed、ui.appearance、ui.layout、ui.themes_directory、progress_interval_ms
     F->>B: session.history / input.submit / …
     B-->>F: event / interaction.requested / 响应
     F->>B: backend.shutdown
@@ -62,7 +62,7 @@ sequenceDiagram
 | 方法 | 执行位置 | 结果 |
 | --- | --- | --- |
 | `backend.hello` | 读线程 | 协议版本、后端版本、backend_instance_id |
-| `app.initialize` | 命令线程，只允许一次 | mode、session 快照或 null（查询模式）、resumed、`ui.theme_file`、`ui.appearance`、`ui.themes_directory`、progress_interval_ms |
+| `app.initialize` | 命令线程，只允许一次 | mode、session 快照或 null（查询模式）、resumed、`ui.theme_file`、`ui.appearance`、`ui.layout`、`ui.themes_directory`、progress_interval_ms |
 | `backend.shutdown` | 读线程 | 实际收尾后返回 closed=true；重复关闭幂等 |
 | `session.snapshot` | 读线程 | SessionSnapshot |
 | `input.submit` / `input.recall_last` | 读线程 | input_id（仅表示入队）/ 取回的最后一条排队输入或 null |
@@ -72,7 +72,9 @@ sequenceDiagram
 | `session.revoke_grant` | 读线程校验后走即时控制路径 | 提交撤销记录、终止使用旧授权的活跃执行后返回 removed（运行中也可用） |
 | `model.list` | 读线程 | 公开模型、provider 种类、default_name、selected_name |
 | `session.new` / `resume` / `select_model`、`model.add`、`session.compact` | 命令线程 | 成功返回快照；`model.add` 返回 model/selected/selection_error；compact 返回 operation_id，完成走 `operation.finished` |
-| `ui.appearance.save` | 命令线程 | `{appearance}`：校验、原子保存后返回生效的 appearance；失败为 config_error |
+| `ui.appearance.save` | 命令线程 | `{appearance, layout?}`：联合校验、原子保存后返回生效的 appearance；失败为 config_error |
+| `workspace.git_status` | 查询线程 | `{repository, branch, ahead, behind, files:[{path,status,added,removed}]}`，当前项目根的本地 Git 状态 |
+| `agents.list` | 查询线程 | `[{name,description,permission,tools}]`，配置的可用 Agent 定义 |
 | `memory.list` / `memory.view` / `memory.delete` | 查询线程 | 全局与当前项目条目元数据 / 正文 / 删除结果；详见 [memory](memory.md#5-用户管理) |
 | `session.list` / `children` / `history` / `history_close`、`workspace.info` / `complete` | 查询线程 | 会话列表、子会话、HistoryItem 页与游标、项目信息、文件候选 |
 
@@ -113,23 +115,45 @@ model.add 的 SessionTarget 必须有效；保存失败为 config_error。保存
 ### 外观初始化与保存（协议 minor 3）
 
 initialize 的 `ui.appearance` 是补齐默认值的外观对象：theme 为已解析的绝对主题文件路径，
-mode/background/panels/density/icons/sidebar 均为有效配置值，accent 未覆盖时省略。
+mode/background/panels/density/icons/diff/links/accent 均为有效配置值。旧 sidebar 仅兼容读取，布局使用补齐默认值的 `ui.layout`。
 `ui.themes_directory` 是 Home/themes 的绝对路径，用于前端切换预设；旧 `ui.theme_file` 字段保留。
 前端在第一帧前应用这个对象。字段的合法取值见 [UI](ui.md#2-外观与设置)。
 
 ```json
 {"method":"ui.appearance.save","params":{"appearance":{
-  "theme":"midnight","mode":"auto","background":"transparent",
-  "panels":"filled","density":"comfortable","icons":"unicode","sidebar":"right"
-}}}
+  "theme":"dagent","mode":"auto","background":"transparent",
+  "panels":"filled","density":"comfortable","icons":"unicode"
+},"layout":{"width":"auto","navigator":"auto","status_panel":"right",
+"navigator_sections":["sessions","git","skills","agents"],
+"status_sections":["session","context","plan","changed","running_agents","mcp"]}}}
 ```
 
 方法无需 SessionTarget，运行中也可保存；仅作用于当前后端的 Home。
-后端持配置写锁，重新读取 config.json、保留其它键、替换 ui.appearance，沿用模型添加的
+后端持配置写锁，重新读取 config.json、保留其它键、更新 ui.appearance 和可选 ui.layout，沿用模型添加的
 workspace::write_text 原子写与文件 stamp 检查；内存生效值只在写入成功后更新。
 成功返回 `{"appearance": {...}}`，theme 解析为绝对路径；校验和 I/O 失败返回业务错误 config_error，
-不关闭连接。前端收到成功后关闭设置并显示 Appearance saved；失败保留对话框。
+不关闭连接。前端收到成功后关闭设置并显示 Settings saved；失败保留对话框。
 其它已打开的前端不会被广播更新，下一次启动读取保存值。
+
+保存使用 ordered_json 并局部替换原文：保留原有键顺序与未修改字段的格式，新键追加到对象末尾。
+appearance / layout 中缺失且等于默认值的键不补写；修改原有行内数组时保持一行，元素间使用逗号加空格。
+传入 layout 时同步移除旧 appearance.sidebar，未传入时保持旧保存调用兼容。model.add 与 provider.model.add 同样保序写 models.json。
+
+### 宽布局查询与工作区通知
+
+`workspace.git_status` 可带当前 `session_id`（与 workspace.info 一样，查询本后端固定的项目根）；不要求 SessionTarget，不联网。
+`repository` 为布尔值；非仓库为 false，branch 为空、ahead/behind 为 0、files 为空。
+branch 是分支名，detached HEAD 使用短 SHA；ahead/behind 使用本地 upstream 信息，不 fetch。
+files 的 path 相对项目根，status 归一化为 M / A / D / ?（冲突和重命名归入 M），added/removed 来自暂存与未暂存 numstat 的合计，
+二进制或 untracked 没有 numstat 时为 0。使用 managed git 只读沙箱，禁用 hooks/fsmonitor/外部 diff/textconv；
+每条命令 2 秒、每路输出 1 MiB，只解析完整 NUL 记录，最多返回 2048 个文件，超出时返回有界前缀。
+
+`agents.list` 无参数，直接返回数组；permission 为 inherit / read_only / ask，tools 为字符串数组或 null（继承工具集）。
+仅返回配置定义的 name、description、permission、tools，不返回提示词或凭据；定义在后端启动时加载。
+
+交互模式新增事件 `workspace.changed`，无会话身份/generation 依赖，用于提示重查当前工作区。
+应用层 inotify 有界监听（最多 4096 目录），前端收到后用 120ms 防抖调用 workspace.git_status。
+该通知不携带文件内容，不改变会话/执行状态；轮次和工具完成事件仍是刷新来源。
 
 `session.history` 首次调用捕获高水位，返回不透明游标；每页最多扫描 `session.history_scan_limit` 条记录（随附值 100），读完、`history_close` 或连接关闭时释放，
 每页分配连接内唯一、单次消费且绑定 session_id 的游标。跨会话、已消费或已释放游标返回 `invalid_state`。历史查询不取写锁、不恢复会话、不构造模型或 MCP（记录路线 L22）。
@@ -148,6 +172,7 @@ workspace::write_text 原子写与文件 stamp 检查；内存生效值只在写
 | `turn_started` `step_started` `text` `reasoning` `stream_reset` `retrying` | 核心执行事件 |
 | `tool_pending` `tool_started` `tool_output` `tool_finished` | 工具事件；data 与原实时 JSON 形状一致，工具展示数据保持 View JSON |
 | `context` `compacted` `model_changed` `mode_changed` `notice` `turn_ended` | 核心状态变化 |
+| `workspace.changed` | 工作区文件或 Git 元数据变化；无会话身份，提示前端防抖重查 |
 | `session.changed` | new/resume/切模型安装完成；data 为 replace_transcript、resumed，前端随后用 `session.snapshot` 取权威状态 |
 | `operation.finished` | 手动压缩结束 |
 | `interaction.requested` / `interaction.closed` | 审批/问答的激活（data 为 InteractionRequest：id、approval/question、载荷）与关闭 |

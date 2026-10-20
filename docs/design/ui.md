@@ -5,7 +5,7 @@
 与页面状态：业务操作都经 [私有协议](protocol.md) 发给自己的后端，执行状态、队列、模式与模型的真值都在后端 runtime。
 它使用 [TUI 框架](tui-framework.md)；phase 4 解冻框架，新增通用超链接样式和块可见性查询；phase 5a 增加颜色令牌与显式 256 色回退，
 phase 5b 的对话结果挂钩、卡片、圆角输入框与未读提示也全部在应用层完成，没有新增框架接口。
-双栏 diff、文件解析与阅读栏宽度策略仍放在应用层；导航栏、自适应正文宽度与 Layout 设置属于 phase 5c。
+phase 5c 的自适应阅读宽度、双侧分节栏、导航焦点与 Layout 设置也全部在应用层实现，没有扩展 TUI 框架。
 
 界面 chrome 使用英文，统一来自 `ui/strings.hpp` 的 `Strings` 和 `ui/strings.cpp` 的常量表。
 `text()` 只返回英文表的常量引用；字段全为 `string_view`，格式串使用显式参数索引，由 `format_text()` 格式化。
@@ -29,13 +29,13 @@ phase 5b 的对话结果挂钩、卡片、圆角输入框与未读提示也全�
 | `Activity`、`QueueLabel` | 当前轮耗时、输出 token 与生成速率；单行队列 Chip 和取回提示 |
 | `HintBar` | 底部项目路径与随浮层、审批、运行状态变化的键位提示 |
 | `Chip` / `appearance` | 标签绘制、外观令牌变换、统一 Unicode/Nerd/ASCII 图标表 |
-| `SettingsDialog` | 外观选项、即时预览、后端保存与撤回 |
+| `SettingsDialog` | Appearance / Layout、分节移动和排序、即时预览、后端保存与撤回 |
 | `Completion` | `/` 命令、`@` 文件和 `$` 技能的贴输入框补全浮层 |
 | `Panel` | 支持分组、匹配高亮、别名与快捷键列的居中列表浮层；可选详情栏、状态行、来源页脚与行颜色 |
 | `ModelPicker` | 两栏模型选择、OpenCode Go 设备登录和提供方模型清单；只经 RPC 操作 |
 | `WelcomeView` | 新会话字标、状态 Chip、可恢复的最近会话与快捷键提示 |
 | `ToastStack` | 右上角最多三条、五秒到期的瞬时通知 |
-| `SidePanel` | 可左右放置或隐藏的 SESSION / CONTEXT / PLAN / AGENTS / CHANGED / MCP 分节栏与底部版本 |
+| `SidePanel` | 共用数据模型的状态栏与导航栏；可配置分节、键盘选择、滚动与鼠标激活；状态栏底部版本 |
 | `ApprovalDialog` | 权限审批与选项提问共用的模态骨架与输入；回答经 `interaction.answer` 提交 |
 | `projection` | 协议 DTO / View JSON → UI 实际消费的字段；子事件由 Shell 按协议信封路由，解码后直接投影，不重复包装身份 |
 
@@ -44,23 +44,51 @@ LayerStack
 └─ Container(vertical)
    ├─ HeaderBar                         content，filled 1 行；outline 加 1 行底部分隔线
    ├─ AgentTabs                         content，有子 Pane 时 2 行（标签 + primary 下划线）
-   ├─ Workspace(horizontal)             主区 + SidePanel（可左右交换）
+   ├─ Workspace(horizontal)             Navigator + 主区 + StatusPanel（可左右交换）
+   │  ├─ SidePanel (navigator)           默认左侧，自动/常显/隐藏
    │  ├─ Container(vertical)            主区
    │  │  ├─ ScrollFrame                 flex 1，主区全宽；WelcomeView / Scrollback；有未读时底部独占提示行
    │  │  ├─ Center(Activity)            content，空闲高度 0
    │  │  ├─ Center(QueueLabel)          content，有排队输入时 1 行，最多 3 个 Chip + 余数
    │  │  └─ Center(PromptBox)           content，1–8 行正文；始终圆角边框，密度决定留白
-   │  └─ SidePanel                      content，26/30 列或宽 0
+   │  └─ SidePanel (status)              默认右侧，两侧均为 26/30 列或宽 0
    └─ HintBar                           fixed 1，铺满终端
 浮层：Completion、Panel、ModelPicker（含 Sign-in）、ModelDialog、SettingsDialog、ApprovalDialog、ToastStack
 ```
 
-`centered()` 在主区至少留四列边距，内容栏最大 88 列；主区窄于 44 列时取消边距。
-普通对话块、欢迎页、活动、排队和输入使用同一宽度与左缘。ScrollFrame 占满主区，
-TranscriptRenderer 在每种块的测量与物化阶段保留该阅读宽度，并用无源空白 span 居中；
-只有满足阈值的双栏 diff 主体可超出阅读栏：主区两侧各至少留 2 列，主体总宽度最多 176 列，与 88 列阅读栏同轴居中。
-工具标题、统一 diff 与折叠 footer 仍为原宽度。侧栏被收起或终端少于 80 列时宽度为 0；
-80–99 列占 26 列，至少 100 列占 30 列。HeaderBar、AgentTabs 与 HintBar 始终铺满终端；Sidebar 左右交换不影响主区的居中规则。
+`ui.layout.width` 控制所有居中的正文：auto 在主区允许时随宽度从 88 增至 120 列，compact 最多 88，
+wide 最多 160，也接受 60–240 的整数。正常宽度每侧至少留 4 列；主区不足时收窄正文，少于 44 列时取消边距。
+Transcript、WelcomeView、Activity、QueueLabel 和 PromptBox 共用同一宽度函数。ScrollFrame 始终占满主区；
+只有双栏 diff 主体可独立突破正文栏，两侧至少留 2 列、最多 176 列，同轴居中，标题/footer 保持正文宽度。
+改宽度时提升 theme epoch，使 Document 的测量与物化缓存同时失效。
+
+`ui.layout.status_panel` 为 right（默认）/ left / hidden；导航栏在其对侧，状态栏隐藏时导航栏默认在左。
+`ui.layout.navigator` 为 auto（终端至少 170 列显示）/ always / hidden。两栏均在 80–99 列终端占 26 列，
+100 列起占 30 列；导航栏要求扣除两栏后主区至少剩 50 列，状态栏要求终端至少 80 列，因此缩小时先收导航栏。
+HeaderBar、AgentTabs 和 HintBar 始终铺满终端。Ctrl+T 临时开关状态栏，Ctrl+B 临时开关/聚焦导航栏，均不写配置。
+
+两个有序列表 `navigator_sections`、`status_sections` 控制分节的位置和顺序，任意 id 可放入任一栏；
+不在两列表中的分节隐藏，未知 id 或重复出现为配置错误。默认列表分别是
+`[sessions, git, skills, agents]` 与 `[session, context, plan, changed, running_agents, mcp]`。
+状态分节继续使用现有会话、上下文、计划、文件改动、运行子任务与 MCP 投影，其中运行任务标题改为 RUNNING AGENTS。
+两栏共用 filled/outline 和 density 样式；标题大写、muted；当前会话仅用 background_selected 高亮，
+只有导航栏聚焦时的光标行同时使用 background_selected 与强调色 `▌`，失焦时不画竖条。
+列入布局的 SESSION、CONTEXT、SESSIONS、GIT 始终显示；PLAN 仅有计划时显示，CHANGED 仅有 edit/write 改动时显示，
+RUNNING AGENTS 仅当前会话有子任务时显示，MCP 仅配置服务器时显示，SKILLS / AGENTS 仅列表非空时显示。
+内容多于可见区域时可滚动，导航选择自动滚入视口。
+
+| 导航分节 | 内容与操作 |
+| --- | --- |
+| SESSIONS | 当前项目（精确 cwd）的 `session.list`，排除无标题会话，但保留当前会话，右侧为过滤后的总数；标题左、相对年龄右，当前会话高亮。显示可容纳的条目，余下用 `/sessions all N` 打开完整列表；`+ new session` 调用 `/new`。Enter/点击沿用恢复会话路径，忙碌限制相同。启动、新建、恢复、首次输入及轮次结束刷新。 |
+| GIT | 右侧 ↑ahead ↓behind，分支、最多 8 个文件及 `+K more`，状态 M/A/D/? 分别 warning/success/error/muted，路径左、numstat 增删数右，底部 faint 汇总。非仓库显示 `not a git repository`。 |
+| SKILLS | 安装的 `$ name`；Enter/点击沿用 `/skills` 向输入框插入 `$name `，焦点回到输入。 |
+| AGENTS | 配置定义的名称和权限/工具摘要；Enter/点击以 toast 显示描述。与 RUNNING AGENTS 是不同分节。 |
+
+Ctrl+B 在隐藏时显示并聚焦、已显示未聚焦时聚焦、已聚焦时隐藏（宽度不足时仍按自动收起规则）。
+导航焦点下 ↑/↓ 跨分节逐行选择，Tab 跳到下一分节，Enter 激活，Esc 回输入框；HintBar 显示
+`↑↓ select · enter open · tab section · esc back`。足够宽时空闲提示含 `ctrl+b navigator`，命令面板 View 组提供 Navigator。
+Git 在轮次结束、主/子工具完成、后端 workspace.changed、终端重新获得焦点及打开导航栏时刷新；前端用 120ms 一次性防抖。
+后端应用层 inotify 监听至多 4096 个目录（排除受保护路径和 git objects），没有空闲轮询，也没有新增前端工作线程。
 
 新建且尚未发送消息的会话由 ScrollFrame 显示独立 WelcomeView，不向 Transcript 写欢迎 Banner；
 启动新会话和 `/new` 均显示；初始化的 system 历史记录不算用户消息，不影响欢迎页可见性。
@@ -73,7 +101,7 @@ TranscriptRenderer 在每种块的测量与物化阶段保留该阅读宽度，�
 
 ## 2. 外观与设置
 
-`ui.appearance` 的十一个可选字段为 theme、mode、background、accent、panels、density、icons、sidebar、diff、links，
+`ui.appearance` 的可选字段为 theme、mode、background、accent、panels、density、icons、diff、links，
 默认值与校验见 [app 配置](app.md)。当 theme 缺省时继续使用 `ui.theme_file`；两者都没有时使用 dagent。
 只保留 dagent，从 Home 的 `themes/dagent.json` 加载；自定义路径相对 Home。
 midnight、paper 名称报配置错误，提示改用 dagent 或主题文件路径。
@@ -119,8 +147,8 @@ HeaderBar 的正文仍为一行，outline 另占一行画底线，避免把线�
 compact 取消 Transcript 用户消息前的轮间空行和侧栏分节空行；PromptBox 在两种密度下均不加上下 padding，保留边框行。
 Ctrl+T 只改变本次会话的侧栏显示状态，不写配置；设置 Esc 撤回也恢复打开前的临时显示状态。
 
-`/settings` 和命令面板的 Settings 打开居中圆角浮层（最大 100×24）。左侧只有 Appearance，
-中间九行选项（Mode 起首，包含 Diff 与 Links，无 Theme 行），右侧是 token 预览；终端少于 80 列时不画预览，短终端滚动选项。
+`/settings` 和命令面板的 Settings 打开居中圆角浮层（最大 100×24）。左侧有 Appearance 与其下方的 Layout，可用 Tab 或点击切换；Appearance
+中间八行选项（Mode 起首，包含 Diff 与 Links，无 Theme / Sidebar 行），右侧是 token 预览；终端少于 80 列时不画预览，短终端滚动选项。
 Diff 行循环 auto / unified，Links 行循环 on / off，均即时预览并走同一保存/撤回路径。
 选中 Diff 时，预览区显示两行双栏样例（增删行与上下文），不受样例窄宽度的实际 diff 阈值限制。
 上下选择，左右循环；背景支持 solid / transparent / custom，强调色向右依次为
@@ -128,8 +156,15 @@ orange → green → violet → blue → custom，向左反向；预设显示名
 选中 custom 后 Enter 编辑十六进制字段；不合法的输入以 error 显示且不应用。
 有效颜色 Enter 应用后，再次 Enter 保存；也可移到普通选项行 Enter 保存。
 所有有效更改立即预览；`/theme` 是打开 Settings 并定位 Mode 行的别名。
-Enter 保存经 `ui.appearance.save`，成功关闭并提示 Appearance saved；失败保留对话框并弹错误 toast。
+Enter 保存经 `ui.appearance.save`，成功关闭并提示 Settings saved；失败保留对话框并弹错误 toast。
 Esc / Ctrl+C 还原打开前外观，不写文件。保存请求已发出时锁定编辑直到收到结果。
+
+Layout 页面前三行是 Width（auto / compact / wide / custom）、Navigator（auto / always / hidden）、
+Status panel（right / left / hidden）。custom 按 Enter 编辑行内数字（60–240），合法数字即时预览，Enter 完成输入后再次 Enter 保存。
+下方三列 NAVIGATOR / STATUS PANEL / HIDDEN 列出分节显示名；↑↓ 在选项与分节间选择，←→ 将分节移入相邻列末尾，
+Shift+↑↓ 在列内重排。短终端滚动显示分节。所有更改实时应用；Enter 通过 `ui.appearance.save{appearance,layout}` 原子保存，
+Esc / Ctrl+C 恢复打开前的外观、布局及临时面板显示/导航焦点。旧 `ui.appearance.sidebar` 仅兼容读取：
+未提供 `ui.layout.status_panel` 时映射旧值；设置保存写新键并移除旧键。
 
 应用图标集中在 `ui/appearance` 的一张表，所有动画调用者使用同一组四帧及其长度。
 Unicode 为默认；Nerd 在以下对话图标上与 Unicode 相同，品牌、分支、勾、叉、文件夹继续使用专用字体码位。
@@ -224,6 +259,7 @@ token 数为零时只显示阶段与耗时（如 `Working · 0.1s`）；有输�
 | Ctrl+O | Expand tool output（已完成工具输出展开/折叠） |
 | Ctrl+D | Toggle side-by-side diff（auto 且有宽度足够的 diff 卡片时，本次会话切换双栏/统一） |
 | Ctrl+R | Expand thoughts（全部思考展开/折叠） |
+| Ctrl+B | Navigator（显示并聚焦 / 聚焦 / 隐藏） |
 | Ctrl+T | 收起或展开信息栏 |
 | Ctrl+A | Switch agent view（主会话与子 Agent Pane 切换） |
 | Ctrl+P | Command palette（命令面板） |
@@ -246,7 +282,7 @@ token 数为零时只显示阶段与耗时（如 `Working · 0.1s`）；有输�
 | `/permissions` | 查看当前会话授权，Enter 撤销；运行中也可用 |
 | `/skills` | 浏览技能和发现诊断，选择后插入 `$name` |
 | `/plan` | 进入或退出只读规划模式；新会话不继承 plan |
-| `/settings` | Settings（实时预览外观，Enter 保存，Esc 撤回） |
+| `/settings` | Settings（实时预览 Appearance / Layout，Enter 保存，Esc 撤回） |
 | `/theme` | 打开 Settings 并定位 Mode 行 |
 | `/help` | Keys and commands（打开只读帮助） |
 | `/exit` | Exit（退出） |
@@ -398,9 +434,9 @@ SidePanel 留一行上边距和两列左右留白，章节标题为大写 muted�
 | 节 | 内容 |
 | --- | --- |
 | SESSION | 首次用户输入标题，最多两行；会话 UUIDv7 创建时间转本地 HH:MM、回放和实时 user 轮数（窄栏自动折行） |
-| CONTEXT | 标题右侧百分比、primary/border 用量条、简写的 used / limit tokens；达到压缩阈值用 warning |
+| CONTEXT | 标题右侧百分比、primary/border 用量条，已用和未用部分均为 `█`（ASCII 为 `#`），未用部分使用 border 色；简写的 used / limit tokens；达到压缩阈值用 warning |
 | PLAN | 仅收到 TodoView 后显示；done/total；与 Plan 卡片共用图标表：完成 `☒` success、正文 muted；当前 `☐` accent、正文加粗；待办 `☐` 与正文均 muted；ASCII 使用 `[x]` / `[ ]`，按图标宽度缩进正文 |
-| AGENTS | 位于 PLAN 与 CHANGED 之间，仅有任务时显示；左侧状态图标和 Agent 名，右侧耗时，运行中随动画刷新 |
+| RUNNING AGENTS | 默认位于 CHANGED 之后，仅当前会话有子任务时显示；左侧状态图标和 Agent 名，右侧耗时，运行中随动画刷新 |
 | CHANGED | 当前会话已成功 edit/write 的相对路径和累计 +N −M（分别为 success / error 色，均不加粗）；最多 8 文件，其余 +K more |
 | MCP | 配置的服务器逐项显示名称和 ready/connecting/failed，分别用 success/warning/error 状态符 |
 

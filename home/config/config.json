@@ -98,9 +98,15 @@
       "panels": "filled",
       "density": "comfortable",
       "icons": "unicode",
-      "sidebar": "right",
       "diff": "auto",
       "links": "on"
+    },
+    "layout": {
+      "width": "auto",
+      "status_panel": "right",
+      "navigator": "auto",
+      "navigator_sections": ["sessions", "git", "skills", "agents"],
+      "status_sections": ["session", "context", "plan", "changed", "running_agents", "mcp"]
     },
     "completion_max_files": 5000,
     "theme_file": "themes/dagent.json"

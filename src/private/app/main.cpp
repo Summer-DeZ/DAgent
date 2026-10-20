@@ -264,6 +264,7 @@ int main(int argc, char** argv) {
         options.initial = session_json.get<dagent::protocol::SessionSnapshot>();
         if (const auto ui = initialized.find("ui"); ui != initialized.end() && ui->is_object()) {
             options.appearance = ui->value("appearance", nlohmann::json::object());
+            options.layout = ui->value("layout", nlohmann::json::object());
             options.themes_directory = ui->value("themes_directory", "");
             if (const auto theme = ui->find("theme_file"); theme != ui->end() && theme->is_string()) {
                 options.theme_file = theme->get<std::string>();

@@ -25,23 +25,24 @@ class Configuration final : public backend::ConfigurationGateway {
 public:
     Configuration(std::filesystem::path root,
                   std::vector<std::string> overrides, std::map<std::string, llm::ProviderConfig> models,
-                  std::filesystem::path theme_file, nlohmann::json appearance,
+                  std::filesystem::path theme_file, nlohmann::json appearance, nlohmann::json layout,
                   std::function<std::shared_ptr<agent::ModelSession>(const llm::ProviderConfig&)> make_session);
 
     std::vector<agent::PublicModel> models() const override;
     std::vector<agent::ProviderKindInfo> provider_kinds() const override;
     agent::PublicModel add_model(const agent::ModelInput& input) override;
     std::filesystem::path theme_file() const override;
+    nlohmann::json layout() const override;
     nlohmann::json appearance() const override;
     std::filesystem::path themes_directory() const override;
-    nlohmann::json save_appearance(const nlohmann::json&) override;
+    nlohmann::json save_appearance(const nlohmann::json&, const nlohmann::json&) override;
 
     /// @brief 按配置名重读配置并构造客户端（@model 覆写）。凭据不进入公开返回值。
     ModelSelection resolve(const std::string& name);
 
 private:
     std::filesystem::path root_, theme_file_;
-    nlohmann::json appearance_;
+    nlohmann::json appearance_, layout_;
     std::vector<std::string> overrides_;
     std::map<std::string, llm::ProviderConfig> models_;
     std::function<std::shared_ptr<agent::ModelSession>(const llm::ProviderConfig&)> make_session_;

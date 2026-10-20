@@ -1,5 +1,7 @@
 #pragma once
 #include <map>
+#include <functional>
+#include "tui/input.hpp"
 #include "ui/appearance.hpp"
 #include "ui/projection.hpp"
 
@@ -10,8 +12,27 @@ struct AgentInfo {
     AgentState state = AgentState::running;
     double seconds = 0;
 };
-class SidePanel final : public tui::Widget {
+class SidePanel final : public tui::Widget, public tui::EventHandler {
 public:
+    struct Row {
+        std::string left, right;
+        std::function<void()> activate;
+        bool current = false;
+        char status = 0;
+    };
+    struct Section { std::string right; std::vector<Row> rows; };
+    std::map<std::string, Section> sections;
+    std::vector<std::string> order;
+    SidePanel* source = nullptr;
+    SidePanel* mirror = nullptr;
+    void invalidate() noexcept { tui::Widget::invalidate(); if (mirror) mirror->tui::Widget::invalidate(); }
+    bool left = false, focused = false;
+    int columns = 30;
+    std::function<void()> back, focus;
+    std::function<void()> all_sessions;
+    void set_focused(bool value) { focused = value; invalidate(); }
+    bool on_event(const tui::Event&) override;
+    bool dirty_tree() const noexcept override { return dirty_ || (source && source->dirty_tree()); }
     void set_agents(std::vector<AgentInfo> agents, int frame) { agents_ = std::move(agents); frame_ = frame; invalidate(); }
     void set_title(std::string);
     void set_context(std::size_t used, std::size_t limit);
@@ -42,7 +63,11 @@ private:
     std::string title_, version_, started_;
     std::size_t used_ = 0, limit_ = 0;
     int turns_ = 0, trigger_ = 80;
-    bool collapsed_ = false, outline_ = false, compact_ = false, left_ = false, has_plan_ = false;
+    struct DisplayRow { Row row; std::string section; bool heading = false; };
+    std::vector<DisplayRow> rows_;
+    std::vector<int> selectable_;
+    int selected_ = 0, top_ = 0;
+    bool collapsed_ = false, outline_ = false, compact_ = false, has_plan_ = false;
     const tui::ThemeTokens* theme_ = &tui::dark_theme();
 };
 } // namespace dagent::ui

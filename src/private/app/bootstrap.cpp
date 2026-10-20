@@ -183,7 +183,7 @@ runtime::Assembled assemble_backend(const runtime::BootstrapOptions& options) {
 
     const ModelFactory make_session = make_model_factory(config);
     auto configuration =
-        std::make_shared<Configuration>(options.root, options.overrides, config.models, config.ui.theme_file, config.ui.appearance, make_session);
+        std::make_shared<Configuration>(options.root, options.overrides, config.models, config.ui.theme_file, config.ui.appearance, config.ui.layout, make_session);
 
     auto skills = std::make_shared<agent::SkillCatalog>(*load_skills(paths.skills, config.files));
     for (auto& skill : skills->definitions) {
@@ -200,7 +200,7 @@ runtime::Assembled assemble_backend(const runtime::BootstrapOptions& options) {
     out.progress_interval_ms = static_cast<int>(config.agent.progress.interval.count());
     if (options.mode == "sessions" || options.mode == "models") {
         out.queries = std::make_shared<QueryGatewayImpl>(config.session, options.cwd, config.project_root,
-                                                       config.search, skills, config.process, config.ui.completion_max_files, memory);
+                                                       config.search, skills, config.process, config.ui.completion_max_files, memory, config.subagents);
         return out;
     }
 
@@ -208,7 +208,7 @@ runtime::Assembled assemble_backend(const runtime::BootstrapOptions& options) {
     auto session = session_options(config, options, configuration, make_session);
     context.sandbox = session.search.sandbox;
     out.queries = std::make_shared<QueryGatewayImpl>(config.session, options.cwd, config.project_root,
-                                                   session.search, skills, config.process, config.ui.completion_max_files, memory);
+                                                   session.search, skills, config.process, config.ui.completion_max_files, memory, config.subagents);
     // stdio MCP：用受信任 profile + 已解析 SRT 运行时构造受限启动参数；缺 profile 的 server 不启动。
     if (session.srt) {
         for (auto& server : config.mcp_servers) {

@@ -164,13 +164,16 @@ class Workspace final : public tui::Container {
 public:
     Workspace() : tui::Container(Direction::horizontal) {}
     bool left = false;
+    std::function<void(int)> resize;
     void layout(tui::Rect area) override {
-        tui::Container::layout(area);
-        if (left) {
-            const auto main = child(0).rect(), side = child(1).rect();
-            child(1).layout({0, 0, side.w, area.h});
-            child(0).layout({side.w, 0, main.w, area.h});
-        }
+        if (resize) resize(area.w);
+        // Both panel widths are decided from the terminal width before laying out the main area.
+        tui::Widget::layout(area);
+        const int status = child(1).measure({area.w, area.h}).cols;
+        const int navigator = child(2).measure({area.w, area.h}).cols;
+        child(0).layout({left ? status : navigator, 0, std::max(0, area.w - status - navigator), area.h});
+        child(1).layout({left ? 0 : area.w - status, 0, status, area.h});
+        child(2).layout({left ? area.w - navigator : 0, 0, navigator, area.h});
     }
 };
 
@@ -427,7 +430,7 @@ public:
     Shell(client::Client& client, FrontendBridge& bridge, const protocol::SessionSnapshot& initial,
           std::vector<protocol::HistoryItem> history,
           const InteractiveOptions& options, std::filesystem::path project_root, std::string branch)
-        : client_(client), bridge_(bridge), appearance_(Appearance::from_json(options.appearance)),
+        : client_(client), bridge_(bridge), appearance_(Appearance::from_json(options.appearance)), layout_(Layout::from_json(options.layout)),
           themes_directory_(options.themes_directory),
           resumed_(options.resumed), history_(std::move(history)),
           initial_prompt_(options.initial_prompt), root_(layout()), rt_(terminal_, root_),
@@ -464,7 +467,15 @@ public:
         rt_.bind_mouse(*tabs_, *tabs_);
         rt_.bind_mouse(frame_->welcome, frame_->welcome);
         prompt_.before_edit = [this](const tui::Event& e) { return welcome_event(e); };
+        workspace_->resize = [this](int columns) { update_panels(columns); };
+        navigator_->source = side_; side_->mirror = navigator_;
+        navigator_->back = [this] { focus_prompt(); };
+        navigator_->focus = [this] { focus_navigator(); };
+        side_->focus = [this] { focus_prompt(); };
+        side_->all_sessions = [this] { focus_prompt(); session_panel(); };
+        rt_.bind_mouse(*navigator_, *navigator_); rt_.bind_mouse(*side_, *side_);
         register_commands();
+        apply_layout(layout_);
         apply_appearance(appearance_);
         rt_.on_caps([this](const tui::Terminal::Caps&) {
             if (appearance_.mode == "auto") apply_appearance(appearance_);
@@ -475,6 +486,7 @@ public:
         history_.clear();
         refresh_agents();
         refresh_project();
+        refresh_navigation();
         refresh_mcp();
     }
 
@@ -487,8 +499,10 @@ public:
         }
         model_picker_.close();
         rt_.cancel(file_debounce_);
+        rt_.cancel(git_debounce_);
         terminal_.restore();
         unbind_active_mouse();
+        rt_.unbind_mouse(*navigator_); rt_.unbind_mouse(*side_);
         rt_.unbind_mouse(*tabs_);
         rt_.unbind_mouse(frame_->welcome);
     }
@@ -542,8 +556,9 @@ public:
     }
 
     bool on_event(const tui::Event& event) override {
+        if (event.kind == tui::Event::Kind::focus && event.focus_gained) { schedule_git(); refresh_navigation_sessions(); }
         if (event.kind == tui::Event::Kind::resize) {
-            update_todo_status(event.size.cols);
+            update_panels(event.size.cols);
         }
         return keys_.on_event(event);
     }
@@ -636,6 +651,7 @@ private:
     }
 
     void handle_event(const protocol::Event& event) {
+        if (event.kind == "workspace.changed") { schedule_git(); return; }
         if (event.kind == "session.changed") {
             apply_session_changed(event);
             return;
@@ -647,6 +663,8 @@ private:
             set_busy(false);
             return;
         }
+        if (event.kind == "tool_finished" || event.kind == "turn_ended") schedule_git();
+        if (event.kind == "turn_started" || event.kind == "turn_ended") refresh_navigation_sessions();
         if (event.parent_session_id) {
             route_sub_event(event);
             return;
@@ -686,6 +704,7 @@ private:
         }
         set_busy(false);
         refresh_project();
+        refresh_navigation_sessions();
         refresh_models();
     }
 
@@ -831,12 +850,144 @@ private:
     }
 
     void refresh_project() {
+        schedule_git();
         const std::string id = id_;
         request("workspace.info", {{"session_id", id}}, [this, id](const nlohmann::json& value) {
             if (id_ != id) return;
             branch_ = value.value("branch", "");
             header_->branch = branch_; header_->invalidate();
             update_welcome();
+        });
+    }
+
+    void focus_prompt() {
+        navigator_focused_ = false; navigator_->set_focused(false);
+        rt_.set_focus(&prompt_, input_); hints_->invalidate();
+    }
+    void focus_navigator() {
+        completion_.close(); navigator_focused_ = true; navigator_->set_focused(true);
+        rt_.set_focus(navigator_, navigator_); hints_->invalidate();
+    }
+    void update_panels(int columns) {
+        const bool status = !sidebar_override_.value_or(layout_.status_panel == "hidden") && columns >= 80;
+        const int width = columns >= 100 ? 30 : 26;
+        const bool wanted = navigator_override_.value_or(layout_.navigator == "always" || (layout_.navigator == "auto" && columns >= 170));
+        const bool navigator = wanted && columns - (status ? width : 0) - width >= 50;
+        side_->columns = navigator_->columns = width;
+        side_->set_collapsed(!status); navigator_->set_collapsed(!navigator);
+        side_->left = layout_.status_panel == "left"; navigator_->left = !side_->left;
+        workspace_->left = side_->left; workspace_->invalidate_layout();
+        if (!navigator && navigator_focused_) focus_prompt();
+        update_todo_status(columns);
+    }
+    void apply_layout(const Layout& value) {
+        if (value.status_panel != layout_.status_panel) sidebar_override_.reset();
+        if (value.navigator != layout_.navigator) navigator_override_.reset();
+        layout_ = value;
+        const int width = value.width.is_number_integer() ? value.width.get<int>() : value.width == "compact" ? 88 : value.width == "wide" ? 160 : 0;
+        set_reading_width(width);
+        side_->order = value.status_sections; navigator_->order = value.navigator_sections;
+        update_panels(terminal_.size().cols);
+        // Width participates in document measurement, so invalidate materialized lines via the theme epoch.
+        apply_theme(theme_); root_.invalidate_layout();
+    }
+    void toggle_navigator() {
+        if (navigator_focused_) {
+            navigator_override_ = false; focus_prompt();
+        } else {
+            navigator_override_ = true;
+            update_panels(terminal_.size().cols);
+            if (!navigator_->collapsed()) focus_navigator();
+        }
+        update_panels(terminal_.size().cols);
+        refresh_navigation_sessions(); schedule_git();
+    }
+    void refresh_navigation_sessions() {
+        const auto id = id_;
+        request("session.list", {{"limit", 0}}, [this, id](const nlohmann::json& value) {
+            if (id != id_) return;
+            SidePanel::Section section;
+            const auto sessions = value.value("sessions", nlohmann::json::array());
+            for (const auto& session : sessions) {
+                const auto session_id = session.value("id", "");
+                const auto title = session.value("title", "");
+                if (title.empty() && session_id != id) continue;
+                const auto age = relative_age(std::chrono::system_clock::time_point(std::chrono::milliseconds(session.value("updated", std::int64_t{0}))));
+                section.rows.push_back({title.empty() ? std::string(ui::text().new_session) : title, age,
+                    [this, session_id] { focus_prompt(); if (session_id != id_) resume_session(session_id); }, session_id == id_, 0});
+            }
+            section.right = std::to_string(section.rows.size());
+            section.rows.push_back({std::string(ui::text().navigator_new_session), {}, [this] { focus_prompt(); new_session(); }, false, 0});
+            side_->sections["sessions"] = std::move(section); side_->invalidate();
+        });
+    }
+    void schedule_git() {
+        rt_.cancel(git_debounce_);
+        git_debounce_ = rt_.after(std::chrono::milliseconds(120), [this] {
+            const auto id = id_;
+            request("workspace.git_status", {{"session_id", id}}, [this, id](const nlohmann::json& value) {
+                if (id != id_) return;
+                SidePanel::Section section;
+                if (!value.value("repository", false)) section.rows.push_back({std::string(ui::text().navigator_no_repository), {}, {}, false, 'f'});
+                else {
+                    const auto branch = value.value("branch", "");
+                    section.right = std::format("↑{} ↓{}", value.value("ahead", 0), value.value("behind", 0));
+                    section.rows.push_back({std::string(icons().branch) + " " + branch, {}, {}, false, 0});
+                    const auto files = value.value("files", nlohmann::json::array());
+                    std::map<std::string, int> counts;
+                    int shown = 0;
+                    for (const auto& file : files) {
+                        const auto status = file.value("status", "?"); ++counts[status];
+                        if (shown++ >= 8) continue;
+                        section.rows.push_back({status + " " + file.value("path", ""),
+                            std::format("+{} −{}", file.value("added", 0), file.value("removed", 0)), {}, false, status.front()});
+                    }
+                    if (files.size() > 8) section.rows.push_back({"+" + std::to_string(files.size() - 8) + " more", {}, {}, false, 'f'});
+                    std::string summary;
+                    for (const auto& [status, count] : counts) {
+                        if (!summary.empty()) summary += " · ";
+                        summary += std::to_string(count) + " " + (std::string(status == "?" ? ui::text().navigator_untracked : status == "A" ? ui::text().navigator_added : status == "D" ? ui::text().navigator_deleted : ui::text().navigator_modified));
+                    }
+                    section.rows.push_back({summary.empty() ? std::string(ui::text().navigator_clean) : summary, {}, {}, false, 'f'});
+                    branch_ = branch + (files.empty() ? "" : "*"); header_->branch = branch_; header_->invalidate(); update_welcome();
+                }
+                side_->sections["git"] = std::move(section); side_->invalidate();
+            });
+        });
+    }
+    void refresh_navigation() {
+        refresh_navigation_sessions();
+        request("skills.list", {}, [this](const nlohmann::json& value) {
+            SidePanel::Section section;
+            for (const auto& skill : value.value("skills", nlohmann::json::array())) {
+                const auto name = skill.value("name", "");
+                section.rows.push_back({"$ " + name, {}, [this, name] {
+                    auto input = input_->text(); if (!input.empty() && input.back() != ' ') input += ' ';
+                    input_->set_text({}); input_->insert(input + "$" + name + " "); focus_prompt();
+                }, false, 0});
+            }
+            side_->sections["skills"] = std::move(section); side_->invalidate();
+        });
+        request("agents.list", {}, [this](const nlohmann::json& value) {
+            SidePanel::Section section;
+            for (const auto& agent : value) {
+                const auto name = agent.value("name", ""), description = agent.value("description", "");
+                auto summary = agent.value("permission", "inherit");
+                if (summary == "read_only") summary = "read-only";
+                else if (agent.contains("tools") && agent["tools"].is_array()) {
+                    summary.clear();
+                    const auto tools = agent["tools"].get<std::vector<std::string>>();
+                    const auto has = [&](std::string_view tool) { return std::ranges::find(tools, tool) != tools.end(); };
+                    if (has("edit") || has("write")) summary = ui::text().navigator_edit;
+                    else if (has("grep") || has("glob")) summary = ui::text().navigator_search;
+                    else if (has("read")) summary = ui::text().navigator_read;
+                    if (has("bash")) { if (!summary.empty()) summary += " · "; summary += ui::text().navigator_shell; }
+                    if (summary.empty()) summary = tools.empty() ? std::string(ui::text().navigator_no_tools) : tools.front();
+                    if (agent.value("permission", "inherit") == "ask") summary = "ask · " + summary;
+                }
+                section.rows.push_back({name, summary, [this, name, description] { toast(name + ": " + description); }, false, 0});
+            }
+            side_->sections["agents"] = std::move(section); side_->invalidate();
         });
     }
 
@@ -966,7 +1117,7 @@ private:
         queue_label_->set_theme(theme_); tabs_->set_theme(theme_);
         input_->set_theme(theme_); header_->set_theme(theme_); hints_->set_theme(theme_);
         frame_->welcome.set_theme(theme_);
-        side_->set_theme(theme_); toasts_.set_theme(theme_); panel_.set_theme(theme_);
+        navigator_->set_theme(theme_); side_->set_theme(theme_); toasts_.set_theme(theme_); panel_.set_theme(theme_);
         dialog_.set_theme(theme_); model_dialog_.set_theme(theme_); completion_.set_theme(theme_);
         settings_.set_theme(theme_);
         model_picker_.set_theme(theme_, appearance_.panels == "outline");
@@ -997,7 +1148,7 @@ private:
         auto main = std::make_unique<tui::Container>();
         auto add_centered = [&]<class T>(T*& target, tui::Constraint constraint) {
             auto widget = std::make_unique<T>(); target = widget.get();
-            main->add(constraint, centered(std::move(widget), 88, theme_));
+            main->add(constraint, centered(std::move(widget), 0, theme_));
         };
         auto frame = std::make_unique<ScrollFrame>(); frame_ = frame.get();
         main->add({tui::Sizing::flex, 1}, std::move(frame));
@@ -1009,6 +1160,8 @@ private:
         workspace->add({tui::Sizing::flex, 1}, std::move(main));
         auto side = std::make_unique<SidePanel>(); side_ = side.get();
         workspace->add({tui::Sizing::content}, std::move(side));
+        auto navigator = std::make_unique<SidePanel>(); navigator_ = navigator.get();
+        workspace->add({tui::Sizing::content}, std::move(navigator));
 
         auto page = std::make_unique<Page>();
         page->modal = [this] { return model_picker_.active() || panel_.visible() || settings_.active() || dialog_.active() || model_dialog_.active(); };
@@ -1047,6 +1200,7 @@ private:
                 pane.transcript->set_render_options(appearance_.diff == "auto", unified_diff_, appearance_.links == "on", project_root_);
         }, [this] { return active_transcript().can_switch_diff(active_scroll(), false); });
         add_command("thoughts.toggle", std::string(ui::text().cmd_thoughts), std::string(ui::text().cmd_transcript), "ctrl+r", {}, [this] { active_transcript().toggle_thoughts(); });
+        add_command("navigator.toggle", std::string(ui::text().settings_navigator), std::string(ui::text().cmd_view), "ctrl+b", {}, [this] { toggle_navigator(); });
         add_command("todo.toggle", std::string(ui::text().cmd_todo), std::string(ui::text().cmd_view), "ctrl+t", {}, [this] { toggle_todo(); });
         add_command("scroll.up", std::string(ui::text().cmd_page_up), std::string(ui::text().cmd_transcript), "pageup", {}, [this] { active_scroll().scroll_pages(-1); });
         add_command("scroll.down", std::string(ui::text().cmd_page_down), std::string(ui::text().cmd_transcript), "pagedown", {}, [this] { active_scroll().scroll_pages(1); });
@@ -1229,8 +1383,7 @@ private:
     }
     void toggle_todo() {
         sidebar_override_ = !side_->collapsed();
-        side_->set_collapsed(*sidebar_override_);
-        update_todo_status(terminal_.size().cols);
+        update_panels(terminal_.size().cols);
     }
     /// 输入框尾行与消息尾行共用同一份「模式 · 模型」。
     std::string mode_label() const {
@@ -1448,7 +1601,7 @@ private:
     }
     void session_panel() {
         panel_.open(std::string(ui::text().panel_sessions), {{std::string(ui::text().panel_loading), {}, {}, false, {}}}, std::string(ui::text().panel_session_footer), false);
-        request("session.list", {{"limit", 50}}, [this](const nlohmann::json& value) {
+        request("session.list", {{"limit", 0}}, [this](const nlohmann::json& value) {
             std::vector<Panel::Row> rows;
             for (const auto& session : value.value("sessions", nlohmann::json::array())) {
                 const std::string id = session.value("id", "");
@@ -1501,16 +1654,14 @@ private:
     bool apply_appearance(const Appearance& value) {
         try {
             const auto selected = appearance_theme(value, themes_directory_, terminal_.caps().background);
-            const bool sidebar_changed = value.sidebar != appearance_.sidebar;
             const bool icons_changed = value.icons != appearance_.icons;
             appearance_ = value;
-            if (sidebar_changed) sidebar_override_.reset();
             set_icons(value.icons);
             header_->outline = value.panels == "outline"; header_->invalidate_layout();
             hints_->outline = value.panels == "outline";
             side_->set_appearance(value);
-            side_->set_collapsed(sidebar_override_.value_or(value.sidebar == "hidden"));
-            workspace_->left = value.sidebar == "left"; workspace_->invalidate_layout();
+            navigator_->set_appearance(value);
+            update_panels(terminal_.size().cols);
             input_->set_appearance(value);
             queue_label_->outline = value.panels == "outline";
             frame_->welcome.appearance = value; frame_->welcome.invalidate();
@@ -1531,18 +1682,23 @@ private:
         auto current = appearance_;
         if (std::filesystem::path(current.theme) == themes_directory_ / "dagent.json") current.theme = "dagent";
         const auto sidebar = sidebar_override_;
-        settings_.open(current, [this](const Appearance& value) { return apply_appearance(value); },
-            [this](const Appearance& value) {
-                request("ui.appearance.save", {{"appearance", value.json()}},
+        const auto navigator = navigator_override_;
+        const bool focused = navigator_focused_;
+        settings_.open(current, layout_, [this](const Appearance& value, const Layout& layout) {
+                if (!apply_appearance(value)) return false;
+                apply_layout(layout); return true;
+            },
+            [this](const Appearance& value, const Layout& layout) {
+                request("ui.appearance.save", {{"appearance", value.json()}, {"layout", layout.json()}},
                     [this](const nlohmann::json&) {
                         settings_.saved(); toasts_.show(ToastStack::Severity::success, std::string(ui::text().settings_saved));
                     }, [this](const protocol::RpcError& error) {
                         settings_.failed(); toast(error.message, tui::Notice::Severity::error);
                     });
-            }, row, [this, sidebar] {
-                sidebar_override_ = sidebar;
-                side_->set_collapsed(sidebar_override_.value_or(appearance_.sidebar == "hidden"));
-                update_todo_status(terminal_.size().cols);
+            }, row, [this, sidebar, navigator, focused] {
+                sidebar_override_ = sidebar; navigator_override_ = navigator;
+                update_panels(terminal_.size().cols);
+                if (focused && !navigator_->collapsed()) focus_navigator(); else focus_prompt();
             });
     }
     std::vector<KeyHint> key_hints() const {
@@ -1556,15 +1712,17 @@ private:
         if (settings_.active()) return {hint("enter", ui::text().hint_save), hint("esc", ui::text().hint_revert)};
         if (panel_.visible() || completion_.visible() || model_dialog_.active())
             return {hint("enter", ui::text().hint_select), hint("esc", ui::text().hint_close)};
+        if (navigator_focused_) return {hint("↑↓", ui::text().hint_select), hint("enter", ui::text().hint_open), hint("tab", ui::text().hint_section), hint("esc", ui::text().hint_back)};
         if (busy_) {
             std::vector<KeyHint> out{hint("esc", ui::text().hint_interrupt)};
             if (!snapshot_.queue.empty()) out.push_back(hint(icons().up, ui::text().hint_recall));
             if (panes_.size() > 1) out.push_back(hint("ctrl+a", ui::text().hint_agents));
             return out;
         }
-        if (welcome_navigation()) return {hint(std::string(icons().up) + std::string(icons().down), ui::text().welcome_pick),
+        if (welcome_navigation() && terminal_.size().cols < 170) return {hint(std::string(icons().up) + std::string(icons().down), ui::text().welcome_pick),
             hint("ctrl+p", ui::text().hint_commands), hint("ctrl+c", ui::text().welcome_quit)};
         std::vector<KeyHint> out{hint("ctrl+p", ui::text().hint_commands), hint("ctrl+t", ui::text().hint_sidebar), hint("shift+tab", ui::text().hint_mode)};
+        if (terminal_.size().cols >= 110) out.push_back(hint("ctrl+b", ui::text().hint_navigator));
         if (!panes_.empty() && panes_[active_].transcript->can_switch_diff(*panes_[active_].scroll))
             out.push_back(hint("ctrl+d", unified_diff_ ? ui::text().hint_diff_split : ui::text().hint_diff_unified));
         return out;
@@ -1776,6 +1934,10 @@ private:
     FrontendBridge& bridge_;
     std::shared_ptr<CallbackGate> gate_ = std::make_shared<CallbackGate>();
     Appearance appearance_;
+    Layout layout_;
+    std::optional<bool> navigator_override_;
+    bool navigator_focused_ = false;
+    tui::TimerId git_debounce_ = 0;
     bool unified_diff_ = false;
     std::filesystem::path themes_directory_;
     std::optional<bool> sidebar_override_;
@@ -1797,6 +1959,7 @@ private:
     HeaderBar* header_ = nullptr;
     HintBar* hints_ = nullptr;
     SidePanel* side_ = nullptr;
+    SidePanel* navigator_ = nullptr;
     tui::Terminal terminal_;
     tui::LayerStack root_;
     tui::Runtime rt_;

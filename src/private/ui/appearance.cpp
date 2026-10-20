@@ -105,15 +105,38 @@ Appearance Appearance::from_json(const nlohmann::json& j) {
     a.theme = j.value("theme", a.theme); a.mode = j.value("mode", a.mode);
     a.background = j.value("background", a.background); a.accent = j.value("accent", a.accent);
     a.panels = j.value("panels", a.panels); a.density = j.value("density", a.density);
-    a.icons = j.value("icons", a.icons); a.sidebar = j.value("sidebar", a.sidebar);
+    a.icons = j.value("icons", a.icons);
     a.diff = j.value("diff", a.diff); a.links = j.value("links", a.links);
     return a;
 }
 nlohmann::json Appearance::json() const {
     nlohmann::json j{{"theme", theme}, {"mode", mode}, {"background", background},
-                     {"panels", panels}, {"density", density}, {"icons", icons}, {"sidebar", sidebar}, {"diff", diff}, {"links", links}};
+                     {"panels", panels}, {"density", density}, {"icons", icons}, {"diff", diff}, {"links", links}};
     if (!accent.empty()) j["accent"] = accent;
     return j;
+}
+Layout Layout::from_json(const nlohmann::json& j) {
+    Layout out;
+    out.width = j.value("width", out.width);
+    out.status_panel = j.value("status_panel", out.status_panel);
+    out.navigator = j.value("navigator", out.navigator);
+    out.navigator_sections = j.value("navigator_sections", out.navigator_sections);
+    out.status_sections = j.value("status_sections", out.status_sections);
+    return out;
+}
+nlohmann::json Layout::json() const {
+    return {{"width", width}, {"status_panel", status_panel}, {"navigator", navigator},
+        {"navigator_sections", navigator_sections}, {"status_sections", status_sections}};
+}
+const std::vector<std::string>& section_ids() {
+    static const std::vector<std::string> ids{"sessions", "git", "skills", "agents", "session", "context", "plan", "changed", "running_agents", "mcp"};
+    return ids;
+}
+std::string_view section_name(std::string_view id) {
+    const std::string_view names[]{text().section_sessions, text().section_git, text().section_skills, text().section_definitions, text().section_session, text().section_context, text().section_plan, text().section_changed, text().section_agents, text().section_mcp};
+    const auto& ids = section_ids();
+    const auto found = std::ranges::find(ids, id);
+    return found == ids.end() ? id : names[found - ids.begin()];
 }
 bool hex_color(std::string_view s) {
     return s.size() == 7 && s[0] == '#' && std::ranges::all_of(s.substr(1), [](char c) {

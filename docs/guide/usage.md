@@ -109,7 +109,7 @@ dagent --plan "规划一次模块调整"
 
 ## 自定义外观
 
-输入 `/settings` 打开外观设置，`/theme` 直接定位 Mode。上下选择、左右切换，立即预览全界面。
+输入 `/settings` 打开 Appearance / Layout 设置，`/theme` 直接定位 Mode。上下选择、左右切换，立即预览全界面。
 Enter 保存到当前 Home 的 `config/config.json`，Esc 或 Ctrl+C 撤回；保存失败会显示错误并保留设置窗口。
 背景选 custom 或强调色选 custom 后，Enter 编辑 `#rrggbb`，Enter 应用颜色，再次 Enter 保存。
 
@@ -120,7 +120,7 @@ Accent 按 orange → green → violet → blue → custom 循环，默认 orang
 旧橙/绿/紫/蓝预设 hex（`#EC5B2B` / `#7fd17f` / `#c792ea` / `#6ba1e6`）加载时自动转成名称。
 auto 跟随终端 OSC 11 背景通知；不发送通知的终端可以手动选择明暗。
 可选 filled/outline 面板、comfortable/compact 密度、unicode/nerd/ascii 图标，以及左/右/隐藏侧栏。
-Nerd 图标需要终端字体包含 Nerd Font 字符。Ctrl+T 临时切换侧栏，不改已保存的配置。
+Nerd 图标需要终端字体包含 Nerd Font 字符。Ctrl+T 临时切换状态栏，不改已保存的配置。
 
 透明模式的用法：先在终端中设置背景图片或透明度，再将 Background 设为 transparent。
 页面使用终端默认底色，面板仍保留主题底色；选择 outline 可让栏和输入框也透出终端背景。
@@ -140,9 +140,15 @@ DAgent 本身不加载背景图片。真彩终端显示精确颜色，256 色终
     "panels": "filled",
     "density": "compact",
     "icons": "unicode",
-    "sidebar": "left",
     "diff": "auto",
     "links": "on"
+  },
+  "layout": {
+    "width": "auto",
+    "navigator": "auto",
+    "status_panel": "left",
+    "navigator_sections": ["sessions", "git", "skills", "agents"],
+    "status_sections": ["session", "context", "plan", "changed", "running_agents", "mcp"]
   }
 }
 ```
@@ -150,6 +156,21 @@ DAgent 本身不加载背景图片。真彩终端显示精确颜色，256 色终
 每个 appearance 字段均可省略；不写 appearance.theme 时继续使用旧 ui.theme_file。
 自定义主题文件路径相对 Home，格式见 [UI 设计](../design/ui.md#2-外观与设置)。
 直接编辑文件后重启生效；通过设置对话框保存无需重启。
+
+`ui.layout` 及所有字段都可省略。Width 默认 auto：正文在空间允许时从 88 增至 120 列，每侧至少留四列；
+compact 最多 88，wide 最多 160，也可直接填 60–240 的整数。窄屏会收窄正文，双栏 diff 有独立宽度。
+Status panel 默认 right，可选 left / hidden；导航栏放在其对侧，Navigator 默认 auto（终端至少 170 列），可选 always / hidden。
+空间不足先收起导航栏。仅有旧 `ui.appearance.sidebar` 时自动迁移其含义；新 `ui.layout.status_panel` 优先，设置保存写新键并移除旧键。
+
+Ctrl+B：隐藏时显示并聚焦导航栏，已显示时聚焦，已聚焦时隐藏；↑↓ 选择、Tab 切分节、Enter 打开、Esc 回输入框。
+会话行可点击恢复，`+ new session` 新建；Git 显示分支、领先/落后、改动文件与增删行数；技能插入 `$name `，Agent 行显示定义说明。
+状态栏的运行子任务使用 RUNNING AGENTS 标题，与可用定义 AGENTS 分开。
+
+在 `/settings` 中按 Tab 或点击左侧 Layout。上方切换 Width / Navigator / Status panel；Width 选 custom 后 Enter 编辑数字，
+有效输入实时预览，Enter 完成后再次 Enter 保存。下方 NAVIGATOR / STATUS PANEL / HIDDEN 三列以 ↑↓ 选择分节，
+←→ 移动到相邻列末尾，Shift+↑↓ 重排。所有分节都可放任一栏或隐藏；配置中 id 不可重复，未知 id 会报错。
+默认列表见上例；合法 id 为 sessions、git、skills、agents、session、context、plan、changed、running_agents、mcp。
+Enter 保存外观与布局，Esc / Ctrl+C 还原打开前状态，包括临时面板显示。保存会保留其它配置的原始顺序和排版；模型添加也保序。
 
 `ui.appearance.diff` 可选 `auto`（默认）或 `unified`，也可在 `/settings` 的 Diff 行切换。
 `auto` 在主区足够宽、每侧至少有 60 个代码列时，将 edit/write 卡片主体显示为左右对比；

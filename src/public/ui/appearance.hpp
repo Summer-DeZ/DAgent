@@ -9,11 +9,22 @@
 namespace dagent::ui {
 struct Appearance {
     std::string theme = "dagent", mode = "auto", background = "solid", accent = "orange";
-    std::string panels = "filled", density = "comfortable", icons = "unicode", sidebar = "right";
+    std::string panels = "filled", density = "comfortable", icons = "unicode";
     std::string diff = "auto", links = "on";
     static Appearance from_json(const nlohmann::json&);
     nlohmann::json json() const;
 };
+
+struct Layout {
+    nlohmann::json width = "auto";
+    std::string status_panel = "right", navigator = "auto";
+    std::vector<std::string> navigator_sections{"sessions", "git", "skills", "agents"};
+    std::vector<std::string> status_sections{"session", "context", "plan", "changed", "running_agents", "mcp"};
+    static Layout from_json(const nlohmann::json&);
+    nlohmann::json json() const;
+};
+std::string_view section_name(std::string_view id);
+const std::vector<std::string>& section_ids();
 
 bool hex_color(std::string_view);
 tui::ThemeTokens appearance_theme(const Appearance&, const std::filesystem::path& themes,

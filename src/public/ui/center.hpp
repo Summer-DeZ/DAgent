@@ -15,10 +15,11 @@ public:
 };
 
 /// 把控件放进最多 max_cols 列的居中栏。max_cols == 0 表示不限宽。
+void set_reading_width(int maximum) noexcept; // 0 = auto
 int reading_width(int available) noexcept;
 
 std::unique_ptr<tui::Widget> centered(std::unique_ptr<tui::Widget> child,
-                                      int max_cols = 88,
+                                      int max_cols = 0,
                                       const tui::ThemeTokens& theme = tui::dark_theme());
 
 } // namespace dagent::ui

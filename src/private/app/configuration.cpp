@@ -27,9 +27,9 @@ llm::ProviderConfig to_internal(const agent::ModelInput& input) {
 
 Configuration::Configuration(
     std::filesystem::path root, std::vector<std::string> overrides,
-    std::map<std::string, llm::ProviderConfig> models, std::filesystem::path theme_file, nlohmann::json appearance,
+    std::map<std::string, llm::ProviderConfig> models, std::filesystem::path theme_file, nlohmann::json appearance, nlohmann::json layout,
     std::function<std::shared_ptr<agent::ModelSession>(const llm::ProviderConfig&)> make_session)
-    : root_(std::move(root)), theme_file_(std::move(theme_file)), appearance_(std::move(appearance)), overrides_(std::move(overrides)),
+    : root_(std::move(root)), theme_file_(std::move(theme_file)), appearance_(std::move(appearance)), layout_(std::move(layout)), overrides_(std::move(overrides)),
       models_(std::move(models)), make_session_(std::move(make_session)) {}
 
 std::vector<agent::PublicModel> Configuration::models() const {
@@ -56,10 +56,12 @@ agent::PublicModel Configuration::add_model(const agent::ModelInput& input) {
 
 std::filesystem::path Configuration::theme_file() const { return theme_file_; }
 
+nlohmann::json Configuration::layout() const { return layout_; }
 nlohmann::json Configuration::appearance() const { return appearance_; }
 std::filesystem::path Configuration::themes_directory() const { return root_ / "themes"; }
-nlohmann::json Configuration::save_appearance(const nlohmann::json& value) {
-    appearance_ = app::save_appearance(root_, value);
+nlohmann::json Configuration::save_appearance(const nlohmann::json& value, const nlohmann::json& layout) {
+    appearance_ = app::save_appearance(root_, value, layout);
+    if (!layout.is_null()) layout_ = resolve_layout(layout, appearance_);
     return appearance_;
 }
 

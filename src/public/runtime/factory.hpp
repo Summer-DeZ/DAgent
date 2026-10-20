@@ -155,6 +155,9 @@ public:
     virtual std::unique_ptr<HistoryReader> open_history(std::string_view session_id) = 0;
     virtual std::vector<ChildSummary> children(std::string_view session_id) = 0;
     virtual WorkspaceInfo workspace() = 0;
+    virtual nlohmann::json git_status() = 0;
+    virtual void watch_workspace(std::function<void()> changed) = 0;
+    virtual nlohmann::json agents() const = 0;
     virtual const agent::SkillCatalog& skills() const = 0;
     virtual std::vector<agent::MemoryView> memory_list() const = 0;
     virtual agent::MemoryView memory_view(std::string_view scope, std::string_view name) const = 0;

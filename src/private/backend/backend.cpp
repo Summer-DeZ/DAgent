@@ -236,6 +236,7 @@ void Backend::quit() {
     query_thread_.request_stop();
     if (query_thread_.joinable()) query_thread_.join();
     histories_.clear();
+    if (queries_) queries_->watch_workspace({});
     if (runtime_) runtime_->shutdown();
     if (publisher_) {
         publisher_->flush();
@@ -499,7 +500,7 @@ void Backend::dispatch(const protocol::Request& request) {
     }
     if (method == "session.list" || method == "session.children" || method == "session.history" ||
         method == "session.history_close" || method == "workspace.info" ||
-        method == "workspace.complete" || method == "skills.list" ||
+        method == "workspace.complete" || method == "skills.list" || method == "workspace.git_status" || method == "agents.list" ||
         method == "memory.list" || method == "memory.view" || method == "memory.delete") {
         push_query(Job{id, method, params});
         return;
@@ -598,7 +599,7 @@ void Backend::handle_command(Job job) {
             add_model(job.id, job.params);
         } else if (job.method == "ui.appearance.save") {
             try {
-                respond(job.id, {{"appearance", configuration_->save_appearance(job.params.at("appearance"))}});
+                respond(job.id, {{"appearance", configuration_->save_appearance(job.params.at("appearance"), job.params.value("layout", nlohmann::json(nullptr)))}});
             } catch (const std::exception& error) {
                 protocol::RpcError rpc;
                 rpc.code = protocol::rpc_code::kBusinessError;
@@ -712,13 +713,17 @@ void Backend::initialize(const std::string& id, const nlohmann::json& params) {
     configuration_ = std::dynamic_pointer_cast<ConfigurationGateway>(assembled.configuration);
     if (!configuration_) throw std::runtime_error("backend configuration gateway is unavailable");
     initialized_ = true;
+    if (mode_ == "interactive") queries_->watch_workspace([this] {
+        protocol::Event event; event.kind = "workspace.changed";
+        publisher_->send_event(std::move(event));
+    });
 
     nlohmann::json theme = nullptr;
     if (const auto file = configuration_->theme_file(); !file.empty()) theme = file.string();
     respond(id, {{"mode", mode_},
                  {"session", std::move(session_json)},
                  {"resumed", resumed},
-                 {"ui", {{"theme_file", std::move(theme)}, {"appearance", configuration_->appearance()},
+                 {"ui", {{"theme_file", std::move(theme)}, {"appearance", configuration_->appearance()}, {"layout", configuration_->layout()},
                          {"themes_directory", configuration_->themes_directory().string()}}},
                  {"progress_interval_ms", progress_interval_ms_}});
 }
@@ -843,6 +848,10 @@ void Backend::handle_query(Job job) {
             history_close(job.id, job.params);
         } else if (job.method == "workspace.info") {
             workspace_info(job.id, job.params);
+        } else if (job.method == "workspace.git_status") {
+            respond(job.id, queries_->git_status());
+        } else if (job.method == "agents.list") {
+            respond(job.id, queries_->agents());
         } else if (job.method == "skills.list") {
             const auto& catalog = queries_->skills();
             nlohmann::json skills = nlohmann::json::array(), diagnostics = nlohmann::json::array();

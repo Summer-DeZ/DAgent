@@ -14,7 +14,7 @@ namespace dagent::ui {
 struct InteractiveOptions {
     std::string initial_prompt;
     std::filesystem::path theme_file, themes_directory;
-    nlohmann::json appearance = nlohmann::json::object();
+    nlohmann::json appearance = nlohmann::json::object(), layout = nlohmann::json::object();
     bool resumed = false;
     protocol::SessionSnapshot initial; ///< initialize 返回的权威快照
 };

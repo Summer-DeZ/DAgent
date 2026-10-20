@@ -1,6 +1,14 @@
 #include "app/queries.hpp"
 
 #include <utility>
+#include <charconv>
+#include <sstream>
+#include <array>
+#include <sys/inotify.h>
+#include <sys/eventfd.h>
+#include <poll.h>
+#include <unistd.h>
+#include "base/text.hpp"
 #include <algorithm>
 #include "agent/permission.hpp"
 
@@ -50,8 +58,8 @@ private:
 QueryGatewayImpl::QueryGatewayImpl(storage::Options storage, std::filesystem::path cwd,
                                    std::filesystem::path project_root, workspace::SearchOptions search,
                                    std::shared_ptr<const agent::SkillCatalog> skills, exec::Options process,
-                                   std::size_t completion_max_files, std::shared_ptr<const tools::MemoryStore> memory)
-    : skills_(std::move(skills)), memory_(std::move(memory)), process_(std::move(process)), storage_(std::move(storage)), cwd_(std::move(cwd)), project_root_(std::move(project_root)),
+                                   std::size_t completion_max_files, std::shared_ptr<const tools::MemoryStore> memory, std::vector<agent::SubagentDef> agents)
+    : skills_(std::move(skills)), memory_(std::move(memory)), agents_(std::move(agents)), process_(std::move(process)), storage_(std::move(storage)), cwd_(std::move(cwd)), project_root_(std::move(project_root)),
       search_(std::move(search)), completion_max_files_(completion_max_files) {}
 
 std::vector<agent::MemoryView> QueryGatewayImpl::memory_list() const {
@@ -115,6 +123,148 @@ runtime::WorkspaceInfo QueryGatewayImpl::workspace() {
         if (git->dirty) info.branch += "*";
     }
     return info;
+}
+
+void QueryGatewayImpl::watch_workspace(std::function<void()> changed) {
+    watcher_ = {};
+    if (!changed) return;
+    watcher_ = std::jthread([this, changed = std::move(changed)](std::stop_token stop) {
+        const int fd = ::inotify_init1(IN_CLOEXEC | IN_NONBLOCK), wake = ::eventfd(0, EFD_CLOEXEC | EFD_NONBLOCK);
+        if (fd < 0 || wake < 0) {
+            if (fd >= 0) ::close(fd);
+            if (wake >= 0) ::close(wake);
+            return;
+        }
+        {
+            std::stop_callback cancel(stop, [wake] { const uint64_t one = 1; (void)::write(wake, &one, sizeof(one)); });
+            std::map<int, std::filesystem::path> watched;
+            const auto add = [&](const std::filesystem::path& path) {
+                if (watched.size() >= 4096) return;
+                const auto wd = ::inotify_add_watch(fd, path.c_str(), IN_CLOSE_WRITE | IN_CREATE | IN_DELETE | IN_MOVED_FROM | IN_MOVED_TO | IN_DELETE_SELF | IN_MOVE_SELF);
+                if (wd >= 0) watched[wd] = path;
+            };
+            const auto scan = [&] {
+                add(project_root_);
+                std::error_code error;
+                for (std::filesystem::recursive_directory_iterator it(project_root_, std::filesystem::directory_options::skip_permission_denied, error), end;
+                     it != end && !stop.stop_requested() && watched.size() < 4096; it.increment(error)) {
+                    const auto path = it->path();
+                    const bool protected_path = std::ranges::any_of(search_.sandbox.protected_read, [&](const auto& root) {
+                        const auto relative = path.lexically_relative(root);
+                        return !relative.empty() && *relative.begin() != "..";
+                    });
+                    const auto relative = path.lexically_relative(project_root_).generic_string();
+                    if (protected_path || (agent::classify_resource(path, true, {}) != agent::ResourceClass::normal &&
+                        relative != ".git" && !relative.starts_with(".git/refs") && !relative.starts_with(".git/logs")) ||
+                        relative == ".git/objects") { it.disable_recursion_pending(); continue; }
+                    if (it->is_directory(error) && !it->is_symlink(error)) add(path);
+                }
+            };
+            scan();
+            std::array<pollfd, 2> descriptors{{{fd, POLLIN, 0}, {wake, POLLIN, 0}}};
+            alignas(inotify_event) std::array<char, 16384> buffer;
+            while (!stop.stop_requested() && ::poll(descriptors.data(), descriptors.size(), -1) > 0) {
+                if (descriptors[1].revents) break;
+                bool dirty = false, rescan = false;
+                for (ssize_t size; (size = ::read(fd, buffer.data(), buffer.size())) > 0;) {
+                    for (ssize_t offset = 0; offset < size;) {
+                        const auto* event = reinterpret_cast<const inotify_event*>(buffer.data() + offset);
+                        dirty = true;
+                        rescan = rescan || (event->mask & IN_Q_OVERFLOW) || ((event->mask & IN_ISDIR) && (event->mask & (IN_CREATE | IN_MOVED_TO)));
+                        if (event->mask & IN_IGNORED) watched.erase(event->wd);
+                        offset += sizeof(inotify_event) + event->len;
+                    }
+                }
+                if (rescan) scan();
+                if (dirty) changed();
+            }
+        }
+        ::close(fd); ::close(wake);
+    });
+}
+
+nlohmann::json QueryGatewayImpl::agents() const {
+    auto result = nlohmann::json::array();
+    for (const auto& def : agents_) result.push_back({{"name", def.name}, {"description", def.description},
+        {"permission", def.permission}, {"tools", def.tools ? nlohmann::json(*def.tools) : nlohmann::json(nullptr)}});
+    return result;
+}
+
+nlohmann::json QueryGatewayImpl::git_status() {
+    using nlohmann::json;
+    json result{{"repository", false}, {"branch", ""}, {"ahead", 0}, {"behind", 0}, {"files", json::array()}};
+    const auto git = [&](std::vector<std::string> args) {
+        exec::Command command;
+        command.argv = {"/usr/bin/git", "--no-optional-locks", "-c", "core.quotepath=off", "-c", "core.fsmonitor=false",
+                        "-c", "core.hooksPath=/dev/null", "-c", "core.pager=cat"};
+        command.argv.insert(command.argv.end(), args.begin(), args.end());
+        command.env_set = {{"GIT_CONFIG_NOSYSTEM", "1"}, {"GIT_CONFIG_GLOBAL", "/dev/null"}};
+        command.cwd = project_root_; command.timeout = std::chrono::seconds(2);
+        auto options = process_; options.max_output_bytes = 1 << 20;
+        std::string output;
+        auto result = search_.sandbox.run(command, options, [&](exec::Stream stream, std::string_view bytes) {
+            if (stream == exec::Stream::out && output.size() < options.max_output_bytes)
+                output.append(bytes.substr(0, options.max_output_bytes - output.size()));
+        });
+        const auto last = output.rfind('\0');
+        output.resize(last == std::string::npos ? 0 : last + 1);
+        result.out = std::move(output);
+        return result;
+    };
+    const auto status = git({"status", "--porcelain=v2", "--branch", "-z", "--untracked-files=normal"});
+    if (status.exit_code != 0) return result;
+    result["repository"] = true;
+    std::string oid;
+    std::map<std::string, std::pair<int, int>> counts;
+    const auto number = [](std::string_view text) {
+        int n = 0; std::from_chars(text.data(), text.data() + text.size(), n); return n;
+    };
+    // NUL-delimited records preserve spaces, tabs and newlines in paths. Disable renames
+    // in numstat so both old and new paths have ordinary records.
+    for (const bool cached : {false, true}) {
+        std::vector<std::string> args{"diff", "--numstat", "-z", "--no-renames", "--no-ext-diff", "--no-textconv"};
+        if (cached) args.push_back("--cached");
+        const auto diff = git(std::move(args));
+        if (diff.exit_code != 0) continue;
+        std::istringstream records(diff.out);
+        for (std::string record; std::getline(records, record, '\0');) {
+            const auto a = record.find('\t'), b = a == std::string::npos ? a : record.find('\t', a + 1);
+            if (b == std::string::npos) continue;
+            auto& count = counts[record.substr(b + 1)];
+            count.first += number(std::string_view(record).substr(0, a));
+            count.second += number(std::string_view(record).substr(a + 1, b - a - 1));
+        }
+    }
+    std::istringstream records(status.out);
+    for (std::string record; std::getline(records, record, '\0');) {
+        if (record.starts_with("# branch.head ")) result["branch"] = base::to_valid_utf8(record.substr(14));
+        else if (record.starts_with("# branch.oid ")) oid = record.substr(13, 7);
+        else if (record.starts_with("# branch.ab ")) {
+            std::istringstream ab(record.substr(12)); int ahead = 0, behind = 0; ab >> ahead >> behind;
+            result["ahead"] = ahead; result["behind"] = -behind;
+        } else if (record.size() > 2 && record[0] != '#') {
+            std::size_t path_start = 2;
+            std::string state = "?";
+            if (record[0] != '?') {
+                const int fields = record[0] == '1' ? 8 : record[0] == '2' ? 9 : 10;
+                path_start = 0;
+                for (int i = 0; i < fields && path_start != std::string::npos; ++i) {
+                    path_start = record.find(' ', path_start);
+                    if (path_start != std::string::npos) ++path_start;
+                }
+                if (path_start == std::string::npos) continue;
+                const auto xy = record.substr(2, 2);
+                state = xy.find('D') != std::string::npos ? "D" : xy.find('A') != std::string::npos ? "A" : "M";
+            }
+            const auto path = record.substr(path_start);
+            const auto count = counts[path];
+            if (result["files"].size() < 2048) result["files"].push_back({{"path", base::to_valid_utf8(path)},
+                {"status", state}, {"added", count.first}, {"removed", count.second}});
+            if (record[0] == '2') std::getline(records, record, '\0');
+        }
+    }
+    if (result["branch"] == "(detached)") result["branch"] = oid;
+    return result;
 }
 
 std::vector<runtime::FileCandidate> QueryGatewayImpl::complete(std::string_view query, std::size_t limit) {

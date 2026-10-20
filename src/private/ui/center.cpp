@@ -3,8 +3,10 @@
 #include <algorithm>
 
 namespace dagent::ui {
+namespace { int reading_maximum = 120; }
+void set_reading_width(int maximum) noexcept { reading_maximum = maximum > 0 ? maximum : 120; }
 int reading_width(int available) noexcept {
-    return available < 44 ? std::max(0, available) : std::min(88, available - 4);
+    return available < 44 ? std::max(0, available) : std::min(reading_maximum, available - 8);
 }
 
 namespace {
@@ -44,9 +46,8 @@ public:
     }
 private:
     int content_width(int available) const noexcept {
-        if (available < 44) return std::max(0, available);
-        const int inset = std::max(0, available - 4);
-        return max_cols_ > 0 ? std::min(max_cols_, inset) : inset;
+        const int width = reading_width(available);
+        return max_cols_ > 0 ? std::min(max_cols_, width) : width;
     }
     std::unique_ptr<tui::Widget> child_;
     int max_cols_ = 88;

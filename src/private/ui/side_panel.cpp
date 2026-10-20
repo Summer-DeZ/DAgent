@@ -21,7 +21,7 @@ void SidePanel::set_mcp(std::vector<McpStatus> value) { mcp_ = std::move(value);
 void SidePanel::set_version(std::string value) { version_ = format_text(text().panel_version, value); invalidate(); }
 void SidePanel::set_collapsed(bool value) { collapsed_ = value; invalidate_layout(); }
 void SidePanel::set_appearance(const Appearance& a) {
-    outline_ = a.panels == "outline"; compact_ = a.density == "compact"; left_ = a.sidebar == "left";
+    outline_ = a.panels == "outline"; compact_ = a.density == "compact";
     invalidate_layout();
 }
 void SidePanel::start_session(std::string_view id) {
@@ -52,100 +52,159 @@ std::pair<int, int> SidePanel::progress() const noexcept {
             static_cast<int>(items_.size())};
 }
 tui::Size SidePanel::measure(tui::Size a) const {
-    return collapsed_ || a.cols < 80 ? tui::Size{} : tui::Size{a.cols >= 100 ? 30 : 26, a.rows};
+    return collapsed_ ? tui::Size{} : tui::Size{columns, a.rows};
+}
+bool SidePanel::on_event(const tui::Event& e) {
+    if (e.kind == tui::Event::Kind::mouse) {
+        if (e.mouse.button == 0 && e.mouse.press && !e.mouse.motion) {
+            const int row = e.mouse.y - 1 + top_;
+            auto found = std::ranges::find(selectable_, row);
+            if (found != selectable_.end()) {
+                selected_ = static_cast<int>(found - selectable_.begin());
+                if (focus) focus();
+                const auto action = rows_[row].row.activate;
+                if (action) action();
+                invalidate();
+            }
+        } else if (e.mouse.press && (e.mouse.button == 4 || e.mouse.button == 5)) {
+            top_ = std::clamp(top_ + (e.mouse.button == 4 ? -3 : 3), 0,
+                              std::max(0, static_cast<int>(rows_.size()) - rect().h + 2));
+            invalidate();
+        }
+        return true;
+    }
+    if (e.kind != tui::Event::Kind::key && e.kind != tui::Event::Kind::text && e.kind != tui::Event::Kind::paste) return false;
+    if (e.key == tui::Key::escape) { if (back) back(); return true; }
+    if (tui::any(e.mods & tui::Mods::ctrl)) return false;
+    const int count = static_cast<int>(selectable_.size());
+    if (count && (e.key == tui::Key::up || e.key == tui::Key::down)) {
+        selected_ = (selected_ + (e.key == tui::Key::up ? count - 1 : 1)) % count;
+    } else if (count && e.key == tui::Key::tab) {
+        const auto section = rows_[selectable_[selected_]].section;
+        for (int i = 1; i <= count; ++i) {
+            const int next = (selected_ + i) % count;
+            if (rows_[selectable_[next]].section != section) { selected_ = next; break; }
+        }
+    } else if (count && e.key == tui::Key::enter) {
+        const auto action = rows_[selectable_[selected_]].row.activate;
+        if (action) action();
+    }
+    if (count) {
+        const int row = selectable_[selected_], room = std::max(1, rect().h - 2);
+        if (row < top_) top_ = row;
+        if (row >= top_ + room) top_ = row - room + 1;
+    }
+    invalidate(); return true;
 }
 void SidePanel::render(tui::Surface& s) {
     const int w = s.cols(), h = s.rows(), x = 2, width = w - 4;
     if (w < 6 || h < 3) return;
     const auto& t = *theme_;
+    const auto& data = source ? *source : *this;
     const auto bg = outline_ ? t.background : t.background_panel;
     const auto style = [&](tui::Style v) { v.bg = bg.bg; return v; };
     s.fill({0, 0, w, h}, U' ', bg);
-    if (outline_) for (int row = 0; row < h; ++row) s.put(left_ ? w - 1 : 0, row, icons().vertical, style(t.border));
-    int y = 1;
-    const auto line = [&](std::string_view value, tui::Style tone) {
-        if (y < h - 2) s.text(x, y++, fit_columns(value, width), style(tone));
+    if (outline_) for (int y = 0; y < h; ++y) s.put(left ? w - 1 : 0, y, icons().vertical, style(t.border));
+    rows_.clear(); selectable_.clear();
+    const auto row = [&](std::string id, Row value, bool heading = false) {
+        if (!heading && !value.left.empty()) selectable_.push_back(static_cast<int>(rows_.size()));
+        rows_.push_back({std::move(value), std::move(id), heading});
     };
-    const auto gap = [&] { if (!compact_ && y < h - 2) ++y; };
-    const auto heading = [&](std::string_view label, const std::string& right = "", tui::Style tone = {}) {
-        if (y >= h - 2) return;
-        s.text(x, y, fit_columns(label, width - display_width(right)), style(t.text_muted));
-        s.text(w - 2 - display_width(right), y++, right, style(tone));
-    };
-    heading(text().section_session);
-    const std::string title = title_.empty() ? std::string(text().new_session) : title_;
-    const auto edge = tui::wrap_next_row(title, 0, width);
-    line(title.substr(0, edge.end), t.text);
-    if (edge.next < title.size()) line(std::string_view(title).substr(edge.next), t.text);
-    const auto metadata = format_text(turns_ == 1 ? text().session_started_one : text().session_started, started_, turns_);
-    const auto metadata_edge = tui::wrap_next_row(metadata, 0, width);
-    line(metadata.substr(0, metadata_edge.end), t.text_muted);
-    if (metadata_edge.next < metadata.size()) line(std::string_view(metadata).substr(metadata_edge.next), t.text_muted);
-    gap();
-    const double percent = limit_ ? 100.0 * used_ / limit_ : 0;
-    heading(text().section_context, std::format("{:.0f}%", percent), percent >= trigger_ ? t.warning : t.text_muted);
-    if (y < h - 2) {
-        const int filled = std::clamp(static_cast<int>(width * percent / 100), 0, width);
-        for (int col = 0; col < width; ++col) s.put(x + col, y, icons().meter, style(col < filled ? t.primary : t.border));
-        ++y;
-    }
-    line(format_text(text().context_tokens, tokens(used_), tokens(limit_)), t.text_muted);
-    if (has_plan_) {
-        gap(); const auto [done, total] = progress();
-        heading(text().section_plan, std::format("{}/{}", done, total), t.text_muted);
-        for (const auto& item : items_) {
-            if (y >= h - 2) break;
-            const bool done_item = item.state == TodoItem::State::done, doing = item.state == TodoItem::State::doing;
-            const auto symbol = done_item ? icons().done : icons().todo;
-            const int indent = display_width(symbol) + 1;
-            auto body = doing ? t.text : t.text_muted;
-            if (doing) body.attrs = body.attrs | tui::Attr::bold;
-            if (item.state == TodoItem::State::dropped) body.attrs = body.attrs | tui::Attr::strike;
-            s.text(x, y, symbol,
-                   style(done_item ? t.success : doing ? t.accent : t.text_muted));
-            s.text(x + indent, y++, fit_columns(item.text, width - indent), style(body));
+    auto visible = order;
+    std::erase_if(visible, [&](const auto& id) {
+        if (id == "session" || id == "context" || id == "sessions" || id == "git") return false;
+        if (id == "plan") return !data.has_plan_;
+        if (id == "changed") return data.changes_.empty();
+        if (id == "running_agents") return data.agents_.empty();
+        if (id == "mcp") return data.mcp_.empty();
+        const auto found = data.sections.find(id);
+        return found == data.sections.end() || found->second.rows.empty();
+    });
+    const double percent = data.limit_ ? 100.0 * data.used_ / data.limit_ : 0;
+    const int filled = std::clamp(static_cast<int>(width * percent / 100), 0, width);
+    for (const auto& id : visible) {
+        if (!rows_.empty() && !compact_) row(id, {}, true);
+        Section section;
+        if (const auto found = data.sections.find(id); found != data.sections.end()) section = found->second;
+        if (id == "session") {
+            section.rows.push_back({data.title_.empty() ? std::string(text().new_session) : data.title_, {}, {}, false, 0});
+            section.rows.push_back({format_text(data.turns_ == 1 ? text().session_started_one : text().session_started, data.started_, data.turns_), {}, {}, false, 'f'});
+        } else if (id == "context") {
+            section.right = std::format("{:.0f}%", percent);
+            section.rows.push_back({format_text(text().context_tokens, tokens(data.used_), tokens(data.limit_)), {}, {}, false, 'f'});
+            std::string meter;
+            for (int i = 0; i < width; ++i) meter += icons().meter;
+            section.rows.insert(section.rows.begin(), {meter, {}, {}, false, percent >= data.trigger_ ? 'M' : 'p'});
+        } else if (id == "plan") {
+            const auto [done, total] = data.progress(); section.right = std::format("{}/{}", done, total);
+            for (const auto& item : data.items_) section.rows.push_back({std::string(item.state == TodoItem::State::done ? icons().done : icons().todo) + " " + item.text, {}, {}, false, item.state == TodoItem::State::doing ? 'p' : 'f'});
+        } else if (id == "running_agents") {
+            for (const auto& agent : data.agents_) {
+                const bool running = agent.state == AgentState::running, failed = agent.state == AgentState::failed;
+                section.rows.push_back({std::string(running ? icons().spinner[data.frame_] : failed ? icons().cross : icons().check) + " " + agent.name,
+                    std::format("{:.1f}s", agent.seconds), {}, false, failed ? 'D' : running ? 'p' : 'A'});
+            }
+        } else if (id == "changed") {
+            int count = 0;
+            for (const auto& [path, counts] : data.changes_) {
+                if (count++ == 8) break;
+                section.rows.push_back({path, std::format("+{} −{}", counts.first, counts.second), {}, false, 0});
+            }
+            if (data.changes_.size() > 8) section.rows.push_back({format_text(text().changed_more, data.changes_.size() - 8), {}, {}, false, 'f'});
+        } else if (id == "mcp") {
+            for (const auto& server : data.mcp_) {
+                const bool ready = server.status == "ready", connecting = server.status == "connecting" || server.status == "reconnecting";
+                section.rows.push_back({std::string(ready ? icons().dot : connecting ? icons().circle : icons().cross) + " " + server.name,
+                    std::string(ready ? text().mcp_ready : connecting ? text().mcp_connecting : text().mcp_failed), {}, false, ready ? 'A' : connecting ? 'M' : 'D'});
+            }
+        }
+        row(id, {std::string(section_name(id)), section.right, {}, false, 0}, true);
+        if (id == "sessions" && !section.rows.empty()) {
+            // Leave room for the remaining section headings and their first row.
+            const int reserve = 3 * static_cast<int>(visible.end() - std::ranges::find(visible, id) - 1);
+            const int room = std::max(1, h - 6 - static_cast<int>(rows_.size()) - reserve);
+            const int count = static_cast<int>(section.rows.size()) - 1;
+            for (int i = 0; i < std::min(count, room); ++i) row(id, section.rows[i]);
+            if (count > room) row(id, {format_text(text().navigator_all_sessions, count), {}, data.all_sessions, false, 'f'});
+            row(id, section.rows.back());
+        } else {
+            for (auto& item : section.rows) row(id, std::move(item));
         }
     }
-    if (!agents_.empty()) {
-        gap(); heading(text().section_agents);
-        for (const auto& agent : agents_) {
-            if (y >= h - 2) break;
-            const bool running = agent.state == AgentState::running, failed = agent.state == AgentState::failed;
-            const auto elapsed = std::format("{:.1f}s", agent.seconds);
-            s.text(x, y, running ? icons().spinner[frame_] : failed ? icons().cross : icons().check,
-                   style(running ? t.accent : failed ? t.error : t.success));
-            s.text(x + 2, y, fit_columns(agent.name, width - display_width(elapsed) - 3), style(t.text));
-            s.text(w - 2 - display_width(elapsed), y++, elapsed, style(t.text_muted));
+    selected_ = std::clamp(selected_, 0, std::max(0, static_cast<int>(selectable_.size()) - 1));
+    top_ = std::clamp(top_, 0, std::max(0, static_cast<int>(rows_.size()) - h + 2));
+    const int selection = selectable_.empty() ? -1 : selectable_[selected_];
+    for (int y = 1, i = top_; y < h - 1 && i < static_cast<int>(rows_.size()); ++y, ++i) {
+        const auto& item = rows_[i]; const auto& value = item.row;
+        auto tone = style(item.heading ? t.text_muted : value.status == 'f' ? t.text_faint : value.status == '?' ? t.text_muted :
+                          value.status == 'M' ? t.warning : value.status == 'A' ? t.success : value.status == 'D' ? t.error : value.status == 'p' ? t.primary : t.text);
+        auto muted = style(value.status == 'f' ? t.text_faint : t.text_muted);
+        if (!item.heading && ((focused && i == selection) || value.current)) {
+            s.fill({1, y, w - 2, 1}, U' ', t.background_selected);
+            if (value.status == 'f') tone = muted = t.text_muted;
+            tone.bg = muted.bg = t.background_selected.bg;
+            if (focused && i == selection) {
+                auto bar = t.primary; bar.bg = tone.bg; s.text(0, y, icons().bar, bar);
+            }
         }
+        const auto right = fit_columns(value.right, std::max(0, width - 4));
+        const int right_width = display_width(right);
+        const auto left_text = fit_columns(value.left, width - (right.empty() ? 0 : right_width + 1));
+        if (item.section == "context" && !item.heading && (value.status == 'p' || value.status == 'M')) {
+            auto unused = t.border; unused.bg = tone.bg;
+            for (int col = 0; col < width; ++col) s.put(x + col, y, icons().meter, col < filled ? tone : unused);
+        } else if (item.section == "git" && (value.status == 'M' || value.status == 'A' || value.status == 'D' || value.status == '?')) {
+            auto path_style = t.text; path_style.bg = tone.bg;
+            s.text(x, y, left_text, path_style);
+            s.text(x, y, value.left.substr(0, 1), tone);
+        } else s.text(x, y, left_text, tone);
+        const auto split = right.find(' ');
+        if (!item.heading && (item.section == "git" || item.section == "changed") && right.starts_with('+') && split != std::string::npos) {
+            auto added = t.success, removed = t.error; added.bg = removed.bg = tone.bg;
+            s.text(w - 2 - right_width, y, right.substr(0, split), added);
+            s.text(w - 2 - right_width + static_cast<int>(split) + 1, y, right.substr(split + 1), removed);
+        } else s.text(w - 2 - right_width, y, right, muted);
     }
-    if (!changes_.empty()) {
-        gap(); heading(text().section_changed);
-        auto added_style = style(t.success), removed_style = style(t.error);
-        added_style.attrs = added_style.attrs & ~tui::Attr::bold;
-        removed_style.attrs = removed_style.attrs & ~tui::Attr::bold;
-        int count = 0;
-        for (const auto& [path, counts] : changes_) {
-            if (count++ == 8 || y >= h - 2) break;
-            const auto added = std::format("+{}", counts.first), removed = std::string(icons().minus) + std::to_string(counts.second);
-            const int right = w - 2 - display_width(added) - 1 - display_width(removed);
-            s.text(x, y, fit_columns(path, right - x - 1), style(t.text));
-            s.text(right, y, added, added_style);
-            s.text(right + display_width(added) + 1, y++, removed, removed_style);
-        }
-        if (changes_.size() > 8) line(format_text(text().changed_more, changes_.size() - 8), t.text_muted);
-    }
-    if (!mcp_.empty()) {
-        gap(); heading(text().section_mcp);
-        for (const auto& server : mcp_) {
-            if (y >= h - 2) break;
-            const bool ready = server.status == "ready", connecting = (server.status == "connecting" || server.status == "reconnecting");
-            const auto state = ready ? text().mcp_ready : connecting ? text().mcp_connecting : text().mcp_failed;
-            const auto tone = ready ? t.success : connecting ? t.warning : t.error;
-            s.text(x, y, ready ? icons().dot : connecting ? icons().circle : icons().cross, style(tone));
-            s.text(x + 2, y, fit_columns(server.name, width - display_width(state) - 3), style(t.text));
-            s.text(w - 2 - display_width(state), y++, state, style(tone));
-        }
-    }
-    s.text(x, h - 1, fit_columns(version_, width), style(t.text_faint));
+    if (!source) s.text(x, h - 1, fit_columns(data.version_, width), style(t.text_faint));
 }
 } // namespace dagent::ui

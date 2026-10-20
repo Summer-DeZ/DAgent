@@ -257,7 +257,8 @@ const std::set<std::string>& known_keys() {
         "permissions", "ui.theme_file", "ui.completion_max_files", "ui.appearance.theme", "ui.appearance.mode",
         "ui.appearance.background", "ui.appearance.accent", "ui.appearance.panels",
         "ui.appearance.density", "ui.appearance.icons", "ui.appearance.sidebar",
-        "ui.appearance.diff", "ui.appearance.links", "sandbox.version", "sandbox.backend",
+        "ui.layout.width", "ui.layout.status_panel", "ui.layout.navigator",
+        "ui.layout.navigator_sections", "ui.layout.status_sections", "ui.appearance.diff", "ui.appearance.links", "sandbox.version", "sandbox.backend",
         "sandbox.host_access", "sandbox.startup_timeout_ms", "sandbox.network_approval_timeout_ms",
         "sandbox.max_network_requests_per_execution", "sandbox.allowed_targets", "sandbox.denied_targets",
         "mcp.connect_timeout_ms", "mcp.probe_timeout_ms",
@@ -823,6 +824,9 @@ Config load_config(const LoadOptions& options) {
     const auto appearance = node.child("ui").child("appearance");
     config.ui.appearance = resolve_appearance(appearance.exists() ? appearance.raw() : json::object(),
                                               config.root, config.ui.theme_file);
+    const auto layout = node.child("ui").child("layout");
+    config.ui.layout = resolve_layout(layout.exists() ? layout.raw() : json::object(), config.ui.appearance);
+
     config.ui.completion_max_files = size_option(node.required("ui"), "completion_max_files");
     config.system_prompt_file = node.child("prompts").child("system").str((paths.prompts / "system.md").string());
     config.compact_prompt_file = node.child("prompts").child("compact").str((paths.prompts / "compact.md").string());
@@ -994,14 +998,174 @@ nlohmann::json resolve_appearance(const nlohmann::json& input, const fs::path& r
     return result;
 }
 
-nlohmann::json save_appearance(const fs::path& root, const nlohmann::json& appearance) {
+nlohmann::json resolve_layout(const nlohmann::json& input, const nlohmann::json& appearance) {
+    if (!input.is_object()) fail(ConfigError::Kind::type, "/ui/layout must be an object");
+    json out{{"width", "auto"}, {"status_panel", appearance.value("sidebar", "right")}, {"navigator", "auto"},
+             {"navigator_sections", {"sessions", "git", "skills", "agents"}},
+             {"status_sections", {"session", "context", "plan", "changed", "running_agents", "mcp"}}};
+    for (auto it = input.begin(); it != input.end(); ++it) {
+        const auto path = "/ui/layout/" + it.key();
+        if (!out.contains(it.key())) fail(ConfigError::Kind::invalid, "unknown layout key: " + path);
+        if (it.key() == "width") {
+            const bool number = it->is_number_integer() && *it >= 60 && *it <= 240;
+            if (!number && *it != "auto" && *it != "compact" && *it != "wide")
+                fail(ConfigError::Kind::invalid, path + ": expected auto, compact, wide or integer 60–240");
+        } else if (it.key() == "navigator") {
+            if (*it != "auto" && *it != "always" && *it != "hidden") fail(ConfigError::Kind::invalid, path + ": expected auto, always or hidden");
+        } else if (it.key() == "status_panel") {
+            if (*it != "left" && *it != "right" && *it != "hidden") fail(ConfigError::Kind::invalid, path + ": expected left, right or hidden");
+        } else if (!it->is_array()) fail(ConfigError::Kind::type, path + ": expected array");
+        out[it.key()] = *it;
+    }
+    std::set<std::string> seen;
+    const std::set<std::string> ids{"sessions", "git", "skills", "agents", "session", "context", "plan", "changed", "running_agents", "mcp"};
+    for (const auto key : {"navigator_sections", "status_sections"}) {
+        for (const auto& id : out[key]) {
+            if (!id.is_string() || !ids.contains(id.get<std::string>()))
+                fail(ConfigError::Kind::invalid, std::string("/ui/layout/") + key + ": unknown section id");
+            if (!seen.insert(id.get<std::string>()).second)
+                fail(ConfigError::Kind::invalid, std::string("/ui/layout/") + key + ": duplicate section " + id.get<std::string>());
+        }
+    }
+    return out;
+}
+
+namespace {
+// Parse with ordered_json, then patch only changed values into the original text.
+// Unowned objects, comments, inline arrays and whitespace remain byte-for-byte intact.
+struct ConfigDocument {
+    using Ordered = nlohmann::ordered_json;
+    std::string source, indent = "  ", newline = "\n";
+    Ordered original, value;
+    explicit ConfigDocument(const fs::path& file) {
+        std::ifstream in(file, std::ios::binary);
+        if (!in) fail(ConfigError::Kind::io, "cannot open config file: " + file.string());
+        source.assign(std::istreambuf_iterator<char>(in), {});
+        original = value = Ordered::parse(source, nullptr, true, true);
+        if (source.find("\r\n") != std::string::npos) newline = "\r\n";
+        const auto line = source.find('\n');
+        if (line != std::string::npos) {
+            const auto end = source.find_first_not_of(" \t", line + 1);
+            if (end > line + 1) indent = source.substr(line + 1, end - line - 1);
+        }
+    }
+    void trivia(std::size_t& p) const {
+        while (p < source.size()) {
+            if (std::isspace(static_cast<unsigned char>(source[p]))) { ++p; continue; }
+            if (source.compare(p, 2, "//") == 0) { p = source.find('\n', p + 2); continue; }
+            if (source.compare(p, 2, "/*") == 0) { p = source.find("*/", p + 2) + 2; continue; }
+            break;
+        }
+    }
+    std::size_t token_end(std::size_t p) const {
+        if (source[p] == '"') {
+            for (++p; source[p] != '"'; ++p) if (source[p] == '\\') ++p;
+            return p + 1;
+        }
+        if (source[p] == '{' || source[p] == '[') {
+            const char end = source[p++] == '{' ? '}' : ']';
+            trivia(p);
+            while (source[p] != end) {
+                if (source[p] == ',' || source[p] == ':') ++p;
+                else p = token_end(p);
+                trivia(p);
+            }
+            return p + 1;
+        }
+        while (p < source.size() && !std::isspace(static_cast<unsigned char>(source[p])) &&
+               source[p] != ',' && source[p] != ']' && source[p] != '}' && source[p] != '/') ++p;
+        return p;
+    }
+    std::string encoded(const Ordered& item, const std::string& padding, bool multiline) const {
+        if (item.is_array() && !multiline) {
+            std::string out = "[";
+            for (const auto& value : item) {
+                if (out.size() > 1) out += ", ";
+                out += encoded(value, padding, false);
+            }
+            return out + "]";
+        }
+        const auto raw = item.dump(multiline ? static_cast<int>(indent.size()) : -1, indent.front());
+        std::string out;
+        for (char c : raw) {
+            if (c == '\n') out += newline + padding;
+            else out += c;
+        }
+        return out;
+    }
+    std::string patch(const Ordered& before, const Ordered& after, std::size_t begin, std::size_t end) const {
+        if (before == after) return source.substr(begin, end - begin);
+        const auto line = source.rfind('\n', begin);
+        const auto start = line == std::string::npos ? 0 : line + 1;
+        const auto first = source.find_first_not_of(" \t", start);
+        const auto padding = source.substr(start, first - start);
+        const bool multiline = source.substr(begin, end - begin).find('\n') != std::string::npos;
+        if (!before.is_object() || !after.is_object()) return encoded(after, padding, multiline);
+        std::string out = "{";
+        std::size_t p = begin + 1, closing = p;
+        bool any = false;
+        const auto append = [&](const std::string& entry) {
+            if (any) out += ',';
+            out += entry; any = true;
+        };
+        trivia(p);
+        while (source[p] != '}') {
+            const auto key_start = p, key_end = token_end(p);
+            const auto key = Ordered::parse(source.substr(key_start, key_end - key_start)).get<std::string>();
+            p = key_end; trivia(p); ++p; trivia(p);
+            const auto value_start = p, value_end = token_end(p);
+            p = value_end; trivia(p);
+            if (after.contains(key)) {
+                auto entry = source.substr(closing, value_start - closing) + patch(before.at(key), after.at(key), value_start, value_end);
+                if (source[p] == ',') entry += source.substr(value_end, p - value_end);
+                append(entry);
+            }
+            closing = value_end;
+            if (source[p] == ',') { closing = ++p; trivia(p); }
+        }
+        const auto tail = source.substr(closing, end - closing - 1);
+        for (auto it = after.begin(); it != after.end(); ++it) {
+            if (before.contains(it.key())) continue;
+            const auto child_padding = padding + indent;
+            const auto prefix = multiline ? newline + child_padding : any ? " " : "";
+            append(prefix + Ordered(it.key()).dump() + ": " + encoded(it.value(), child_padding, multiline));
+        }
+        return out + tail + "}";
+    }
+    std::string dump() const {
+        std::size_t begin = 0; trivia(begin);
+        const auto end = token_end(begin);
+        return source.substr(0, begin) + patch(original, value, begin, end) + source.substr(end);
+    }
+};
+}
+
+nlohmann::json save_appearance(const fs::path& root, const nlohmann::json& appearance,
+                               const nlohmann::json& layout) {
     ModelWriteLock lock(root);
     const fs::path file = root / "config" / "config.json";
-    json document = parse_file(file);
+    ConfigDocument document(file);
     const auto effective = resolve_appearance(appearance, root, {});
-    document["ui"]["appearance"] = appearance;
-    document["ui"]["appearance"]["accent"] = effective["accent"];
-    workspace::write_text(file, document.dump(2) + "\n", workspace::Eol::lf, false, workspace::stamp_of(file));
+    const auto defaults = resolve_appearance(json::object(), root, {});
+    auto ui = document.value.value("ui", ConfigDocument::Ordered::object());
+    auto saved = ui.value("appearance", ConfigDocument::Ordered::object());
+    for (auto it = appearance.begin(); it != appearance.end(); ++it) {
+        if (saved.contains(it.key()) || effective[it.key()] != defaults[it.key()])
+            saved[it.key()] = it.key() == "accent" ? effective[it.key()] : *it;
+    }
+    if (!layout.is_null()) {
+        resolve_layout(layout, effective);
+        saved.erase("sidebar");
+        const auto layout_defaults = resolve_layout(json::object(), json::object());
+        auto saved_layout = ui.value("layout", ConfigDocument::Ordered::object());
+        for (auto it = layout.begin(); it != layout.end(); ++it) {
+            if (saved_layout.contains(it.key()) || *it != layout_defaults[it.key()]) saved_layout[it.key()] = *it;
+        }
+        if (!saved_layout.empty() || ui.contains("layout")) ui["layout"] = std::move(saved_layout);
+    }
+    if (!saved.empty() || ui.contains("appearance")) ui["appearance"] = std::move(saved);
+    if (!ui.empty()) document.value["ui"] = std::move(ui);
+    workspace::write_text(file, document.dump(), workspace::Eol::lf, false, workspace::stamp_of(file));
     return effective;
 }
 
@@ -1011,15 +1175,15 @@ llm::ProviderConfig add_model(const fs::path& root_path,
     const fs::path file = HomePaths(root).models;
     ModelWriteLock lock(root);
     require_private_file(file);
-    json document = parse_file(file);
-    json& models = document["models"];
+    ConfigDocument document(file);
+    auto& models = document.value["models"];
     if (!models.is_object()) fail(ConfigError::Kind::type, "/models must be an object");
     if (model.name.empty()) fail(ConfigError::Kind::invalid, "model configuration name must not be empty");
     if (models.contains(model.name) && existing_ok) return map_models(Node(models, "/models")).at(model.name);
     if (models.contains(model.name))
         fail(ConfigError::Kind::invalid, "model configuration already exists: " + model.name);
 
-    json entry{{"kind", model.kind},
+    nlohmann::ordered_json entry{{"kind", model.kind},
                {"base_url", model.base_url},
                {"model", model.model},
                {"max_tokens", model.max_tokens},
@@ -1038,7 +1202,7 @@ llm::ProviderConfig add_model(const fs::path& root_path,
     if (selected == parsed.end()) fail(ConfigError::Kind::invalid, "failed to add model " + model.name);
 
     const std::optional<workspace::Stamp> stamp = workspace::stamp_of(file);
-    workspace::write_text(file, document.dump(2) + "\n", workspace::Eol::lf, false, stamp);
+    workspace::write_text(file, document.dump(), workspace::Eol::lf, false, stamp);
     require_private_file(file);
     return selected->second;
 }

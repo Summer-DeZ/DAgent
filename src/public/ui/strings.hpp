@@ -44,7 +44,6 @@ struct Strings {
     std::string_view settings_panels;
     std::string_view settings_density;
     std::string_view settings_icons;
-    std::string_view settings_sidebar;
     std::string_view settings_diff;
     std::string_view settings_links;
     std::string_view settings_custom;
@@ -350,6 +349,36 @@ struct Strings {
     std::string_view provider_age_hours;
     std::string_view provider_age_days;
 
+    std::string_view section_sessions;
+    std::string_view section_git;
+    std::string_view section_skills;
+    std::string_view section_definitions;
+    std::string_view settings_layout;
+    std::string_view settings_width;
+    std::string_view settings_navigator;
+    std::string_view settings_status;
+    std::string_view settings_column_navigator;
+    std::string_view settings_column_status;
+    std::string_view settings_column_hidden;
+    std::string_view settings_width_invalid;
+    std::string_view settings_layout_footer;
+    std::string_view settings_layout_keys;
+    std::string_view navigator_all_sessions;
+    std::string_view navigator_new_session;
+    std::string_view navigator_no_repository;
+    std::string_view navigator_clean;
+    std::string_view navigator_modified;
+    std::string_view navigator_untracked;
+    std::string_view navigator_added;
+    std::string_view navigator_deleted;
+    std::string_view navigator_no_tools;
+    std::string_view navigator_edit;
+    std::string_view navigator_shell;
+    std::string_view navigator_search;
+    std::string_view navigator_read;
+    std::string_view hint_navigator;
+    std::string_view hint_section;
+    std::string_view hint_open;
 };
 
 const Strings& text() noexcept;

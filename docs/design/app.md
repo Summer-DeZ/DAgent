@@ -147,7 +147,11 @@ stdio 项支持 `command`、`args`、`env`、`environment`，HTTP 项支持 `url
 | `ui.appearance.panels` | filled / outline | filled |
 | `ui.appearance.density` | comfortable / compact | comfortable |
 | `ui.appearance.icons` | unicode / nerd / ascii | unicode |
-| `ui.appearance.sidebar` | right / left / hidden | right |
+| `ui.layout.width` | auto / compact（88）/ wide（最多 160）/ 整数 60–240 | auto（88–120） |
+| `ui.layout.status_panel` | right / left / hidden | right |
+| `ui.layout.navigator` | auto（终端 ≥170 列）/ always / hidden | auto |
+| `ui.layout.navigator_sections` | 导航栏有序分节 id | sessions, git, skills, agents |
+| `ui.layout.status_sections` | 状态栏有序分节 id | session, context, plan, changed, running_agents, mcp |
 | `ui.appearance.diff` | auto / unified | auto |
 | `ui.appearance.links` | on / off | on |
 | `ui.completion_max_files` | 每次文件补全扫描上限；每次查询读取当前目录 | 5000 |
@@ -155,13 +159,32 @@ stdio 项支持 `command`、`args`、`env`、`environment`，HTTP 项支持 `url
 
 `ui.appearance` 整体及各键均可省略；显式提供时必须是对象和合法字符串，错误消息指明
 `/ui/appearance/<key>`。无效枚举、颜色、空主题名或不存在的主题文件为配置错误。
-ConfigurationGateway 向前端返回解析后的有效值，保存入口只重写 ui.appearance，保留其它配置。
+ConfigurationGateway 向前端返回解析后的有效值，保存入口更新 ui.appearance 和可选 ui.layout，保留其它配置。
 midnight / paper 预设已删除，配置错误提示改用 dagent 或主题文件路径；设置对话框只保留 Mode，不再提供 Theme 行。
 强调色预设按名字保存，按 dark/light 分别解析为 orange `#fe8a4c` / `#a85500`、
 green `#87d787` / `#2a7a1a`、violet `#b9a0ff` / `#6a4bc4`、blue `#7a9cff` / `#3157c8`。
 加载时将旧 hex `#EC5B2B` / `#7fd17f` / `#c792ea` / `#6ba1e6`（不区分大小写）映射为对应名称，
 下次保存写名字；其它 hex 保留输入值，渲染时按 OKLab 明度在浅色压暗、深色提亮至面板上 4.5:1。
 `/settings` 的保存立即生效且跨重启保留；Esc/Ctrl+C 只撤销前端预览。预设主题都随 Home 资源安装。
+
+`ui.layout` 整体与所有键均可省略，显式值须为合法对象、枚举、整数或有序字符串数组；错误定位 `/ui/layout/<key>`。
+全部合法分节为 sessions、git、skills、agents、session、context、plan、changed、running_agents、mcp，
+可放入任一栏，两栏合计至多出现一次；未知或重复 id 报配置错误，不在两列表中的分节隐藏。
+正文宽度会按实际主区收窄，通常每侧留至少四列；双栏 diff 保留独立突破规则。
+旧 `ui.appearance.sidebar` 仍校验并在新 `status_panel` 缺省时映射 right / left / hidden；两者同时给出时以新键为准。
+`/settings` 的 Layout 页面提供布局选项和三列分节移动/排序，保存时写新键并移除 sidebar；Ctrl+B / Ctrl+T 的临时开关不落盘。
+
+配置的读改写使用 `ordered_json`，按原顺序更新已有键、新键追加至所属对象末尾，并将变更值补入原文。
+未修改字段的注释、空白、行内数组和数值文本不变；新内容沿用文件缩进、LF/CRLF 与末尾换行风格。
+修改原有行内数组时仍保持一行，元素间使用逗号加空格。保存外观和布局时，缺失且等于默认值的键不补写；
+已有键即使改回默认值也保留并更新，旧强调色 hex 的名称迁移仍生效。
+`ui.appearance.save`（含可选 layout）、`model.add` 与 `provider.model.add` 共用这一保序保存路径，沿用锁与原子写。
+
+QueryGateway 提供 `workspace.git_status` 与 `agents.list`。Git 查询使用与 workspace.info 相同的只读受管 git 环境，
+无网络、每条命令 2 秒、每路输出最多 1 MiB、结果最多 2048 个文件；numstat 合计暂存和未暂存改动，二进制计数为 0。
+交互模式由后端应用层 inotify 监听至多 4096 个工作区目录，跳过受保护路径和 git objects；事件只触发前端防抖查询。
+无可用监听时仍保留轮次、工具完成、终端重新聚焦和打开导航的刷新；退出先停止监听，再关闭 Publisher。
+Agent 清单使用启动时加载的定义，不返回 system prompt。
 
 上下文预算、工具结果与文件大小限制、HTTP/进程超时、日志大小及进度间隔也显式读取对应配置段。
 `process.kill_grace_ms`、`process.drain_after_exit_ms`、`process.env_deny` 与 `log.also_stderr` 已列入配置文件。
