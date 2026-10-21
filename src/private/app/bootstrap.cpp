@@ -125,7 +125,9 @@ SessionAssembly::Options session_options(const Config& config, const backend::Bo
         }
     } else {
         exec::Support support;
-        support.missing.push_back("internal/sandbox runtime is not prepared; run `dagent runtime sync`");
+        support.missing.push_back(detail::platform_sandbox_supported()
+                                      ? "internal/sandbox runtime is not prepared; run `dagent runtime sync`"
+                                      : "this platform has no sandbox backend");
         out.sandbox = std::move(support);
     }
     out.tools.sandbox = out.sandbox_options;

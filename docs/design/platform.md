@@ -64,7 +64,7 @@ Home 安装脚本按配置时的目标系统选择 Linux 的 0600 权限设置�
 | `src/private/app/models_{posix,win}.cpp` | `src/public/app/config_detail.hpp` | `detail::ModelWriteLock` |
 | `src/private/llm/auth_{posix,win}.cpp` | `src/public/llm/auth.hpp`、`src/public/llm/auth_detail.hpp` | `read_credentials`、`detail::CredentialLock`、`detail::write_credentials`、`detail::remove_credentials` |
 | `src/private/app/queries_posix.cpp` | `src/public/app/queries.hpp` | `QueryGatewayImpl::watch_workspace` |
-| `src/private/app/sandbox_status_posix.cpp` | `src/public/app/sandbox_status.hpp` | `detail::host_bwrap`、`detail::host_socat`、`detail::append_host_diagnostics` |
+| `src/private/app/sandbox_status_posix.cpp` | `src/public/app/sandbox_status.hpp` | `detail::platform_sandbox_supported`、`detail::host_bwrap`、`detail::host_socat`、`detail::append_host_diagnostics` |
 
 ## 接口语义与资源所有权
 
@@ -288,3 +288,14 @@ AppArmor 诊断保持在真实 sandbox probe 之后追加，缺少 runtime 的�
 资源脚本的 Unix socket、信号和文件操作仍在 SRT bridge/wrapper 内；这些脚本与第三方代码属于 I1 的明确例外。
 Git 命令参数及 unified diff 中的 `/dev/null` 是外部命令配置或文本格式，bash 分析中的设备路径是待分析命令的语义，
 均不是共享 C++ 对本机原生 API 的调用。中立封装、标准流或跨平台库的 read/write/close 等同名方法也不等同于 fd 系统调用。
+
+## Windows：工作区监视与沙箱能力报告
+
+`app/queries_win.cpp` 为每个受监视目录保持一个 overlapped `ReadDirectoryChangesW`（非递归），由同一个完成端口在
+watcher 线程中消费；目录筛选、4096 上限、不跟随 reparse point 目录与 POSIX 相同。新增或重命名进入的目录以及缓冲区溢出触发重扫，
+其余事件触发 changed 回调；停止时投递完成键 0 唤醒，`CancelIoEx` 取消在途请求并收齐完成通知后才释放缓冲区和句柄。
+Windows 没有 `IN_CLOSE_WRITE` 的精确对应物，通知可能在写入结束前或多次到达，契约只要求最终刷新正确。
+
+`detail::platform_sandbox_supported()` 在 POSIX 返回 true，Windows 返回 false。为 false 时 `sandbox_runtime` 直接返回
+nullopt，`dagent sandbox status` 只报告 runtime 是否准备好，`probe` 为 `{ok:false, stage:"unsupported"}`，不列 bwrap/socat、
+不启动探测、不读宿主诊断；启动装配把"本平台没有沙箱后端"记入 `Support.missing`。Linux 路径不受影响。
