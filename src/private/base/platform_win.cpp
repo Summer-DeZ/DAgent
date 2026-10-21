@@ -255,7 +255,8 @@ void make_file_private(const std::filesystem::path& path, std::error_code& error
         BOOL present = FALSE, defaulted = FALSE;
         PACL acl = nullptr;
         security_check(::GetSecurityDescriptorDacl(descriptor.data(), &present, &acl, &defaulted));
-        HANDLE raw = ::CreateFileW(path.c_str(), WRITE_DAC | FILE_READ_ATTRIBUTES,
+        // 带 PROTECTED_DACL 的 SetSecurityInfo 要先读现有描述符剥离继承项，因此还需要 READ_CONTROL。
+        HANDLE raw = ::CreateFileW(path.c_str(), READ_CONTROL | WRITE_DAC | FILE_READ_ATTRIBUTES,
             FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE, nullptr, OPEN_EXISTING,
             FILE_FLAG_BACKUP_SEMANTICS | FILE_FLAG_OPEN_REPARSE_POINT, nullptr);
         if (raw == INVALID_HANDLE_VALUE) { error = windows_error(); return; }

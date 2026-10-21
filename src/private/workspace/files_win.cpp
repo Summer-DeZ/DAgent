@@ -280,7 +280,7 @@ struct Temporary {
 void create_temporary(Temporary& temp, HANDLE parent, const std::wstring& prefix,
                       const Security& security, const fs::path& path) {
     const DWORD access = FILE_WRITE_DATA | DELETE | metadata_access |
-                         (security.descriptor ? WRITE_DAC | WRITE_OWNER : 0);
+                         (security.descriptor ? READ_CONTROL | WRITE_DAC | WRITE_OWNER : 0);
     std::error_code error;
     for (;;) {
         temp.handle = open_component(parent, fs::path(prefix + random_suffix(path)), access, nt_non_directory,
