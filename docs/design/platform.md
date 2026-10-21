@@ -4,7 +4,7 @@
 Windows 为 `win`，其他系统以 `Unsupported target system` 错误拒绝配置。`src/CMakeLists.txt`
 显式列出 `private/<模块>/<文件>_${DAGENT_PLATFORM}.cpp`，不使用运行时平台选择或虚函数端口。
 当前包含完整 POSIX 实现及 base、workspace/context、app/cli、app/paths、ui/browser、web/document、
-exec/platform、ipc/channel、app/interrupts、app/backend_main 十个 Windows 实现。
+exec/platform、ipc/channel、app/interrupts、app/backend_main、workspace/files 十一个 Windows 实现。
 Windows 在 `project()` 完成工具链与编译器识别后、项目依赖查找和源码目标生成前，
 以 `Windows support is not available in this revision: native *_win.cpp implementations are not yet complete.`
 错误停止配置。`win-dev` preset 仅在 Windows 宿主可用，不表示当前修订支持 Windows 构建。
@@ -20,7 +20,7 @@ MSVC 的 C 为 `/W4 /utf-8`，C++ 为 `/W4 /permissive- /utf-8`。
 Windows 的 CMake CRT 选择为 `MultiThreaded$<$<CONFIG:Debug>:Debug>DLL`，与 vcpkg x64-windows 的动态 CRT 一致。
 依赖规则在 Windows 查找 Boost 的 process 组件和 `find_package(Iconv MODULE REQUIRED)`；
 exec 保留 `BOOST_PROCESS_USE_STD_FS`，使用具体的 Boost.Process v2 分头文件，并显式链接 `Boost::process`、`ws2_32` 和 `bcrypt`。
-Windows 系统库按使用目标链接：base 用 `bcrypt`，workspace 用 `ntdll`，ui 和 app_cli 用 `shell32`；
+Windows 系统库按使用目标链接：base 用 `bcrypt`，workspace 用 `ntdll`、`advapi32`、`bcrypt`，ui 和 app_cli 用 `shell32`；
 ipc 的私有管道 ACL 和随机名称使用 `advapi32`、`bcrypt`；web 用 `Iconv::Iconv`。这些依赖均不会进入 Linux 链接行；Windows 的提前停止点仍先于依赖查找。
 
 SRT bridge/wrapper 与 SearXNG 入口的构建复制目标、可执行文件对它们的依赖及安装规则仅在 Linux 启用。
@@ -56,7 +56,7 @@ Home 安装脚本按配置时的目标系统选择 Linux 的 0600 权限设置�
 | `src/private/ipc/channel_{posix,win}.cpp` | `src/public/ipc/channel.hpp` | `InheritedEndpoint` 参数解析、`Channel` 原生状态与传输、`BackendProcess` 不透明进程标识、`backend_binary_path`、`spawn_backend`、`wait_or_terminate` |
 | `src/private/tui/terminal_posix.cpp` | `src/public/tui/terminal.hpp`、`src/public/tui/event_wait.hpp` | Terminal 生命周期、原生状态、尺寸、字节写入、输入恢复与信号；EventWait 的等待、输入读取、唤醒及排空 |
 | `src/private/exec/platform_{posix,win}.cpp` | `src/public/exec/detail.hpp`、`src/public/exec/platform.hpp`、`src/public/exec/process.hpp` | `inherited_environment`、`environment_names_equal`、`environment_name_matches`、`resolve_program`、`system_git_program`、`default_search_path`、`project_search_path`、执行权限、SIGPIPE、ProcessGroup、退出状态、spawn_command/spawn_child、InheritedResources、SrtControl、默认 SRT 可读目录 |
-| `src/private/workspace/files_posix.cpp` | `src/public/workspace/files.hpp` | `probe`、`read_text`、`write_text`、`stamp_of`、FileReference 原生状态与操作 |
+| `src/private/workspace/files_{posix,win}.cpp` | `src/public/workspace/files.hpp` | `probe`、`read_text`、`write_text`、`stamp_of`、FileReference 原生状态与操作、DirectoryEntries 惰性枚举 |
 | `src/private/storage/storage_posix.cpp` | `src/public/storage/platform.hpp` | `detail::SessionFileLock` |
 | `src/private/storage/decision_store_posix.cpp` | `src/public/storage/platform.hpp` | `detail::make_decision_file_private` |
 | `src/private/app/config_detail_posix.cpp` | `src/public/app/config_detail.hpp` | `detail::require_private_file` |
@@ -212,6 +212,22 @@ workspace 的 HEAD diff 仍执行 `git`，通过其传入 PATH 搜索。
 `base::environment_variable` 读取 PATH，缺失时不追加，空值时追加空 PATH，不使用六目录回退。
 
 SRT 配置 JSON、控制帧和线程编排保持共享，各控制 I/O 方法保留原短写、EINTR、EPIPE 与关闭语义。
+
+Windows 文件原语使用 NtCreateFile 的 RootDirectory 逐分量打开，prepare 仅获取元数据权限，
+固定最近存在的祖先及目标；拒绝 reparse point、上跳与 ADS。validate 以 FILE_ID_INFO 的卷序列及完整 128 位标识
+确认祖先与目标。Stamp 新增默认零的 inode_high，参与默认相等比较；POSIX 仍为零，没有新增 Stamp 序列化格式。
+
+FileReference 的 directory_path 被 directory_entries 取代；DirectoryEntries 只暴露名称、惰性类型查询及
+error_code/抛异常的递增接口，独立持有固定目录资源。POSIX 内部复制原 fd 并沿 /proc 路径使用既有标准库迭代器；
+Windows 在 ReOpenFile 获得的目录句柄上分批枚举，仅类型查询才相对打开子项且不跟随 reparse point。
+read 先权限过滤再查类型，memory 只消费名称；共享调用方不再持有平台目录路径。
+
+Windows 写入在固定目录下创建临时文件并 FlushFileBuffers，保留已有目标的 owner/group/DACL 与继承保护状态，
+不读取/复制特权 SACL，不在权限失败时放宽 ACL。普通写入和 FileReference 写入分别保持各自的编码、校验和覆盖策略。
+FILE_RENAME_INFO 通过 FileRenameInfoEx 相对固定父目录提交；替换允许旧目标句柄继续存在，新建禁止覆盖。
+FileReference 提交前也比较新建/打开的最终父目录标识；提交后关闭数据写句柄，再从固定的新对象读取最终 Stamp。
+删除用 FileDispositionInfoEx；失败临时文件按持有句柄清理。Windows 的共享访问、只读属性及文件系统 API 支持可能导致
+替换/删除失败；目录 flush 为尽力而为。完整差异见 [workspace](workspace.md#windows-文件原语)。
 
 workspace 的路径和文本编解码通过 `files_detail.hpp` 供平台文件调用，不暴露原生句柄或 stat。
 两条写入路径保持独立：通用 write_text 保留 `07777`、显式 close 后 rename；FileReference::write 保留 `0777`，

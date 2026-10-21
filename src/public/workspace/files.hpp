@@ -1,5 +1,5 @@
 /// @file files.hpp
-/// @brief 文件原语：路径解析、文本读取、原子写入、stale 检测。不做目录遍历（交给 search）。
+/// @brief 文件原语：路径解析、固定目录的直接子项枚举、文本读写与 stale 检测；递归搜索交给 search。
 #pragma once
 
 #include <cstdint>
@@ -8,6 +8,7 @@
 #include <memory>
 #include <string>
 #include <string_view>
+#include <system_error>
 
 #include "workspace/error.hpp"
 
@@ -35,6 +36,7 @@ struct Stamp {
     std::filesystem::file_time_type mtime;
     std::uintmax_t size = 0;
     std::uint64_t device = 0, inode = 0;
+    std::uint64_t inode_high = 0; ///< Windows 128 位 File ID 的高 64 位；POSIX 为零。
     bool operator==(const Stamp&) const = default;
 };
 
@@ -46,6 +48,27 @@ struct TextFile {
 };
 
 enum class FileKind { text, binary, missing, directory };
+
+/// @brief 固定目录上的单遍惰性枚举；只暴露当前子项名称，类型查询由调用方按需触发。
+/// 枚举对象独立持有目录资源，可以比创建它的 FileReference 活得更久。
+class DirectoryEntries {
+public:
+    ~DirectoryEntries();
+    DirectoryEntries(DirectoryEntries&&) noexcept;
+    DirectoryEntries& operator=(DirectoryEntries&&) noexcept;
+    DirectoryEntries(const DirectoryEntries&) = delete;
+    DirectoryEntries& operator=(const DirectoryEntries&) = delete;
+    bool at_end() const noexcept;
+    std::filesystem::path name() const;
+    bool is_directory(std::error_code&) const;
+    void increment(std::error_code&);
+    void increment();
+private:
+    struct Impl;
+    explicit DirectoryEntries(std::unique_ptr<Impl>);
+    std::unique_ptr<Impl> impl_;
+    friend class FileReference;
+};
 
 /// Metadata-only reference captured before approval. All later I/O is relative to the pinned
 /// directory; replacement of a parent or target requires preparing the operation again.
@@ -63,7 +86,8 @@ public:
     TextFile read(const FileOptions&) const;
     Stamp write(std::string_view, Eol, bool, const std::optional<Stamp>&, const FileOptions&);
     void erase();
-    std::filesystem::path directory_path() const;
+    DirectoryEntries directory_entries() const;
+    DirectoryEntries directory_entries(std::filesystem::directory_options, std::error_code&) const;
 private:
     struct Impl;
     std::unique_ptr<Impl> impl_;

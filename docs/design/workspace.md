@@ -40,8 +40,8 @@ public:
 `files.cpp` 保留路径解析、路径包含判断、符号链接目标计算和 BOM/EOL/UTF-8 编解码。
 `files_detail.hpp` 声明模块内部的 `fail`、`through_symlink`、`decode_text`、`encode_text` 与
 `encode_reference_text`，不传递原生句柄或 stat 类型。两条编码函数分别保留原 reserve/逐字符追加方式。
-`files_posix.cpp` 实现文件 I/O、权限、原子替换和 `FileReference` 的全部原生状态；
-CMake 通过 `files_${DAGENT_PLATFORM}.cpp` 选择它，`files.hpp` 的对外接口不变。
+`files_posix.cpp` 和 `files_win.cpp` 实现文件 I/O、权限、原子替换、固定目录枚举和 `FileReference` 的原生状态；
+CMake 通过 `files_${DAGENT_PLATFORM}.cpp` 选择实现，公共头不暴露原生句柄。
 
 ### 路径解析：resolve
 
@@ -56,14 +56,25 @@ CMake 通过 `files_${DAGENT_PLATFORM}.cpp` 选择它，`files.hpp` 的对外接
 ### 工具执行：FileReference
 
 模型的 read/edit/write 使用 `FileReference`，不直接以路径调用通用读写函数。构造只获取元数据，
-以 `O_PATH` 固定已存在的祖先目录和目标对象；`openat2` 禁止穿过新符号链接或 magic link。
+Linux 以 `O_PATH` 固定已存在的祖先目录和目标对象；`openat2` 禁止穿过新符号链接或 magic link。
 工具层先消费 Policy 的读/写 grant，再调用以下操作；本模块自身不决定权限。
 
 - `validate()` 重开路径核对 device/inode；父目录、目标被替换或原本不存在的目标已出现时返回 stale，要求重新准备。
-- `read()` 只读已固定的普通文件，保留文本读取、上限、换行与 UTF-8 语义；目录读取通过 `directory_path()` 取得固定目录。
+- `read()` 只读已固定的普通文件，保留文本读取、上限、换行与 UTF-8 语义；目录读取通过 `directory_entries()` 在固定目录上按需枚举。
 - `write()` 在获准目录句柄下逐级创建缺失父目录，写同目录临时文件，核对对象和 `expect` 后用 `renameat2` 提交并同步目录。
   新建文件使用 `RENAME_NOREPLACE`，避免覆盖准备后出现的同名文件。
-- `Stamp` 包含 mtime、size、device、inode；预览和写入都核对，FileTracker 不能代替访问授权。
+- `Stamp` 包含 mtime、size、device、inode、inode_high；高位字段默认零，POSIX 保持零，Windows 保留完整 128 位 File ID。
+  默认相等比较覆盖全部字段；预览和写入都核对，FileTracker 不能代替访问授权。当前 Stamp 仅用于内存跟踪和比较，没有持久化/协议序列化入口。
+
+`DirectoryEntries` 是可移动、不可复制的单遍游标，暴露 `at_end()`、`name()`、按需 `is_directory(error_code&)`
+和 `increment()` / `increment(error_code&)`。工厂有抛异常的无参版本，以及接收 directory_options/error_code 的版本。
+建立枚举前仍 validate 并确认目录类型；游标独立持有固定目录资源，不依赖 FileReference 的后续寿命。
+POSIX 在内部复制 O_PATH fd，再沿 `/proc/self/fd/<副本>` 构造原 std::filesystem::directory_iterator；
+枚举、类型查询、skip_permission_denied、增量错误与字节名称沿用标准库行为，原生路径不再出现在调用方接口中。
+read 仍先按子项名称检查 grant，再调用目录类型查询，排序与截断位置不变；memory 只检查名称的扩展名和 stem。
+两处名称显示通过 base 路径转换，POSIX 仍保留原始字节。
+
+以下 O_PATH、*at、umask 与 fd 清理步骤描述 Linux 实现。
 
 `read()` 先 validate、确认普通文件，再以 `O_RDONLY | O_CLOEXEC` 打开固定 inode 的 `/proc/self/fd` 路径，
 执行 fstat、限长读取和共享解码，返回时关闭读取句柄；原生锚点与目标句柄的持有期不变。
@@ -86,7 +97,7 @@ CMake 通过 `files_${DAGENT_PLATFORM}.cpp` 选择它，`files.hpp` 的对外接
 - **换行风格**：`detect_eol` 统计 `\r\n`/`\n`/单独的 `\r`，三类都出现过的判 `mixed`。内部统一转成 LF
   （`to_lf`），BOM（`EF BB BF`）单独摘出来，`bom=true`。
 - **编码**：转 LF 后校验 UTF-8；非法字节用 `base::to_valid_utf8` 替换成 U+FFFD，`lossy=true`。
-- `Stamp`（`mtime`、`size`、`device`、`inode`）来自 `fstat`，`mtime` 精度到纳秒。
+- POSIX 的 `Stamp`（`mtime`、`size`、`device`、`inode`）来自 `fstat`，`mtime` 精度到纳秒，`inode_high` 为零。
 
 ### 通用写入：write_text
 
@@ -103,6 +114,40 @@ CMake 通过 `files_${DAGENT_PLATFORM}.cpp` 选择它，`files.hpp` 的对外接
 
 `stamp_of` 返回当前文件指纹，文件不存在时返回 `nullopt`（不抛异常），用于写入前的比对或核心自己判断
 文件是否被外部改动。
+
+
+### Windows 文件原语
+
+`files_win.cpp` 使用宽字符路径和 NtCreateFile 的 RootDirectory。prepare 只申请 FILE_READ_ATTRIBUTES/SYNCHRONIZE，
+从根目录逐分量打开，固定最近已存在的祖先和目标；每个分量都以 FILE_OPEN_REPARSE_POINT 打开并拒绝 reparse point，
+不穿过 symlink/junction，也不接受 `..`、ADS 分量。resolve 在 prepare 前解析的既有链接仍按共享规则处理。
+validate 按路径重开祖先、从固定祖先重开目标，比较 FILE_ID_INFO 的卷序列号及完整 128 位标识；
+不存在的目标变成文件、父目录/目标被替换、路径出现 reparse point，均要求重新准备。
+读取和枚举在授权后用 ReOpenFile 从固定对象获取所需权限，不通过展示路径重新定位对象。
+
+Windows Stamp 的 device 为卷序列号，inode/inode_high 为 File ID 的低/高 64 位；
+mtime 从 1601 年起的 100 ns 时间经 system_clock/file_clock 转换。文件大小和文本处理仍走共享契约。
+通用 probe/read_text/stamp_of 允许既有链接，拒绝非磁盘设备；文本上限、额外一字节探测、NUL、BOM、CRLF/UTF-8 处理不变。
+Windows 不实现 POSIX FIFO 的暂时无数据语义。
+
+两条写入路径均从固定目录句柄创建新父目录和独占随机名临时文件，写完 FlushFileBuffers。
+新文件继承父目录安全设置；替换已有文件时读取 owner、group、DACL 及 DACL 继承保护状态，
+将其用于临时文件创建并重新应用，失败即报错，不降级为默认 ACL。普通用户路径不读取/复制需要额外权限的 SACL。
+文件处于只读、占用或权限不足状态时保留原生失败，不关闭第三方句柄或绕过权限。
+
+- 通用 write_text 沿用 through_symlink、父目录创建、encode_text、一次 expect 校验的顺序。
+  关闭临时文件的数据写句柄后保留 DELETE/元数据句柄，用相对父目录的 FILE_RENAME_INFO 提交替换。
+- FileReference::write 保留两次 validate/expect 校验，且提交前核对实际创建/打开的最终父目录仍是同一对象。
+  使用 encode_reference_text；原目标不存在时提交不允许覆盖，原目标存在时允许替换。
+  替换通过 FileRenameInfoEx 的 REPLACE_IF_EXISTS/POSIX_SEMANTICS 标志完成，旧目标固定句柄仍保留，
+  不使用先删目标或先关闭审批对象的替代流程。提交后固定新对象并关闭最后的数据写句柄，再查询返回 Stamp，
+  避免 LastWriteTime 延迟更新。erase 使用 FileDispositionInfoEx 的 DELETE/POSIX_SEMANTICS 移除名称。
+- 临时文件失败清理通过其 DELETE 句柄标记删除后关闭；成功提交后不再删除。父目录 flush 为尽力而为，
+  不承诺 Windows 上等同 Linux 目录 fsync 的断电持久性。不支持相关文件标识/扩展替换 API 的文件系统直接报错。
+
+Windows 目录游标通过固定目录句柄调用 GetFileInformationByHandleEx，按批取得名称、按调用方 increment 前进；
+仅调用 is_directory 时才相对固定目录打开子项查询类型。类型查询遇 reparse point 返回 error_code，不跟随目标。
+read 的权限过滤发生在类型查询前；memory 不触发目录类型查询。游标不预先收集或排序整个目录。
 
 ---
 

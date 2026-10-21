@@ -143,7 +143,7 @@ dagent_compile_options(dagent_workspace)
 target_link_libraries(dagent_workspace
     PUBLIC dagent_base
     PRIVATE dagent_exec pantor::inja
-        "$<$<PLATFORM_ID:Windows>:ntdll>"
+        "$<$<PLATFORM_ID:Windows>:ntdll;advapi32;bcrypt>"
 )
 
 # 会话存储：单个 SQLite 数据库、脱敏、按 cwd 列表与顺序回放。

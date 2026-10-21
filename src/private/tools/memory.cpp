@@ -9,6 +9,7 @@
 #include <yaml-cpp/yaml.h>
 
 #include "base/platform.hpp"
+#include "base/path.hpp"
 #include "base/frontmatter.hpp"
 #include "base/log.hpp"
 #include "workspace/files.hpp"
@@ -102,11 +103,12 @@ std::vector<MemoryEntry> MemoryStore::list() const {
             const auto dir = directory(scope);
             const workspace::FileReference reference(dir);
             if (reference.kind() == workspace::FileKind::missing) continue;
-            for (const auto& candidate : fs::directory_iterator(reference.directory_path())) {
-                if (candidate.path().extension() != ".md") continue;
-                try { entries.push_back(view(scope, candidate.path().stem().string())); }
+            for (auto iterator = reference.directory_entries(); !iterator.at_end(); iterator.increment()) {
+                const auto candidate = iterator.name();
+                if (candidate.extension() != ".md") continue;
+                try { entries.push_back(view(scope, base::path_to_utf8(candidate.stem()))); }
                 catch (const std::exception& error) {
-                    base::logger("tools")->warn("Memory {}: {}", (dir / candidate.path().filename()).string(), error.what());
+                    base::logger("tools")->warn("Memory {}: {}", base::path_to_utf8(dir / candidate), error.what());
                 }
             }
         } catch (const std::exception& error) {

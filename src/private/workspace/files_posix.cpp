@@ -282,11 +282,44 @@ void FileReference::erase() {
     if (::unlinkat(parent.value, r.relative.filename().c_str(), 0) != 0)
         fail(WorkspaceError::Kind::io, "delete", r.path, errno_text(errno));
 }
-fs::path FileReference::directory_path() const {
+struct DirectoryEntries::Impl {
+    Fd directory;
+    fs::directory_iterator iterator;
+
+    explicit Impl(int fd) : directory(::fcntl(fd, F_DUPFD_CLOEXEC, 0)) {}
+    fs::path path() const { return "/proc/self/fd/" + std::to_string(directory.value); }
+};
+
+DirectoryEntries::DirectoryEntries(std::unique_ptr<Impl> impl) : impl_(std::move(impl)) {}
+DirectoryEntries::~DirectoryEntries() = default;
+DirectoryEntries::DirectoryEntries(DirectoryEntries&&) noexcept = default;
+DirectoryEntries& DirectoryEntries::operator=(DirectoryEntries&&) noexcept = default;
+bool DirectoryEntries::at_end() const noexcept { return !impl_ || impl_->iterator == fs::directory_iterator{}; }
+fs::path DirectoryEntries::name() const { return impl_->iterator->path().filename(); }
+bool DirectoryEntries::is_directory(std::error_code& error) const { return impl_->iterator->is_directory(error); }
+void DirectoryEntries::increment(std::error_code& error) { impl_->iterator.increment(error); }
+void DirectoryEntries::increment() { ++impl_->iterator; }
+
+DirectoryEntries FileReference::directory_entries() const {
     validate();
     if (kind() != FileKind::directory)
         fail(WorkspaceError::Kind::io, "list", impl_->path, "not a directory");
-    return "/proc/self/fd/" + std::to_string(impl_->target);
+    auto entries = std::make_unique<DirectoryEntries::Impl>(impl_->target);
+    if (entries->directory.value < 0)
+        throw fs::filesystem_error("directory iterator cannot open directory", impl_->path,
+                                   std::error_code(errno, std::generic_category()));
+    entries->iterator = fs::directory_iterator(entries->path());
+    return DirectoryEntries(std::move(entries));
+}
+
+DirectoryEntries FileReference::directory_entries(fs::directory_options options, std::error_code& error) const {
+    validate();
+    if (kind() != FileKind::directory)
+        fail(WorkspaceError::Kind::io, "list", impl_->path, "not a directory");
+    auto entries = std::make_unique<DirectoryEntries::Impl>(impl_->target);
+    if (entries->directory.value < 0) error = {errno, std::generic_category()};
+    else entries->iterator = fs::directory_iterator(entries->path(), options, error);
+    return DirectoryEntries(std::move(entries));
 }
 Stamp FileReference::write(std::string_view content, Eol eol, bool bom,
                            const std::optional<Stamp>& expect, const FileOptions& options) {
