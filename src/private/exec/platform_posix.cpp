@@ -6,16 +6,19 @@
 
 #include <boost/process/v2.hpp>
 
+#include <algorithm>
 #include <cerrno>
 #include <csignal>
 #include <cstdlib>
 #include <cstring>
+#include <limits>
 #include <mutex>
 
 #include <fcntl.h>
 #include <fnmatch.h>
 #include <sys/socket.h>
 #include <sys/stat.h>
+#include <sys/syscall.h>
 #include <sys/wait.h>
 #include <unistd.h>
 
@@ -99,6 +102,26 @@ std::span<const int> inherited_fds(const Command& cmd) noexcept {
     return cmd.inherited_resources ? std::span<const int>(cmd.inherited_resources->fds) : std::span<const int>{};
 }
 
+void close_fds(int first, int last) noexcept {
+#ifdef SYS_close_range
+    if (::syscall(SYS_close_range, static_cast<unsigned>(first), static_cast<unsigned>(last), 0u) == 0) return;
+#endif
+    for (int fd = first; fd <= last && fd < 1024; ++fd) ::close(fd);
+}
+
+// 关闭白名单（stdio、launcher 的错误回报管道、继承清单）之外的全部描述符。Boost 1.83 的 close_all_fds
+// 在比较相邻白名单项时取的是同一项，白名单之间的描述符从不关闭，日志文件和 curl 的 socket 会随 exec
+// 进入子进程。fork 之后只排序，不分配内存。
+void close_except(std::vector<int>& keep) noexcept {
+    std::sort(keep.begin(), keep.end());
+    int next = 0;
+    for (const int fd : keep) {
+        if (fd > next) close_fds(next, fd - 1);
+        if (fd >= next) next = fd + 1;
+    }
+    close_fds(next, std::numeric_limits<int>::max());
+}
+
 /// 默认 launcher 的 env 成员默认指向进程环境；这个 init 把它换成过滤后的环境。
 /// 不用 Boost.Process 的 process_environment：1.83 的 header-only 模式下它没有提供
 /// on_setup 的定义（需要单独编译的 libboost_process）。
@@ -119,6 +142,7 @@ struct EnvSetup {
 };
 
 /// fork 之后、exec 之前执行的钩子，具体步骤见 setup_child（只做 async-signal-safe 调用）。
+/// 必须排在 stdio 绑定之后：关闭多余描述符要等 stdio 的 dup2 完成。
 struct ExecSetup {
     const char* cwd = nullptr;
     std::span<const int> inherit_fds;
@@ -129,12 +153,13 @@ struct ExecSetup {
         return {};
     }
 
-    boost::system::error_code on_exec_setup(bp::posix::default_launcher&, const bp::filesystem::path&,
+    boost::system::error_code on_exec_setup(bp::posix::default_launcher& launcher, const bp::filesystem::path&,
                                           const char* const*) const {
         for (const int fd : inherit_fds)
             if (::fcntl(fd, F_SETFD, 0) == -1) return {errno, boost::system::system_category()};
         const int err = setup_child(cwd);
         if (err != 0) errno = err; // 失败时 launcher 把 errno（而不是返回的 ec）写回父进程
+        if (err == 0) close_except(launcher.fd_whitelist);
         return {err, boost::system::system_category()};
     }
 
@@ -200,7 +225,7 @@ void spawn_command(const Command& cmd_, const fs::path& program, const std::vect
     ExecSetup setup{cmd_.cwd.empty() ? nullptr : cmd_.cwd.c_str(), inherited_fds(cmd_)};
 
     try {
-        proc_ = bp::process(ctx_, program, args, env_setup, setup, stdio);
+        proc_ = bp::process(ctx_, program, args, env_setup, stdio, setup);
     } catch (const boost::system::system_error& e) {
         throw ExecError{ExecError::Kind::spawn_failed, e.what()};
     }
@@ -255,7 +280,7 @@ void spawn_child(const Command& cmd, const fs::path& program_, const std::vector
     };
 
     try {
-        proc_ = bp::process(ctx_, program_, args, env_setup, setup, stdio);
+        proc_ = bp::process(ctx_, program_, args, env_setup, stdio, setup);
     } catch (const boost::system::system_error& e) {
         throw ExecError{ExecError::Kind::spawn_failed, e.what()};
     }

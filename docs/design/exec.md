@@ -44,7 +44,7 @@ exec::Result r = exec::run(cmd, options,
 | --- | --- |
 | 会话 | 子进程先 `setsid()`：成为新进程组的组长，**并且没有控制终端**。`sudo`、`ssh` 这类要打开 `/dev/tty` 的程序会直接失败，不会跟 TUI 抢键盘 |
 | stdin | 没有 `stdin_data` 时接 `/dev/null`，不继承 agent 的 stdin |
-| 额外资源 | `Command::inherited_resources` 持有只读的不透明继承清单，不拥有 OS 资源；平台实现在 fork 前展开为 fd span 并登记白名单，仅在目标子进程中清除 CLOEXEC |
+| 额外资源 | `Command::inherited_resources` 持有只读的不透明继承清单，不拥有 OS 资源；平台实现在 fork 前展开为 fd span 并登记白名单，仅在目标子进程中清除 CLOEXEC。除 stdio 与继承清单外的描述符在 exec 前全部关闭：Boost 1.83 的 `close_all_fds` 不会关闭白名单项之间的描述符，所以由 `ExecSetup` 自己按白名单用 `close_range` 关闭，日志文件和 curl 的 socket 不会进入子进程 |
 | 环境变量 | `Command::inherit_env=true` 时继承 agent 环境并按 `env_deny` 过滤；false 时从空环境开始。两者随后注入非交互默认项、`Options::environment`，再应用 `env_unset` 和 `env_set`。托管命令使用 false 和托管 PATH；受限 bash 还把 HOME/XDG/TMP 及 uv/npm 缓存指向私有目录，宿主凭据及 BASH_ENV/加载器/语言注入变量不会进入命令 |
 | 查找程序 | argv[0] 带 `/` 时直接使用，相对路径**相对 `Command::cwd`**；否则按**子进程将看到的 PATH**（也就是叠加 `env_set` 之后的值）查找 |
 | 信号 | SIGPIPE 在子进程里恢复为默认行为，所以 `yes \| head` 这类管道能正常结束；信号屏蔽清空（父进程为 sigwait 屏蔽的 SIGINT/SIGTERM 不会带进子进程，`timeout` 与 SIGTERM 清理照常生效） |
@@ -62,7 +62,8 @@ stdio 绑定→argv 与继承清单→Boost 启动→设置 spawned→保存进�
 `spawn_child` 保留另一条路径：环境指针表→忽略默认 SIGPIPE→固定三条管道→argv 与继承清单→stdio 绑定→
 Boost 启动→保存进程号→关闭 stdin 读端、stdout/stderr 写端→按 stdin、stdout、stderr 顺序移交 Asio。
 随后共享 Child::Impl 注册读取、退出回调并启动线程。构造失败仍由未移交的 PipeFds、已构造的 Asio/Boost 成员清理，
-不新增进程组终止步骤。两套钩子均保留继承端点清 CLOEXEC→setsid→SIGPIPE 复位→清信号屏蔽→chdir 的执行顺序。
+不新增进程组终止步骤。两套钩子均保留继承端点清 CLOEXEC→setsid→SIGPIPE 复位→清信号屏蔽→chdir 的执行顺序，
+随后关闭白名单外的描述符；`ExecSetup` 排在 stdio 绑定之后，关闭发生在 stdio 的 dup2 完成之后。
 
 ### 进程组的清理
 

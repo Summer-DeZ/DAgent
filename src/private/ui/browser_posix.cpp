@@ -20,6 +20,7 @@ bool open_browser(const std::string& url) {
     posix_spawn_file_actions_init(&actions);
     for (int fd = 0; fd < 3; ++fd)
         posix_spawn_file_actions_addopen(&actions, fd, "/dev/null", fd == 0 ? O_RDONLY : O_WRONLY, 0);
+    posix_spawn_file_actions_addclosefrom_np(&actions, 3); // 日志文件等不进入浏览器进程
     posix_spawnattr_t attributes;
     posix_spawnattr_init(&attributes);
     sigset_t mask;
