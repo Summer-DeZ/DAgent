@@ -1,11 +1,12 @@
 # Web：受管搜索与网页读取
 
 `dagent_web` 负责 SRT 内 HTTP GET、字符集解码、HTML→Markdown 和 SearXNG JSON 协议。
-它依赖 exec、base、lexbor v3.0.1 和 glibc iconv，不依赖 agent。工具参数、分页、缓存及给模型的措辞在 tools；
+它依赖 exec、base、lexbor v3.0.1 和 iconv（Linux 为 glibc，Windows 为 libiconv），不依赖 agent。工具参数、分页、缓存及给模型的措辞在 tools；
 权限决策在 agent；SearXNG 运行时准备和进程生命周期在 app。
 
 `web/document.cpp` 保留 charset/BOM 检测与文档解析，`web/detail.hpp` 的 `detail::convert_charset`
-由 `web/document_posix.cpp` 实现，只承接原 iconv 转换循环及其错误处理。
+由 `web/document_${DAGENT_PLATFORM}.cpp` 转调共享 `web/charset.cpp` 中的 `convert_charset_iconv`，
+两个平台使用同一转换循环、缓冲区策略及截断和错误处理。Windows 通过 CMake `FindIconv` 的 `Iconv::Iconv` 链接 libiconv。
 
 ## 模块接口
 

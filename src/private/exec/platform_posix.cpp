@@ -4,7 +4,9 @@
 #include "base/log.hpp"
 #include "base/platform.hpp"
 
-#include <boost/process/v2.hpp>
+#include <boost/process/v2/posix/default_launcher.hpp>
+#include <boost/process/v2/process.hpp>
+#include <boost/process/v2/stdio.hpp>
 
 #include <algorithm>
 #include <cerrno>

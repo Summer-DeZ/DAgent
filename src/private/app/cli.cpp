@@ -69,6 +69,7 @@ std::vector<std::string> collect_overrides(int argc, char** argv) {
 
 std::variant<Args, int> parse_args(int argc, char** argv) {
     CLI::App app{"DAgent - a terminal coding agent", "dagent"};
+    argv = app.ensure_utf8(argv);
     app.footer("Exit codes: 0 ok, 1 failed, 2 bad usage, 130 interrupted.");
     app.set_version_flag("--version", DAGENT_VERSION, "print version and exit");
 

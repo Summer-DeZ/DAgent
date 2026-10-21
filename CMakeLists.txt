@@ -14,7 +14,7 @@ endif()
 if(DAGENT_PLATFORM STREQUAL "win")
     message(FATAL_ERROR
         "Windows support is not available in this revision: "
-        "native *_win.cpp implementations are not yet included.")
+        "native *_win.cpp implementations are not yet complete.")
 endif()
 
 set(CMAKE_CXX_STANDARD 23)
@@ -22,7 +22,13 @@ set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_CXX_EXTENSIONS OFF)
 set(CMAKE_EXPORT_COMPILE_COMMANDS ON)
 
-find_package(Boost 1.83 REQUIRED)
+if(CMAKE_SYSTEM_NAME STREQUAL "Windows")
+    set(CMAKE_MSVC_RUNTIME_LIBRARY "MultiThreaded$<$<CONFIG:Debug>:Debug>DLL")
+    find_package(Boost 1.83 REQUIRED COMPONENTS process)
+    find_package(Iconv MODULE REQUIRED)
+else()
+    find_package(Boost 1.83 REQUIRED)
+endif()
 find_package(CURL REQUIRED)
 find_package(Threads REQUIRED)
 

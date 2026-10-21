@@ -5,6 +5,9 @@ function(dagent_compile_options target)
         "$<$<COMPILE_LANG_AND_ID:C,MSVC>:/W4;/utf-8>"
         "$<$<COMPILE_LANG_AND_ID:CXX,MSVC>:/W4;/permissive-;/utf-8>"
     )
+    target_compile_definitions(${target} PRIVATE
+        "$<$<PLATFORM_ID:Windows>:NOMINMAX;WIN32_LEAN_AND_MEAN;_WIN32_WINNT=0x0A00>"
+    )
 endfunction()
 
 # 最底层公共库：日志、文本与路径工具、JSON 脱敏。
@@ -21,6 +24,7 @@ target_include_directories(dagent_base PUBLIC ${CMAKE_SOURCE_DIR}/src/public)
 target_compile_features(dagent_base PUBLIC cxx_std_23)
 dagent_compile_options(dagent_base)
 target_link_libraries(dagent_base PUBLIC spdlog::spdlog)
+target_link_libraries(dagent_base PRIVATE "$<$<PLATFORM_ID:Windows>:bcrypt>")
 
 add_library(dagent_tui STATIC
     private/tui/terminal.cpp
@@ -76,6 +80,7 @@ add_library(dagent_ui STATIC
 )
 
 target_link_libraries(dagent_ui PUBLIC dagent_tui dagent_client dagent_protocol dagent_base)
+target_link_libraries(dagent_ui PRIVATE "$<$<PLATFORM_ID:Windows>:shell32>")
 dagent_compile_options(dagent_ui)
 target_compile_definitions(dagent_ui PRIVATE DAGENT_VERSION="${PROJECT_VERSION}")
 
@@ -110,14 +115,16 @@ target_compile_definitions(dagent_exec PRIVATE BOOST_PROCESS_USE_STD_FS=1)
 target_link_libraries(dagent_exec
     PUBLIC dagent_base
     PRIVATE Boost::headers tree-sitter tree-sitter-bash Threads::Threads
+        "$<$<PLATFORM_ID:Windows>:Boost::process;ws2_32>"
 )
 
 # Web transport and document decoding; authorization is supplied by tools.
-add_library(dagent_web STATIC private/web/http.cpp private/web/document.cpp)
+add_library(dagent_web STATIC private/web/http.cpp private/web/document.cpp private/web/charset.cpp)
 target_sources(dagent_web PRIVATE private/web/document_${DAGENT_PLATFORM}.cpp)
 target_include_directories(dagent_web PUBLIC ${CMAKE_SOURCE_DIR}/src/public)
 dagent_compile_options(dagent_web)
 target_link_libraries(dagent_web PUBLIC dagent_exec PRIVATE lexbor_static)
+target_link_libraries(dagent_web PRIVATE "$<$<PLATFORM_ID:Windows>:Iconv::Iconv>")
 
 # 工作区：文件原语、ripgrep 搜索、unified diff、项目上下文（git/AGENTS.md/模板）。
 add_library(dagent_workspace STATIC
@@ -136,6 +143,7 @@ dagent_compile_options(dagent_workspace)
 target_link_libraries(dagent_workspace
     PUBLIC dagent_base
     PRIVATE dagent_exec pantor::inja
+        "$<$<PLATFORM_ID:Windows>:ntdll>"
 )
 
 # 会话存储：单个 SQLite 数据库、脱敏、按 cwd 列表与顺序回放。
@@ -226,6 +234,7 @@ endif()
 target_link_libraries(dagent_app_cli
     PUBLIC dagent_client dagent_protocol dagent_base
     PRIVATE CLI11::CLI11
+        "$<$<PLATFORM_ID:Windows>:shell32>"
 )
 
 # 核心 agent：中立消息模型、动作/控制契约、Session/Run/循环、调度、权限与记录语义。

@@ -12,7 +12,7 @@
 #include <boost/asio/streambuf.hpp>
 #include <boost/asio/writable_pipe.hpp>
 #include <boost/asio/write.hpp>
-#include <boost/process/v2.hpp>
+#include <boost/process/v2/process.hpp>
 
 #include <atomic>
 #include <chrono>

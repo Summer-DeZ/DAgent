@@ -3,8 +3,9 @@
 平台源文件由根 CMake 根据 `CMAKE_SYSTEM_NAME` 设置的 `DAGENT_PLATFORM` 选择：Linux 为 `posix`，
 Windows 为 `win`，其他系统以 `Unsupported target system` 错误拒绝配置。`src/CMakeLists.txt`
 显式列出 `private/<模块>/<文件>_${DAGENT_PLATFORM}.cpp`，不使用运行时平台选择或虚函数端口。
-当前仅包含 POSIX 实现；Windows 在 `project()` 完成工具链与编译器识别后、项目依赖查找和源码目标生成前，
-以 `Windows support is not available in this revision: native *_win.cpp implementations are not yet included.`
+当前包含完整 POSIX 实现及 base、workspace/context、app/cli、app/paths、ui/browser、web/document 六个 Windows 实现。
+Windows 在 `project()` 完成工具链与编译器识别后、项目依赖查找和源码目标生成前，
+以 `Windows support is not available in this revision: native *_win.cpp implementations are not yet complete.`
 错误停止配置。`win-dev` preset 仅在 Windows 宿主可用，不表示当前修订支持 Windows 构建。
 
 ## 构建选项与程序资源
@@ -13,6 +14,13 @@ Windows 为 `win`，其他系统以 `Unsupported target system` 错误拒绝配�
 用 `COMPILE_LANG_AND_ID` 分别选择 C 和 C++：GNU/Clang 均为 `-Wall -Wextra`；
 MSVC 的 C 为 `/W4 /utf-8`，C++ 为 `/W4 /permissive- /utf-8`。
 函数不设置编译特性，不改变各目标已有的 `cxx_std_23` 声明，也不修改第三方目标的选项。
+该函数还通过 `PLATFORM_ID:Windows` 为自有目标添加 PRIVATE 的 `NOMINMAX`、`WIN32_LEAN_AND_MEAN`、
+`_WIN32_WINNT=0x0A00` 定义；Linux 不增加定义或编译选项。
+Windows 的 CMake CRT 选择为 `MultiThreaded$<$<CONFIG:Debug>:Debug>DLL`，与 vcpkg x64-windows 的动态 CRT 一致。
+依赖规则在 Windows 查找 Boost 的 process 组件和 `find_package(Iconv MODULE REQUIRED)`；
+exec 保留 `BOOST_PROCESS_USE_STD_FS`，使用具体的 Boost.Process v2 分头文件，并显式链接 `Boost::process` 和 `ws2_32`。
+Windows 系统库按使用目标链接：base 用 `bcrypt`，workspace 用 `ntdll`，ui 和 app_cli 用 `shell32`；
+web 用 `Iconv::Iconv`。这些依赖均不会进入 Linux 链接行；Windows 的提前停止点仍先于依赖查找。
 
 SRT bridge/wrapper 与 SearXNG 入口的构建复制目标、可执行文件对它们的依赖及安装规则仅在 Linux 启用。
 AppArmor profile 的构建生成和安装生成也仅在 Linux 启用，后者仍使用不含 `DESTDIR` 的最终后端路径。
@@ -21,11 +29,12 @@ Home 安装脚本按配置时的目标系统选择 Linux 的 0600 权限设置�
 
 ## 边界
 
-- I1：自有 C++ 中的平台头文件和原生平台操作集中到 `src/private/**/*_posix.cpp`。
+- I1：自有 C++ 中的平台头文件和原生平台操作集中到 `src/private/**/*_posix.cpp` 或 `*_win.cpp`。
   范围包括 unistd/fcntl/poll/signal/termios/spawn/pthread、sys/linux 头文件，进程与信号、fd I/O、
   socketpair、文件锁、原生文件和目录操作、终端、时间转换、uname、监听及 `/proc` 路径。
   第三方 `src/public/lib/**`、SRT 资源脚本和 bash 语义分析字面量不受此限制；
   Boost.Asio/Process 的跨平台用法可以留在共享实现，POSIX 钩子与 fd 操作属于平台实现。
+  iconv 是两个平台共用的库接口，转换循环位于共享 `web/charset.cpp`。
 - I2：`src/public/**`（除 lib）不直接包含平台头文件，不在接口或成员中暴露 fd、pid_t、
   termios、sigset_t 等原生类型；资源状态用不透明类型表示。标准库类型可用于中立接口。
 - 平台提取保留原操作、标志、顺序、错误和日志文本、超时、权限与参数；格式化和业务失败策略留在调用方。
@@ -34,15 +43,15 @@ Home 安装脚本按配置时的目标系统选择 Linux 的 0600 权限设置�
 
 | 平台文件 | 中立声明 | 实现 |
 | --- | --- | --- |
-| `src/private/base/platform_posix.cpp` | `src/public/base/platform.hpp`、`src/public/base/path.hpp` | `path_from_utf8`、`path_to_utf8`、`path_to_generic_utf8`、`executable_path`、`environment_variable`、`home_directory`、`process_id`、`stdin_is_terminal`、`stdout_is_terminal`、`local_time`、`utc_time`、`utc_timestamp`、`can_execute`、`default_temporary_directory`、`create_unique_directory` |
-| `src/private/workspace/context_posix.cpp` | `src/public/workspace/context.hpp` | `detail::os_description`、`detail::shell_description` |
-| `src/private/app/cli_posix.cpp` | `src/public/app/cli.hpp` | `detail::read_stdin_all` |
-| `src/private/app/paths_posix.cpp` | `src/public/app/paths.hpp` | `detail::executable_home_directory`、`detail::probe_home_writable` |
+| `src/private/base/platform_{posix,win}.cpp` | `src/public/base/platform.hpp`、`src/public/base/path.hpp` | `path_from_utf8`、`path_to_utf8`、`path_to_generic_utf8`、`executable_path`、`environment_variable`、`home_directory`、`process_id`、`stdin_is_terminal`、`stdout_is_terminal`、`local_time`、`utc_time`、`utc_timestamp`、`can_execute`、`default_temporary_directory`、`create_unique_directory` |
+| `src/private/workspace/context_{posix,win}.cpp` | `src/public/workspace/context.hpp` | `detail::os_description`、`detail::shell_description` |
+| `src/private/app/cli_{posix,win}.cpp` | `src/public/app/cli.hpp` | `detail::read_stdin_all` |
+| `src/private/app/paths_{posix,win}.cpp` | `src/public/app/paths.hpp` | `detail::executable_home_directory`、`detail::probe_home_writable` |
 | `src/private/app/interrupts_posix.cpp` | `src/public/app/interrupts.hpp` | `install_interrupts`、`ignore_broken_pipe` |
 | `src/private/app/backend_main_posix.cpp` | `src/public/app/interrupts.hpp` | `initialize_backend_signals` |
 | `src/private/app/toolchain_posix.cpp` | `src/public/app/toolchain_detail.hpp` | `detail::runtime_platform`、`detail::extract_runtime_archive`、`detail::runtime_environment`、`detail::install_python_runtime`、`detail::python_environment_program`、`detail::SyncLock` |
-| `src/private/ui/browser_posix.cpp` | `src/public/ui/browser.hpp` | `open_browser` |
-| `src/private/web/document_posix.cpp` | `src/public/web/detail.hpp` | `detail::convert_charset` |
+| `src/private/ui/browser_{posix,win}.cpp` | `src/public/ui/browser.hpp` | `open_browser` |
+| `src/private/web/document_{posix,win}.cpp` | `src/public/web/detail.hpp` | `detail::convert_charset`（共用 `web/charset.cpp` 的 `convert_charset_iconv`） |
 | `src/private/ipc/channel_posix.cpp` | `src/public/ipc/channel.hpp` | `InheritedEndpoint` 参数解析、`Channel` 原生状态与传输、`BackendProcess` 不透明进程标识、`spawn_backend`、`wait_or_terminate` |
 | `src/private/tui/terminal_posix.cpp` | `src/public/tui/terminal.hpp`、`src/public/tui/event_wait.hpp` | Terminal 生命周期、原生状态、尺寸、字节写入、输入恢复与信号；EventWait 的等待、输入读取、唤醒及排空 |
 | `src/private/exec/platform_posix.cpp` | `src/public/exec/detail.hpp`、`src/public/exec/platform.hpp`、`src/public/exec/process.hpp` | `inherited_environment`、`environment_names_equal`、`environment_name_matches`、`resolve_program`、`system_git_program`、`default_search_path`、`project_search_path`、执行权限、SIGPIPE、ProcessGroup、退出状态、spawn_command/spawn_child、InheritedResources、SrtControl、默认 SRT 可读目录 |
@@ -57,6 +66,29 @@ Home 安装脚本按配置时的目标系统选择 Linux 的 0600 权限设置�
 
 ## 接口语义与资源所有权
 
+以下未特别说明的原生操作契约描述 POSIX 实现；六个已有 Windows 实现的差异如下：
+
+- base：路径、环境变量均以 UTF-8 对外，以 UTF-16 调用原生 API；非法编码抛 `system_error`，不修复、
+  不规范化路径。可执行文件路径使用可增长缓冲区的 `GetModuleFileNameW`，error_code 重载在成功时清除错误。
+  `GetEnvironmentVariableW` 保留缺失与空值区别；用户 Home 只读取 `USERPROFILE`，不改变 DAGENT_HOME 的选择顺序。
+  `GetConsoleMode` 判断标准输入输出是否控制台；时间使用 `localtime_s`、`gmtime_s`、`_mkgmtime64`。
+  `can_execute` 仅判断存在且非目录，是否为可执行程序由实际启动判断，不模拟 POSIX 执行位。
+  `GetTempPath2W` 选择系统临时目录；完整 XXXXXX 模板末尾由 BCrypt 随机后缀替换，`CreateDirectoryW` 原子独占创建，
+  仅在重名时重试。目录继承父目录 ACL，不等同于 POSIX 的 0700；函数不创建父目录、不清理返回的目录。
+- workspace/context：`RtlGetVersion` 从 ntdll 取得实际系统版本，展示为 `Windows major.minor.build`，失败为 `unknown`；
+  shell 展示为 `Git Bash`，不读取 PowerShell 或 SHELL，不负责定位执行程序。
+- app/cli：`ReadFile` 原样读取 stdin 字节至 EOF 或错误，不做 CRLF 或代码页转换。共享 `parse_args` 在自定义 argv 扫描前
+  调用 `CLI::App::ensure_utf8`；转码后 argv 的所有权属于该 App，Linux 返回原 argv。
+- app/paths：通过 base 的可执行文件路径取父目录；`CREATE_NEW` 创建可写探针，成功后依次关闭和删除，
+  不覆盖已有同名文件。Home 选择与业务错误上下文仍由共享层保留，原生错误来自 Windows。
+- ui/browser：URL 从 UTF-8 转为 UTF-16 后交给 `ShellExecuteW` 的 `open` 动作，不拼 shell 命令；
+  返回值只表示启动请求是否被系统接受，不等待浏览器退出。
+- web/document：Windows 链接 libiconv，POSIX 使用 glibc iconv，共用同一转换循环及错误文本。
+  该解码实现不改变工具层对只读 SRT 的要求。
+
+SQLite 的两个打开入口通过 `path_to_utf8` 向 `sqlite3_open_v2` 传入文件名；POSIX 保留路径原始字节，
+Windows 从原生 UTF-16 转为 SQLite 要求的 UTF-8，临时字符串覆盖整个调用期间。
+
 `executable_path` 的两个重载分别保留 filesystem 的抛异常和 error_code 行为，供 IPC、sandbox status、
 SearXNG 定位程序资源。安装根的固定缓冲区 readlink 和 InstallError 在 `app/paths_posix.cpp` 中保持独立；
 `app/paths.cpp` 保留 DAGENT_HOME/dev 默认值选择和目录验证，可写探针仍使用原 O_EXCL、0600 与关闭/删除顺序。
@@ -67,7 +99,7 @@ workspace 的用户路径、Git 根目录和参数通过这些接口转换；上
 `to_valid_utf8`，文件操作继续使用原始路径。UI 的项目路径缩写前通过 `path_to_utf8` 取文本。
 
 `environment_variable` 返回环境变量的独立 `optional<string>` 副本，不缓存；未设置为 `nullopt`，
-已设置为空为有值的空字符串。`home_directory` 只读取 HOME，返回相同契约，不规范化，且不是 DAGENT_HOME。
+已设置为空为有值的空字符串。POSIX 的 `home_directory` 只读取 HOME，返回相同契约，不规范化，且不是 DAGENT_HOME。
 app 通过环境变量接口读取 DAGENT_HOME，仅非空时使用；dev 默认值与可执行文件目录的选择顺序不变。
 tools 的 `~` 展开在 HOME 缺失或为空时保留输入；权限层、命令分类和 UI 缩写只判断 HOME 是否存在，
 保留空值参与原路径拼接或文本比较的行为。命令分类的局部 lambda 借用函数内持有的 Home 副本，不逃逸。
@@ -79,8 +111,8 @@ Terminal 的 `probe_caps() noexcept` 保留不分配内存的 getenv/string_view
 `process_id` 返回当前进程号，调用位置与十进制格式不变。时间转换写入调用方的 `std::tm`，
 local/UTC 转换返回是否成功，UTC 时间戳转换保留原返回值和对 tm 的修改；调用者维持各自的失败处理。
 
-`can_execute` 只检查执行权限，不附加普通文件判断；exec 的 stat 检查由 `regular_executable` 在平台实现中完成。
-`create_unique_directory` 接收 `filesystem::path` 形式的完整 XXXXXX 模板，复制原生字节后调用 mkdtemp，
+POSIX 的 `can_execute` 只检查执行权限，不附加普通文件判断；exec 的 stat 检查由 `regular_executable` 在平台实现中完成。
+POSIX 的 `create_unique_directory` 接收 `filesystem::path` 形式的完整 XXXXXX 模板，复制原生字节后调用 mkdtemp，
 成功返回目录，失败返回 strerror 文本。`default_temporary_directory` 在 POSIX 固定返回 `/tmp`，
 不读取 TMPDIR 等环境变量，供 SRT 与 MCP 的私有 HOME 使用。SRT 控制目录既有的
 `filesystem::temp_directory_path()` 回退保持独立；SearXNG 仍在 Home 的 run 下创建目录。
@@ -100,8 +132,8 @@ CLI 用 `stdin_is_terminal` 判断输入来源，用 `read_stdin_all` 读取管�
 Terminal 也通过 base 判断 stdin/stdout 是否终端。前端先安装中断处理，再忽略断管信号；后端参数校验后恢复信号屏蔽并忽略断管信号，
 随后接管 Channel。后端 `--ipc-fd` 保留原参数格式，参数值经不透明的 `InheritedEndpoint` 解析和接管。
 
-浏览器启动完整实现在 `browser_posix.cpp`，保留原 posix_spawn 属性与回收线程。
-网页 charset/BOM 检测留在共享文件，只有 iconv 转换循环进入 `document_posix.cpp`，保留缓冲区、截断与错误处理。
+POSIX 浏览器启动完整实现在 `browser_posix.cpp`，保留原 posix_spawn 属性与回收线程。
+网页 charset/BOM 检测留在 `document.cpp`，平台文件转调共享 `charset.cpp` 的 iconv 转换循环，保留缓冲区、截断与错误处理。
 
 IPC 的共享文件只保留分帧、缓冲、错误状态与后端路径。Channel 和继承参数对象共用不透明端点状态，
 参数解析与替换不取得连接所有权，adopt 移交已有状态而不重新分配。socketpair 的端点状态和后端进程状态

@@ -16,6 +16,7 @@
 #include <vector>
 
 #include "base/json.hpp"
+#include "base/path.hpp"
 #include "storage/storage.hpp"
 #include "storage/sqlite.hpp"
 #include "storage/platform.hpp"
@@ -135,7 +136,7 @@ public:
 private:
     void open() {
         const int rc = sqlite3_open_v2(
-            file_.c_str(), &db_,
+            base::path_to_utf8(file_).c_str(), &db_,
             SQLITE_OPEN_READWRITE | SQLITE_OPEN_CREATE | SQLITE_OPEN_FULLMUTEX, nullptr);
         if (rc != SQLITE_OK) {
             const std::string text = db_ == nullptr ? "cannot open SQLite database" : sqlite3_errmsg(db_);
