@@ -177,6 +177,8 @@ OS 描述由 `context_posix.cpp` 用 uname 拼出 `sysname release`，失败仍�
 
 当前上下文采集调用 `/usr/bin/git`，通过 `ContextOptions::sandbox` 进入只读 SRT；禁用 fsmonitor、hooks、
 pager 和全局/系统 Git 配置。这里尚未切换到托管 Git，宿主无该路径或 SRT 不可用时 Git 信息为空。
+程序路径由 `exec::system_git_program` 提供，POSIX 仍返回上述固定值，不预先探测或搜索 PATH。
+上下文的 shell 展示由 `detail::shell_description` 提供：POSIX 使用非空 SHELL，否则为 `sh`，不决定执行 Bash。
 
 `status --porcelain=v2` 的输出里，`1 `/`2 ` 开头的行计入「已修改」，`u ` 计入「冲突」，`? ` 计入
 「未跟踪」；`branch.head` 是 `(detached)` 时用 `branch.oid` 的前 7 位当分支名。
@@ -184,7 +186,9 @@ pager 和全局/系统 Git 配置。这里尚未切换到托管 Git，宿主无�
 规范化和指令文件查找；路径仅在转换为模板展示数据时修复，不以展示副本做文件操作。
 Git 根目录通过 `base::path_from_utf8` 转为路径；上下文序列化先用 `path_to_utf8` 取路径文本，再沿用
 `to_valid_utf8` 清洗。HEAD diff 的 `-C` 和 `ls-files` 路径使用原生文本接口，`HEAD:` 后的路径及 diff 文件名
-使用 `path_to_generic_utf8`；Git 选择、PATH 继承和异常捕获位置保持原样。
+使用 `path_to_generic_utf8`。HEAD diff 保留裸程序名 `git`，不使用固定系统 Git 接口；
+通过 `base::environment_variable` 读取 PATH，缺失时不追加、空值时追加空字符串，再按该子进程环境搜索。
+Git 调用的异常捕获位置保持原样。
 
 ### AGENTS.md 收集
 

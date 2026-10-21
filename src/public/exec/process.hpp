@@ -83,7 +83,15 @@ Result run(const Command& cmd, const Options& opt = {},
            const std::function<void(Stream, std::string_view)>& on_output = {},
            std::stop_token stop = {});
 
-/// @brief 按 PATH 查找可执行文件；name 含 '/' 时直接检查该路径。
+/// @brief 系统 Git 的平台路径；POSIX 固定返回 /usr/bin/git，不预先验证或搜索 PATH。
+std::filesystem::path system_git_program();
+/// @brief 平台的基础搜索路径；POSIX 为 /usr/bin:/bin。
+std::string default_search_path();
+/// @brief project 受限执行的搜索路径；POSIX 使用非空宿主 PATH，否则使用六目录回退。
+std::string project_search_path();
+
+/// @brief 使用当前宿主环境快照，按平台规则查找可执行文件，不应用子进程环境过滤或覆盖。
+/// POSIX 下带目录的路径直接检查，否则按 PATH 搜索；空或缺失 PATH 不搜索裸程序名。
 std::optional<std::filesystem::path> which(std::string_view name);
 
 /// @brief 用单引号把参数包成可安全拼进 bash 命令的字面量。

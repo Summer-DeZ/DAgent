@@ -1,7 +1,6 @@
 #include "workspace/git.hpp"
 
 #include <chrono>
-#include <cstdlib>
 #include <optional>
 #include <string>
 #include <string_view>
@@ -11,6 +10,7 @@
 
 #include "exec/process.hpp"
 #include "base/path.hpp"
+#include "base/platform.hpp"
 #include "workspace/diff.hpp"
 #include "workspace/files.hpp"
 
@@ -48,7 +48,7 @@ GitOutcome run_git(const std::filesystem::path& root, std::vector<std::string> a
     command.cwd = root;
     command.merge_stderr = true;
     command.inherit_env = false;
-    if (const char* path = std::getenv("PATH")) command.env_set.emplace_back("PATH", path);
+    if (const auto path = base::environment_variable("PATH")) command.env_set.emplace_back("PATH", *path);
     command.timeout = remaining;
 
     GitOutcome outcome;

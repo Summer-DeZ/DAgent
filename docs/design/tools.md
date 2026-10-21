@@ -159,6 +159,11 @@ dangerous / known_readonly 仍由 exec 的原分析函数计算，核心不重�
 
 - 执行 `bash -c <command>`，cwd 是 `ctx.root()`，stderr 合并进 stdout，stdin 接 `/dev/null`，
   `LC_ALL=C.UTF-8`（报错文本不随系统 locale 变化，同时 `ls` 不会把中文文件名转义成八进制）。
+  执行程序继续使用 runtime 的 `exec::Environment::shell`，宿主启动参数经 `base::path_to_utf8` 编码，
+  不由 SHELL 或默认 Bash 发现逻辑替代。project 受限执行通过 `exec::project_search_path` 取得非空宿主 PATH，
+  缺失或空值时使用 `/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin`；
+  project 宿主执行仍清空 `Options::environment`，通过 `base::environment_variable` 读取 PATH，
+  仅缺失时不追加，空值仍显式追加，不使用上述回退。
 - **每次调用都是新进程**：`cd`、`export` 不保留。说明里告诉模型需要换目录就写 `cd dir && …`；后台常驻进程
   （`server &`）会在主进程退出后被清理，说明里写明不支持。
 - **沙箱**：受限 grant 的读写范围、受保护路径、网络目标和私有临时空间交给 `exec::run_srt`；

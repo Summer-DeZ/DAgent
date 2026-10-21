@@ -11,13 +11,15 @@ tree-sitter + tree-sitter-bash。
 | 能力 | 头文件 | 主要接口 |
 | --- | --- | --- |
 | 一次性命令：超时、取消、流式输出、输出截断，结束时清理整个进程组 | `exec/process.hpp` | `run`、`which`、`shell_quote` |
+| 平台工具路径与搜索路径默认值 | `exec/process.hpp` | `system_git_program`、`default_search_path`、`project_search_path` |
 | 长期存活的子进程：按行读 stdout，线程安全地写 stdin（给 MCP stdio 用） | `exec/child.hpp` | `Child` |
 | bash 命令分析：语法状态、简单命令、影响证据和只读分类 | `exec/shell.hpp` | `analyze`、`is_known_readonly`、`is_dangerous` |
 | 受限执行的中立值：模式、路径/网络边界与能力快照 | `exec/sandbox.hpp` | `Policy`、`Support`、`sensitive_paths` |
 | SRT 后端：bridge 控制通道、运行中网络审批、只读搜索边界 | `exec/srt.hpp` | `run_srt`、`srt_config`、`ReadOnlySandbox` |
 
 `exec/detail.hpp` 与 `exec/platform.hpp` 是模块内部接口，外部不要 include。
-`platform_posix.cpp` 集中实现原生管道、两套启动钩子、进程组、退出状态与 SRT 控制连接；
+`platform_posix.cpp` 集中实现环境快照、变量名匹配、程序解析、工具和搜索路径默认值、原生管道、
+两套启动钩子、进程组、退出状态与 SRT 控制连接；
 `process.cpp`、`child.cpp` 保留 Asio 调度、计时器、取消、输出处理和回调，`srt.cpp` 保留策略与协议编排。
 原生 PipeFds 只在平台实现内部定义，公共头不暴露 fd 或 PID。
 
@@ -50,9 +52,22 @@ exec::Result r = exec::run(cmd, options,
 | 信号 | SIGPIPE 在子进程里恢复为默认行为，所以 `yes \| head` 这类管道能正常结束；信号屏蔽清空（父进程为 sigwait 屏蔽的 SIGINT/SIGTERM 不会带进子进程，`timeout` 与 SIGTERM 清理照常生效） |
 | exec 前失败 | fork 之后 chdir、应用沙箱或 `execve` 失败时，错误码经管道交回父进程，子进程直接 `_exit(127)`：不执行 agent 的 atexit 与静态析构，也不会把 fork 时复制来的 stdio 缓冲再写一遍 |
 
-`inherited_environment` 返回借用的环境条目 span，不复制变量值；共享 `make_environment` 继续过滤无名条目、
-按原顺序过滤和复制允许的变量，再覆盖默认项及显式设置。`environment_name_matches` 保留 fnmatch/FNM_CASEFOLD，
-`regular_executable` 保留 stat/普通文件判断后再检查执行权限。
+`inherited_environment` 在父进程中复制原环境条目，返回有所有权的 `vector<string>`，保留顺序和重复项。
+共享 `make_environment` 直接使用快照容器，稳定删除无名、无等号或匹配 env_deny 的继承项；
+再按默认项 → `Options::environment` → `env_unset` → `env_set` 的顺序处理，不缓存或去重。
+变量名相等由 `environment_names_equal` 判断，POSIX 区分大小写；赋值只覆盖第一个同名项，
+`find_env` 返回第一个匹配值，unset 删除全部同名项。deny 通配符匹配独立使用 `environment_name_matches`，
+保留 fnmatch/FNM_CASEFOLD。
+
+`resolve_program` 接收完整环境；Runner 和 Child 传入合并后的子进程环境，`which` 传入原始宿主快照，
+不应用默认项、deny 过滤或显式覆盖。POSIX 仍用 PATH 的第一个值，按 `:` 拆分，空分量表示 cwd；
+整个 PATH 为空或缺失时不搜索裸程序名，带目录的路径不依赖 PATH。`regular_executable` 保留
+stat/普通文件判断后再检查执行权限，解析不新增扩展名补全、路径规范化或宿主 PATH 回退。
+
+`system_git_program` 在 POSIX 固定返回 `/usr/bin/git`，不探测、不缓存；`default_search_path` 固定为
+`/usr/bin:/bin`，ReadOnlySandbox 仍在 command.env_set 之后、LC_ALL 之前追加该 PATH。
+`project_search_path` 返回非空宿主 PATH，否则返回 `/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin`；
+该回退用于 project 受限 Bash，不用于普通程序解析。
 
 `spawn_command` 独立保留原启动路径：环境指针表→按需 stdin 管道或 /dev/null→stdout→按需独立 stderr→
 stdio 绑定→argv 与继承清单→Boost 启动→设置 spawned→保存进程号→关闭子端→按 stdout、stderr、stdin 顺序移交 Asio。

@@ -1,10 +1,11 @@
 #include <algorithm>
 #include <chrono>
-#include <cstdlib>
 #include <format>
 #include <utility>
 
 #include "base/text.hpp"
+#include "base/path.hpp"
+#include "base/platform.hpp"
 #include "exec/shell.hpp"
 #include "tools/detail.hpp"
 #include "workspace/diff.hpp"
@@ -138,10 +139,7 @@ private:
                 request.timeout = timeout_;
                 request.merge_stderr = true;
                 if (environment_name_ == "project") {
-                    const char* path = std::getenv("PATH");
-                    request.environment.emplace_back(
-                        "PATH", path && *path ? std::string(path)
-                                              : "/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin");
+                    request.environment.emplace_back("PATH", exec::project_search_path());
                 }
                 // 固定消息语言：报错文本（strerror）不随系统 locale 变化，给模型和沙箱判断都是稳定输入。
                 // 用 C.UTF-8 而不是 C，否则 ls 会把中文文件名转义成 \346… 这样的八进制。
@@ -149,7 +147,7 @@ private:
                 outcome = exec::run_srt(request, process_options_, on_chunk, stop);
             } else {
                 exec::Command cmd;
-                cmd.argv = {environment_.shell.string(), "--noprofile", "--norc", "-c", command_};
+                cmd.argv = {base::path_to_utf8(environment_.shell), "--noprofile", "--norc", "-c", command_};
                 cmd.cwd = root_;
                 cmd.merge_stderr = true;
                 cmd.timeout = timeout_;
@@ -157,7 +155,7 @@ private:
                 cmd.env_set = environment_.variables;
                 if (environment_name_ == "project") {
                     process_options_.environment.clear();
-                    if (const char* path = std::getenv("PATH")) cmd.env_set.emplace_back("PATH", path);
+                    if (const auto path = base::environment_variable("PATH")) cmd.env_set.emplace_back("PATH", *path);
                 }
                 cmd.env_set.emplace_back("LC_ALL", "C.UTF-8");
                 outcome = exec::run(cmd, process_options_, on_chunk, stop);

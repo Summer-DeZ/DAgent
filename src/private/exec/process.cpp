@@ -16,7 +16,6 @@
 #include <algorithm>
 #include <array>
 #include <chrono>
-#include <cstdlib>
 #include <exception>
 #include <string>
 #include <system_error>
@@ -155,7 +154,7 @@ private:
             throw ExecError{ExecError::Kind::spawn_failed, "empty command"};
 
         auto env = detail::make_environment(cmd_, opt_);
-        const auto program = detail::resolve_program(cmd_.argv.front(), cmd_.cwd, detail::find_env(env, "PATH"));
+        const auto program = detail::resolve_program(cmd_.argv.front(), cmd_.cwd, env);
         if (program.empty())
             throw ExecError{ExecError::Kind::spawn_failed, "command not found: " + cmd_.argv.front()};
         detail::spawn_command(cmd_, program, env, ctx_, proc_, in_pipe_, out_pipe_, err_pipe_,
@@ -309,8 +308,8 @@ Result run(const Command& cmd, const Options& opt,
 }
 
 std::optional<std::filesystem::path> which(std::string_view name) {
-    const char* path_env = ::getenv("PATH");
-    const auto path = detail::resolve_program(name, {}, path_env != nullptr ? path_env : "");
+    const auto environment = detail::inherited_environment();
+    const auto path = detail::resolve_program(name, {}, environment);
     if (path.empty()) return std::nullopt;
     return path;
 }

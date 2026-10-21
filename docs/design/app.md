@@ -288,6 +288,9 @@ dagent sandbox status
 run： --output <text|json|jsonl>
 ```
 
+`queries.cpp` 的 Git 状态查询通过 `exec::system_git_program` 取得 POSIX 固定路径 `/usr/bin/git`，
+不预先验证或搜索 PATH，仍沿用只读 SRT、命令参数和输出处理。
+
 `sandbox_status.cpp` 保留 runtime 装配、静态检查与真实 probe；`sandbox_status_posix.cpp` 提供
 `detail::host_bwrap`、`detail::host_socat` 与 `detail::append_host_diagnostics`。
 宿主查找仍先用 exec::which，再检查 `/usr/bin/bwrap`、`/usr/bin/socat` 的执行权限；后备检查不增加普通文件校验。

@@ -2,7 +2,6 @@
 #include "workspace/files.hpp"
 
 #include <algorithm>
-#include <cstdlib>
 #include <ctime>
 #include <format>
 #include <fstream>
@@ -36,7 +35,7 @@ struct GitOutput {
 GitOutput run_git(const fs::path& cwd, std::vector<std::string> args, std::chrono::milliseconds timeout,
                   std::stop_token stop, const ContextOptions& options) {
     exec::Command cmd;
-    cmd.argv = {"/usr/bin/git", "--no-optional-locks", "-c", "core.quotepath=off",
+    cmd.argv = {base::path_to_utf8(exec::system_git_program()), "--no-optional-locks", "-c", "core.quotepath=off",
                 "-c", "core.fsmonitor=false", "-c", "core.hooksPath=/dev/null", "-c", "core.pager=cat"};
     cmd.env_set = {{"GIT_CONFIG_NOSYSTEM", "1"}, {"GIT_CONFIG_GLOBAL", "/dev/null"}};
     cmd.argv.insert(cmd.argv.end(), std::make_move_iterator(args.begin()), std::make_move_iterator(args.end()));
@@ -196,11 +195,7 @@ Environment collect_environment(const fs::path& cwd, const ContextOptions& opt, 
     env.cwd = base::canonical_or_absolute_or_lexical(cwd);
 
     env.os = detail::os_description();
-    if (const char* shell = std::getenv("SHELL"); shell != nullptr && *shell != '\0') {
-        env.shell = shell;
-    } else {
-        env.shell = "sh";
-    }
+    env.shell = detail::shell_description();
     const std::time_t now = std::time(nullptr);
     std::tm local {};
     if (base::local_time(now, local)) {

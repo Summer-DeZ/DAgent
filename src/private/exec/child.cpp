@@ -117,7 +117,7 @@ private:
         if (cmd.argv.empty() || cmd.argv.front().empty())
             throw ExecError{ExecError::Kind::spawn_failed, "empty command"};
         auto env = detail::make_environment(cmd, opt_);
-        program_ = detail::resolve_program(cmd.argv.front(), cmd.cwd, detail::find_env(env, "PATH"));
+        program_ = detail::resolve_program(cmd.argv.front(), cmd.cwd, env);
         if (program_.empty())
             throw ExecError{ExecError::Kind::spawn_failed, "command not found: " + cmd.argv.front()};
         detail::spawn_child(cmd, program_, env, ctx_, proc_, in_pipe_, out_pipe_, err_pipe_, group_);

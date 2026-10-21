@@ -35,7 +35,7 @@ Home 安装脚本按配置时的目标系统选择 Linux 的 0600 权限设置�
 | 平台文件 | 中立声明 | 实现 |
 | --- | --- | --- |
 | `src/private/base/platform_posix.cpp` | `src/public/base/platform.hpp`、`src/public/base/path.hpp` | `path_from_utf8`、`path_to_utf8`、`path_to_generic_utf8`、`executable_path`、`environment_variable`、`home_directory`、`process_id`、`stdin_is_terminal`、`stdout_is_terminal`、`local_time`、`utc_time`、`utc_timestamp`、`can_execute`、`default_temporary_directory`、`create_unique_directory` |
-| `src/private/workspace/context_posix.cpp` | `src/public/workspace/context.hpp` | `detail::os_description` |
+| `src/private/workspace/context_posix.cpp` | `src/public/workspace/context.hpp` | `detail::os_description`、`detail::shell_description` |
 | `src/private/app/cli_posix.cpp` | `src/public/app/cli.hpp` | `detail::read_stdin_all` |
 | `src/private/app/paths_posix.cpp` | `src/public/app/paths.hpp` | `detail::executable_home_directory`、`detail::probe_home_writable` |
 | `src/private/app/interrupts_posix.cpp` | `src/public/app/interrupts.hpp` | `install_interrupts`、`ignore_broken_pipe` |
@@ -45,7 +45,7 @@ Home 安装脚本按配置时的目标系统选择 Linux 的 0600 权限设置�
 | `src/private/web/document_posix.cpp` | `src/public/web/detail.hpp` | `detail::convert_charset` |
 | `src/private/ipc/channel_posix.cpp` | `src/public/ipc/channel.hpp` | `InheritedEndpoint` 参数解析、`Channel` 原生状态与传输、`BackendProcess` 不透明进程标识、`spawn_backend`、`wait_or_terminate` |
 | `src/private/tui/terminal_posix.cpp` | `src/public/tui/terminal.hpp`、`src/public/tui/event_wait.hpp` | Terminal 生命周期、原生状态、尺寸、字节写入、输入恢复与信号；EventWait 的等待、输入读取、唤醒及排空 |
-| `src/private/exec/platform_posix.cpp` | `src/public/exec/detail.hpp`、`src/public/exec/platform.hpp`、`src/public/exec/process.hpp` | 环境枚举/匹配、执行权限、SIGPIPE、ProcessGroup、退出状态、spawn_command/spawn_child、InheritedResources、SrtControl、默认 SRT 可读目录 |
+| `src/private/exec/platform_posix.cpp` | `src/public/exec/detail.hpp`、`src/public/exec/platform.hpp`、`src/public/exec/process.hpp` | `inherited_environment`、`environment_names_equal`、`environment_name_matches`、`resolve_program`、`system_git_program`、`default_search_path`、`project_search_path`、执行权限、SIGPIPE、ProcessGroup、退出状态、spawn_command/spawn_child、InheritedResources、SrtControl、默认 SRT 可读目录 |
 | `src/private/workspace/files_posix.cpp` | `src/public/workspace/files.hpp` | `probe`、`read_text`、`write_text`、`stamp_of`、FileReference 原生状态与操作 |
 | `src/private/storage/storage_posix.cpp` | `src/public/storage/platform.hpp` | `detail::SessionFileLock` |
 | `src/private/storage/decision_store_posix.cpp` | `src/public/storage/platform.hpp` | `detail::make_decision_file_private` |
@@ -82,7 +82,9 @@ local/UTC 转换返回是否成功，UTC 时间戳转换保留原返回值和对
 `filesystem::temp_directory_path()` 回退保持独立；SearXNG 仍在 Home 的 run 下创建目录。
 父目录创建、业务异常、资源获取及清理顺序仍由各调用方保留。
 
-`os_description` 返回 uname 的 `sysname release`，失败为 `unknown`。Toolchain 的 `runtime_platform`
+`os_description` 返回 uname 的 `sysname release`，失败为 `unknown`；`shell_description` 返回非空 SHELL，
+未设置或为空时返回 `sh`，只用于上下文展示。执行 Bash 仍由 Toolchain 的程序记录和 `exec::Environment::shell` 决定。
+Toolchain 的 `runtime_platform`
 保留 `sysname-machine` 与原异常。`SyncLock` 用 pimpl 保存 fd，仍非阻塞加独占锁，析构只 close，
 锁范围仍覆盖原 sync 流程；文件锁未合并为 base 原语。
 
@@ -109,7 +111,22 @@ exec 的跨平台 Asio/Boost.Process 对象和调度保留在共享文件，POSI
 
 SrtControl 用 optional 延迟到原 socketpair 位置构造，不把连接创建提前到目录创建之前；其 Impl 在 socketpair 前分配。
 设置 Command 继承清单时，在已有控制连接上分配共享元数据及原有 fd 列表存储，均在 fork 前；失败走原资源清理路径。
-环境枚举使用借用 span，不新增值复制或容器分配。fork 后钩子不展开不透明对象、不新增分配。
+`inherited_environment` 在父进程中返回有所有权的字符串快照，保留原环境顺序与重复项，不缓存。
+`make_environment` 直接使用快照容器并稳定过滤无名、无等号和 env_deny 匹配项，随后依次应用默认项、
+`Options::environment`、`env_unset`、`env_set`。`environment_names_equal` 在 POSIX 区分大小写；
+`environment_name_matches` 独立保留 fnmatch/FNM_CASEFOLD。赋值只覆盖第一个同名项，查询取第一个，
+unset 删除全部同名项，不额外去重。fork 后钩子不展开不透明对象、不新增分配。
+
+`resolve_program` 接收完整环境，POSIX 只从其中读取 PATH，不回退宿主环境。带目录的程序路径仍相对 cwd
+检查；裸程序名按冒号拆分的 PATH 搜索，空分量表示 cwd，整个 PATH 为空或缺失时不搜索裸程序名。
+Runner 和 Child 传入合并后的子进程环境；`which` 传入未经过滤和覆盖的宿主环境快照。
+`system_git_program` 固定返回 `/usr/bin/git`，不预先检查或增加 fallback，供 context 和 queries 使用；
+workspace 的 HEAD diff 仍执行 `git`，通过其传入 PATH 搜索。
+`default_search_path` 返回 `/usr/bin:/bin`，只读 SRT 在原位置追加该变量。
+`project_search_path` 供 project 受限 Bash 使用：非空宿主 PATH 原样保留，未设置或空值时回退到
+`/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin`。project 宿主 Bash 和 HEAD diff 则通过
+`base::environment_variable` 读取 PATH，缺失时不追加，空值时追加空 PATH，不使用六目录回退。
+
 SRT 配置 JSON、控制帧和线程编排保持共享，各控制 I/O 方法保留原短写、EINTR、EPIPE 与关闭语义。
 
 workspace 的路径和文本编解码通过 `files_detail.hpp` 供平台文件调用，不暴露原生句柄或 stat。

@@ -19,6 +19,8 @@ namespace dagent::workspace {
 
 namespace detail {
 std::string os_description();
+/// @brief 上下文展示的 shell 描述，不负责选择实际执行程序。
+std::string shell_description();
 } // namespace detail
 
 struct GitStatus {

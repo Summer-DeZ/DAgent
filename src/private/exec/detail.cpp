@@ -17,7 +17,7 @@ bool is_denied(std::string_view name, const std::vector<std::string>& patterns) 
 // 环境条目形如 "名字=值"；名字为空或没有 '=' 的条目直接忽略。
 bool entry_has_name(const std::string& entry, std::string_view name) {
     return entry.size() > name.size() && entry[name.size()] == '=' &&
-           std::string_view(entry).compare(0, name.size(), name) == 0;
+           environment_names_equal(std::string_view(entry).substr(0, name.size()), name);
 }
 
 void set_entry(std::vector<std::string>& env, std::string_view name, std::string_view value) {
@@ -47,13 +47,13 @@ constexpr std::pair<std::string_view, std::string_view> kDefaultEnv[] = {
 std::vector<std::string> make_environment(const Command& cmd, const Options& opt) {
     std::vector<std::string> env;
     if (cmd.inherit_env) {
-        for (const char* entry : inherited_environment()) {
+        env = inherited_environment();
+        std::erase_if(env, [&](const std::string& entry) {
             const std::string_view view(entry);
             const auto equals = view.find('=');
-            if (equals == std::string_view::npos || equals == 0) continue;
-            if (is_denied(view.substr(0, equals), opt.env_deny)) continue;
-            env.emplace_back(view);
-        }
+            return equals == std::string_view::npos || equals == 0 ||
+                   is_denied(view.substr(0, equals), opt.env_deny);
+        });
     }
 
     for (const auto& [name, value] : kDefaultEnv) set_entry(env, name, value);
@@ -66,32 +66,6 @@ std::vector<std::string> make_environment(const Command& cmd, const Options& opt
 std::string_view find_env(const std::vector<std::string>& env, std::string_view name) {
     for (const auto& entry : env) {
         if (entry_has_name(entry, name)) return std::string_view(entry).substr(name.size() + 1);
-    }
-    return {};
-}
-
-std::filesystem::path resolve_program(std::string_view name, const std::filesystem::path& cwd,
-                                      std::string_view path_env) {
-    if (name.empty()) return {};
-
-    // 子进程会先 chdir 到 cwd 再 exec，所以带目录的相对路径要相对 cwd 检查，
-    // 并解析成绝对路径传给 exec，检查的和执行的才是同一个文件。
-    const std::filesystem::path base = cwd.empty() ? std::filesystem::current_path() : cwd;
-    const std::filesystem::path path(name);
-    if (path.has_parent_path()) {
-        const auto candidate = path.is_absolute() ? path : base / path;
-        return regular_executable(candidate) ? candidate : std::filesystem::path{};
-    }
-    if (path_env.empty()) return {};
-
-    while (true) {
-        const auto colon = path_env.find(':');
-        const std::string_view dir = path_env.substr(0, colon);
-        const std::filesystem::path dir_path = dir.empty() ? base : std::filesystem::path(dir);
-        const auto candidate = (dir_path.is_absolute() ? dir_path : base / dir_path) / path;
-        if (regular_executable(candidate)) return candidate;
-        if (colon == std::string_view::npos) break;
-        path_env.remove_prefix(colon + 1);
     }
     return {};
 }

@@ -4,6 +4,7 @@
 #include <charconv>
 #include <sstream>
 #include "base/text.hpp"
+#include "base/path.hpp"
 #include <algorithm>
 #include "agent/permission.hpp"
 
@@ -143,7 +144,7 @@ nlohmann::json QueryGatewayImpl::git_status() {
     json result{{"repository", false}, {"branch", ""}, {"ahead", 0}, {"behind", 0}, {"files", json::array()}};
     const auto git = [&](std::vector<std::string> args) {
         exec::Command command;
-        command.argv = {"/usr/bin/git", "--no-optional-locks", "-c", "core.quotepath=off", "-c", "core.fsmonitor=false",
+        command.argv = {base::path_to_utf8(exec::system_git_program()), "--no-optional-locks", "-c", "core.quotepath=off", "-c", "core.fsmonitor=false",
                         "-c", "core.hooksPath=/dev/null", "-c", "core.pager=cat"};
         command.argv.insert(command.argv.end(), args.begin(), args.end());
         command.env_set = {{"GIT_CONFIG_NOSYSTEM", "1"}, {"GIT_CONFIG_GLOBAL", "/dev/null"}};

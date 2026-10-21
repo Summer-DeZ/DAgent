@@ -353,7 +353,7 @@ Result ReadOnlySandbox::run(const Command& command, const Options& options,
     request.policy.protected_read = protected_read;
     request.policy.read_exceptions = read_exceptions;
     request.environment = command.env_set;
-    request.environment.emplace_back("PATH", "/usr/bin:/bin");
+    request.environment.emplace_back("PATH", default_search_path());
     request.environment.emplace_back("LC_ALL", "C.UTF-8");
     for (const auto& argument : command.argv) {
         if (!request.command.empty()) request.command += ' ';

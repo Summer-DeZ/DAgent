@@ -22,6 +22,20 @@
 #include <sys/wait.h>
 #include <unistd.h>
 
+namespace dagent::exec {
+
+std::filesystem::path system_git_program() { return "/usr/bin/git"; }
+
+std::string default_search_path() { return "/usr/bin:/bin"; }
+
+std::string project_search_path() {
+    const char* path = std::getenv("PATH");
+    return path && *path ? std::string(path)
+                        : "/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin";
+}
+
+} // namespace dagent::exec
+
 namespace dagent::exec::detail {
 namespace asio = boost::asio;
 namespace bp = boost::process::v2;
@@ -31,12 +45,15 @@ struct InheritedResources {
     std::vector<int> fds;
 };
 
-std::span<const char* const> inherited_environment() noexcept {
-    const auto begin = ::environ;
-    if (begin == nullptr) return {};
-    auto end = begin;
-    while (*end != nullptr) ++end;
-    return {begin, static_cast<std::size_t>(end - begin)};
+std::vector<std::string> inherited_environment() {
+    std::vector<std::string> environment;
+    if (::environ == nullptr) return environment;
+    for (auto entry = ::environ; *entry != nullptr; ++entry) environment.emplace_back(*entry);
+    return environment;
+}
+
+bool environment_names_equal(std::string_view left, std::string_view right) noexcept {
+    return left == right;
 }
 
 bool environment_name_matches(std::string_view name, const std::string& pattern) {
@@ -47,6 +64,33 @@ bool regular_executable(const std::filesystem::path& path) {
     struct stat st {};
     if (::stat(path.c_str(), &st) != 0 || !S_ISREG(st.st_mode)) return false;
     return base::can_execute(path);
+}
+
+std::filesystem::path resolve_program(std::string_view name, const std::filesystem::path& cwd,
+                                      const std::vector<std::string>& environment) {
+    if (name.empty()) return {};
+
+    // 子进程会先 chdir 到 cwd 再 exec，所以带目录的相对路径要相对 cwd 检查，
+    // 并解析成绝对路径传给 exec，检查的和执行的才是同一个文件。
+    const std::filesystem::path base = cwd.empty() ? std::filesystem::current_path() : cwd;
+    const std::filesystem::path path(name);
+    if (path.has_parent_path()) {
+        const auto candidate = path.is_absolute() ? path : base / path;
+        return regular_executable(candidate) ? candidate : std::filesystem::path{};
+    }
+    auto path_env = find_env(environment, "PATH");
+    if (path_env.empty()) return {};
+
+    while (true) {
+        const auto colon = path_env.find(':');
+        const std::string_view dir = path_env.substr(0, colon);
+        const std::filesystem::path dir_path = dir.empty() ? base : std::filesystem::path(dir);
+        const auto candidate = (dir_path.is_absolute() ? dir_path : base / dir_path) / path;
+        if (regular_executable(candidate)) return candidate;
+        if (colon == std::string_view::npos) break;
+        path_env.remove_prefix(colon + 1);
+    }
+    return {};
 }
 
 void ignore_sigpipe() {
