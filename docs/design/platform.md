@@ -336,3 +336,8 @@ DAgent 作为 ConPTY 的客户端运行，不创建 ConPTY；终端由 Windows T
   同步输出、kitty 键盘、字素宽度为 false），不读 TERM/COLORTERM，后续由握手应答经 `apply_caps` 修正。
 - 还原：`restore()` 仍由共享实现去重，调用 `restore_input()` 按已保存标志恢复输入模式、输出模式与输出代码页后清标志；
   析构顺序为 restore、卸载控制台处理器、关闭信号事件、清除全局实例。atexit 兜底与 POSIX 相同。
+
+## TLS 吊销检查
+
+net 层与 runtime 下载的 libcurl 句柄都设置 `CURLSSLOPT_REVOKE_BEST_EFFORT`：Windows 的 schannel 在吊销服务器不可达时（常见于只经代理出网的主机）
+不再以 `CRYPT_E_REVOCATION_OFFLINE` 失败，证书本身的验证不变；OpenSSL 后端忽略该选项，Linux 行为不变。
