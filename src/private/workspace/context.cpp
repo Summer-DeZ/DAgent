@@ -117,7 +117,7 @@ std::optional<GitInfo> collect_git(const fs::path& cwd, const ContextOptions& op
     }
 
     GitInfo info;
-    info.root = base::canonical_or_absolute_or_lexical(trim(root.text));
+    info.root = base::canonical_or_absolute_or_lexical(base::path_from_utf8(trim(root.text)));
     info.status = parse_git_status(status.text);
 
     std::istringstream commits(log.text);
@@ -215,13 +215,13 @@ Environment collect_environment(const fs::path& cwd, const ContextOptions& opt, 
 
 nlohmann::json to_json(const Environment& env) {
     nlohmann::json json;
-    json["cwd"] = base::to_valid_utf8(env.cwd.string());
+    json["cwd"] = base::to_valid_utf8(base::path_to_utf8(env.cwd));
     json["os"] = env.os;
     json["shell"] = env.shell;
     json["date"] = env.date;
     if (env.git) {
         json["git"] = {
-            {"root", base::to_valid_utf8(env.git->root.string())},
+            {"root", base::to_valid_utf8(base::path_to_utf8(env.git->root))},
             {"branch", env.git->status.branch},
             {"status_summary", env.git->status.status_summary},
             {"recent_commits", env.git->recent_commits},
@@ -232,7 +232,7 @@ nlohmann::json to_json(const Environment& env) {
     json["instructions"] = nlohmann::json::array();
     for (const Instructions& instruction : env.instructions) {
         json["instructions"].push_back({
-            {"file", base::to_valid_utf8(instruction.file.string())},
+            {"file", base::to_valid_utf8(base::path_to_utf8(instruction.file))},
             {"content", instruction.content},
             {"truncated", instruction.truncated},
         });

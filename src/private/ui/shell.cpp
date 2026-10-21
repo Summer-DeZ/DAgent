@@ -22,6 +22,7 @@
 #include <vector>
 
 #include "base/platform.hpp"
+#include "base/path.hpp"
 #include "base/log.hpp"
 #include "base/overloaded.hpp"
 #include "tui/document.hpp"
@@ -270,9 +271,9 @@ private:
 };
 
 std::string display_path(const std::filesystem::path& path) {
-    const std::string value = path.string();
-    if (const char* home = base::home_directory()) {
-        const std::string prefix(home);
+    const std::string value = base::path_to_utf8(path);
+    if (const auto home = base::home_directory()) {
+        const std::string& prefix = *home;
         if (value == prefix) return "~";
         if (value.starts_with(prefix + "/")) return "~" + value.substr(prefix.size());
     }

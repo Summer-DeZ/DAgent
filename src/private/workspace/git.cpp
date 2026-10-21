@@ -10,6 +10,7 @@
 #include <vector>
 
 #include "exec/process.hpp"
+#include "base/path.hpp"
 #include "workspace/diff.hpp"
 #include "workspace/files.hpp"
 
@@ -42,7 +43,7 @@ GitOutcome run_git(const std::filesystem::path& root, std::vector<std::string> a
         deadline - std::chrono::steady_clock::now());
     if (stop.stop_requested() || remaining <= std::chrono::milliseconds::zero()) return {};
     exec::Command command;
-    command.argv = {"git", "-C", root.string()};
+    command.argv = {"git", "-C", base::path_to_utf8(root)};
     for (std::string& arg : args) command.argv.push_back(std::move(arg));
     command.cwd = root;
     command.merge_stderr = true;
@@ -107,7 +108,7 @@ HeadDiff head_diff(const std::filesystem::path& file,
     }
 
     // ls-files --error-unmatch：退出码 1 表示未被跟踪，其它非 0 是 git 层面的失败。
-    const GitOutcome tracked = run_git(*root, {"ls-files", "--error-unmatch", "--", relative.string()},
+    const GitOutcome tracked = run_git(*root, {"ls-files", "--error-unmatch", "--", base::path_to_utf8(relative)},
                                        deadline, stop);
     if (!tracked.spawned) {
         out.error = "git is not available";
@@ -123,7 +124,7 @@ HeadDiff head_diff(const std::filesystem::path& file,
     }
 
     // 取 HEAD 全文；无 HEAD（新仓库）或取不到时不做伪空 diff。
-    const GitOutcome head = run_git(*root, {"show", "HEAD:" + relative.generic_string()}, deadline, stop);
+    const GitOutcome head = run_git(*root, {"show", "HEAD:" + base::path_to_generic_utf8(relative)}, deadline, stop);
     if (!head.spawned) {
         out.error = "git is not available";
         return out;
@@ -150,7 +151,7 @@ HeadDiff head_diff(const std::filesystem::path& file,
     }
 
     out.tracked = true;
-    const Unified diff = unified_diff(head.out, current.content, relative.generic_string());
+    const Unified diff = unified_diff(head.out, current.content, base::path_to_generic_utf8(relative));
     out.text = diff.text;
     out.content_lines = diff_content_lines(out.text);
     return out;

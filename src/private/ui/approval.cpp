@@ -268,8 +268,8 @@ void ApprovalDialog::open(const ApprovalRequest& approval,
         doc.set_meta(id, std::string(label));
     };
     auto cwd = approval.cwd;
-    if (const char* home = base::home_directory()) {
-        const std::string prefix(home);
+    if (const auto home = base::home_directory()) {
+        const std::string& prefix = *home;
         if (cwd == prefix || cwd.starts_with(prefix + "/")) cwd = "~" + cwd.substr(prefix.size());
     }
     detail(ui::text().approve_cwd, cwd);

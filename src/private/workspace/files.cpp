@@ -4,6 +4,7 @@
 #include <system_error>
 
 #include "base/text.hpp"
+#include "base/path.hpp"
 
 namespace dagent::workspace {
 namespace fs = std::filesystem;
@@ -62,7 +63,7 @@ Resolved resolve(const fs::path& root, std::string_view user_path) {
         ec.clear();
         abs_root = fs::absolute(root, ec).lexically_normal();
     }
-    fs::path candidate = user_path.empty() ? abs_root : fs::path(user_path);
+    fs::path candidate = user_path.empty() ? abs_root : base::path_from_utf8(user_path);
     if (!candidate.is_absolute()) candidate = abs_root / candidate;
     fs::path resolved = fs::weakly_canonical(candidate, ec);
     if (ec) {
@@ -76,7 +77,7 @@ namespace detail {
 
 [[noreturn]] void fail(WorkspaceError::Kind kind, std::string_view op, const fs::path& p,
                        const std::string& detail) {
-    std::string what = std::string(op) + ": " + p.string();
+    std::string what = std::string(op) + ": " + base::path_to_utf8(p);
     if (!detail.empty()) what += ": " + detail;
     throw WorkspaceError(kind, what);
 }

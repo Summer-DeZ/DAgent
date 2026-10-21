@@ -24,9 +24,9 @@ Result error_result(std::string text, agent::View display) {
 
 std::string expand_home(std::string_view raw) {
     if (!raw.starts_with("~/") && raw != "~") return std::string(raw);
-    const char* home = base::home_directory();
-    if (home == nullptr || *home == '\0') return std::string(raw);
-    return raw == "~" ? home : std::format("{}/{}", home, raw.substr(2));
+    const auto home = base::home_directory();
+    if (!home || home->empty()) return std::string(raw);
+    return raw == "~" ? *home : std::format("{}/{}", *home, raw.substr(2));
 }
 
 workspace::Resolved resolve_arg(const Context& ctx, std::string_view raw) {

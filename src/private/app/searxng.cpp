@@ -47,7 +47,7 @@ struct Searxng::Impl {
             throw std::runtime_error("SearXNG is not prepared; run dagent runtime sync");
         if (directory.empty()) {
             fs::create_directories(paths.run);
-            auto created = base::create_unique_directory((paths.run / "searxng-XXXXXX").string());
+            auto created = base::create_unique_directory(paths.run / "searxng-XXXXXX");
             if (!created) throw std::runtime_error("cannot create SearXNG run directory");
             directory = *created;
         }

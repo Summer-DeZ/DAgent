@@ -34,7 +34,7 @@ Home 安装脚本按配置时的目标系统选择 Linux 的 0600 权限设置�
 
 | 平台文件 | 中立声明 | 实现 |
 | --- | --- | --- |
-| `src/private/base/platform_posix.cpp` | `src/public/base/platform.hpp` | `executable_path`、`home_directory`、`process_id`、`stdin_is_terminal`、`stdout_is_terminal`、`local_time`、`utc_time`、`utc_timestamp`、`can_execute`、`create_unique_directory` |
+| `src/private/base/platform_posix.cpp` | `src/public/base/platform.hpp`、`src/public/base/path.hpp` | `path_from_utf8`、`path_to_utf8`、`path_to_generic_utf8`、`executable_path`、`environment_variable`、`home_directory`、`process_id`、`stdin_is_terminal`、`stdout_is_terminal`、`local_time`、`utc_time`、`utc_timestamp`、`can_execute`、`default_temporary_directory`、`create_unique_directory` |
 | `src/private/workspace/context_posix.cpp` | `src/public/workspace/context.hpp` | `detail::os_description` |
 | `src/private/app/cli_posix.cpp` | `src/public/app/cli.hpp` | `detail::read_stdin_all` |
 | `src/private/app/paths_posix.cpp` | `src/public/app/paths.hpp` | `detail::executable_home_directory`、`detail::probe_home_writable` |
@@ -61,13 +61,26 @@ Home 安装脚本按配置时的目标系统选择 Linux 的 0600 权限设置�
 SearXNG 定位程序资源。安装根的固定缓冲区 readlink 和 InstallError 在 `app/paths_posix.cpp` 中保持独立；
 `app/paths.cpp` 保留 DAGENT_HOME/dev 默认值选择和目录验证，可写探针仍使用原 O_EXCL、0600 与关闭/删除顺序。
 
-`home_directory` 借用 getenv 的结果，不缓存、不规范化，保留 nullptr 与空字符串的区别。
+`path_from_utf8` 在 POSIX 按原始字节构造路径，`path_to_utf8` 和 `path_to_generic_utf8` 分别保留
+原 `string()`、`generic_string()` 的输出形式；不校验或修复非法 UTF-8，不规范化、不解析符号链接。
+workspace 的用户路径、Git 根目录和参数通过这些接口转换；上下文路径仍只在生成 JSON 展示副本时调用
+`to_valid_utf8`，文件操作继续使用原始路径。UI 的项目路径缩写前通过 `path_to_utf8` 取文本。
+
+`environment_variable` 返回环境变量的独立 `optional<string>` 副本，不缓存；未设置为 `nullopt`，
+已设置为空为有值的空字符串。`home_directory` 只读取 HOME，返回相同契约，不规范化，且不是 DAGENT_HOME。
+app 通过环境变量接口读取 DAGENT_HOME，仅非空时使用；dev 默认值与可执行文件目录的选择顺序不变。
+tools 的 `~` 展开在 HOME 缺失或为空时保留输入；权限层、命令分类和 UI 缩写只判断 HOME 是否存在，
+保留空值参与原路径拼接或文本比较的行为。命令分类的局部 lambda 借用函数内持有的 Home 副本，不逃逸。
+
 `process_id` 返回当前进程号，调用位置与十进制格式不变。时间转换写入调用方的 `std::tm`，
 local/UTC 转换返回是否成功，UTC 时间戳转换保留原返回值和对 tm 的修改；调用者维持各自的失败处理。
 
 `can_execute` 只检查执行权限，不附加普通文件判断；exec 的 stat 检查由 `regular_executable` 在平台实现中完成。
-`create_unique_directory` 接收完整 XXXXXX 模板，只调用 mkdtemp，成功返回目录，失败返回 strerror 文本。
-父目录创建、固定 `/tmp` 选择、业务异常及清理由 SRT、MCP、SearXNG 各自保留。
+`create_unique_directory` 接收 `filesystem::path` 形式的完整 XXXXXX 模板，复制原生字节后调用 mkdtemp，
+成功返回目录，失败返回 strerror 文本。`default_temporary_directory` 在 POSIX 固定返回 `/tmp`，
+不读取 TMPDIR 等环境变量，供 SRT 与 MCP 的私有 HOME 使用。SRT 控制目录既有的
+`filesystem::temp_directory_path()` 回退保持独立；SearXNG 仍在 Home 的 run 下创建目录。
+父目录创建、业务异常、资源获取及清理顺序仍由各调用方保留。
 
 `os_description` 返回 uname 的 `sysname release`，失败为 `unknown`。Toolchain 的 `runtime_platform`
 保留 `sysname-machine` 与原异常。`SyncLock` 用 pimpl 保存 fd，仍非阻塞加独占锁，析构只 close，

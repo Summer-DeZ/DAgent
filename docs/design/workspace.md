@@ -50,6 +50,8 @@ CMake 通过 `files_${DAGENT_PLATFORM}.cpp` 选择它，`files.hpp` 的对外接
 （`fs::path` 的迭代器天然按分量拆分），不是字符串前缀比较，所以 `/work2` 不会被判成 `/work` 的子路径。
 
 在工作区外时放不放行，由核心根据 `Resolved::inside_workspace` 决定。
+非空用户路径经 `base::path_from_utf8` 进入文件系统；POSIX 保留原始字节，不提前校验 UTF-8。
+文件错误中的路径经 `base::path_to_utf8` 输出，原错误类型与文本格式不变。
 
 ### 工具执行：FileReference
 
@@ -180,6 +182,9 @@ pager 和全局/系统 Git 配置。这里尚未切换到托管 Git，宿主无�
 「未跟踪」；`branch.head` 是 `(detached)` 时用 `branch.oid` 的前 7 位当分支名。
 分支名和近期提交文本修复为合法 UTF-8，供 system 模板和 workspace 查询展示。仓库根保留原始路径字节参与
 规范化和指令文件查找；路径仅在转换为模板展示数据时修复，不以展示副本做文件操作。
+Git 根目录通过 `base::path_from_utf8` 转为路径；上下文序列化先用 `path_to_utf8` 取路径文本，再沿用
+`to_valid_utf8` 清洗。HEAD diff 的 `-C` 和 `ls-files` 路径使用原生文本接口，`HEAD:` 后的路径及 diff 文件名
+使用 `path_to_generic_utf8`；Git 选择、PATH 继承和异常捕获位置保持原样。
 
 ### AGENTS.md 收集
 

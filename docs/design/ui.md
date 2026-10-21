@@ -440,6 +440,8 @@ HeaderBar 左侧为 primary 粗体品牌与首条用户输入的首行（未输�
 标题、模型与长分支都按显示列宽裁剪，避免左右重叠。
 
 HintBar 左侧是缩成 `~` 的项目路径；右侧按 key=text、description=text_muted 绘制，项目间用 text_faint 的 ` · `。
+项目路径经 `base::path_to_utf8` 取文本，Home 由 `base::home_directory` 返回独立副本；
+与审批 cwd 一样，仅在 HOME 存在时执行原有文本前缀缩写，空字符串仍参与比较，不额外规范化或修复 UTF-8。
 空闲显示 ctrl+p commands、ctrl+t sidebar、shift+tab mode；忙碌显示 esc interrupt，
 有排队输入时加 ↑ recall queued，有子 Pane 时加 ctrl+a agents。Panel/Completion 打开时显示
 enter select、esc close；Settings 显示 enter save、esc revert。

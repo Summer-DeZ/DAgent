@@ -30,6 +30,8 @@ app 同时实现 `backend/configuration.hpp`、`backend/queries.hpp`、`backend/
 
 安装根选择和目录验证在 `app/paths.cpp`；固定缓冲区 readlink 与可写探针位于 `app/paths_posix.cpp`，
 经 `detail::executable_home_directory`、`detail::probe_home_writable` 调用。
+`DAGENT_HOME` 经 `base::environment_variable` 读取，缺失与空值均使用后续默认值；环境值和 dev 默认文本
+经 `base::path_from_utf8` 转为路径，再沿用原规范化与绝对化回退，目录错误中的路径经 `path_to_utf8` 输出。
 
 ```text
 <root>/

@@ -96,6 +96,8 @@ bridge，server 只拿到 profile 允许的读取/写入范围与严格网络 al
 审批），私有 HOME/TMPDIR 使用每次连接独占的 `/tmp/dagent-home-XXXXXX`（`base::create_unique_directory` 通过 mkdtemp 创建，0700），
 避免 Home 路径或 server 名过长导致 SRT Unix socket 超过路径上限。`init.json` 仍保存在 state root 下的
 每连接状态目录；连接关闭或启动失败时，在子进程结束后清理状态目录与私有 HOME。
+私有 HOME 的父目录通过 `base::default_temporary_directory` 取得，POSIX 固定为 `/tmp`，不读取宿主 TMPDIR；
+状态目录与私有 HOME 均直接以 `filesystem::path` 传递完整的 XXXXXX 模板，错误与清理顺序保持原样。
 新旧连接与 lease 在权限降级或切换时被显式作废
 （`McpHub::revoke`），旧 `Client` 的后续请求直接返回 `disconnected`。
 

@@ -678,10 +678,10 @@ bool is_dangerous(const Analysis& analysis) {
         }
         return recursive && force;
     };
-    const char* home = base::home_directory();
-    const auto broad_target = [home](std::string_view raw) {
+    const auto home = base::home_directory();
+    const auto broad_target = [&home](std::string_view raw) {
         if (raw == "/" || raw == "~" || raw == "$HOME" || raw == "${HOME}") return true;
-        if (home != nullptr && raw == home) return true;
+        if (home && raw == *home) return true;
         if (!raw.starts_with('/')) return false;
         std::filesystem::path path(raw);
         return static_cast<int>(std::distance(path.begin(), path.end())) <= 2;

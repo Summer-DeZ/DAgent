@@ -176,7 +176,9 @@ unrestricted 的 bash 使用 host；web 仍强制进入只读 SRT，由运行中
   不在父进程清除 CLOEXEC，避免并发启动时将通道泄漏给其他进程，也不依赖启动器偶然保留描述符。
 - 工作区保护遵循启动快照语义：运行中新建的同名敏感文件不在保护承诺内。
 - 受限命令的私有 HOME 使用短临时路径，避免深层 Home 导致 SRT Unix socket 路径过长；bridge 初始化异常按结构化错误报告。
-  控制目录与私有 HOME 通过 `base::create_unique_directory` 创建，父目录处理、错误文本和清理仍由 SRT 管理。
+  私有 HOME 的父目录由 `base::default_temporary_directory` 提供，POSIX 固定为 `/tmp`，不读取宿主 TMPDIR；
+  控制目录的 `filesystem::temp_directory_path()` 回退保持独立。两者都向 `base::create_unique_directory`
+  传入完整路径模板，父目录处理、错误文本和清理仍由 SRT 管理。
 
 `SrtControl` 在原 socketpair 位置构造，仍晚于控制目录、私有 HOME 及其子目录创建。
 共享代码保留 JSON、网络审批、reader/watchdog/gates 的启停与 join 顺序；平台边界的 I/O 语义分别为：

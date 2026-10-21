@@ -14,8 +14,8 @@ DAgent 外围模块的最底层。头文件在 `src/public/base/`，实现在 `s
 | --- | --- | --- |
 | 日志：全局初始化、按模块命名的 logger、滚动文件、崩溃时刷盘 | `base/log.hpp` | `init_log`、`logger`、`shutdown_log` |
 | 文本处理：UTF-8 校验与修复、按字符边界截断、清理 ANSI 转义、base64 解码 | `base/text.hpp` | `to_valid_utf8`、`truncate_middle`、`strip_ansi`、`base64_decode` |
-| 路径规范化：解析符号链接，失败时逐级回退 | `base/path.hpp` | `canonical_or_absolute_or_lexical` |
-| 平台原语：程序路径、HOME、进程号、stdin/stdout 终端判断、时间转换、执行权限和独占目录 | `base/platform.hpp` | `executable_path`、`home_directory`、`process_id`、`stdin_is_terminal`、`stdout_is_terminal`、`local_time`、`utc_time`、`utc_timestamp`、`can_execute`、`create_unique_directory` |
+| 路径文本转换与规范化：保留原生或 generic 格式，解析符号链接时逐级回退 | `base/path.hpp` | `path_from_utf8`、`path_to_utf8`、`path_to_generic_utf8`、`canonical_or_absolute_or_lexical` |
+| 平台原语：程序路径、环境变量、HOME、进程号、终端判断、时间转换、执行权限和临时目录 | `base/platform.hpp` | `executable_path`、`environment_variable`、`home_directory`、`process_id`、`stdin_is_terminal`、`stdout_is_terminal`、`local_time`、`utc_time`、`utc_timestamp`、`can_execute`、`default_temporary_directory`、`create_unique_directory` |
 | frontmatter 文本切分：返回 header/body 视图，区分缺少开头与结尾分隔符 | `base/frontmatter.hpp` | `split_frontmatter` |
 | JSON 参数解析与脱敏 | `base/json.hpp` | `parse_arguments`、`require_string`、`get_string`、`get_int`、`get_bool`、`redact` |
 
@@ -25,6 +25,14 @@ skills 与 memory 共用 `split_frontmatter`，输入为 workspace 读取后已�
 开头必须是 `---\n`，首个内容恰为 `---` 的后续行结束 header，结尾分隔符无需末尾换行；
 header/body 视图借用输入存储，排除分隔符及其换行，其余文本原样保留。
 该函数不依赖 yaml-cpp；错误文案、YAML 解析和字段校验仍由调用方负责。子 Agent 保留自己的分行解析与诊断。
+
+`path_from_utf8`、`path_to_utf8`、`path_to_generic_utf8` 在 `base/platform_posix.cpp` 实现：
+POSIX 输入按原始字节构造路径，输出分别使用 `string()` 和 `generic_string()`，不校验或修复 UTF-8，
+不做绝对化、规范化或符号链接解析。用于 JSON/展示的文本修复仍由调用方处理。
+`environment_variable` 和 `home_directory` 返回有所有权的 `optional<string>`，不缓存；
+未设置为 `nullopt`，空值为有值的空字符串，POSIX 的用户 Home 只取 `HOME`。
+`default_temporary_directory` 固定返回 `/tmp`，不读取 TMPDIR；`create_unique_directory` 接收完整路径模板，
+复制原生字节后交给 `mkdtemp`，不负责创建父目录或清理。
 
 app 配置、workspace 上下文与 storage 会话路径共用 `canonical_or_absolute_or_lexical`：
 先用 `weakly_canonical` 解析已存在部分的符号链接并规范化剩余路径；失败后使用

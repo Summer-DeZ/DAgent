@@ -84,6 +84,7 @@ dangerous / known_readonly 仍由 exec 的原分析函数计算，核心不重�
   `"true"` 时照常接受；未知字段忽略。
 - 所有路径参数：相对路径基于 `ctx.root()`，开头的 `~/` 展开成 `$HOME`，统一经 `workspace::resolve`。给模型
   和界面看的路径，在工作区内显示相对路径，在工作区外显示绝对路径。
+  `~` 展开使用 `base::home_directory` 返回的独立副本；HOME 未设置或为空时保留原始输入，不改用其他 Home。
 
 ### FileTracker
 

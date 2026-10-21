@@ -1,4 +1,5 @@
 #include "base/platform.hpp"
+#include "base/path.hpp"
 
 #include <cerrno>
 #include <cstdlib>
@@ -6,6 +7,18 @@
 #include <unistd.h>
 
 namespace dagent::base {
+
+std::filesystem::path path_from_utf8(std::string_view text) {
+    return std::filesystem::path(text);
+}
+
+std::string path_to_utf8(const std::filesystem::path& path) {
+    return path.string();
+}
+
+std::string path_to_generic_utf8(const std::filesystem::path& path) {
+    return path.generic_string();
+}
 
 std::filesystem::path executable_path() {
     return std::filesystem::read_symlink("/proc/self/exe");
@@ -15,7 +28,12 @@ std::filesystem::path executable_path(std::error_code& error) {
     return std::filesystem::read_symlink("/proc/self/exe", error);
 }
 
-const char* home_directory() noexcept { return std::getenv("HOME"); }
+std::optional<std::string> environment_variable(std::string_view name) {
+    if (const char* value = std::getenv(std::string(name).c_str())) return std::string(value);
+    return std::nullopt;
+}
+
+std::optional<std::string> home_directory() { return environment_variable("HOME"); }
 std::int64_t process_id() noexcept { return ::getpid(); }
 bool stdin_is_terminal() noexcept { return ::isatty(STDIN_FILENO) != 0; }
 bool stdout_is_terminal() noexcept { return ::isatty(STDOUT_FILENO) != 0; }
@@ -34,9 +52,12 @@ bool can_execute(const std::filesystem::path& path) noexcept {
     return ::access(path.c_str(), X_OK) == 0;
 }
 
-std::expected<std::filesystem::path, std::string> create_unique_directory(std::string pattern) {
-    if (::mkdtemp(pattern.data()) == nullptr) return std::unexpected(std::string(std::strerror(errno)));
-    return std::filesystem::path(pattern);
+std::filesystem::path default_temporary_directory() { return "/tmp"; }
+
+std::expected<std::filesystem::path, std::string> create_unique_directory(const std::filesystem::path& pattern) {
+    auto native = pattern.native();
+    if (::mkdtemp(native.data()) == nullptr) return std::unexpected(std::string(std::strerror(errno)));
+    return std::filesystem::path(native);
 }
 
 } // namespace dagent::base

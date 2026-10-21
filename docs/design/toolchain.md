@@ -151,6 +151,7 @@ Python 入口监听由后端持有写端的 stdin 管道，EOF 时结束进程�
 
 SearXNG 入口 `libexec/searxng_server.py` 与 SRT bridge 的复制目标和安装规则仅在 Linux 启用，
 这些入口随二进制更新，定位基准为后端路径。
-SearXNG 用 `base::executable_path()` 定位入口，用 `base::create_unique_directory` 创建实例目录；
+SearXNG 用 `base::executable_path()` 定位入口，向 `base::create_unique_directory` 传入
+`paths.run / "searxng-XXXXXX"` 路径模板创建实例目录，仍由调用方先创建父目录；
 SRT 资源定位保留 `executable_path(error_code&)` 的失败处理。目录清理仍由各自生命周期管理。
 依赖准备与用户配置升级见 [构建指南](../guide/build.md#升级已有-home-的-web-资源)，引擎、缓存和传输选项见 [网页指南](../guide/web.md)。

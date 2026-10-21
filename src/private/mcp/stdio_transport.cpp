@@ -33,12 +33,12 @@ void StdioTransport::start_sandboxed() {
     const StdioSandbox& sandbox = *config_.sandbox;
     std::error_code error;
     std::filesystem::create_directories(sandbox.state_root, error);
-    auto directory = base::create_unique_directory((sandbox.state_root / ("mcp-" + config_.name + "-XXXXXX")).string());
+    auto directory = base::create_unique_directory(sandbox.state_root / ("mcp-" + config_.name + "-XXXXXX"));
     if (!directory)
         throw McpError{McpError::Kind::spawn, config_.name + ": cannot create the sandbox state directory"};
     state_dir_ = *directory;
     // SRT 在 TMPDIR 下创建 Unix sockets；固定短路径避免 Home 或 server 名过长。
-    directory = base::create_unique_directory("/tmp/dagent-home-XXXXXX");
+    directory = base::create_unique_directory(base::default_temporary_directory() / "dagent-home-XXXXXX");
     if (!directory)
         throw McpError{McpError::Kind::spawn, config_.name + ": cannot create the sandbox private home"};
     private_home_ = *directory;

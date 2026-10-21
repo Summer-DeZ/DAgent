@@ -21,7 +21,7 @@ using json = nlohmann::json;
 fs::path make_unique_dir(const fs::path& parent, std::string_view prefix) {
     std::error_code error;
     fs::create_directories(parent, error);
-    auto directory = base::create_unique_directory((parent / (std::string(prefix) + "-XXXXXX")).string());
+    auto directory = base::create_unique_directory(parent / (std::string(prefix) + "-XXXXXX"));
     if (!directory) throw ExecError{ExecError::Kind::sandbox, "mkdtemp: " + directory.error()};
     return *directory;
 }
@@ -137,7 +137,7 @@ Result run_srt(const SrtRequest& request, const Options& options,
     resources.control_dir = make_unique_dir(state_root, "dagent-run");
     // SRT 在 TMPDIR 下创建 Unix sockets；深层 DAGENT_HOME 会超过 sockaddr_un 的路径上限。
     // mkdtemp 保持每次执行独占的 0700 目录，固定短路径也不受宿主 TMPDIR 长度影响。
-    resources.private_home = make_unique_dir("/tmp", "dagent-home");
+    resources.private_home = make_unique_dir(base::default_temporary_directory(), "dagent-home");
     const auto& control_dir = resources.control_dir;
     const auto& private_home = resources.private_home;
     for (const auto& writable : request.policy.writable) {
