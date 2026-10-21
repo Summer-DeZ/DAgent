@@ -1,5 +1,6 @@
 #include "workspace/files.hpp"
 #include "workspace/files_detail.hpp"
+#include "base/path.hpp"
 
 #include <algorithm>
 #include <array>
@@ -14,6 +15,10 @@
 #include <winternl.h>
 #include <aclapi.h>
 #include <bcrypt.h>
+
+// 用户态 SDK（winternl.h）不声明此 ntdll 入口。
+extern "C" NTSYSAPI NTSTATUS NTAPI NtSetInformationFile(HANDLE handle, PIO_STATUS_BLOCK status, PVOID information,
+                                                        ULONG length, FILE_INFORMATION_CLASS information_class);
 
 namespace dagent::workspace {
 namespace fs = std::filesystem;
@@ -125,13 +130,34 @@ Handle open_component(HANDLE directory, const fs::path& component, DWORD access,
     return result;
 }
 
+// ReOpenFile 不能用于目录句柄（返回 ERROR_ACCESS_DENIED）；以空名字相对自身重新打开同一目录对象。
+Handle reopen_directory(HANDLE directory, DWORD access, std::error_code& error) {
+    UNICODE_STRING text{};
+    OBJECT_ATTRIBUTES attributes{};
+    attributes.Length = sizeof(attributes);
+    attributes.RootDirectory = directory;
+    attributes.ObjectName = &text;
+    attributes.Attributes = OBJ_CASE_INSENSITIVE;
+    IO_STATUS_BLOCK status_block{};
+    HANDLE raw = INVALID_HANDLE_VALUE;
+    const NTSTATUS status = ::NtCreateFile(&raw, access, &attributes, &status_block, nullptr, FILE_ATTRIBUTE_DIRECTORY,
+        sharing, nt_open, nt_directory | nt_synchronous | nt_open_reparse, nullptr, 0);
+    if (status < 0) {
+        error = windows_error(::RtlNtStatusToDosError(status));
+        return Handle{};
+    }
+    Handle result(raw);
+    if (!check_object(raw, true, error)) return Handle{};
+    return result;
+}
+
 Handle walk(HANDLE anchor, const fs::path& relative, DWORD access, bool directory, std::error_code& error) {
     Handle current = duplicate(anchor, error);
     if (!current) return current;
     std::vector<fs::path> components;
     for (const auto& component : relative)
         if (!component.empty() && component != L".") components.push_back(component);
-    if (components.empty()) return reopen(current.value, access, error);
+    if (components.empty()) return directory ? reopen_directory(current.value, access, error) : reopen(current.value, access, error);
     for (std::size_t i = 0; i < components.size(); ++i) {
         const bool last = i + 1 == components.size();
         current = open_component(current.value, components[i], last ? access : metadata_access,
@@ -307,20 +333,31 @@ void write_contents(HANDLE handle, std::string_view bytes, const fs::path& path)
     if (!::FlushFileBuffers(handle)) io_error("write", path, windows_error());
 }
 
+// 内核的 FILE_RENAME_INFORMATION（FileRenameInformationEx = 65）；Win32 的 SetFileInformationByHandle 不接受
+// 带 RootDirectory 的相对重命名（返回 ERROR_INVALID_PARAMETER），所以直接调 NtSetInformationFile。
+// https://learn.microsoft.com/windows-hardware/drivers/ddi/ntifs/ns-ntifs-_file_rename_information
+struct RenameInformationEx {
+    ULONG Flags;
+    HANDLE RootDirectory;
+    ULONG FileNameLength;
+    WCHAR FileName[1];
+};
+
 bool rename_into(HANDLE file, HANDLE parent, const fs::path& name, bool replace, std::error_code& error) {
     const auto& text = name.native();
     const auto bytes = text.size() * sizeof(wchar_t);
-    std::vector<std::byte> buffer(sizeof(FILE_RENAME_INFO) + bytes);
-    auto* info = reinterpret_cast<FILE_RENAME_INFO*>(buffer.data());
-    // FileRenameInfoEx 与 FILE_RENAME_INFO 的 Flags：REPLACE_IF_EXISTS=1, POSIX_SEMANTICS=2。
-    // 后者允许保留旧目标的固定句柄；不关闭审批对象，也不使用先删除再重命名的替代流程。
-    // https://learn.microsoft.com/windows-hardware/drivers/ddi/ntifs/ns-ntifs-_file_rename_information
+    std::vector<std::byte> buffer(sizeof(RenameInformationEx) + bytes);
+    auto* info = reinterpret_cast<RenameInformationEx*>(buffer.data());
+    // FILE_RENAME_REPLACE_IF_EXISTS=1, FILE_RENAME_POSIX_SEMANTICS=2：后者允许旧目标仍被固定句柄持有。
     info->Flags = replace ? 0x00000001u | 0x00000002u : 0;
     info->RootDirectory = parent;
-    info->FileNameLength = static_cast<DWORD>(bytes);
+    info->FileNameLength = static_cast<ULONG>(bytes);
     std::memcpy(info->FileName, text.data(), bytes);
-    if (!::SetFileInformationByHandle(file, FileRenameInfoEx, info, static_cast<DWORD>(buffer.size()))) {
-        error = windows_error();
+    IO_STATUS_BLOCK status_block{};
+    const NTSTATUS status = ::NtSetInformationFile(file, &status_block, info, static_cast<ULONG>(buffer.size()),
+                                                   static_cast<FILE_INFORMATION_CLASS>(65));
+    if (status < 0) {
+        error = windows_error(::RtlNtStatusToDosError(status));
         return false;
     }
     error.clear();
@@ -336,7 +373,7 @@ Handle create_parents(HANDLE anchor, const fs::path& relative, const fs::path& p
         parent = open_component(parent.value, component, metadata_access, nt_directory, nt_open_if, nullptr, error);
         if (!parent) {
             if (error.value() == ERROR_CANT_ACCESS_FILE || error.value() == ERROR_DIRECTORY)
-                fail(WorkspaceError::Kind::stale, "write", path, "parent changed; prepare again");
+                fail(WorkspaceError::Kind::stale, "write", path, "parent changed; prepare again: " + error.message());
             io_error("mkdir", path, error);
         }
     }
@@ -514,12 +551,13 @@ Stamp FileReference::write(std::string_view content, Eol eol, bool bom,
     validate();
     std::error_code error;
     Handle current_parent = walk(r.anchor.value, r.relative.parent_path(), metadata_access, true, error);
-    if (!current_parent || !matches(current_parent.value, parent_info))
-        fail(WorkspaceError::Kind::stale, "write", r.path, "parent changed; prepare again");
+    if (!current_parent) fail(WorkspaceError::Kind::stale, "write", r.path, "parent changed; prepare again: " + error.message());
+    if (!matches(current_parent.value, parent_info))
+        fail(WorkspaceError::Kind::stale, "write", r.path, "parent changed; prepare again: identity mismatch");
     if (expect && make_stamp(metadata(r.target.value, "write", r.path)) != *expect)
         fail(WorkspaceError::Kind::stale, "write", r.path, "file changed since preview");
     if (!rename_into(temp.handle.value, parent.value, r.relative.filename(), static_cast<bool>(r.target), error))
-        fail(WorkspaceError::Kind::stale, "write", r.path, "target changed or cannot be replaced");
+        fail(WorkspaceError::Kind::stale, "write", r.path, "target changed or cannot be replaced: " + error.message());
     temp.keep = true;
     ::FlushFileBuffers(parent.value);
     // 固定提交后的新对象，再关闭最后的数据写句柄，避免返回尚未更新的 LastWriteTime。
@@ -589,7 +627,7 @@ DirectoryEntries FileReference::directory_entries(fs::directory_options options,
     if (kind() != FileKind::directory) fail(WorkspaceError::Kind::io, "list", impl_->path, "not a directory");
     auto entries = std::make_unique<DirectoryEntries::Impl>();
     entries->path = impl_->path;
-    entries->directory = reopen(impl_->target.value, FILE_LIST_DIRECTORY | metadata_access, error);
+    entries->directory = reopen_directory(impl_->target.value, FILE_LIST_DIRECTORY | metadata_access, error);
     if (entries->directory) entries->advance(error);
     else if (error.value() == ERROR_ACCESS_DENIED && (options & fs::directory_options::skip_permission_denied) != fs::directory_options::none)
         error.clear();
