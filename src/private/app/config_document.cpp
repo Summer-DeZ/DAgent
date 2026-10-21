@@ -52,9 +52,9 @@ std::size_t ConfigDocument::token_end(std::size_t p) const {
 std::string ConfigDocument::encoded(const Ordered& item, const std::string& padding, bool multiline) const {
     if (item.is_array() && !multiline) {
         std::string out = "[";
-        for (const auto& value : item) {
+        for (const auto& element : item) {
             if (out.size() > 1) out += ", ";
-            out += encoded(value, padding, false);
+            out += encoded(element, padding, false);
         }
         return out + "]";
     }

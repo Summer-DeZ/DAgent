@@ -156,9 +156,9 @@ void Client::reader(std::stop_token stop) {
                     if (const auto it = pending_.find(message.response.id); it != pending_.end()) {
                         pending = it->second;
                         pending_.erase(it);
-                    } else if (const auto it = sync_.find(message.response.id); it != sync_.end()) {
-                        sync = it->second;
-                        sync_.erase(it);
+                    } else if (const auto sync_it = sync_.find(message.response.id); sync_it != sync_.end()) {
+                        sync = sync_it->second;
+                        sync_.erase(sync_it);
                     }
                 }
             }

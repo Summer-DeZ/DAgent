@@ -29,14 +29,19 @@ tui::Color mix(tui::Color a, tui::Color b, double amount) {
 tui::Color rgb(tui::Color c) {
         if (c.kind != tui::Color::Kind::indexed) return c;
         const int n = c.r;
-        if (n >= 232) return tui::Color::rgb(8 + (n - 232) * 10, 8 + (n - 232) * 10, 8 + (n - 232) * 10);
+        if (n >= 232)
+            return tui::Color::rgb(static_cast<uint8_t>(8 + (n - 232) * 10),
+                                   static_cast<uint8_t>(8 + (n - 232) * 10),
+                                   static_cast<uint8_t>(8 + (n - 232) * 10));
         if (n >= 16) {
-            const auto channel = [](int v) { return v ? 55 + v * 40 : 0; };
+            const auto channel = [](int v) -> uint8_t { return static_cast<uint8_t>(v ? 55 + v * 40 : 0); };
             return tui::Color::rgb(channel((n - 16) / 36), channel((n - 16) / 6 % 6), channel((n - 16) % 6));
         }
         constexpr unsigned palette[] = {0x000000,0x800000,0x008000,0x808000,0x000080,0x800080,0x008080,0xc0c0c0,
                                         0x808080,0xff0000,0x00ff00,0xffff00,0x0000ff,0xff00ff,0x00ffff,0xffffff};
-        return tui::Color::rgb(palette[n] >> 16, (palette[n] >> 8) & 255, palette[n] & 255);
+        return tui::Color::rgb(static_cast<uint8_t>(palette[n] >> 16),
+                               static_cast<uint8_t>((palette[n] >> 8) & 255),
+                               static_cast<uint8_t>(palette[n] & 255));
 }
 // 在 OKLab 中沿固定色相调整明度；超出 sRGB 色域时只缩小色度。
 double linear(double value) {

@@ -590,8 +590,8 @@ ScanSample sample_fetch_result(std::string_view result) {
             const std::size_t begin = base::utf8_floor(result, lower);
             return {begin, base::utf8_floor(result, std::min(begin + kSampleFixed, end_upper))};
         }
-        const std::size_t last = end_upper - kSampleFixed;
-        std::uniform_int_distribution<std::size_t> pick(lower, last);
+        const std::size_t last_start = end_upper - kSampleFixed;
+        std::uniform_int_distribution<std::size_t> pick(lower, last_start);
         const std::size_t begin = base::utf8_floor(result, pick(generator));
         return {begin, base::utf8_floor(result, begin + kSampleFixed)};
     };

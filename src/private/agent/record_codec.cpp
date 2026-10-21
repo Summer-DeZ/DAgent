@@ -44,9 +44,9 @@ bool bool_field(std::string_view type, const json& object, const char* key) {
 Usage parse_usage(std::string_view type, const json& value) {
     if (!value.is_object()) corrupt(type, "field usage must be an object");
     Usage usage;
-    usage.prompt = integer_field(type, value, "prompt");
-    usage.completion = integer_field(type, value, "completion");
-    usage.cached = integer_field(type, value, "cached");
+    usage.prompt = static_cast<int>(integer_field(type, value, "prompt"));
+    usage.completion = static_cast<int>(integer_field(type, value, "completion"));
+    usage.cached = static_cast<int>(integer_field(type, value, "cached"));
     return usage;
 }
 
@@ -461,7 +461,7 @@ DecodedRecord decode(std::string_view type, const nlohmann::json& payload) {
         return record;
     }
     if (type == "permission" || type == "parent_review") {
-        const int schema = integer_field(type, payload, "schema");
+        const int schema = static_cast<int>(integer_field(type, payload, "schema"));
         // schema 2 的 network 布尔已由显式请求范围取代；旧记录只读回放，忽略该字段。
         if (schema != 2 && schema != 3 && schema != 4 && schema != 5) corrupt(type, "unknown schema");
         if (type == "parent_review" && schema != 4 && schema != 5) corrupt(type, "unknown parent review schema");

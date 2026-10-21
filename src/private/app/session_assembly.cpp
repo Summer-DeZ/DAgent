@@ -1,6 +1,8 @@
 #include "app/session_assembly.hpp"
 
 #include <algorithm>
+#include <charconv>
+#include <cctype>
 #include <format>
 #include <stdexcept>
 #include <utility>
@@ -43,8 +45,23 @@ struct SessionSpec {
 std::chrono::system_clock::time_point parse_created(std::string_view text) {
     std::tm utc{};
     int year = 0, month = 0, day = 0, hour = 0, minute = 0, second = 0, millis = 0;
-    if (std::sscanf(std::string(text).c_str(), "%d-%d-%dT%d:%d:%d.%dZ", &year, &month, &day, &hour,
-                    &minute, &second, &millis) == 7) {
+    std::size_t pos = 0;
+    const auto integer = [&](int& value) {
+        while (pos < text.size() && std::isspace(static_cast<unsigned char>(text[pos]))) ++pos;
+        if (pos < text.size() && text[pos] == '+') ++pos;
+        const auto [end, error] = std::from_chars(text.data() + pos, text.data() + text.size(), value);
+        if (error != std::errc{}) return false;
+        pos = static_cast<std::size_t>(end - text.data());
+        return true;
+    };
+    const auto literal = [&](char expected) {
+        if (pos >= text.size() || text[pos] != expected) return false;
+        ++pos;
+        return true;
+    };
+    if (integer(year) && literal('-') && integer(month) && literal('-') && integer(day) && literal('T') &&
+        integer(hour) && literal(':') && integer(minute) && literal(':') && integer(second) && literal('.') &&
+        integer(millis) && literal('Z')) {
         utc.tm_year = year - 1900;
         utc.tm_mon = month - 1;
         utc.tm_mday = day;

@@ -4,7 +4,7 @@
 
 #include <algorithm>
 #include <cctype>
-#include <cstdio>
+#include <charconv>
 #include <ctime>
 #include <format>
 #include <iterator>
@@ -77,11 +77,43 @@ std::optional<std::chrono::milliseconds> parse_retry_after(std::string_view raw)
     // HTTP-date：Wed, 21 Oct 2015 07:28:00 GMT（不依赖 locale，手工映射月份）
     static constexpr std::string_view months[] = {"Jan", "Feb", "Mar", "Apr", "May", "Jun",
                                                   "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"};
-    char weekday[4] = {};
-    char month[4] = {};
+    const auto token = [&](std::size_t& pos, std::size_t width, std::string_view& out) {
+        const std::size_t first = pos;
+        while (pos < value.size() && pos - first < width &&
+               !std::isspace(static_cast<unsigned char>(value[pos]))) ++pos;
+        if (pos == first) return false;
+        out = std::string_view(value).substr(first, pos - first);
+        return true;
+    };
+    const auto digits = [&](std::size_t& pos, std::size_t width, int& out) {
+        const std::size_t first = pos;
+        while (pos < value.size() && pos - first < width &&
+               std::isdigit(static_cast<unsigned char>(value[pos]))) ++pos;
+        if (pos == first) return false;
+        const auto [end, error] = std::from_chars(value.data() + first, value.data() + pos, out);
+        return error == std::errc{} && end == value.data() + pos;
+    };
+    const auto literal = [&](std::size_t& pos, char expected) {
+        if (pos >= value.size() || value[pos] != expected) return false;
+        ++pos;
+        return true;
+    };
+    const auto space = [&](std::size_t& pos) {
+        while (pos < value.size() && std::isspace(static_cast<unsigned char>(value[pos]))) ++pos;
+    };
+    std::size_t pos = 0;
+    std::string_view weekday, month;
     int day = 0, year = 0, hour = 0, minute = 0, second = 0;
-    if (std::sscanf(value.c_str(), "%3s, %2d %3s %4d %2d:%2d:%2d", weekday, &day, month, &year, &hour,
-                    &minute, &second) != 7) {
+    if (!token(pos, 3, weekday) || !literal(pos, ',')) return std::nullopt;
+    space(pos);
+    if (!digits(pos, 2, day)) return std::nullopt;
+    space(pos);
+    if (!token(pos, 3, month)) return std::nullopt;
+    space(pos);
+    if (!digits(pos, 4, year)) return std::nullopt;
+    space(pos);
+    if (!digits(pos, 2, hour) || !literal(pos, ':') || !digits(pos, 2, minute) || !literal(pos, ':') ||
+        !digits(pos, 2, second)) {
         return std::nullopt;
     }
     const auto found = std::find_if(std::begin(months), std::end(months),

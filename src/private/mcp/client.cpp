@@ -421,10 +421,10 @@ void Client::Impl::fetch_tools(milliseconds timeout, std::stop_token stop) {
                 tool.input_schema = *schema;
             else
                 tool.input_schema = json::object();
-            std::vector<detail::HeaderParam> params;
+            std::vector<detail::HeaderParam> header_params_for_tool;
             if (config_.transport == Transport::http && dialect_->revision().routing_headers) {
                 std::string reason;
-                if (!detail::collect_header_params(tool.input_schema, params, reason)) {
+                if (!detail::collect_header_params(tool.input_schema, header_params_for_tool, reason)) {
                     base::logger("mcp")->warn("{}: 剔除工具 {}：{}", config_.name, tool.name, reason);
                     continue;
                 }
@@ -435,7 +435,8 @@ void Client::Impl::fetch_tools(milliseconds timeout, std::stop_token stop) {
                                 tool.qualified_name);
                 continue;
             }
-            if (!params.empty()) header_params.emplace(tool.name, std::move(params));
+            if (!header_params_for_tool.empty())
+                header_params.emplace(tool.name, std::move(header_params_for_tool));
             tools.push_back(std::move(tool));
         }
         const auto next = result.find("nextCursor");

@@ -109,7 +109,7 @@ public:
         json body;
         try {
             body = json::parse(response.body);
-        } catch (const json::exception& error) {
+        } catch (const json::exception&) {
             return std::unexpected(agent::DecisionError{agent::DecisionError::Kind::invalid_response,
                                                         "invalid decision response"});
         }
@@ -173,11 +173,13 @@ public:
                 reply.scores.emplace(question.dimension, std::move(score));
             }
             if (const auto usage = body.find("usage"); usage != body.end() && usage->is_object()) {
-                reply.usage.prompt = usage->value("input_tokens", std::int64_t{0});
-                reply.usage.completion = usage->value("output_tokens", std::int64_t{0});
+                reply.usage.prompt =
+                    static_cast<int>(usage->value("input_tokens", std::int64_t{0}));
+                reply.usage.completion =
+                    static_cast<int>(usage->value("output_tokens", std::int64_t{0}));
             }
             return reply;
-        } catch (const json::exception& error) {
+        } catch (const json::exception&) {
             return std::unexpected(agent::DecisionError{agent::DecisionError::Kind::invalid_response,
                                                         "invalid decision response"});
         }

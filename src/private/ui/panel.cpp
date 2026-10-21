@@ -45,9 +45,9 @@ public:
             const auto& group = owner->rows_[owner->shown_[pos]].group;
             if (!group.empty() && group != previous) {
                 if (!out.empty()) out.push_back({-1, {}});
-                auto title = group;
-                std::ranges::transform(title, title.begin(), [](unsigned char c) { return std::toupper(c); });
-                out.push_back({-1, std::move(title)});
+                auto heading = group;
+                std::ranges::transform(heading, heading.begin(), [](unsigned char c) { return std::toupper(c); });
+                out.push_back({-1, std::move(heading)});
             }
             out.push_back({pos, {}}); previous = group;
         }

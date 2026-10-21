@@ -170,10 +170,10 @@ exec::SandboxOptions map_sandbox(const Node& n, const fs::path& workspace) {
     options.host_access = n.child("host_access").str(options.host_access);
     if (options.host_access != "ask_once")
         fail(ConfigError::Kind::invalid, n.child("host_access").pointer() + " must be ask_once");
-    options.startup_timeout =
-        std::chrono::milliseconds(n.child("startup_timeout_ms").integer(options.startup_timeout.count()));
+    options.startup_timeout = std::chrono::milliseconds(
+        n.child("startup_timeout_ms").integer(static_cast<int>(options.startup_timeout.count())));
     options.network_approval_timeout = std::chrono::milliseconds(
-        n.child("network_approval_timeout_ms").integer(options.network_approval_timeout.count()));
+        n.child("network_approval_timeout_ms").integer(static_cast<int>(options.network_approval_timeout.count())));
     options.max_network_requests_per_execution =
         static_cast<int>(n.child("max_network_requests_per_execution")
                              .integer(options.max_network_requests_per_execution));
@@ -481,8 +481,8 @@ Config load_config(const LoadOptions& options) {
     config.project_root = project_root(cwd, config.process);
     for (auto& server : config.mcp_servers) {
         // profile 里的相对路径按 Home 根解析，与其它受信任配置一致。
-        for (auto* paths : {&server.profile_read, &server.profile_write}) {
-            for (auto& path : *paths) {
+        for (auto* profile_paths : {&server.profile_read, &server.profile_write}) {
+            for (auto& path : *profile_paths) {
                 if (path.is_relative()) path = absolute_under(root, path.string());
             }
         }
