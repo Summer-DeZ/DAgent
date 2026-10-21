@@ -62,13 +62,13 @@ L1 终端     Terminal
 
 | 层 | 头文件 | 实现 |
 | --- | --- | --- |
-| L1 终端 | `terminal.hpp` | `terminal.cpp`、`terminal_posix.cpp` |
+| L1 终端 | `terminal.hpp` | `terminal.cpp`、`terminal_posix.cpp`、`terminal_win.cpp` |
 | L2 网格 | `surface.hpp`、`grapheme.hpp` | `surface.cpp`、`present.cpp`、`grapheme.cpp` |
 | L3 布局 | `layout.hpp` | `layout.cpp` |
 | L4 控件 | `widget.hpp` | `widget.cpp`、`theme.cpp` |
 | L5 文档层 | `document.hpp` | `document.cpp`、`wrap.cpp`、`markdown.cpp`、`syntax.cpp` |
 | L6 输入 | `input.hpp` | `input.cpp` |
-| L7 运行时 | `runtime.hpp`、`event_wait.hpp` | `runtime.cpp`、`keymap.cpp`；原生事件等待在 `terminal_posix.cpp` |
+| L7 运行时 | `runtime.hpp`、`event_wait.hpp` | `runtime.cpp`、`keymap.cpp`；原生事件等待在 `terminal_{posix,win}.cpp` |
 
 ### 对象关系
 
@@ -174,6 +174,11 @@ kitty 键盘协议、字素宽度模式、背景色。
 `restore` 先用原子标记去重，退出已开启的界面模式，再恢复 termios；它不卸载处理器或关闭管道。
 析构先 restore，再摘除信号写端并还原调用方的处理器，随后关闭 self-pipe 两端、清除全局实例，最后释放 Native。
 信号处理器仍只写 self-pipe，并保存/恢复 errno；安装时保留 SA_RESTART。
+
+Windows 对应物由 `terminal_win.cpp` 提供：`ReadConsoleInputW` 配合 `ENABLE_VIRTUAL_TERMINAL_INPUT` 取得输入，
+`WriteFile` 写出 VT 序列并把控制台输出代码页设为 UTF-8；`SetConsoleCtrlHandler` 只接管关闭、注销与关机事件。
+raw 模式下 Ctrl-C 作为 0x03 键输入到达解码器，没有 SIGHUP，窗口尺寸变化由 `WINDOW_BUFFER_SIZE_EVENT` 报告。
+细节见 [platform](platform.md#windows终端)。
 
 ### 4.2 网格与出帧（L2）
 
@@ -322,15 +327,19 @@ Document 仍只物化可见块、保留增量计数和窗口外驱逐，Surface 
 
 `Runtime` 把以上各层串起来，是应用直接打交道的对象。
 
-Runtime 用 `unique_ptr<EventWait>` 持有等待对象，原生实现与 Terminal 位于同一个 `terminal_posix.cpp`，
-不通过公共接口传递 fd。EventWait 借用 Terminal，只负责 poll、输入读取及 wake pipe；超时计算、事件消费与渲染仍由 Runtime 控制。
-wake pipe 仍使用 NONBLOCK/CLOEXEC，创建失败 terminate。Runtime 析构先删除 inbox 节点，再销毁 EventWait、关闭 wake pipe 两端。
+Runtime 用 `unique_ptr<EventWait>` 持有等待对象，原生实现与 Terminal 位于同一个平台文件
+（`terminal_posix.cpp` / `terminal_win.cpp`），不通过公共接口传递 fd 或句柄。EventWait 借用 Terminal，
+只负责等待、输入读取及 wake；超时计算、事件消费与渲染仍由 Runtime 控制。
+wake pipe 仍使用 NONBLOCK/CLOEXEC，创建失败 terminate；Windows 的 wake 与信号都使用手动重置事件，
+`WaitForMultipleObjects` 失败时走同一条等待失败路径。Runtime 析构先删除 inbox 节点，再销毁 EventWait、关闭 wake 资源。
 
-每轮先清理已取消的定时器条目并计算超时，再等待；EINTR 回到外层循环，其他等待错误设置退出标记并结束循环。
+每轮先清理已取消的定时器条目并计算超时，再等待；POSIX 的 EINTR 回到外层循环，其他等待错误设置退出标记并结束循环。
 正常返回（含超时）依次处理信号、wake、输入，再 apply_inbox、resize、定时器、Esc、握手与渲染。
-signal/wake 只响应 POLLIN；stdin 响应 POLLIN/HUP/ERR/NVAL，每次仍读 4096 字节，EINTR 重试，
-EOF 或非 EAGAIN 错误请求退出，EAGAIN 不产生输入。已设置退出标记时仍按原位置执行本轮后续处理。
-跨线程 wake 仍先 exchange `wake_pending_` 去重，再写唤醒字节；排空时先清标记，再循环读取，保留 EINTR 重试。
+POSIX 的 signal/wake 只响应 POLLIN；stdin 响应 POLLIN/HUP/ERR/NVAL，每次仍读 4096 字节，EINTR 重试，
+EOF 或非 EAGAIN 错误请求退出，EAGAIN 不产生输入。Windows 以 `WaitForMultipleObjects` 的就绪项和
+`read_input` 的 closed 结果表达同一组状态。已设置退出标记时仍按原位置执行本轮后续处理。
+跨线程 wake 仍先 exchange `wake_pending_` 去重，再写唤醒字节或设置事件；POSIX 排空时先清标记，
+再循环读取，保留 EINTR 重试；Windows 直接重置手动事件。
 
 | 接口 | 作用 |
 | --- | --- |

@@ -11,12 +11,6 @@ else()
     message(FATAL_ERROR "Unsupported target system: ${CMAKE_SYSTEM_NAME}.")
 endif()
 
-if(DAGENT_PLATFORM STREQUAL "win")
-    message(FATAL_ERROR
-        "Windows support is not available in this revision: "
-        "native *_win.cpp implementations are not yet complete.")
-endif()
-
 set(CMAKE_CXX_STANDARD 23)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_CXX_EXTENSIONS OFF)

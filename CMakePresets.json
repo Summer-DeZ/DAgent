@@ -12,7 +12,7 @@
     },
     {
       "name": "win-dev",
-      "description": "Windows development configuration; this revision rejects configuration because native *_win.cpp implementations are not included.",
+      "description": "Windows development configuration (MSVC + vcpkg; pass -DCMAKE_TOOLCHAIN_FILE on the command line)",
       "generator": "Ninja",
       "binaryDir": "${sourceDir}/build/win-dev",
       "condition": {

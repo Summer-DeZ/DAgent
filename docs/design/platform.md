@@ -5,10 +5,10 @@ Windows 为 `win`，其他系统以 `Unsupported target system` 错误拒绝配�
 显式列出 `private/<模块>/<文件>_${DAGENT_PLATFORM}.cpp`，不使用运行时平台选择或虚函数端口。
 当前包含完整 POSIX 实现及 base、workspace/context、app/cli、app/paths、ui/browser、web/document、
 exec/platform、ipc/channel、app/interrupts、app/backend_main、workspace/files、storage/storage、storage/decision_store、
-app/config_detail、app/models、llm/auth、app/toolchain 十七个 Windows 实现。
-Windows 在 `project()` 完成工具链与编译器识别后、项目依赖查找和源码目标生成前，
-以 `Windows support is not available in this revision: native *_win.cpp implementations are not yet complete.`
-错误停止配置。`win-dev` preset 仅在 Windows 宿主可用，不表示当前修订支持 Windows 构建。
+app/config_detail、app/models、llm/auth、app/toolchain、tui/terminal 十八个 Windows 实现。
+Windows 配置可用：在 MSVC 开发环境中使用 Windows 宿主专属的 `win-dev` preset，并按 vcpkg 实际安装位置传入
+`-DCMAKE_TOOLCHAIN_FILE`；配置随后照常查找依赖并生成全部目标。Windows 终端设计见
+[Windows：终端](#windows终端)。
 
 ## 构建选项与程序资源
 
@@ -22,7 +22,7 @@ Windows 的 CMake CRT 选择为 `MultiThreaded$<$<CONFIG:Debug>:Debug>DLL`，与
 依赖规则在 Windows 查找 Boost 的 process 组件和 `find_package(Iconv MODULE REQUIRED)`；
 exec 保留 `BOOST_PROCESS_USE_STD_FS`，使用具体的 Boost.Process v2 分头文件，并显式链接 `Boost::process`、`ws2_32` 和 `bcrypt`。
 Windows 系统库按使用目标链接：base 用 `bcrypt`、`advapi32`，workspace 用 `ntdll`、`advapi32`、`bcrypt`，ui 和 app_cli 用 `shell32`；
-ipc 的私有管道 ACL 和随机名称使用 `advapi32`、`bcrypt`；llm 用 `ntdll`、`advapi32`、`bcrypt`，app_config 用 `advapi32`；web 用 `Iconv::Iconv`。这些依赖均不会进入 Linux 链接行；Windows 的提前停止点仍先于依赖查找。
+ipc 的私有管道 ACL 和随机名称使用 `advapi32`、`bcrypt`；llm 用 `ntdll`、`advapi32`、`bcrypt`，app_config 用 `advapi32`；web 用 `Iconv::Iconv`。这些依赖均不会进入 Linux 链接行。
 
 SRT bridge/wrapper 与 SearXNG 入口的构建复制目标、可执行文件对它们的依赖及安装规则仅在 Linux 启用。
 AppArmor profile 的构建生成和安装生成也仅在 Linux 启用，后者仍使用不含 `DESTDIR` 的最终后端路径。
@@ -56,6 +56,7 @@ Home 安装脚本按配置时的目标系统选择 Linux 的 0600 权限设置�
 | `src/private/web/document_{posix,win}.cpp` | `src/public/web/detail.hpp` | `detail::convert_charset`（共用 `web/charset.cpp` 的 `convert_charset_iconv`） |
 | `src/private/ipc/channel_{posix,win}.cpp` | `src/public/ipc/channel.hpp` | `InheritedEndpoint` 参数解析、`Channel` 原生状态与传输、`BackendProcess` 不透明进程标识、`backend_binary_path`、`spawn_backend`、`wait_or_terminate` |
 | `src/private/tui/terminal_posix.cpp` | `src/public/tui/terminal.hpp`、`src/public/tui/event_wait.hpp` | Terminal 生命周期、原生状态、尺寸、字节写入、输入恢复与信号；EventWait 的等待、输入读取、唤醒及排空 |
+| `src/private/tui/terminal_win.cpp` | `src/public/tui/terminal.hpp`、`src/public/tui/event_wait.hpp` | Windows 控制台版：Terminal 生命周期、能力基线、尺寸、字节写入、输入模式与输出代码页还原、控制台事件；EventWait 的等待、`ReadConsoleInputW` 解码、唤醒及排空 |
 | `src/private/exec/platform_{posix,win}.cpp` | `src/public/exec/detail.hpp`、`src/public/exec/platform.hpp`、`src/public/exec/process.hpp` | `inherited_environment`、`environment_names_equal`、`environment_name_matches`、`resolve_program`、`system_git_program`、`default_search_path`、`project_search_path`、执行权限、SIGPIPE、ProcessGroup、退出状态、spawn_command/spawn_child、InheritedResources、SrtControl、默认 SRT 可读目录 |
 | `src/private/workspace/files_{posix,win}.cpp` | `src/public/workspace/files.hpp` | `probe`、`read_text`、`write_text`、`stamp_of`、FileReference 原生状态与操作、DirectoryEntries 惰性枚举 |
 | `src/private/storage/storage_{posix,win}.cpp` | `src/public/storage/platform.hpp` | `detail::SessionFileLock` |
@@ -150,7 +151,7 @@ tools 的 `~` 展开在 HOME 缺失或为空时保留输入；权限层、命令
 保留空值参与原路径拼接或文本比较的行为。命令分类的局部 lambda 借用函数内持有的 Home 副本，不逃逸。
 配置的 `env_value` 也使用环境变量副本，缺失与空值都沿用原来的 unset 错误；DAGENT_LOG 仅在非空时解析。
 SearXNG 代理透传只判断变量是否存在，保留空值及大小写变量的原追加顺序。
-Terminal 的 `probe_caps() noexcept` 保留不分配内存的 getenv/string_view 读取，TERM/COLORTERM 的缺失与空值
+POSIX 的 `Terminal::probe_caps() noexcept` 保留不分配内存的 getenv/string_view 读取，TERM/COLORTERM 的缺失与空值
 均作为空文本参与原能力判断；此处不调用返回字符串副本的接口。
 
 `process_id` 返回当前进程号，调用位置与十进制格式不变。时间转换写入调用方的 `std::tm`，
@@ -185,9 +186,11 @@ IPC 的共享文件只保留分帧、缓冲与错误状态，后端路径位于�
 分别在创建连接、fork 前分配。BackendProcess 移动时保留源对象的进程标识，各对象的回收标记独立，
 析构只关闭 channel；原生调用、flags、继承顺序和回收节奏见 [protocol](protocol.md#1-进程与传输)。
 
-Terminal 的 Native 与 EventWait 的 Impl 都只在 `terminal_posix.cpp` 定义，公共头不包含终端类型或原生句柄。
+Terminal 的 Native 与 EventWait 的 Impl 只在对应平台文件（`terminal_posix.cpp` / `terminal_win.cpp`）定义，
+公共头不包含终端类型或原生句柄。
 EventWait 只报告就绪状态，Runtime 仍按信号、wake、stdin 的顺序消费，再执行 inbox、尺寸、定时器、Esc、握手和渲染。
-`wake_pending_` 留在 Runtime，清除后才排空 wake pipe；self-pipe 创建失败降级，wake pipe 创建失败 terminate。
+`wake_pending_` 留在 Runtime，清除后才排空 wake pipe 或 wake 事件；self-pipe 或 signal 事件创建失败降级，
+wake pipe 或 wake 事件创建失败 terminate。
 Terminal 的恢复与信号卸载顺序见 [tui-framework](tui-framework.md#41-终端l1)，构造所需状态在对应管道创建前分配。
 
 exec 的跨平台 Asio/Boost.Process 对象和调度保留在共享文件，POSIX 启动钩子、原生管道与继承清单展开位于平台文件。
@@ -299,3 +302,35 @@ Windows 没有 `IN_CLOSE_WRITE` 的精确对应物，通知可能在写入结束
 `detail::platform_sandbox_supported()` 在 POSIX 返回 true，Windows 返回 false。为 false 时 `sandbox_runtime` 直接返回
 nullopt，`dagent sandbox status` 只报告 runtime 是否准备好，`probe` 为 `{ok:false, stage:"unsupported"}`，不列 bwrap/socat、
 不启动探测、不读宿主诊断；启动装配把"本平台没有沙箱后端"记入 `Support.missing`。Linux 路径不受影响。
+
+## Windows：终端
+
+DAgent 作为 ConPTY 的客户端运行，不创建 ConPTY；终端由 Windows Terminal 或 ConPTY 捕获工具提供。
+`terminal_win.cpp` 只使用控制台 API，公共头不包含 Windows 类型。
+
+- 输入：构造时保存 `GetConsoleMode` 的输入模式，关闭 `ENABLE_LINE_INPUT`、`ENABLE_ECHO_INPUT`、
+  `ENABLE_PROCESSED_INPUT`、`ENABLE_QUICK_EDIT_MODE`、`ENABLE_MOUSE_INPUT`，开启 `ENABLE_EXTENDED_FLAGS`、
+  `ENABLE_WINDOW_INPUT`、`ENABLE_VIRTUAL_TERMINAL_INPUT`。`ReadConsoleInputW` 每次最多取 128 条记录，只取
+  `bKeyDown` 且 `UnicodeChar != 0` 的 `KEY_EVENT`，按 `wRepeatCount` 重复；UTF-16 代理对跨记录、跨调用拼接，
+  孤立代理丢弃，再以 `WideCharToMultiByte(CP_UTF8, 0, …)` 转为 UTF-8。VT 输入模式下方向键、功能键、鼠标与粘贴
+  已由控制台转成 `\x1b[A`、`\x1b[<0;10;5M`、`\x1b[200~` 等序列逐字符送入，解码器直接识别，不翻译虚拟键码。
+  `UnicodeChar == 0` 的按键、`MENU_EVENT` 与 `MOUSE_EVENT` 忽略；`FOCUS_EVENT` 转为解码器认识的 `\x1b[I` / `\x1b[O`；
+  `WINDOW_BUFFER_SIZE_EVENT` 置待处理尺寸变化标志并唤醒事件循环。一次读入放不下的字节存入 `pending`。
+- 输出：stdout 是控制台时保存输出模式，开启 `ENABLE_VIRTUAL_TERMINAL_PROCESSING` 与
+  `DISABLE_NEWLINE_AUTO_RETURN`，并把 `GetConsoleOutputCP()` 的代码页改为 `CP_UTF8`。`write()` 用 `WriteFile`
+  循环写满 UTF-8 字节，不使用 `WriteConsoleW`；stdout 重定向到文件或管道时同样按字节写出。
+  进入/离开备用屏等序列仍由共享 `terminal.cpp` 生成。
+- 事件与等待：手动重置的 `signal_event` 加 `quit_pending`、`resize_pending` 两个原子标志代替 POSIX 的 self-pipe；
+  全局锚点供 atexit 与控制台事件处理器使用。`EventWait` 用 `WaitForMultipleObjects` 同时等待输入句柄、信号事件与
+  手动重置的 wake 事件，超时为负表示 `INFINITE`；`pending` 非空或 stdin 不是控制台时不阻塞，后者让 `read_input`
+  报告 closed，对应 Linux 下 stdin 为 `/dev/null` 的正常退出。信号事件或 wake 事件创建失败的处理与 POSIX 相同：
+  signal 事件降级、wake 事件终止。
+- 控制台事件：`SetConsoleCtrlHandler` 的处理器只接管 `CTRL_CLOSE_EVENT`、`CTRL_LOGOFF_EVENT`、`CTRL_SHUTDOWN_EVENT`，
+  置退出标志、`SetEvent` 并直接 `restore()`（进程随后被结束），返回 TRUE；`CTRL_C_EVENT`、`CTRL_BREAK_EVENT`
+  返回 FALSE 不接管：raw 模式关闭了 `ENABLE_PROCESSED_INPUT`，Ctrl-C 作为 0x03 键输入到达解码器，Ctrl-Break
+  交给 `app/interrupts_win.cpp` 已注册的进程级处理。
+- 与 POSIX 的差异：Ctrl-C 是键输入而非 SIGINT；没有 SIGHUP，关闭/注销/关机经由控制台事件退出；尺寸变化由
+  `WINDOW_BUFFER_SIZE_EVENT` 报告而不是 SIGWINCH；`probe_caps()` 固定初始能力（真彩色、SGR 鼠标、括号粘贴为 true，
+  同步输出、kitty 键盘、字素宽度为 false），不读 TERM/COLORTERM，后续由握手应答经 `apply_caps` 修正。
+- 还原：`restore()` 仍由共享实现去重，调用 `restore_input()` 按已保存标志恢复输入模式、输出模式与输出代码页后清标志；
+  析构顺序为 restore、卸载控制台处理器、关闭信号事件、清除全局实例。atexit 兜底与 POSIX 相同。
