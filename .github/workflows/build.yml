@@ -1,0 +1,82 @@
+name: build
+
+on:
+  push:
+    branches:
+      - master
+      - "platform/**"
+  pull_request:
+
+jobs:
+  linux:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y ninja-build g++-14 libboost-dev libcurl4-openssl-dev libssl-dev
+
+      - name: Configure
+        run: cmake --preset dev -DCMAKE_CXX_COMPILER=g++-14 -DCMAKE_C_COMPILER=gcc-14
+
+      - name: Build
+        run: cmake --build --preset dev --target dagent dagent-backend -j
+
+      - name: Install
+        run: cmake --install build/dev --prefix "$PWD/stage"
+
+      - name: Smoke
+        run: |
+          stage/dagent --version
+          DAGENT_HOME="$PWD/stage" stage/dagent sandbox status
+
+  windows:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Resolve vcpkg revision
+        id: vcpkg
+        shell: pwsh
+        run: echo "revision=$(git -C $env:VCPKG_INSTALLATION_ROOT rev-parse HEAD)" >> $env:GITHUB_OUTPUT
+
+      - name: Cache vcpkg installed tree
+        uses: actions/cache@v4
+        with:
+          path: ${{ github.workspace }}/vcpkg_installed
+          key: ${{ runner.os }}-vcpkg-x64-windows-boost1.92-curl-openssl-iconv-${{ steps.vcpkg.outputs.revision }}
+
+      - name: Install vcpkg dependencies
+        shell: pwsh
+        run: '& "$env:VCPKG_INSTALLATION_ROOT/vcpkg.exe" install boost-asio boost-process curl[schannel] openssl libiconv --triplet x64-windows --x-install-root ${{ github.workspace }}/vcpkg_installed'
+
+      - name: Configure
+        shell: pwsh
+        run: cmake --preset win-release "-DCMAKE_TOOLCHAIN_FILE=$env:VCPKG_INSTALLATION_ROOT/scripts/buildsystems/vcpkg.cmake" "-DVCPKG_INSTALLED_DIR=${{ github.workspace }}/vcpkg_installed"
+
+      # MSVC 与 Windows SDK 版本由 runner 当时提供的版本决定。
+      - name: Build
+        run: cmake --build --preset win-release
+
+      - name: Install
+        shell: pwsh
+        run: cmake --install build/win-release --prefix ${{ github.workspace }}/stage
+
+      - name: Smoke
+        shell: pwsh
+        run: |
+          $env:DAGENT_HOME = "${{ github.workspace }}/stage"
+          & "${{ github.workspace }}/stage/dagent.exe" --version
+          & "${{ github.workspace }}/stage/dagent.exe" sandbox status
+
+      - name: Upload diagnostics
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: windows-build-diagnostics
+          path: |
+            build/win-release/CMakeFiles/CMakeConfigureLog.yaml
+            stage
+          if-no-files-found: ignore

@@ -25,10 +25,21 @@
         "DAGENT_DEV_HOME": "${sourceDir}/home",
         "VCPKG_TARGET_TRIPLET": "x64-windows"
       }
+    },
+    {
+      "name": "win-release",
+      "description": "Windows release configuration (MSVC + vcpkg; pass -DCMAKE_TOOLCHAIN_FILE on the command line)",
+      "inherits": "win-dev",
+      "binaryDir": "${sourceDir}/build/win-release",
+      "cacheVariables": {
+        "CMAKE_BUILD_TYPE": "Release",
+        "DAGENT_DEV_HOME": null
+      }
     }
   ],
   "buildPresets": [
     { "name": "dev", "configurePreset": "dev" },
-    { "name": "win-dev", "configurePreset": "win-dev" }
+    { "name": "win-dev", "configurePreset": "win-dev" },
+    { "name": "win-release", "configurePreset": "win-release" }
   ]
 }

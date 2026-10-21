@@ -6,7 +6,7 @@ Windows 为 `win`，其他系统以 `Unsupported target system` 错误拒绝配�
 当前包含完整 POSIX 实现及 base、workspace/context、app/cli、app/paths、ui/browser、web/document、
 exec/platform、ipc/channel、app/interrupts、app/backend_main、workspace/files、storage/storage、storage/decision_store、
 app/config_detail、app/models、llm/auth、app/toolchain、tui/terminal 十八个 Windows 实现。
-Windows 配置可用：在 MSVC 开发环境中使用 Windows 宿主专属的 `win-dev` preset，并按 vcpkg 实际安装位置传入
+Windows 配置可用：在 MSVC 开发环境中使用 Windows 宿主专属的 `win-dev` 或 `win-release` preset，并按 vcpkg 实际安装位置传入
 `-DCMAKE_TOOLCHAIN_FILE`；配置随后照常查找依赖并生成全部目标。Windows 终端设计见
 [Windows：终端](#windows终端)。
 
@@ -26,8 +26,13 @@ ipc 的私有管道 ACL 和随机名称使用 `advapi32`、`bcrypt`；llm 用 `n
 
 SRT bridge/wrapper 与 SearXNG 入口的构建复制目标、可执行文件对它们的依赖及安装规则仅在 Linux 启用。
 AppArmor profile 的构建生成和安装生成也仅在 Linux 启用，后者仍使用不含 `DESTDIR` 的最终后端路径。
-Home 安装脚本按配置时的目标系统选择 Linux 的 0600 权限设置和 AppArmor 生成；
-仅补充缺失用户文件的规则保持共享。Linux 的资源路径、文件权限和 profile 内容不变。
+Windows 的安装目标登记 `RUNTIME_DEPENDENCY_SET`，从 vcpkg 的运行时目录收集依赖 DLL 并安装到可执行文件旁；
+排除 `api-ms-win-*`、`ext-ms-*` 等转发 DLL 以及 System32/WinSxS 中的系统组件，不收集 VC 运行库。
+非 vcpkg 构建不添加依赖搜索目录。Windows 不安装 `libexec`，也不生成 AppArmor profile。
+Home 安装脚本按配置时的目标系统选择 Linux 的 0600 权限设置或 Windows 的私有 DACL 设置，以及 Linux 的 AppArmor 生成；
+Windows 下只对本次新生成的 `config/models.json`、`config/mcp.json` 用 `icacls` 设置受保护 DACL，
+仅授予当前用户、SYSTEM 与 Administrators 完全控制。仅补充缺失用户文件的规则保持共享。
+Linux 的资源路径、文件权限和 profile 内容不变。
 
 ## 边界
 

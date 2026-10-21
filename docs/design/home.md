@@ -51,6 +51,11 @@ Linux 构建和安装中，二进制旁的 `libexec/srt_bridge.mjs`、`libexec/s
 `libexec/dagent.apparmor` 按最终安装路径重新生成；这些是程序资源。更换后端路径后需重新部署对应 profile。
 源码的 `models.example.json`、`mcp.example.json` 安装为对应配置文件；本机真实认证文件不参与打包。
 Linux 安装时将新生成的模型、MCP 配置权限设置为 0600。数据库在第一次写入会话时创建，包括其父目录。
+Windows 安装同样只补充缺失文件，不覆盖已有配置、提示词、主题、Skill 或子 Agent 定义。
+可执行文件旁的运行时 DLL 随安装收集；不安装 `libexec`，也不生成 AppArmor profile。
+首次生成的 `config/models.json`、`config/mcp.json` 通过 `icacls` 设置受保护 DACL，
+仅授予当前用户、SYSTEM 与 Administrators 完全控制，与运行时 `require_private_file` 的检查一致；
+已有文件不覆盖，也不改权限。
 
 新安装先编辑 `config/models.json` 和需要的 `config/mcp.json`，再执行：
 
