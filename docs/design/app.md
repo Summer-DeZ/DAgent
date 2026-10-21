@@ -365,7 +365,7 @@ stdout 被关闭时 jsonl 请求取消本轮并返回 1，text / json 最终写�
 
 ### 信号与退出码
 
-前端忽略 SIGPIPE，并在其他线程启动前屏蔽 SIGINT / SIGTERM，由 sigwait 线程处理。可优雅结束期间第一个信号经
+Linux 前端忽略 SIGPIPE，并在其他线程启动前屏蔽 SIGINT / SIGTERM，由 sigwait 线程处理。可优雅结束期间第一个信号经
 `session.snapshot` + `run.cancel` 只取消本前端的当前 Run，第二个信号直接 `_Exit(130)`；加载配置、读取 stdin 等轮外阶段直接退出。
 后端在独立进程组中运行，不接收终端信号。交互模式 raw 下的 Ctrl+C 是按键，行为由 ui 决定；全屏期间的进程信号走退出流程。
 
@@ -373,6 +373,11 @@ stdout 被关闭时 jsonl 请求取消本轮并返回 1，text / json 最终写�
 后端的 `initialize_backend_signals` 位于 `app/backend_main_posix.cpp`，仍在参数校验后、Channel 接管前调用；
 参数遍历与 `--ipc-fd` 保持在共享入口中，值经 `InheritedEndpoint::parse_argument` 按 atoi 语义解析，
 重复参数最后一次生效；校验后先初始化信号，再 `Channel::adopt`，最后 `prevent_inheritance`。
+
+Windows 的对应实现位于 `interrupts_win.cpp`、`backend_main_win.cpp`。前端控制台回调处理 Ctrl-C/Ctrl-Break，
+首次优雅停止只计数并通知事件，由工作线程调用 request_stop；轮外或第二次中断直接 TerminateProcess(130)，
+不等待第一次 stop 回调完成。后端忽略这两类控制台事件，按 IPC 取消和生命周期 Job 收尾。
+Windows 的 `--ipc-fd` 严格解析为十进制 uintptr_t 句柄，拒绝溢出、尾随文本和无效值；采用及禁继承顺序不变。
 
 | 情况 | 退出码 |
 | --- | --- |

@@ -65,7 +65,7 @@ public:
     /// @brief 读取一行；EOF 返回 nullopt 且 eof() 为真；超长行返回 nullopt 并设 error。
     std::optional<std::string> receive_line(std::size_t max_bytes = 64u << 20);
 
-    /// @brief 停止本端双向通信；不关闭连接资源。
+    /// @brief 停止本端双向通信；POSIX 保留 fd，Windows 取消并等待 I/O 后关闭管道句柄以通知对端 EOF。
     void shutdown();
     /// @brief 关闭本端；幂等，不清空缓冲与错误状态。
     void close();
@@ -90,7 +90,8 @@ private:
     friend std::optional<BackendProcess> spawn_backend(std::string& error);
 };
 
-/// @brief 本进程创建的后端进程；析构只关闭 channel，回收由 wait_or_terminate 显式执行。
+/// @brief 本进程创建的后端进程；显式回收由 wait_or_terminate 执行。
+/// Windows 最后一个共享进程状态销毁时关闭生命周期 Job，终止其中尚存的后端及后代。
 class BackendProcess {
 public:
     BackendProcess() noexcept;
@@ -111,14 +112,15 @@ private:
     friend bool wait_or_terminate(BackendProcess& process, std::chrono::milliseconds grace);
 };
 
-/// @brief 同安装目录下的 dagent-backend；找不到返回 nullopt。
+/// @brief 同安装目录下的 dagent-backend（Windows 为 .exe）；找不到返回空路径。
 std::filesystem::path backend_binary_path();
 
-/// @brief 创建 socketpair 并直接启动后端（同目录、独立进程组、只继承 IPC FD）。
+/// @brief 创建私有连接并直接启动后端（同目录、独立进程组、只继承 stdio 和 IPC 端点）。
 /// 失败返回 nullopt 并写 error。
 std::optional<BackendProcess> spawn_backend(std::string& error);
 
-/// @brief 宽限期内等待退出，超时发 SIGTERM/SIGKILL；返回是否已回收。
+/// @brief 宽限期内等待退出，POSIX 超时发 SIGTERM/SIGKILL，Windows 终止生命周期 Job。
+/// 强制终止或等待失败返回 false；已结束或在宽限期退出返回 true。
 bool wait_or_terminate(BackendProcess& process, std::chrono::milliseconds grace);
 
 } // namespace dagent::ipc

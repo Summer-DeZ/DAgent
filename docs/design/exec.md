@@ -1,7 +1,7 @@
 # exec：子进程与沙箱
 
 执行外部命令的模块。头文件在 `src/public/exec/`，实现在 `src/private/exec/`，构建为静态库
-`dagent_exec`，命名空间 `dagent::exec`。依赖 base；内部使用 Boost.Process v2 + Asio（header-only）、
+`dagent_exec`，命名空间 `dagent::exec`。依赖 base；内部使用 Boost.Process v2 + Asio（Linux 为 header-only，Windows 链接 Boost::process）、
 tree-sitter + tree-sitter-bash。
 
 ---
@@ -18,10 +18,23 @@ tree-sitter + tree-sitter-bash。
 | SRT 后端：bridge 控制通道、运行中网络审批、只读搜索边界 | `exec/srt.hpp` | `run_srt`、`srt_config`、`ReadOnlySandbox` |
 
 `exec/detail.hpp` 与 `exec/platform.hpp` 是模块内部接口，外部不要 include。
-`platform_posix.cpp` 集中实现环境快照、变量名匹配、程序解析、工具和搜索路径默认值、原生管道、
+`platform_${DAGENT_PLATFORM}.cpp` 集中实现环境快照、变量名匹配、程序解析、工具和搜索路径默认值、原生管道、
 两套启动钩子、进程组、退出状态与 SRT 控制连接；
 `process.cpp`、`child.cpp` 保留 Asio 调度、计时器、取消、输出处理和回调，`srt.cpp` 保留策略与协议编排。
 原生 PipeFds 只在平台实现内部定义，公共头不暴露 fd 或 PID。
+
+Windows 的平台实现采用 UTF-16 环境块和 argv、分号 PATH、仅 `.exe`/`.com` 的 PATHEXT 解析，
+变量名以 Windows ordinal 忽略大小写比较。共享合并顺序及重复项处理不变，生成环境块时稳定排序。
+`environment_names_equal` 因转码可抛异常；共享查询按实际等号位置取值，避免 UTF-8 名称长度差异截错数据。
+Windows deny 匹配支持 `*`、`?`、集合、否定集合、范围及转义，不支持 POSIX 命名字符类。
+
+Windows 的两个 spawn 入口使用 Boost 1.92 launcher：stdio 的父端是 Asio overlapped 管道，子端只通过显式句柄清单继承；
+无 stdin 数据时接 NUL，merge 模式共享 stdout 子端。挂起创建、新进程组、capture 加入独立 Job、恢复线程依次完成。
+`ProcessGroup::capture` 可报告失败；加入 Job 或恢复线程失败即终止挂起进程并报告启动失败。
+Job 设置 KILL_ON_JOB_CLOSE；terminate 尝试 Ctrl-Break，宽限到期 force_kill 使用 TerminateJobObject，
+共享计时器、截断和输出回调不变。退出码保留 DWORD 的 32 位到 int（高位为 1 时为负数），signal 留空。
+Windows 没有 SRT 后端：SrtControl 创建/通信和默认可读目录入口直接报 unsupported，无资源的关闭方法为空操作。
+完整路径、继承与资源契约见 [platform](platform.md)。下面涉及 POSIX 系统调用的步骤描述 Linux 行为。
 
 ---
 

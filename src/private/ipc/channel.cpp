@@ -1,5 +1,4 @@
 #include "ipc/channel.hpp"
-#include "base/platform.hpp"
 
 namespace dagent::ipc {
 
@@ -53,15 +52,6 @@ std::optional<std::string> Channel::receive_line(std::size_t max_bytes) {
         error_ = std::move(read.error);
         return std::nullopt;
     }
-}
-
-std::filesystem::path backend_binary_path() {
-    std::error_code error;
-    const std::filesystem::path self = base::executable_path(error);
-    if (error) return {};
-    const std::filesystem::path backend = self.parent_path() / "dagent-backend";
-    if (!std::filesystem::exists(backend, error)) return {};
-    return backend;
 }
 
 } // namespace dagent::ipc

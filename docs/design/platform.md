@@ -3,7 +3,8 @@
 平台源文件由根 CMake 根据 `CMAKE_SYSTEM_NAME` 设置的 `DAGENT_PLATFORM` 选择：Linux 为 `posix`，
 Windows 为 `win`，其他系统以 `Unsupported target system` 错误拒绝配置。`src/CMakeLists.txt`
 显式列出 `private/<模块>/<文件>_${DAGENT_PLATFORM}.cpp`，不使用运行时平台选择或虚函数端口。
-当前包含完整 POSIX 实现及 base、workspace/context、app/cli、app/paths、ui/browser、web/document 六个 Windows 实现。
+当前包含完整 POSIX 实现及 base、workspace/context、app/cli、app/paths、ui/browser、web/document、
+exec/platform、ipc/channel、app/interrupts、app/backend_main 十个 Windows 实现。
 Windows 在 `project()` 完成工具链与编译器识别后、项目依赖查找和源码目标生成前，
 以 `Windows support is not available in this revision: native *_win.cpp implementations are not yet complete.`
 错误停止配置。`win-dev` preset 仅在 Windows 宿主可用，不表示当前修订支持 Windows 构建。
@@ -18,9 +19,9 @@ MSVC 的 C 为 `/W4 /utf-8`，C++ 为 `/W4 /permissive- /utf-8`。
 `_WIN32_WINNT=0x0A00` 定义；Linux 不增加定义或编译选项。
 Windows 的 CMake CRT 选择为 `MultiThreaded$<$<CONFIG:Debug>:Debug>DLL`，与 vcpkg x64-windows 的动态 CRT 一致。
 依赖规则在 Windows 查找 Boost 的 process 组件和 `find_package(Iconv MODULE REQUIRED)`；
-exec 保留 `BOOST_PROCESS_USE_STD_FS`，使用具体的 Boost.Process v2 分头文件，并显式链接 `Boost::process` 和 `ws2_32`。
+exec 保留 `BOOST_PROCESS_USE_STD_FS`，使用具体的 Boost.Process v2 分头文件，并显式链接 `Boost::process`、`ws2_32` 和 `bcrypt`。
 Windows 系统库按使用目标链接：base 用 `bcrypt`，workspace 用 `ntdll`，ui 和 app_cli 用 `shell32`；
-web 用 `Iconv::Iconv`。这些依赖均不会进入 Linux 链接行；Windows 的提前停止点仍先于依赖查找。
+ipc 的私有管道 ACL 和随机名称使用 `advapi32`、`bcrypt`；web 用 `Iconv::Iconv`。这些依赖均不会进入 Linux 链接行；Windows 的提前停止点仍先于依赖查找。
 
 SRT bridge/wrapper 与 SearXNG 入口的构建复制目标、可执行文件对它们的依赖及安装规则仅在 Linux 启用。
 AppArmor profile 的构建生成和安装生成也仅在 Linux 启用，后者仍使用不含 `DESTDIR` 的最终后端路径。
@@ -47,14 +48,14 @@ Home 安装脚本按配置时的目标系统选择 Linux 的 0600 权限设置�
 | `src/private/workspace/context_{posix,win}.cpp` | `src/public/workspace/context.hpp` | `detail::os_description`、`detail::shell_description` |
 | `src/private/app/cli_{posix,win}.cpp` | `src/public/app/cli.hpp` | `detail::read_stdin_all` |
 | `src/private/app/paths_{posix,win}.cpp` | `src/public/app/paths.hpp` | `detail::executable_home_directory`、`detail::probe_home_writable` |
-| `src/private/app/interrupts_posix.cpp` | `src/public/app/interrupts.hpp` | `install_interrupts`、`ignore_broken_pipe` |
-| `src/private/app/backend_main_posix.cpp` | `src/public/app/interrupts.hpp` | `initialize_backend_signals` |
+| `src/private/app/interrupts_{posix,win}.cpp` | `src/public/app/interrupts.hpp` | `install_interrupts`、`ignore_broken_pipe` |
+| `src/private/app/backend_main_{posix,win}.cpp` | `src/public/app/interrupts.hpp` | `initialize_backend_signals` |
 | `src/private/app/toolchain_posix.cpp` | `src/public/app/toolchain_detail.hpp` | `detail::runtime_platform`、`detail::extract_runtime_archive`、`detail::runtime_environment`、`detail::install_python_runtime`、`detail::python_environment_program`、`detail::SyncLock` |
 | `src/private/ui/browser_{posix,win}.cpp` | `src/public/ui/browser.hpp` | `open_browser` |
 | `src/private/web/document_{posix,win}.cpp` | `src/public/web/detail.hpp` | `detail::convert_charset`（共用 `web/charset.cpp` 的 `convert_charset_iconv`） |
-| `src/private/ipc/channel_posix.cpp` | `src/public/ipc/channel.hpp` | `InheritedEndpoint` 参数解析、`Channel` 原生状态与传输、`BackendProcess` 不透明进程标识、`spawn_backend`、`wait_or_terminate` |
+| `src/private/ipc/channel_{posix,win}.cpp` | `src/public/ipc/channel.hpp` | `InheritedEndpoint` 参数解析、`Channel` 原生状态与传输、`BackendProcess` 不透明进程标识、`backend_binary_path`、`spawn_backend`、`wait_or_terminate` |
 | `src/private/tui/terminal_posix.cpp` | `src/public/tui/terminal.hpp`、`src/public/tui/event_wait.hpp` | Terminal 生命周期、原生状态、尺寸、字节写入、输入恢复与信号；EventWait 的等待、输入读取、唤醒及排空 |
-| `src/private/exec/platform_posix.cpp` | `src/public/exec/detail.hpp`、`src/public/exec/platform.hpp`、`src/public/exec/process.hpp` | `inherited_environment`、`environment_names_equal`、`environment_name_matches`、`resolve_program`、`system_git_program`、`default_search_path`、`project_search_path`、执行权限、SIGPIPE、ProcessGroup、退出状态、spawn_command/spawn_child、InheritedResources、SrtControl、默认 SRT 可读目录 |
+| `src/private/exec/platform_{posix,win}.cpp` | `src/public/exec/detail.hpp`、`src/public/exec/platform.hpp`、`src/public/exec/process.hpp` | `inherited_environment`、`environment_names_equal`、`environment_name_matches`、`resolve_program`、`system_git_program`、`default_search_path`、`project_search_path`、执行权限、SIGPIPE、ProcessGroup、退出状态、spawn_command/spawn_child、InheritedResources、SrtControl、默认 SRT 可读目录 |
 | `src/private/workspace/files_posix.cpp` | `src/public/workspace/files.hpp` | `probe`、`read_text`、`write_text`、`stamp_of`、FileReference 原生状态与操作 |
 | `src/private/storage/storage_posix.cpp` | `src/public/storage/platform.hpp` | `detail::SessionFileLock` |
 | `src/private/storage/decision_store_posix.cpp` | `src/public/storage/platform.hpp` | `detail::make_decision_file_private` |
@@ -66,7 +67,7 @@ Home 安装脚本按配置时的目标系统选择 Linux 的 0600 权限设置�
 
 ## 接口语义与资源所有权
 
-以下未特别说明的原生操作契约描述 POSIX 实现；六个已有 Windows 实现的差异如下：
+以下未特别说明的原生操作契约描述 POSIX 实现；已有 Windows 实现的差异如下：
 
 - base：路径、环境变量均以 UTF-8 对外，以 UTF-16 调用原生 API；非法编码抛 `system_error`，不修复、
   不规范化路径。可执行文件路径使用可增长缓冲区的 `GetModuleFileNameW`，error_code 重载在成功时清除错误。
@@ -85,6 +86,49 @@ Home 安装脚本按配置时的目标系统选择 Linux 的 0600 权限设置�
   返回值只表示启动请求是否被系统接受，不等待浏览器退出。
 - web/document：Windows 链接 libiconv，POSIX 使用 glibc iconv，共用同一转换循环及错误文本。
   该解码实现不改变工具层对只读 SRT 的要求。
+
+Windows 的 exec 与进程边界：
+
+- `GetEnvironmentStringsW` 返回原环境条目的有所有权 UTF-8 快照。变量名经 UTF-16 转换，以
+  `CompareStringOrdinal(..., TRUE)` 比较，因此 `environment_names_equal` 不再承诺 noexcept；
+  共享查询按实际等号位置截取值，不以查询名的 UTF-8 字节数推断位置。合并阶段仍稳定过滤、不去重，
+  仅在生成 Windows 环境块时按名称稳定排序，保留同名项相对顺序；块以双 NUL 结尾，启动使用 `CREATE_UNICODE_ENVIRONMENT`。
+  deny 匹配支持 `*`、`?`、括号集合、否定集合、范围和反斜杠转义，按 UTF-16 字符进行 ordinal 忽略大小写比较；
+  不支持 POSIX 命名字符类。POSIX 保留原 fnmatch/FNM_CASEFOLD。
+- 程序解析只读取传入环境中的 PATH/PATHEXT，PATH 按分号拆分，空分量表示 cwd，可去掉目录分量外层双引号；
+  整个 PATH 缺失或为空时不搜索裸程序名，不隐式搜索宿主当前目录、系统目录或宿主 PATH。
+  显式 `.exe`/`.com` 可直接检查；无扩展名时只按 PATHEXT 中的 `.exe`/`.com` 顺序补全，
+  PATHEXT 缺失或为空时默认 `.EXE;.COM`。拒绝 `.cmd`/`.bat` 等其他扩展名及依赖每驱动器 cwd 的 `C:foo` 路径。
+  `regular_executable` 检查扩展名、存在且非目录，最终可执行性由 CreateProcess 决定。
+- 系统 Git 固定为 `C:\Program Files\Git\cmd\git.exe`；默认 PATH 顺序为同安装的 cmd、bin、Windows 系统目录、Windows 目录。
+  `project_search_path` 保留非空宿主 PATH，否则使用这个默认值。执行 Bash 的选择仍由 Toolchain 和 Environment 负责。
+- Boost.Process v2 Windows launcher 使用 overlapped stdio 管道、UTF-16 argv 和环境块、显式 `inherited_handles`。
+  无 stdin 数据时使用 NUL；merge 模式复用 stdout 子端；长期 Child 固定三条管道。
+  每次启动挂起并新建控制台进程组；成功钩子移交主线程句柄，`ProcessGroup::capture` 加入独立 Job 后才 ResumeThread。
+  加入或恢复失败时终止并等待该进程，报告启动失败。Job 设置 KILL_ON_JOB_CLOSE，销毁也会清理残留后代。
+  `terminate` 尝试发 Ctrl-Break；没有共同控制台或程序不处理时，仍由既有宽限计时器执行 `TerminateJobObject`。
+  退出状态的 signal 为空，DWORD 退出码保留 32 位到既有 int 接口（最高位为 1 时显示为负数），不作 POSIX 状态解码。
+- InheritedResources 保存不拥有资源的句柄清单；launch 临时设置并恢复额外句柄的继承位，仅白名单进入子进程。
+  SIGPIPE 操作为空；SrtControl 构造、通信入口及默认 SRT 可读路径明确抛 `sandbox is unsupported on Windows`，
+  无资源的 close/shutdown/析构为空操作，不建立伪造连接，不改变授权或 MCP 的上层启动策略。
+
+Windows 的 IPC 与中断边界：
+
+- `Channel::create_pair` 创建 128 位随机名、仅当前用户 DACL、拒绝远程访问的双向字节管道，
+  父进程预先打开客户端并完成连接。两个方向各自有 OVERLAPPED 和手动复位事件；
+  短写仍交给共享分帧循环，底层同步方法等待各自 I/O 完成。
+- shutdown 与提交 I/O 使用同一把锁：先阻止新操作，再 CancelIoEx，等待在途读写结束后关闭本端管道，通知对端 EOF。
+  Windows 不保留 socket 式的半关闭句柄；close 幂等，不清空帧缓冲、错误和 EOF 状态。
+  `--ipc-fd` 名称不变，值严格解析为十进制 uintptr_t，不接受溢出、尾随文本、0 或 INVALID_HANDLE_VALUE。
+  解析对象不拥有管道；adopt 接管后由 Channel 关闭，并清除继承位。
+- `backend_binary_path` 在两个平台文件内实现；Windows 在前端可执行文件同目录找 `dagent-backend.exe`。
+  CreateProcessW 使用 STARTUPINFOEX，显式继承三份 stdio 副本和子端 IPC 句柄，父进程立即关闭子端副本。
+  后端挂起创建并加入 KILL_ON_JOB_CLOSE 生命周期 Job 后恢复，失败即终止；后端及其工具的嵌套 Job 均留在生命周期 Job 中。
+  BackendProcess 的共享状态拥有进程和 Job 句柄，最后一个状态销毁关闭 Job，前端异常退出同样触发系统清理。
+  `wait_or_terminate` 先断开连接并等待宽限期，超时 TerminateJobObject 后等待后端退出；强制终止返回 false。
+- 前端 SetConsoleCtrlHandler 只处理 Ctrl-C/Ctrl-Break：首次在 graceful 为真时计数并通知事件，工作线程执行 request_stop；
+  轮外或第二次中断直接 TerminateProcess(130)，不等待第一次 stop 回调结束。状态和事件持续到进程结束。
+  后端忽略这两种控制台事件，取消由前端经 IPC 传入；ignore_broken_pipe 为空操作。
 
 SQLite 的两个打开入口通过 `path_to_utf8` 向 `sqlite3_open_v2` 传入文件名；POSIX 保留路径原始字节，
 Windows 从原生 UTF-16 转为 SQLite 要求的 UTF-8，临时字符串覆盖整个调用期间。
@@ -135,7 +179,7 @@ Terminal 也通过 base 判断 stdin/stdout 是否终端。前端先安装中断
 POSIX 浏览器启动完整实现在 `browser_posix.cpp`，保留原 posix_spawn 属性与回收线程。
 网页 charset/BOM 检测留在 `document.cpp`，平台文件转调共享 `charset.cpp` 的 iconv 转换循环，保留缓冲区、截断与错误处理。
 
-IPC 的共享文件只保留分帧、缓冲、错误状态与后端路径。Channel 和继承参数对象共用不透明端点状态，
+IPC 的共享文件只保留分帧、缓冲与错误状态，后端路径位于平台文件。Channel 和继承参数对象共用不透明端点状态，
 参数解析与替换不取得连接所有权，adopt 移交已有状态而不重新分配。socketpair 的端点状态和后端进程状态
 分别在创建连接、fork 前分配。BackendProcess 移动时保留源对象的进程标识，各对象的回收标记独立，
 析构只关闭 channel；原生调用、flags、继承顺序和回收节奏见 [protocol](protocol.md#1-进程与传输)。

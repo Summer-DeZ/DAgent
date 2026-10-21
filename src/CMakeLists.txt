@@ -115,7 +115,7 @@ target_compile_definitions(dagent_exec PRIVATE BOOST_PROCESS_USE_STD_FS=1)
 target_link_libraries(dagent_exec
     PUBLIC dagent_base
     PRIVATE Boost::headers tree-sitter tree-sitter-bash Threads::Threads
-        "$<$<PLATFORM_ID:Windows>:Boost::process;ws2_32>"
+        "$<$<PLATFORM_ID:Windows>:Boost::process;ws2_32;bcrypt>"
 )
 
 # Web transport and document decoding; authorization is supplied by tools.
@@ -310,6 +310,7 @@ target_include_directories(dagent_ipc PUBLIC ${CMAKE_SOURCE_DIR}/src/public)
 target_compile_features(dagent_ipc PUBLIC cxx_std_23)
 dagent_compile_options(dagent_ipc)
 target_link_libraries(dagent_ipc PUBLIC dagent_base)
+target_link_libraries(dagent_ipc PRIVATE "$<$<PLATFORM_ID:Windows>:advapi32;bcrypt>")
 
 # client：RPC 匹配、DTO 状态与请求/事件转交。
 add_library(dagent_client STATIC
