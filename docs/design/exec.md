@@ -136,8 +136,11 @@ sh/bash。它只向 agent Policy 提供判定，不执行命令。
 
 `Policy` 包含读/写允许范围、受保护读/写子路径、网络与本地 socket 开关和私有临时空间要求。
 受限命令由 SRT 后端执行：每次 `run_srt` 调用（包括受限 bash 和 web 请求）启动一个 Node bridge，bridge 初始化
-`@anthropic-ai/sandbox-runtime`、生成 bubblewrap 包装命令并管理代理出口；命令的
-stdin/stdout/stderr 保持独立，网络判定经独立控制 FD 交回核心权限层（见 [agent 权限契约](agent.md#7-权限与沙箱)）。
+`@anthropic-ai/sandbox-runtime`、生成 bubblewrap 包装命令并管理代理出口；bridge 不碰命令的
+stdin/stdout/stderr，`SrtRequest::merge_stderr` 为 true 时 bridge 进程本身以 `merge_stderr` 启动，命令的 stderr
+与宿主执行一样并入 stdout 管道（bash 工具开启，只读搜索保持分开）；网络判定经独立控制 FD 交回核心权限层
+（见 [agent 权限契约](agent.md#7-权限与沙箱)）。bwrap 把沙箱内进程的信号终止回报为退出码 128+N，
+`Result::signal` 只反映 bridge 进程本身的终止方式。
 控制 socket 按 UTF-8 流解码，跨数据块保留未完成字符，避免 init 中的命令或路径被分块边界改写。
 bridge 非零退出且未报告结果时，诊断输出先修复 UTF-8，再按字符边界保留最多 500 字节。
 

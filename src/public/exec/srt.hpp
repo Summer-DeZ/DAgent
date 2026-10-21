@@ -51,6 +51,7 @@ struct SrtRequest {
     /// 命令环境（PATH、LC_ALL 等）；HOME/TMPDIR 系列由本函数指向私有目录。
     std::vector<std::pair<std::string, std::string>> environment;
     std::optional<std::chrono::milliseconds> timeout;
+    bool merge_stderr = false; ///< 命令的 stderr 并入 stdout 管道，交错顺序与宿主执行一致
     std::chrono::milliseconds startup_timeout{15000};   ///< bridge 初始化与握手期限
     std::chrono::milliseconds approval_timeout{120000};
     int max_network_requests = 32;

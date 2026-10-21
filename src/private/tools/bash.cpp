@@ -136,6 +136,7 @@ private:
                 request.command = command_;
                 request.environment = environment_.variables;
                 request.timeout = timeout_;
+                request.merge_stderr = true;
                 if (environment_name_ == "project") {
                     const char* path = std::getenv("PATH");
                     request.environment.emplace_back(
@@ -198,9 +199,11 @@ private:
         std::string raw; // 给视图的「完整输出」（exec 已按上限保留头尾）
         if (outcome) {
             raw = base::to_valid_utf8(base::strip_ansi(outcome->out));
-            view.exit_code = outcome->exit_code;
-            view.signal = outcome->signal;
             view.timed_out = outcome->timed_out;
+            // 退出状态按 shell 的 $? 约定：顶层进程被信号终止记为 128+N。沙箱里 bwrap 对内部的信号终止
+            // 也只能这样回报，两种后端由此一致；超时由状态行说明，不再附带被终止时的退出码。
+            if (!outcome->timed_out)
+                view.exit_code = outcome->signal ? std::optional(128 + *outcome->signal) : outcome->exit_code;
         } else {
             raw = base::to_valid_utf8(base::strip_ansi(collected));
         }
@@ -229,15 +232,12 @@ private:
             if (outcome->timed_out)
                 text += std::format("\n[timed out after {}s]",
                                     std::chrono::duration_cast<std::chrono::seconds>(elapsed).count());
-            if (outcome->signal)
-                text += std::format("\n[terminated by signal {}]", *outcome->signal);
-            else if (outcome->exit_code && *outcome->exit_code != 0)
-                text += std::format("\n[exit code {}]", *outcome->exit_code);
+            else if (view.exit_code && *view.exit_code != 0)
+                text += std::format("\n[exit code {}]", *view.exit_code);
         }
         result.model_text = std::move(text);
         result.is_error = !interrupted && outcome.has_value() &&
-                          ((outcome->exit_code.has_value() && *outcome->exit_code != 0) ||
-                           outcome->signal.has_value() || outcome->timed_out);
+                          (outcome->timed_out || (view.exit_code.has_value() && *view.exit_code != 0));
         result.interrupted = interrupted;
         result.display = std::move(view);
         return result;

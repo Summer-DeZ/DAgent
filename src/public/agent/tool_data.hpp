@@ -31,7 +31,7 @@ struct FileChangeView {
 
 struct BashView {
     std::string command, output; ///< output 是 exec 截断后的完整输出，不是给模型的那份
-    std::optional<int> exit_code, signal;
+    std::optional<int> exit_code; ///< shell 的 $? 约定（被信号终止为 128+N）；超时或无法执行时为空
     bool timed_out = false, interrupted = false;
     std::string sandbox; ///< "read_only" / "workspace_write" / "full_access"
     std::string backend, grant_source;

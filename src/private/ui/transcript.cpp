@@ -1010,8 +1010,7 @@ void Transcript::finished(const ToolFinished& event) {
         [&](const BashView& v) {
             name = std::string(ui::text().card_bash); param = clean_field(v.command);
             const std::string state = v.interrupted ? std::string(ui::text().card_interrupted) : v.timed_out ? std::string(ui::text().card_timeout)
-                : v.signal ? format_text(ui::text().card_signal, *v.signal)
-                           : format_text(ui::text().card_exit, v.exit_code.value_or(0));
+                : format_text(ui::text().card_exit, v.exit_code.value_or(0));
             stat = format_text(ui::text().card_state_time, state, v.elapsed_ms / 1000.0);
             body = v.output; rows = 10;
         },

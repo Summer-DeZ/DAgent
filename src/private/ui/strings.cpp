@@ -128,7 +128,6 @@ constexpr Strings kEnglish{
     .card_unseen = "{0} new lines · End to jump",
     .card_interrupted = "interrupted",
     .card_timeout = "timed out",
-    .card_signal = "signal {0}",
     .card_exit = "exit {0}",
     .card_match = "{0} match   {1}",
     .card_matches = "{0} matches   {1}",

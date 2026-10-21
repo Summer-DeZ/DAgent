@@ -133,7 +133,6 @@ struct Strings {
     std::string_view card_unseen;
     std::string_view card_interrupted;
     std::string_view card_timeout;
-    std::string_view card_signal;
     std::string_view card_exit;
     std::string_view card_match, card_matches;
     std::string_view card_file, card_files;

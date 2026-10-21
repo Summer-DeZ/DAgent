@@ -77,8 +77,6 @@ ToolView decode_tool_view(const json& view) {
         out.timed_out = view.value("timed_out", false);
         if (const auto it = view.find("exit_code"); it != view.end() && it->is_number_integer())
             out.exit_code = it->get<int>();
-        if (const auto it = view.find("signal"); it != view.end() && it->is_number_integer())
-            out.signal = it->get<int>();
         out.elapsed_ms = view.value("elapsed_ms", 0);
         return out;
     }

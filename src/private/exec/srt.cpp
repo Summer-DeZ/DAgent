@@ -179,6 +179,7 @@ Result run_srt(const SrtRequest& request, const Options& options,
         cmd.cwd = control_dir;
         cmd.timeout = request.timeout;
         cmd.inherit_env = false;
+        cmd.merge_stderr = request.merge_stderr;
         cmd.env_set = request.environment;
         cmd.env_set.insert(cmd.env_set.end(),
                            {{"HOME", private_home.string()},

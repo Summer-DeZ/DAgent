@@ -67,13 +67,12 @@ NLOHMANN_DEFINE_TYPE_NON_INTRUSIVE(TaskStep, summary, is_error)
 NLOHMANN_DEFINE_TYPE_NON_INTRUSIVE(TaskView, agent, task, session_id, result, steps,
                                                 model_calls, tool_calls, seconds, interrupted)
 
-// BashView 的 exit_code / signal 是 std::optional<int>：本项目用的 nlohmann 开着隐式转换，
-// 这份配置不提供 optional 的序列化，BashView 手写；null 表示没有退出码或信号。
+// BashView 的 exit_code 是 std::optional<int>：本项目用的 nlohmann 开着隐式转换，
+// 这份配置不提供 optional 的序列化，BashView 手写；null 表示没有退出码。
 inline void to_json(nlohmann::json& j, const BashView& v) {
     j["command"] = v.command;
     j["output"] = v.output;
     j["exit_code"] = v.exit_code ? nlohmann::json(*v.exit_code) : nlohmann::json(nullptr);
-    j["signal"] = v.signal ? nlohmann::json(*v.signal) : nlohmann::json(nullptr);
     j["timed_out"] = v.timed_out;
     j["interrupted"] = v.interrupted;
     j["sandbox"] = v.sandbox;
@@ -113,8 +112,9 @@ inline void from_json(const nlohmann::json& j, BashView& v) {
     j.at("elapsed_ms").get_to(v.elapsed_ms);
     const auto& exit_code = j.at("exit_code");
     v.exit_code = exit_code.is_null() ? std::nullopt : std::optional<int>(exit_code.get<int>());
-    const auto& signal = j.at("signal");
-    v.signal = signal.is_null() ? std::nullopt : std::optional<int>(signal.get<int>());
+    // 旧记录把信号号单独存在 signal 里，按同一 $? 约定换算。
+    if (const auto signal = j.find("signal"); !v.exit_code && signal != j.end() && signal->is_number_integer())
+        v.exit_code = 128 + signal->get<int>();
 }
 
 json to_json(const View& view) {

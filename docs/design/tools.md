@@ -167,10 +167,12 @@ dangerous / known_readonly 仍由 exec 的原分析函数计算，核心不重�
   `CommandIntent` 摘要（含 known_readonly / dangerous）；策略与审批只看摘要。语法错误在 prepare 返回带字节位置的未执行错误。
 - **给模型的文本**：`strip_ansi` → `to_valid_utf8` → `truncate_middle`，正文预算是 `max_result_bytes` 减去
   512 字节的余量，**截断之后**再追加状态行，保证状态行不会被切掉、整体仍在预算内：
-  - 退出码非 0 时 `[退出码 N]`，超时 `[超时，已在 Ns 后终止]`，信号 `[被信号 N 终止]`，取消 `[已被用户中断]`，
+  - 退出码非 0 时 `[退出码 N]`，超时 `[超时，已在 Ns 后终止]`，取消 `[已被用户中断]`，
     启动失败或执行层失败 `[无法执行命令：…]` / `[执行失败：…]`；没有输出时写 `（无输出）`；退出码 0 不写状态行。
-  - 普通非零退出只按退出码/信号/超时报告；不会仅凭 stderr 关键词声称是沙箱拒绝或自动请求扩权。
-- `is_error`：退出码非 0、被信号终止、超时、无法执行。
+  - 退出码按 shell 的 `$?` 约定：顶层进程被信号终止记为 128+N。沙箱里 bwrap 对内部的信号终止只能这样回报，
+    宿主执行照同一约定换算，两种后端的报告一致。超时只写超时行，不附带被终止时的退出码；`BashView.exit_code` 同样为空。
+  - 普通非零退出只按退出码/超时报告；不会仅凭 stderr 关键词声称是沙箱拒绝或自动请求扩权。
+- `is_error`：退出码非 0、超时、无法执行。
 - `on_output` 把原始输出块交给核心，核心 `post` 给界面。
 - display：`BashView` 额外保存实际 backend、grant source 与 analysis version；`output` 是 exec 按 `process.max_output_bytes` 截断后的输出，不是给模型的那份，
   存进会话时直接进入 SQLite payload BLOB。
