@@ -1,6 +1,7 @@
 #include "app/toolchain.hpp"
 #include "app/toolchain_detail.hpp"
 #include "base/platform.hpp"
+#include "base/path.hpp"
 
 #include "app/hash.hpp"
 
@@ -33,7 +34,7 @@ void write_json(const fs::path& file, const json& value) {
     out.exceptions(std::ios::failbit | std::ios::badbit);
     out << value.dump(2) << '\n';
     out.close();
-    fs::permissions(temporary, fs::perms::owner_read | fs::perms::owner_write);
+    base::make_file_private(temporary);
     fs::rename(temporary, file);
 }
 
@@ -184,6 +185,7 @@ json Toolchain::sync() {
         else {
             if (fs::exists(directory)) fs::remove_all(directory); // only an unpublished, incomplete generation
             fs::create_directories(directory);
+            detail::RuntimePrograms python_programs;
             entry = {{"version", version}, {"directory", directory.string()}, {"env", json::object()}};
             if (kind == "archive") {
                 const auto& asset = package.at("assets").at(detail::runtime_platform());
@@ -203,15 +205,17 @@ json Toolchain::sync() {
                 }
             } else if (kind == "python") {
                 const auto uv = next.at("programs").at("uv").get<std::string>();
-                detail::install_python_runtime(uv, version, directory, paths_.cache);
+                python_programs = detail::install_python_runtime(base::path_from_utf8(uv), version, directory, paths_.cache);
             } else throw std::runtime_error("unknown runtime package kind: " + kind);
             const auto bin = package.value("bin", "bin");
             entry["bin"] = (bin == "." ? directory : within(directory, bin)).string();
             entry["programs"] = json::object();
             for (const auto& [program, relative] : package.at("programs").items()) {
-                const auto file = within(directory, relative.get<std::string>());
+                auto file = within(directory, relative.get<std::string>());
+                if (const auto found = python_programs.find(program); found != python_programs.end())
+                    file = detail::select_python_runtime_program(file, found->second);
                 if (!base::can_execute(file)) throw std::runtime_error("installed program is not executable: " + file.string());
-                entry["programs"][program] = file.string();
+                entry["programs"][program] = base::path_to_utf8(file);
                 entry["checksums"][program] = sha256(read(file));
             }
             const json variables = package.value("env", json::object());

@@ -24,7 +24,7 @@ target_include_directories(dagent_base PUBLIC ${CMAKE_SOURCE_DIR}/src/public)
 target_compile_features(dagent_base PUBLIC cxx_std_23)
 dagent_compile_options(dagent_base)
 target_link_libraries(dagent_base PUBLIC spdlog::spdlog)
-target_link_libraries(dagent_base PRIVATE "$<$<PLATFORM_ID:Windows>:bcrypt>")
+target_link_libraries(dagent_base PRIVATE "$<$<PLATFORM_ID:Windows>:bcrypt;advapi32>")
 
 add_library(dagent_tui STATIC
     private/tui/terminal.cpp
@@ -287,6 +287,7 @@ dagent_compile_options(dagent_llm)
 target_link_libraries(dagent_llm
     PUBLIC dagent_agent dagent_net
     PRIVATE CURL::libcurl
+        "$<$<PLATFORM_ID:Windows>:ntdll;advapi32;bcrypt>"
 )
 
 # protocol：线上 DTO/编解码/错误码，纯数据；只依赖 base。
@@ -378,6 +379,7 @@ target_link_libraries(dagent_app_config
     PUBLIC dagent_runtime dagent_llm tools dagent_storage dagent_workspace dagent_exec dagent_mcp
            dagent_base
     PRIVATE yaml-cpp::yaml-cpp CURL::libcurl OpenSSL::Crypto
+        "$<$<PLATFORM_ID:Windows>:advapi32>"
 )
 
 # backend：RPC 方法适配与事件 DTO 转换；不链接 TUI。

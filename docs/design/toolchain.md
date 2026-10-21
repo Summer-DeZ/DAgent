@@ -36,15 +36,31 @@ runtime/
 | `execute_runtime_command` | `app/toolchain.cpp`：不继承宿主环境，沿用 exec 默认项与传入环境；超时 20 分钟，输出上限 65536，失败文本仍拼接程序名、stderr、stdout，成功时去掉尾部 CR/LF |
 | `extract_runtime_archive` | `app/toolchain_posix.cpp`：在传入 cwd 执行 `/usr/bin/tar -xf <archive> --strip-components=1 -C <destination>` |
 | `runtime_environment` | `app/toolchain_posix.cpp`：按原顺序构造 shell、PATH、HOME/XDG、包环境变量和可读目录 |
-| `install_python_runtime` | `app/toolchain_posix.cpp`：设置准备环境，执行 uv python install/find，并创建 `bin/python` 和 `bin/python3` 符号链接 |
+| `install_python_runtime` | `app/toolchain_posix.cpp`：设置准备环境，执行 uv python install/find，并创建 `bin/python` 和 `bin/python3` 符号链接，返回程序映射；Windows 返回实际解释器路径 |
+| `select_python_runtime_program` | POSIX 保留配置相对路径的解析结果；Windows 采用安装器返回的解释器路径 |
 | `python_environment_program` | `app/toolchain_posix.cpp`：返回环境根下的 `bin/python`，供 uv pip sync 和 SearXNG 启动使用 |
 | `runtime_platform`、`SyncLock` | `app/toolchain_posix.cpp`：平台标识和原生安装锁 |
 
 共享 `toolchain.cpp` 保留配置读取、下载和 SHA-256 校验、包顺序、代际与摘要计算、就绪检查和 manifest 发布；
 归档验证完成后才调用解包接口。Python 包安装仍在非 Python 包之后，平台操作完成后再计算程序摘要、
 写入 `.ready.json`；依赖环境就绪后才写最终 `installed.json`，不改变未完成代际的清理位置。
+JSON 临时文件在原关闭位置调用 base::make_file_private；POSIX 仍执行原 filesystem::permissions，之后才 rename。
 `runtime_platform` 保留 uname 的 `sysname-machine` 格式与失败异常；`SyncLock` 以不透明状态持有
 `run/runtime.lock`，仍使用 0600/CLOEXEC、非阻塞独占锁，析构关闭文件，持有范围仍覆盖整个 sync 流程。
+
+Windows 的 `toolchain_win.cpp` 提供 Windows-x86_64 平台标识和非阻塞 LockFileEx 同步锁，
+锁文件创建时私有、句柄不继承、不共享删除，持有范围覆盖整个 sync，析构关闭释放。
+解包明确调用 Windows 系统目录的 tar.exe（x64 上为 SystemRoot/System32），保持 -xf、--strip-components=1 和 -C。
+运行环境不继承宿主 PATH；按包顺序拼接分号 PATH，最后追加系统目录和 Windows 目录。
+Python venv 前置 Scripts，Node 环境前置 node_modules/.bin；HOME/USERPROFILE 指向所选 runtime/homes/<name>。
+XDG、离线选项、uv/npm 缓存与配置变量保留原含义，增加 SystemRoot、系统 COMSPEC 及系统临时目录 TEMP/TMP。
+环境构造不隐式创建目录，也不改变发布顺序。
+
+Python 安装接口返回 RuntimePrograms 映射。Windows 保留 uv install/find 参数，--no-bin 不创建入口链接，
+python/python3 均指向 uv find 返回的实际解释器；venv 使用 Scripts/python.exe。
+共享层仍先验证配置的相对路径，再通过 select_python_runtime_program 选择实际程序；POSIX 保留原配置路径，
+因此自定义 Python 程序路径、原符号链接目标和程序摘要不变。Windows 程序路径写入 JSON 时使用 UTF-8。
+当前仓库尚无 Windows 专属 runtime 模板、系统 Git/Bash 登记及资产定义，这些平台接口不表示 runtime 已可完整准备。
 
 `dagent runtime list` 返回期望配置、安装记录和 `current`（平台、配置及依赖文件是否匹配）。
 它不是磁盘完整性扫描；正常启动还检查程序是否可执行、依赖环境是否就绪。

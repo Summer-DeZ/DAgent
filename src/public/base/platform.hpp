@@ -35,6 +35,10 @@ bool can_execute(const std::filesystem::path& path) noexcept;
 /// @brief POSIX 固定为 /tmp，不读取 TMPDIR；Windows 使用 GetTempPath2W 的系统临时目录选择。
 std::filesystem::path default_temporary_directory();
 
+/// @brief POSIX 替换为 owner_read|owner_write；Windows 设置受保护的当前用户/SYSTEM/Administrators DACL。
+void make_file_private(const std::filesystem::path& path);
+void make_file_private(const std::filesystem::path& path, std::error_code& error);
+
 /// @brief 按完整的 XXXXXX 模板创建独占目录，不创建父目录、不自动清理。
 /// 失败返回系统错误文本，由调用方补充业务上下文。
 std::expected<std::filesystem::path, std::string> create_unique_directory(const std::filesystem::path& pattern);

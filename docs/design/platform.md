@@ -4,7 +4,8 @@
 Windows 为 `win`，其他系统以 `Unsupported target system` 错误拒绝配置。`src/CMakeLists.txt`
 显式列出 `private/<模块>/<文件>_${DAGENT_PLATFORM}.cpp`，不使用运行时平台选择或虚函数端口。
 当前包含完整 POSIX 实现及 base、workspace/context、app/cli、app/paths、ui/browser、web/document、
-exec/platform、ipc/channel、app/interrupts、app/backend_main、workspace/files 十一个 Windows 实现。
+exec/platform、ipc/channel、app/interrupts、app/backend_main、workspace/files、storage/storage、storage/decision_store、
+app/config_detail、app/models、llm/auth、app/toolchain 十七个 Windows 实现。
 Windows 在 `project()` 完成工具链与编译器识别后、项目依赖查找和源码目标生成前，
 以 `Windows support is not available in this revision: native *_win.cpp implementations are not yet complete.`
 错误停止配置。`win-dev` preset 仅在 Windows 宿主可用，不表示当前修订支持 Windows 构建。
@@ -20,8 +21,8 @@ MSVC 的 C 为 `/W4 /utf-8`，C++ 为 `/W4 /permissive- /utf-8`。
 Windows 的 CMake CRT 选择为 `MultiThreaded$<$<CONFIG:Debug>:Debug>DLL`，与 vcpkg x64-windows 的动态 CRT 一致。
 依赖规则在 Windows 查找 Boost 的 process 组件和 `find_package(Iconv MODULE REQUIRED)`；
 exec 保留 `BOOST_PROCESS_USE_STD_FS`，使用具体的 Boost.Process v2 分头文件，并显式链接 `Boost::process`、`ws2_32` 和 `bcrypt`。
-Windows 系统库按使用目标链接：base 用 `bcrypt`，workspace 用 `ntdll`、`advapi32`、`bcrypt`，ui 和 app_cli 用 `shell32`；
-ipc 的私有管道 ACL 和随机名称使用 `advapi32`、`bcrypt`；web 用 `Iconv::Iconv`。这些依赖均不会进入 Linux 链接行；Windows 的提前停止点仍先于依赖查找。
+Windows 系统库按使用目标链接：base 用 `bcrypt`、`advapi32`，workspace 用 `ntdll`、`advapi32`、`bcrypt`，ui 和 app_cli 用 `shell32`；
+ipc 的私有管道 ACL 和随机名称使用 `advapi32`、`bcrypt`；llm 用 `ntdll`、`advapi32`、`bcrypt`，app_config 用 `advapi32`；web 用 `Iconv::Iconv`。这些依赖均不会进入 Linux 链接行；Windows 的提前停止点仍先于依赖查找。
 
 SRT bridge/wrapper 与 SearXNG 入口的构建复制目标、可执行文件对它们的依赖及安装规则仅在 Linux 启用。
 AppArmor profile 的构建生成和安装生成也仅在 Linux 启用，后者仍使用不含 `DESTDIR` 的最终后端路径。
@@ -44,24 +45,24 @@ Home 安装脚本按配置时的目标系统选择 Linux 的 0600 权限设置�
 
 | 平台文件 | 中立声明 | 实现 |
 | --- | --- | --- |
-| `src/private/base/platform_{posix,win}.cpp` | `src/public/base/platform.hpp`、`src/public/base/path.hpp` | `path_from_utf8`、`path_to_utf8`、`path_to_generic_utf8`、`executable_path`、`environment_variable`、`home_directory`、`process_id`、`stdin_is_terminal`、`stdout_is_terminal`、`local_time`、`utc_time`、`utc_timestamp`、`can_execute`、`default_temporary_directory`、`create_unique_directory` |
+| `src/private/base/platform_{posix,win}.cpp` | `src/public/base/platform.hpp`、`src/public/base/path.hpp` | `path_from_utf8`、`path_to_utf8`、`path_to_generic_utf8`、`executable_path`、`environment_variable`、`home_directory`、`process_id`、`stdin_is_terminal`、`stdout_is_terminal`、`local_time`、`utc_time`、`utc_timestamp`、`can_execute`、`make_file_private`、`default_temporary_directory`、`create_unique_directory` |
 | `src/private/workspace/context_{posix,win}.cpp` | `src/public/workspace/context.hpp` | `detail::os_description`、`detail::shell_description` |
 | `src/private/app/cli_{posix,win}.cpp` | `src/public/app/cli.hpp` | `detail::read_stdin_all` |
 | `src/private/app/paths_{posix,win}.cpp` | `src/public/app/paths.hpp` | `detail::executable_home_directory`、`detail::probe_home_writable` |
 | `src/private/app/interrupts_{posix,win}.cpp` | `src/public/app/interrupts.hpp` | `install_interrupts`、`ignore_broken_pipe` |
 | `src/private/app/backend_main_{posix,win}.cpp` | `src/public/app/interrupts.hpp` | `initialize_backend_signals` |
-| `src/private/app/toolchain_posix.cpp` | `src/public/app/toolchain_detail.hpp` | `detail::runtime_platform`、`detail::extract_runtime_archive`、`detail::runtime_environment`、`detail::install_python_runtime`、`detail::python_environment_program`、`detail::SyncLock` |
+| `src/private/app/toolchain_{posix,win}.cpp` | `src/public/app/toolchain_detail.hpp` | `detail::runtime_platform`、`detail::extract_runtime_archive`、`detail::runtime_environment`、`detail::install_python_runtime`、`detail::select_python_runtime_program`、`detail::python_environment_program`、`detail::SyncLock` |
 | `src/private/ui/browser_{posix,win}.cpp` | `src/public/ui/browser.hpp` | `open_browser` |
 | `src/private/web/document_{posix,win}.cpp` | `src/public/web/detail.hpp` | `detail::convert_charset`（共用 `web/charset.cpp` 的 `convert_charset_iconv`） |
 | `src/private/ipc/channel_{posix,win}.cpp` | `src/public/ipc/channel.hpp` | `InheritedEndpoint` 参数解析、`Channel` 原生状态与传输、`BackendProcess` 不透明进程标识、`backend_binary_path`、`spawn_backend`、`wait_or_terminate` |
 | `src/private/tui/terminal_posix.cpp` | `src/public/tui/terminal.hpp`、`src/public/tui/event_wait.hpp` | Terminal 生命周期、原生状态、尺寸、字节写入、输入恢复与信号；EventWait 的等待、输入读取、唤醒及排空 |
 | `src/private/exec/platform_{posix,win}.cpp` | `src/public/exec/detail.hpp`、`src/public/exec/platform.hpp`、`src/public/exec/process.hpp` | `inherited_environment`、`environment_names_equal`、`environment_name_matches`、`resolve_program`、`system_git_program`、`default_search_path`、`project_search_path`、执行权限、SIGPIPE、ProcessGroup、退出状态、spawn_command/spawn_child、InheritedResources、SrtControl、默认 SRT 可读目录 |
 | `src/private/workspace/files_{posix,win}.cpp` | `src/public/workspace/files.hpp` | `probe`、`read_text`、`write_text`、`stamp_of`、FileReference 原生状态与操作、DirectoryEntries 惰性枚举 |
-| `src/private/storage/storage_posix.cpp` | `src/public/storage/platform.hpp` | `detail::SessionFileLock` |
-| `src/private/storage/decision_store_posix.cpp` | `src/public/storage/platform.hpp` | `detail::make_decision_file_private` |
-| `src/private/app/config_detail_posix.cpp` | `src/public/app/config_detail.hpp` | `detail::require_private_file` |
-| `src/private/app/models_posix.cpp` | `src/public/app/config_detail.hpp` | `detail::ModelWriteLock` |
-| `src/private/llm/auth_posix.cpp` | `src/public/llm/auth.hpp`、`src/public/llm/auth_detail.hpp` | `read_credentials`、`detail::CredentialLock`、`detail::write_credentials`、`detail::remove_credentials` |
+| `src/private/storage/storage_{posix,win}.cpp` | `src/public/storage/platform.hpp` | `detail::SessionFileLock` |
+| `src/private/storage/decision_store_{posix,win}.cpp` | `src/public/storage/platform.hpp` | `detail::make_decision_file_private` |
+| `src/private/app/config_detail_{posix,win}.cpp` | `src/public/app/config_detail.hpp` | `detail::require_private_file` |
+| `src/private/app/models_{posix,win}.cpp` | `src/public/app/config_detail.hpp` | `detail::ModelWriteLock` |
+| `src/private/llm/auth_{posix,win}.cpp` | `src/public/llm/auth.hpp`、`src/public/llm/auth_detail.hpp` | `read_credentials`、`detail::CredentialLock`、`detail::write_credentials`、`detail::remove_credentials` |
 | `src/private/app/queries_posix.cpp` | `src/public/app/queries.hpp` | `QueryGatewayImpl::watch_workspace` |
 | `src/private/app/sandbox_status_posix.cpp` | `src/public/app/sandbox_status.hpp` | `detail::host_bwrap`、`detail::host_socat`、`detail::append_host_diagnostics` |
 
@@ -233,6 +234,40 @@ workspace 的路径和文本编解码通过 `files_detail.hpp` 供平台文件�
 两条写入路径保持独立：通用 write_text 保留 `07777`、显式 close 后 rename；FileReference::write 保留 `0777`，
 文件句柄保持打开直到 renameat2、同步目录和读取返回 Stamp 后清理。两者共用原 umask 静态缓存，
 零字节写处理与异常清理顺序见 [workspace](workspace.md#2-文件原语fileshpp)。
+
+`base::make_file_private` 提供抛异常及 error_code 两个重载：POSIX 直接执行原
+filesystem::permissions(owner_read|owner_write)，Windows 设置受保护的当前用户/SYSTEM/Administrators DACL。
+共享 runtime JSON 和 SearXNG 配置在原写入/关闭位置调用它，不改变失败传播与发布顺序。
+配置保存原本通过 workspace 保留既有权限，未增加新的 chmod 时点；POSIX 决策库仍单独 best-effort chmod。
+Windows `base/security_detail.hpp` 仅供平台文件使用，传递自相对描述符字节和校验结果，不暴露 Windows 头或句柄。
+描述符由当前进程 token 用户 SID、SYSTEM 和 Administrators 构造；创建时指定当前用户所有、完全控制和受保护 DACL。
+验证仅接受普通 allow ACE，必须禁止父 ACL 继承、无其他获准主体，当前用户具有读写权限（目录还需创建及遍历）。
+NULL DACL、未保护 DACL、其他获准主体及未支持的 ACE 组合均拒绝，不通过忽略 ACE 推断为安全。
+
+Windows SessionFileLock 与 SyncLock 在固定锁文件的 [0,1) 字节上非阻塞独占 LockFileEx；
+ModelWriteLock 用同步句柄阻塞独占。所有锁句柄不继承，且打开期间不共享删除权限；锁文件不主动删除。
+会话同进程租约注册表保持共享实现；Session/Model 锁析构 UnlockFileEx 后关闭，SyncLock 关闭释放。
+凭据锁单独保留 30 秒期限、50ms 可取消等待和原错误分类，关闭锁文件后再关闭目录。
+决策库通过 make_file_private(error_code) best-effort 收紧 DACL，调用位置不变。
+
+Windows require_private_file 检查磁盘普通文件（拒绝目录/reparse point）和上述私有 DACL，
+所有者必须是三个受信任主体之一；不安全时报告 invalid，并给出 Windows Security > Advanced 的所有者/继承/授权修复说明。
+已有凭据则额外要求当前用户所有；目录与文件逐分量 NtCreateFile，拒绝 symlink/junction/ADS，
+创建缺失目录、锁文件和独占临时文件时已经带受保护描述符，已有对象不自动修复。
+凭据保持相同 JSON 编解码、尾部换行、4096 字节读取和 64 KiB 上限；
+写入 FlushFileBuffers 后相对同目录 FileRenameInfoEx 替换，失败按临时句柄删除，删除使用 FileDispositionInfoEx。
+Windows 目录 flush 为尽力而为，不声称具备 POSIX 目录 fsync 的持久性保证；不读取或修改特权 SACL。
+
+Windows runtime_platform 返回 Windows-x86_64；tar 固定为系统目录的 tar.exe，保持 -xf/strip-components=1/-C 参数。
+runtime_environment 使用分号 PATH，包目录及变量按原迭代顺序排列，系统目录与 Windows 目录放在末尾；
+Python 环境前置 Scripts，Node 前置 node_modules/.bin。HOME/USERPROFILE 指向所选受管 Home，
+XDG/UV/NPM 变量沿用原含义，另显式传入 SystemRoot、系统 COMSPEC、系统临时目录 TEMP/TMP，不继承宿主 PATH。
+install_python_runtime 返回 python/python3 程序映射；POSIX 仍创建并返回原两个链接，Windows 直接返回 uv find 的解释器路径。
+select_python_runtime_program 在 POSIX 保留配置路径，在 Windows 选择安装器路径；配置相对路径仍在原位置验证。
+程序校验、摘要、包/环境就绪标记和最终 manifest 发布顺序不变；Windows venv 程序为 Scripts/python.exe。
+当前配置模板仍未提供 Windows 的系统工具登记与资产定义。
+
+以下锁与原生权限细节描述 POSIX 实现。
 
 SessionFileLock 的 Impl 在保存会话 ID 后、open 锁文件前分配；同进程租约注册表与互斥范围仍在 storage.cpp。
 锁保持非阻塞、无 EINTR 重试，最后共享 State 销毁时 UNLOCK+close。决策库 chmod(0600) 仍忽略返回值，

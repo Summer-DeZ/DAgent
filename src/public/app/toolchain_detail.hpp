@@ -4,6 +4,7 @@
 
 #include <filesystem>
 #include <memory>
+#include <map>
 #include <string>
 #include <string_view>
 #include <utility>
@@ -32,8 +33,13 @@ exec::Environment runtime_environment(const HomePaths& paths, const nlohmann::js
                                       std::string_view name);
 
 /// @brief 准备 Python 包及程序入口；cache 为 HomePaths::cache，POSIX 使用其 uv 子目录。
-void install_python_runtime(const std::filesystem::path& uv, std::string_view version,
+using RuntimePrograms = std::map<std::string, std::filesystem::path>;
+RuntimePrograms install_python_runtime(const std::filesystem::path& uv, std::string_view version,
                             const std::filesystem::path& directory, const std::filesystem::path& cache);
+
+/// @brief POSIX 保留配置声明的程序路径；Windows 使用安装器发现的原生解释器路径。
+std::filesystem::path select_python_runtime_program(const std::filesystem::path& configured,
+                                                    const std::filesystem::path& installed);
 
 std::filesystem::path python_environment_program(const std::filesystem::path& environment_root);
 

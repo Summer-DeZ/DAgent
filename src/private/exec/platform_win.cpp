@@ -229,10 +229,10 @@ struct LaunchSetup {
         return {};
     }
 
-    boost::system::error_code on_success(bp::windows::default_launcher& launcher, const fs::path&, std::wstring&) {
+    // Boost 1.92 的 invoke_on_success 要求此钩子返回 void；只有 on_setup 返回 error_code。
+    void on_success(bp::windows::default_launcher& launcher, const fs::path&, std::wstring&) {
         // launcher 原本在此钩子之后关闭线程句柄；移交给本次启动，加入 Job 后才能恢复。
         thread.value = std::exchange(launcher.process_information.hThread, INVALID_HANDLE_VALUE);
-        return {};
     }
 };
 

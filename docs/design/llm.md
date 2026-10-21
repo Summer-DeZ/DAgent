@@ -195,17 +195,17 @@ authorization_pending 继续，拒绝、过期和其它 OAuth 错误终止。批
 以上等待与请求均可取消。OAuth 失败仅显示 HTTP 状态、白名单错误码与固定说明，不透传响应或 JSON 解析异常。
 
 HomePaths 提供 `data/credentials/opencode.json` 和 `run/credentials/opencode.lock`。
-凭据目录 0700、文件 0600；逐级拒绝 symlink，文件须属当前用户且为普通文件。
+POSIX 凭据目录 0700、文件 0600；逐级拒绝 symlink，文件须属当前用户且为普通文件。
 临时文件从创建起 0600，写入后 fsync → rename → fsync 目录。
 字段 access_token、refresh_token、expires_at、org_id、client_id、state、updated；时间为 Unix 秒。
 登录保存、刷新与登出共享固定 flock 文件；登出保留锁文件。设备等待不持锁，推理不持锁。
 每次请求重读凭据，不设进程内 token 缓存。
 
 `auth.cpp` 保留 OAuth、刷新流程、URL 校验、JSON 编解码、状态投影和可取消等待。
-`auth_posix.cpp` 实现目录遍历、文件验证、CredentialLock 及凭据文件读写/删除，
+`auth_{posix,win}.cpp` 实现目录遍历、文件验证、CredentialLock 及凭据文件读写/删除，
 由 CMake 的 `auth_${DAGENT_PLATFORM}.cpp` 选择。内部接口在 `llm/auth_detail.hpp`，不暴露原生句柄。
 
-目录遍历从 `/` 开始，逐级 openat 使用 `O_RDONLY | O_DIRECTORY | O_NOFOLLOW | O_CLOEXEC`；
+POSIX 目录遍历从 `/` 开始，逐级 openat 使用 `O_RDONLY | O_DIRECTORY | O_NOFOLLOW | O_CLOEXEC`；
 允许创建时，仅在 ENOENT 分支 mkdirat(0700) 后重开。每级取得新句柄后关闭前一级，最终目录才核对 uid 和 0700。
 文件验证保持 fstat、普通文件、当前有效 uid 和权限低 9 位为 0600 的检查。
 
@@ -223,6 +223,20 @@ HomePaths 提供 `data/credentials/opencode.json` 和 `run/credentials/opencode.
   `O_CREAT | O_RDWR | O_NOFOLLOW | O_NONBLOCK | O_CLOEXEC`、0600 打开并验证锁文件。
   验证后设 30 秒期限，每轮先检查取消，再尝试非阻塞 flock；仅 EWOULDBLOCK/EINTR 进入期限检查和 50ms 可取消等待。
   失败和正常析构都先关闭锁文件、再关闭锁目录，通过 close 释放锁，不增加显式 UNLOCK。
+
+Windows 的对应实现以 NtCreateFile 的 RootDirectory 逐分量打开目录和文件，不跟随 reparse point，
+并拒绝 ADS。仅在最终凭据目录核对当前用户所有及受保护私有 DACL；既有祖先不被重新授权。
+新目录、锁文件和随机独占临时文件在创建时就传入私有描述符，当前用户/SYSTEM/Administrators 有完全控制，
+禁止继承父目录 ACL。已有凭据或最终目录不安全时拒绝操作，不先读取明文再补权限，也不自动修复。
+校验拒绝 NULL DACL、继承未关闭、其他获准主体和非普通 allow ACE；要求当前用户读写，目录另需创建/遍历。
+只处理 owner/DACL，不使用管理员提升或修改特权 SACL。
+
+Windows 锁使用同步 LockFileEx(EXCLUSIVE|FAIL_IMMEDIATELY) 锁定 [0,1)，仅 ERROR_LOCK_VIOLATION 进入
+原 30 秒期限检查和 50ms 可取消等待；取消继续使用共享 check_stop/pause。析构关闭文件再关闭目录，锁随文件句柄释放。
+读取仍分 4096 字节块、限制 64 KiB，使用原 decode_credentials；JSON 异常仍得到 state=invalid。
+写入使用原 credential_json().dump()+换行，完整写入后 FlushFileBuffers，再相对固定目录用 FileRenameInfoEx 原子替换；
+保留已有验证句柄，失败时删除临时文件。登出通过 FileDispositionInfoEx 删除凭据，保留锁文件。
+目录 flush 在 Windows 为尽力而为；不支持扩展替换/删除的文件系统直接报错，不降级为先删后写。
 
 文件/目录/普通 I/O 错误仍为 `credential storage is unavailable or unsafe`；
 锁超时为 `credential lock wait timed out`，取消仍抛 HttpError(cancelled, `authentication cancelled`)。
