@@ -1,8 +1,23 @@
 # 平台实现约定
 
-平台源文件由根 CMake 的 `DAGENT_PLATFORM` 选择，当前值为 `posix`。`src/CMakeLists.txt`
+平台源文件由根 CMake 根据 `CMAKE_SYSTEM_NAME` 设置的 `DAGENT_PLATFORM` 选择：Linux 为 `posix`，
+Windows 为 `win`，其他系统以 `Unsupported target system` 错误拒绝配置。`src/CMakeLists.txt`
 显式列出 `private/<模块>/<文件>_${DAGENT_PLATFORM}.cpp`，不使用运行时平台选择或虚函数端口。
-根 CMake 仍拒绝非 Linux 系统。
+当前仅包含 POSIX 实现；Windows 在 `project()` 完成工具链与编译器识别后、项目依赖查找和源码目标生成前，
+以 `Windows support is not available in this revision: native *_win.cpp implementations are not yet included.`
+错误停止配置。`win-dev` preset 仅在 Windows 宿主可用，不表示当前修订支持 Windows 构建。
+
+## 构建选项与程序资源
+
+`src/CMakeLists.txt` 的 `dagent_compile_options(target)` 为自有目标设置 PRIVATE 编译选项，
+用 `COMPILE_LANG_AND_ID` 分别选择 C 和 C++：GNU/Clang 均为 `-Wall -Wextra`；
+MSVC 的 C 为 `/W4 /utf-8`，C++ 为 `/W4 /permissive- /utf-8`。
+函数不设置编译特性，不改变各目标已有的 `cxx_std_23` 声明，也不修改第三方目标的选项。
+
+SRT bridge/wrapper 与 SearXNG 入口的构建复制目标、可执行文件对它们的依赖及安装规则仅在 Linux 启用。
+AppArmor profile 的构建生成和安装生成也仅在 Linux 启用，后者仍使用不含 `DESTDIR` 的最终后端路径。
+Home 安装脚本按配置时的目标系统选择 Linux 的 0600 权限设置和 AppArmor 生成；
+仅补充缺失用户文件的规则保持共享。Linux 的资源路径、文件权限和 profile 内容不变。
 
 ## 边界
 

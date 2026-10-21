@@ -9,7 +9,26 @@
         "CMAKE_BUILD_TYPE": "Debug",
         "DAGENT_DEV_HOME": "${sourceDir}/home"
       }
+    },
+    {
+      "name": "win-dev",
+      "description": "Windows development configuration; this revision rejects configuration because native *_win.cpp implementations are not included.",
+      "generator": "Ninja",
+      "binaryDir": "${sourceDir}/build/win-dev",
+      "condition": {
+        "type": "equals",
+        "lhs": "${hostSystemName}",
+        "rhs": "Windows"
+      },
+      "cacheVariables": {
+        "CMAKE_BUILD_TYPE": "Debug",
+        "DAGENT_DEV_HOME": "${sourceDir}/home",
+        "VCPKG_TARGET_TRIPLET": "x64-windows"
+      }
     }
   ],
-  "buildPresets": [{ "name": "dev", "configurePreset": "dev" }]
+  "buildPresets": [
+    { "name": "dev", "configurePreset": "dev" },
+    { "name": "win-dev", "configurePreset": "win-dev" }
+  ]
 }

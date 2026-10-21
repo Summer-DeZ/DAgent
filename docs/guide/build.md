@@ -12,6 +12,9 @@ cmake --build --preset dev --target dagent dagent-backend -j 4
 
 dev 构建的安装根是源码树 `home/`，`DAGENT_HOME` 可覆盖。
 
+Windows 的 MSVC 开发环境可调用 `cmake --preset win-dev -DCMAKE_TOOLCHAIN_FILE=C:/dev/vcpkg/scripts/buildsystems/vcpkg.cmake`
+（toolchain 路径按实际安装位置传入）；当前修订缺少 `*_win.cpp` 实现，会在项目依赖查找前明确拒绝配置，尚不支持 Windows 构建。
+
 ## 首次准备
 
 开发目录缺少模型或 MCP 配置时，从示例创建，保留已有文件：

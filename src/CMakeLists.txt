@@ -1,3 +1,12 @@
+function(dagent_compile_options target)
+    target_compile_options(${target} PRIVATE
+        "$<$<COMPILE_LANG_AND_ID:C,GNU,Clang>:-Wall;-Wextra>"
+        "$<$<COMPILE_LANG_AND_ID:CXX,GNU,Clang>:-Wall;-Wextra>"
+        "$<$<COMPILE_LANG_AND_ID:C,MSVC>:/W4;/utf-8>"
+        "$<$<COMPILE_LANG_AND_ID:CXX,MSVC>:/W4;/permissive-;/utf-8>"
+    )
+endfunction()
+
 # 最底层公共库：日志、文本与路径工具、JSON 脱敏。
 add_library(dagent_base STATIC
     private/base/frontmatter.cpp
@@ -10,7 +19,7 @@ add_library(dagent_base STATIC
 
 target_include_directories(dagent_base PUBLIC ${CMAKE_SOURCE_DIR}/src/public)
 target_compile_features(dagent_base PUBLIC cxx_std_23)
-target_compile_options(dagent_base PRIVATE -Wall -Wextra)
+dagent_compile_options(dagent_base)
 target_link_libraries(dagent_base PUBLIC spdlog::spdlog)
 
 add_library(dagent_tui STATIC
@@ -33,7 +42,7 @@ add_library(dagent_tui STATIC
 
 target_include_directories(dagent_tui PUBLIC ${CMAKE_SOURCE_DIR}/src/public)
 target_compile_features(dagent_tui PUBLIC cxx_std_23)
-target_compile_options(dagent_tui PRIVATE -Wall -Wextra)
+dagent_compile_options(dagent_tui)
 target_link_libraries(dagent_tui PRIVATE dagent_base)
 
 # 应用层：在 TUI 框架之上构建的界面（只持 Client、协议 DTO 与页面状态）。
@@ -67,7 +76,7 @@ add_library(dagent_ui STATIC
 )
 
 target_link_libraries(dagent_ui PUBLIC dagent_tui dagent_client dagent_protocol dagent_base)
-target_compile_options(dagent_ui PRIVATE -Wall -Wextra)
+dagent_compile_options(dagent_ui)
 target_compile_definitions(dagent_ui PRIVATE DAGENT_VERSION="${PROJECT_VERSION}")
 
 # 网络层：libcurl 薄封装（HTTP 整包/流式、取消、超时）与 SSE 解析，不含任何模型协议。
@@ -78,7 +87,7 @@ add_library(dagent_net STATIC
 
 target_include_directories(dagent_net PUBLIC ${CMAKE_SOURCE_DIR}/src/public)
 target_compile_features(dagent_net PUBLIC cxx_std_23)
-target_compile_options(dagent_net PRIVATE -Wall -Wextra)
+dagent_compile_options(dagent_net)
 target_compile_definitions(dagent_net PRIVATE DAGENT_VERSION="${PROJECT_VERSION}")
 target_link_libraries(dagent_net PRIVATE CURL::libcurl)
 
@@ -95,7 +104,7 @@ add_library(dagent_exec STATIC
 
 target_include_directories(dagent_exec PUBLIC ${CMAKE_SOURCE_DIR}/src/public)
 target_compile_features(dagent_exec PUBLIC cxx_std_23)
-target_compile_options(dagent_exec PRIVATE -Wall -Wextra)
+dagent_compile_options(dagent_exec)
 # Boost.Process v2 内部用 std::filesystem（本机没有编译好的 Boost.Filesystem）。
 target_compile_definitions(dagent_exec PRIVATE BOOST_PROCESS_USE_STD_FS=1)
 target_link_libraries(dagent_exec
@@ -107,7 +116,7 @@ target_link_libraries(dagent_exec
 add_library(dagent_web STATIC private/web/http.cpp private/web/document.cpp)
 target_sources(dagent_web PRIVATE private/web/document_${DAGENT_PLATFORM}.cpp)
 target_include_directories(dagent_web PUBLIC ${CMAKE_SOURCE_DIR}/src/public)
-target_compile_options(dagent_web PRIVATE -Wall -Wextra)
+dagent_compile_options(dagent_web)
 target_link_libraries(dagent_web PUBLIC dagent_exec PRIVATE lexbor_static)
 
 # 工作区：文件原语、ripgrep 搜索、unified diff、项目上下文（git/AGENTS.md/模板）。
@@ -123,7 +132,7 @@ add_library(dagent_workspace STATIC
 
 target_include_directories(dagent_workspace PUBLIC ${CMAKE_SOURCE_DIR}/src/public)
 target_compile_features(dagent_workspace PUBLIC cxx_std_23)
-target_compile_options(dagent_workspace PRIVATE -Wall -Wextra)
+dagent_compile_options(dagent_workspace)
 target_link_libraries(dagent_workspace
     PUBLIC dagent_base
     PRIVATE dagent_exec pantor::inja
@@ -141,7 +150,7 @@ add_library(dagent_storage STATIC
 
 target_include_directories(dagent_storage PUBLIC ${CMAKE_SOURCE_DIR}/src/public)
 target_compile_features(dagent_storage PUBLIC cxx_std_23)
-target_compile_options(dagent_storage PRIVATE -Wall -Wextra)
+dagent_compile_options(dagent_storage)
 target_compile_definitions(dagent_storage PRIVATE
     DAGENT_VERSION="${PROJECT_VERSION}"
     SQLITE_OMIT_LOAD_EXTENSION
@@ -162,7 +171,7 @@ add_library(dagent_mcp STATIC
 
 target_include_directories(dagent_mcp PUBLIC ${CMAKE_SOURCE_DIR}/src/public)
 target_compile_features(dagent_mcp PUBLIC cxx_std_23)
-target_compile_options(dagent_mcp PRIVATE -Wall -Wextra)
+dagent_compile_options(dagent_mcp)
 target_compile_definitions(dagent_mcp PRIVATE DAGENT_VERSION="${PROJECT_VERSION}")
 target_link_libraries(dagent_mcp
     PUBLIC dagent_base dagent_exec dagent_net
@@ -189,7 +198,7 @@ add_library(tools STATIC
 
 target_include_directories(tools PUBLIC ${CMAKE_SOURCE_DIR}/src/public)
 target_compile_features(tools PUBLIC cxx_std_23)
-target_compile_options(tools PRIVATE -Wall -Wextra)
+dagent_compile_options(tools)
 target_link_libraries(tools
     PUBLIC dagent_agent dagent_base dagent_exec dagent_workspace dagent_mcp dagent_web
     PRIVATE yaml-cpp
@@ -209,7 +218,7 @@ add_library(dagent_app_cli STATIC
 
 target_include_directories(dagent_app_cli PUBLIC ${CMAKE_SOURCE_DIR}/src/public)
 target_compile_features(dagent_app_cli PUBLIC cxx_std_23)
-target_compile_options(dagent_app_cli PRIVATE -Wall -Wextra)
+dagent_compile_options(dagent_app_cli)
 target_compile_definitions(dagent_app_cli PRIVATE DAGENT_VERSION="${PROJECT_VERSION}")
 if(DAGENT_DEV_HOME)
     target_compile_definitions(dagent_app_cli PRIVATE DAGENT_DEV_HOME="${DAGENT_DEV_HOME}")
@@ -247,7 +256,7 @@ add_library(dagent_agent STATIC
 
 target_include_directories(dagent_agent PUBLIC ${CMAKE_SOURCE_DIR}/src/public)
 target_compile_features(dagent_agent PUBLIC cxx_std_23)
-target_compile_options(dagent_agent PRIVATE -Wall -Wextra)
+dagent_compile_options(dagent_agent)
 target_link_libraries(dagent_agent PUBLIC dagent_base)
 
 # llm 适配：Model 实际请求、provider 编解码、HTTP/SSE；实现核心 ModelSession 端口。
@@ -265,7 +274,7 @@ add_library(dagent_llm STATIC
 
 target_include_directories(dagent_llm PUBLIC ${CMAKE_SOURCE_DIR}/src/public)
 target_compile_features(dagent_llm PUBLIC cxx_std_23)
-target_compile_options(dagent_llm PRIVATE -Wall -Wextra)
+dagent_compile_options(dagent_llm)
 target_link_libraries(dagent_llm
     PUBLIC dagent_agent dagent_net
     PRIVATE CURL::libcurl
@@ -279,7 +288,7 @@ add_library(dagent_protocol STATIC
 
 target_include_directories(dagent_protocol PUBLIC ${CMAKE_SOURCE_DIR}/src/public)
 target_compile_features(dagent_protocol PUBLIC cxx_std_23)
-target_compile_options(dagent_protocol PRIVATE -Wall -Wextra)
+dagent_compile_options(dagent_protocol)
 target_link_libraries(dagent_protocol PUBLIC dagent_base)
 
 # ipc：socketpair FD 包装、JSON 行分帧与后端进程启动。
@@ -290,7 +299,7 @@ add_library(dagent_ipc STATIC
 
 target_include_directories(dagent_ipc PUBLIC ${CMAKE_SOURCE_DIR}/src/public)
 target_compile_features(dagent_ipc PUBLIC cxx_std_23)
-target_compile_options(dagent_ipc PRIVATE -Wall -Wextra)
+dagent_compile_options(dagent_ipc)
 target_link_libraries(dagent_ipc PUBLIC dagent_base)
 
 # client：RPC 匹配、DTO 状态与请求/事件转交。
@@ -300,7 +309,7 @@ add_library(dagent_client STATIC
 
 target_include_directories(dagent_client PUBLIC ${CMAKE_SOURCE_DIR}/src/public)
 target_compile_features(dagent_client PUBLIC cxx_std_23)
-target_compile_options(dagent_client PRIVATE -Wall -Wextra)
+dagent_compile_options(dagent_client)
 target_link_libraries(dagent_client PUBLIC dagent_protocol dagent_ipc dagent_base)
 
 # runtime：会话控制、交互代理、子执行与只读查询协调；只经核心端口访问具体实现。
@@ -314,7 +323,7 @@ add_library(dagent_runtime STATIC
 
 target_include_directories(dagent_runtime PUBLIC ${CMAKE_SOURCE_DIR}/src/public)
 target_compile_features(dagent_runtime PUBLIC cxx_std_23)
-target_compile_options(dagent_runtime PRIVATE -Wall -Wextra)
+dagent_compile_options(dagent_runtime)
 target_link_libraries(dagent_runtime PUBLIC dagent_agent)
 
 # 后端配置与具体适配对象装配：SessionFactory/ConfigurationGateway/QueryGateway 的实现。
@@ -348,7 +357,7 @@ add_library(dagent_app_config STATIC
 
 target_include_directories(dagent_app_config PUBLIC ${CMAKE_SOURCE_DIR}/src/public)
 target_compile_features(dagent_app_config PUBLIC cxx_std_23)
-target_compile_options(dagent_app_config PRIVATE -Wall -Wextra)
+dagent_compile_options(dagent_app_config)
 target_compile_definitions(dagent_app_config PRIVATE DAGENT_VERSION="${PROJECT_VERSION}")
 if(DAGENT_DEV_HOME)
     target_compile_definitions(dagent_app_config PRIVATE DAGENT_DEV_HOME="${DAGENT_DEV_HOME}")
@@ -370,7 +379,7 @@ add_library(dagent_backend STATIC
 
 target_include_directories(dagent_backend PUBLIC ${CMAKE_SOURCE_DIR}/src/public)
 target_compile_features(dagent_backend PUBLIC cxx_std_23)
-target_compile_options(dagent_backend PRIVATE -Wall -Wextra)
+dagent_compile_options(dagent_backend)
 target_compile_definitions(dagent_backend PRIVATE DAGENT_VERSION="${PROJECT_VERSION}")
 target_link_libraries(dagent_backend
     PUBLIC dagent_runtime dagent_protocol dagent_ipc dagent_base
@@ -381,32 +390,34 @@ add_executable(dagent-backend private/app/backend_main.cpp)
 target_sources(dagent-backend PRIVATE private/app/backend_main_${DAGENT_PLATFORM}.cpp)
 
 target_compile_features(dagent-backend PRIVATE cxx_std_23)
-target_compile_options(dagent-backend PRIVATE -Wall -Wextra)
+dagent_compile_options(dagent-backend)
 target_link_libraries(dagent-backend PRIVATE dagent_backend dagent_app_config)
 
 # 可执行文件：只编 main.cpp，其余代码都在库里（docs/design/agent.md §1）。
 add_executable(dagent private/app/main.cpp)
 
 target_compile_features(dagent PRIVATE cxx_std_23)
-target_compile_options(dagent PRIVATE -Wall -Wextra)
+dagent_compile_options(dagent)
 target_link_libraries(dagent PRIVATE dagent_app_cli dagent_ui)
 
-# SRT bridge 是程序资源：构建时复制到二进制旁的 libexec/，安装时随二进制覆盖。
-set(DAGENT_BRIDGE ${CMAKE_CURRENT_SOURCE_DIR}/private/exec/srt_bridge.mjs)
-set(DAGENT_BWRAP_WRAPPER ${CMAKE_CURRENT_SOURCE_DIR}/private/exec/srt_bwrap.sh)
-add_custom_command(OUTPUT ${CMAKE_CURRENT_BINARY_DIR}/libexec/srt_bridge.mjs ${CMAKE_CURRENT_BINARY_DIR}/libexec/srt_bwrap.sh
-    COMMAND ${CMAKE_COMMAND} -E make_directory ${CMAKE_CURRENT_BINARY_DIR}/libexec
-    COMMAND ${CMAKE_COMMAND} -E copy_if_different ${DAGENT_BRIDGE} ${CMAKE_CURRENT_BINARY_DIR}/libexec/srt_bridge.mjs
-    COMMAND ${CMAKE_COMMAND} -E copy_if_different ${DAGENT_BWRAP_WRAPPER} ${CMAKE_CURRENT_BINARY_DIR}/libexec/srt_bwrap.sh
-    DEPENDS ${DAGENT_BRIDGE} ${DAGENT_BWRAP_WRAPPER}
-    COMMENT "Copying SRT bridge to libexec")
-add_custom_target(dagent_bridge ALL DEPENDS ${CMAKE_CURRENT_BINARY_DIR}/libexec/srt_bridge.mjs ${CMAKE_CURRENT_BINARY_DIR}/libexec/srt_bwrap.sh)
-add_dependencies(dagent dagent_bridge)
+if(CMAKE_SYSTEM_NAME STREQUAL "Linux")
+    # SRT bridge 是程序资源：构建时复制到二进制旁的 libexec/，安装时随二进制覆盖。
+    set(DAGENT_BRIDGE ${CMAKE_CURRENT_SOURCE_DIR}/private/exec/srt_bridge.mjs)
+    set(DAGENT_BWRAP_WRAPPER ${CMAKE_CURRENT_SOURCE_DIR}/private/exec/srt_bwrap.sh)
+    add_custom_command(OUTPUT ${CMAKE_CURRENT_BINARY_DIR}/libexec/srt_bridge.mjs ${CMAKE_CURRENT_BINARY_DIR}/libexec/srt_bwrap.sh
+        COMMAND ${CMAKE_COMMAND} -E make_directory ${CMAKE_CURRENT_BINARY_DIR}/libexec
+        COMMAND ${CMAKE_COMMAND} -E copy_if_different ${DAGENT_BRIDGE} ${CMAKE_CURRENT_BINARY_DIR}/libexec/srt_bridge.mjs
+        COMMAND ${CMAKE_COMMAND} -E copy_if_different ${DAGENT_BWRAP_WRAPPER} ${CMAKE_CURRENT_BINARY_DIR}/libexec/srt_bwrap.sh
+        DEPENDS ${DAGENT_BRIDGE} ${DAGENT_BWRAP_WRAPPER}
+        COMMENT "Copying SRT bridge to libexec")
+    add_custom_target(dagent_bridge ALL DEPENDS ${CMAKE_CURRENT_BINARY_DIR}/libexec/srt_bridge.mjs ${CMAKE_CURRENT_BINARY_DIR}/libexec/srt_bwrap.sh)
+    add_dependencies(dagent dagent_bridge)
 
-set(DAGENT_SEARXNG_ENTRY ${CMAKE_CURRENT_SOURCE_DIR}/private/app/searxng_server.py)
-add_custom_command(OUTPUT ${CMAKE_CURRENT_BINARY_DIR}/libexec/searxng_server.py
-    COMMAND ${CMAKE_COMMAND} -E make_directory ${CMAKE_CURRENT_BINARY_DIR}/libexec
-    COMMAND ${CMAKE_COMMAND} -E copy_if_different ${DAGENT_SEARXNG_ENTRY} ${CMAKE_CURRENT_BINARY_DIR}/libexec/searxng_server.py
-    DEPENDS ${DAGENT_SEARXNG_ENTRY})
-add_custom_target(dagent_searxng_entry ALL DEPENDS ${CMAKE_CURRENT_BINARY_DIR}/libexec/searxng_server.py)
-add_dependencies(dagent-backend dagent_bridge dagent_searxng_entry)
+    set(DAGENT_SEARXNG_ENTRY ${CMAKE_CURRENT_SOURCE_DIR}/private/app/searxng_server.py)
+    add_custom_command(OUTPUT ${CMAKE_CURRENT_BINARY_DIR}/libexec/searxng_server.py
+        COMMAND ${CMAKE_COMMAND} -E make_directory ${CMAKE_CURRENT_BINARY_DIR}/libexec
+        COMMAND ${CMAKE_COMMAND} -E copy_if_different ${DAGENT_SEARXNG_ENTRY} ${CMAKE_CURRENT_BINARY_DIR}/libexec/searxng_server.py
+        DEPENDS ${DAGENT_SEARXNG_ENTRY})
+    add_custom_target(dagent_searxng_entry ALL DEPENDS ${CMAKE_CURRENT_BINARY_DIR}/libexec/searxng_server.py)
+    add_dependencies(dagent-backend dagent_bridge dagent_searxng_entry)
+endif()

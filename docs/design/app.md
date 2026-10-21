@@ -331,7 +331,8 @@ resume_id, continue_last, log_level}`。后端的 `app::assemble_backend` 依次
    打开记录写入器并取得写租约；存储路径固定为 `<root>/data/dagent.db`。
 
 权限初值优先用 `--permissions`，再用 config.json，默认 workspace。凭据只在 app 内部的 `llm::ProviderConfig` 中出现，
-对外只返回 `PublicModel`。CMake 安装两个可执行文件和分目录资源，模型与 MCP 由不含私有凭据的模板首次生成，权限为 0600。
+对外只返回 `PublicModel`。CMake 安装两个可执行文件和分目录资源，模型与 MCP 由不含私有凭据的模板首次生成，
+Linux 安装时设置权限为 0600；`libexec` 中的 SRT、SearXNG 入口和 AppArmor profile 也仅在 Linux 生成或安装。
 
 ## 6. run 输出
 

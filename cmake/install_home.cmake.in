@@ -14,14 +14,17 @@ foreach(resource IN LISTS resources)
         get_filename_component(parent "${destination}/${target}" DIRECTORY)
         file(MAKE_DIRECTORY "${parent}")
         configure_file("${source}/${resource}" "${destination}/${target}" COPYONLY)
-        if(target STREQUAL "config/models.json" OR target STREQUAL "config/mcp.json")
+        if("@CMAKE_SYSTEM_NAME@" STREQUAL "Linux" AND
+           (target STREQUAL "config/models.json" OR target STREQUAL "config/mcp.json"))
             file(CHMOD "${destination}/${target}" PERMISSIONS OWNER_READ OWNER_WRITE)
         endif()
     endif()
 endforeach()
 
 # Generate for the final executable path, excluding the package staging root.
-set(DAGENT_BACKEND_PATH "${CMAKE_INSTALL_PREFIX}/dagent-backend")
-file(MAKE_DIRECTORY "${destination}/libexec")
-configure_file("@CMAKE_SOURCE_DIR@/cmake/dagent.apparmor.in"
-    "${destination}/libexec/dagent.apparmor" @ONLY)
+if("@CMAKE_SYSTEM_NAME@" STREQUAL "Linux")
+    set(DAGENT_BACKEND_PATH "${CMAKE_INSTALL_PREFIX}/dagent-backend")
+    file(MAKE_DIRECTORY "${destination}/libexec")
+    configure_file("@CMAKE_SOURCE_DIR@/cmake/dagent.apparmor.in"
+        "${destination}/libexec/dagent.apparmor" @ONLY)
+endif()

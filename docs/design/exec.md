@@ -197,7 +197,8 @@ SrtControl 析构的 close 在显式清理后为空操作。继承清单不关�
 ### 宿主前置
 
 bubblewrap 需要宿主允许相应 namespace。对开启 AppArmor 非特权 userns 限制的主机，
-CMake 为实际后端路径生成专用 `dagent.apparmor`，由管理员安装和加载，详见 [构建与安装](../guide/build.md)。
+CMake 仅在 Linux 构建和安装时为实际后端路径生成专用 `dagent.apparmor`，
+由管理员安装和加载，详见 [构建与安装](../guide/build.md)。
 正常启动按后端可执行路径自动匹配，不依赖通用 `aa-exec -p linux-sandbox` 包装器。
 `dagent sandbox status` 分开报告静态依赖、AppArmor 标签和真实启动结果；有依赖不等于可隔离执行。
 2026-09-30 开发主机的默认启动结果见 [验收记录](../archive/2026-09-30-srt-permissions.md)，不代替其他主机的探测。
