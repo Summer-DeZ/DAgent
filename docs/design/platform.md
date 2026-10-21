@@ -341,3 +341,9 @@ DAgent 作为 ConPTY 的客户端运行，不创建 ConPTY；终端由 Windows T
 
 net 层与 runtime 下载的 libcurl 句柄都设置 `CURLSSLOPT_REVOKE_BEST_EFFORT`：Windows 的 schannel 在吊销服务器不可达时（常见于只经代理出网的主机）
 不再以 `CRYPT_E_REVOCATION_OFFLINE` 失败，证书本身的验证不变；OpenSSL 后端忽略该选项，Linux 行为不变。
+
+## Windows：进程代码页
+
+两个可执行文件嵌入 `cmake/dagent.manifest`（`activeCodePage=UTF-8`、`longPathAware`）。进程级 ANSI 代码页因此是 UTF-8，
+共享代码里 `std::filesystem::path(std::string)`、`path.string()` 和 A 版 API 都按 UTF-8 解释窄字符串，与 `base::path_from_utf8/path_to_utf8` 的约定一致；
+命令行参数经 CLI11 `ensure_utf8` 转为 UTF-8 后可直接构造路径。Linux 不嵌清单，行为不变。

@@ -403,6 +403,10 @@ target_sources(dagent-backend PRIVATE private/app/backend_main_${DAGENT_PLATFORM
 
 target_compile_features(dagent-backend PRIVATE cxx_std_23)
 dagent_compile_options(dagent-backend)
+if(CMAKE_SYSTEM_NAME STREQUAL "Windows")
+    # 应用清单：进程 ANSI 代码页为 UTF-8，长路径感知；MSVC 链接器自动嵌入 .manifest 源文件。
+    target_sources(dagent-backend PRIVATE ${CMAKE_SOURCE_DIR}/cmake/dagent.manifest)
+endif()
 target_link_libraries(dagent-backend PRIVATE dagent_backend dagent_app_config)
 
 # 可执行文件：只编 main.cpp，其余代码都在库里（docs/design/agent.md §1）。
@@ -410,6 +414,9 @@ add_executable(dagent private/app/main.cpp)
 
 target_compile_features(dagent PRIVATE cxx_std_23)
 dagent_compile_options(dagent)
+if(CMAKE_SYSTEM_NAME STREQUAL "Windows")
+    target_sources(dagent PRIVATE ${CMAKE_SOURCE_DIR}/cmake/dagent.manifest)
+endif()
 target_link_libraries(dagent PRIVATE dagent_app_cli dagent_ui)
 
 if(CMAKE_SYSTEM_NAME STREQUAL "Linux")
