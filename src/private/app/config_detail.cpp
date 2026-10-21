@@ -1,10 +1,11 @@
 #include "app/config_detail.hpp"
 
-#include <cstdlib>
 #include <fstream>
 #include <iterator>
+#include <utility>
 
 #include "base/path.hpp"
+#include "base/platform.hpp"
 
 namespace dagent::app::detail {
 namespace fs = std::filesystem;
@@ -41,10 +42,10 @@ json parse_file(const fs::path& file) {
 }
 
 std::string env_value(std::string_view name, const std::string& where) {
-    const char* value = std::getenv(std::string(name).c_str());
-    if (value == nullptr || *value == '\0')
+    auto value = base::environment_variable(name);
+    if (!value || value->empty())
         fail(ConfigError::Kind::invalid, std::format("{} references unset environment variable {}", where, name));
-    return value;
+    return std::move(*value);
 }
 
 std::string expand_env(const std::string& text, const std::string& where) {

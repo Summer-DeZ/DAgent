@@ -40,7 +40,7 @@ Home 安装脚本按配置时的目标系统选择 Linux 的 0600 权限设置�
 | `src/private/app/paths_posix.cpp` | `src/public/app/paths.hpp` | `detail::executable_home_directory`、`detail::probe_home_writable` |
 | `src/private/app/interrupts_posix.cpp` | `src/public/app/interrupts.hpp` | `install_interrupts`、`ignore_broken_pipe` |
 | `src/private/app/backend_main_posix.cpp` | `src/public/app/interrupts.hpp` | `initialize_backend_signals` |
-| `src/private/app/toolchain_posix.cpp` | `src/public/app/toolchain_detail.hpp` | `detail::runtime_platform`、`detail::SyncLock` |
+| `src/private/app/toolchain_posix.cpp` | `src/public/app/toolchain_detail.hpp` | `detail::runtime_platform`、`detail::extract_runtime_archive`、`detail::runtime_environment`、`detail::install_python_runtime`、`detail::python_environment_program`、`detail::SyncLock` |
 | `src/private/ui/browser_posix.cpp` | `src/public/ui/browser.hpp` | `open_browser` |
 | `src/private/web/document_posix.cpp` | `src/public/web/detail.hpp` | `detail::convert_charset` |
 | `src/private/ipc/channel_posix.cpp` | `src/public/ipc/channel.hpp` | `InheritedEndpoint` 参数解析、`Channel` 原生状态与传输、`BackendProcess` 不透明进程标识、`spawn_backend`、`wait_or_terminate` |
@@ -71,6 +71,10 @@ workspace 的用户路径、Git 根目录和参数通过这些接口转换；上
 app 通过环境变量接口读取 DAGENT_HOME，仅非空时使用；dev 默认值与可执行文件目录的选择顺序不变。
 tools 的 `~` 展开在 HOME 缺失或为空时保留输入；权限层、命令分类和 UI 缩写只判断 HOME 是否存在，
 保留空值参与原路径拼接或文本比较的行为。命令分类的局部 lambda 借用函数内持有的 Home 副本，不逃逸。
+配置的 `env_value` 也使用环境变量副本，缺失与空值都沿用原来的 unset 错误；DAGENT_LOG 仅在非空时解析。
+SearXNG 代理透传只判断变量是否存在，保留空值及大小写变量的原追加顺序。
+Terminal 的 `probe_caps() noexcept` 保留不分配内存的 getenv/string_view 读取，TERM/COLORTERM 的缺失与空值
+均作为空文本参与原能力判断；此处不调用返回字符串副本的接口。
 
 `process_id` 返回当前进程号，调用位置与十进制格式不变。时间转换写入调用方的 `std::tm`，
 local/UTC 转换返回是否成功，UTC 时间戳转换保留原返回值和对 tm 的修改；调用者维持各自的失败处理。
@@ -87,6 +91,10 @@ local/UTC 转换返回是否成功，UTC 时间戳转换保留原返回值和对
 Toolchain 的 `runtime_platform`
 保留 `sysname-machine` 与原异常。`SyncLock` 用 pimpl 保存 fd，仍非阻塞加独占锁，析构只 close，
 锁范围仍覆盖原 sync 流程；文件锁未合并为 base 原语。
+Toolchain 的解包、执行环境构造、uv Python 安装与符号链接、Python 环境程序位置也由该平台文件提供。
+POSIX 保留固定 tar 路径和参数、PATH 拼接和环境顺序、uv 参数与链接目标；
+`execute_runtime_command` 声明在同一 detail 头，实现在共享 `toolchain.cpp`，仍负责 20 分钟超时、
+65536 输出上限、原失败文本和尾部 CR/LF 清理。下载、校验、摘要、代际及发布留在共享层，详见 [toolchain](toolchain.md)。
 
 CLI 用 `stdin_is_terminal` 判断输入来源，用 `read_stdin_all` 读取管道输入，保留 EINTR 重试与其他错误时停止读取。
 Terminal 也通过 base 判断 stdin/stdout 是否终端。前端先安装中断处理，再忽略断管信号；后端参数校验后恢复信号屏蔽并忽略断管信号，

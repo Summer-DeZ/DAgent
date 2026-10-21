@@ -76,6 +76,8 @@ app 同时实现 `backend/configuration.hpp`、`backend/queries.hpp`、`backend/
 | `config_detail_posix.cpp` | require_private_file 的 stat、普通文件与 0600 权限检查 |
 
 内部共享声明位于 `src/public/app/config_detail.hpp` 的 `dagent::app::detail` 命名空间。
+配置环境展开的 `env_value` 通过 `base::environment_variable` 读取独立副本，缺失或空字符串仍抛
+`ConfigError::Kind::invalid`，保留 `references unset environment variable` 错误文本与调用位置。
 模型添加与外观保存继续使用同一个 `ModelWriteLock` 和 `run/models.lock`；各入口的锁范围不变。
 ModelWriteLock 通过 pimpl 隐藏原生状态，构造/析构签名不变；Impl 在计算锁路径和创建目录前分配。
 仍以 `O_RDWR | O_CREAT | O_CLOEXEC`、0600 打开锁文件，阻塞 `LOCK_EX` 仅重试 EINTR；

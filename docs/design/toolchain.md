@@ -29,7 +29,20 @@ runtime/
 准备成功写 `.ready.json`；失败时不发布新 manifest，重试可重建未完成目录。
 已发布版本不在 sync 中修改或删除，运行中的后端继续使用启动时的路径，重启后使用新快照。
 
-`app/toolchain_detail.hpp` 声明内部平台标识与安装锁，实现在 `app/toolchain_posix.cpp`。
+`app/toolchain_detail.hpp` 声明内部平台操作、共享命令执行和安装锁：
+
+| 接口 | 实现与职责 |
+| --- | --- |
+| `execute_runtime_command` | `app/toolchain.cpp`：不继承宿主环境，沿用 exec 默认项与传入环境；超时 20 分钟，输出上限 65536，失败文本仍拼接程序名、stderr、stdout，成功时去掉尾部 CR/LF |
+| `extract_runtime_archive` | `app/toolchain_posix.cpp`：在传入 cwd 执行 `/usr/bin/tar -xf <archive> --strip-components=1 -C <destination>` |
+| `runtime_environment` | `app/toolchain_posix.cpp`：按原顺序构造 shell、PATH、HOME/XDG、包环境变量和可读目录 |
+| `install_python_runtime` | `app/toolchain_posix.cpp`：设置准备环境，执行 uv python install/find，并创建 `bin/python` 和 `bin/python3` 符号链接 |
+| `python_environment_program` | `app/toolchain_posix.cpp`：返回环境根下的 `bin/python`，供 uv pip sync 和 SearXNG 启动使用 |
+| `runtime_platform`、`SyncLock` | `app/toolchain_posix.cpp`：平台标识和原生安装锁 |
+
+共享 `toolchain.cpp` 保留配置读取、下载和 SHA-256 校验、包顺序、代际与摘要计算、就绪检查和 manifest 发布；
+归档验证完成后才调用解包接口。Python 包安装仍在非 Python 包之后，平台操作完成后再计算程序摘要、
+写入 `.ready.json`；依赖环境就绪后才写最终 `installed.json`，不改变未完成代际的清理位置。
 `runtime_platform` 保留 uname 的 `sysname-machine` 格式与失败异常；`SyncLock` 以不透明状态持有
 `run/runtime.lock`，仍使用 0600/CLOEXEC、非阻塞独占锁，析构关闭文件，持有范围仍覆盖整个 sync 流程。
 
@@ -56,6 +69,10 @@ bridge 位于后端二进制旁的 `libexec/`，跟随程序版本而不是 Home
 `env` 可为包增加执行变量，值开头的 `{root}` 替换为该包目录，例如 Git helper 与模板路径。
 安装记录包含实际程序路径和准备时的程序摘要；下载包另记录归档摘要。
 Python 发行包由固定 uv 版本的 managed Python 下载目录解析和校验。
+POSIX 准备 Python 时，环境按 PATH、HOME、UV_NO_CONFIG、UV_PYTHON_INSTALL_DIR、UV_PYTHON_BIN_DIR、UV_CACHE_DIR
+的顺序传入，PATH 固定 `/usr/bin:/bin`，缓存仍为 `HomePaths::cache / "uv"`。
+先执行 `uv python install <version> --no-bin`，再执行 `uv python find --managed-python --no-python-downloads <version>`；
+创建 bin 目录后，`bin/python` 指向查得程序相对 bin 的路径，`bin/python3` 的链接目标固定为 `python`。
 
 仓库配置固定 Node、uv、ripgrep 和 Python 版本，并为 Linux aarch64、x86_64 提供归档。
 Bash、Git 默认从准备机器导入快照，Git helper 路径采用 Ubuntu 布局；其它发行版应调整 `files`。
@@ -114,6 +131,10 @@ MCP 在 `config/mcp.json` 的 `mcpServers` 条目选择环境，并声明启动�
 
 bash 默认 `environment: managed`，也可选独立依赖环境或显式 `project`。
 managed 从空进程环境开始，使用托管 Bash `--noprofile --norc`；PATH 先放该消费者的依赖，再放托管工具。
+POSIX 的 `runtime_environment` 对非 managed 环境先拼接 `<root>/bin:` 和 `<root>/node_modules/.bin:`，
+再按 manifest 的 packages 遍历顺序追加各包 bin，最后追加 `/usr/bin:/bin`。
+环境变量依次为 Python 环境的 VIRTUAL_ENV（如适用）、各包声明的 env、固定 PATH/HOME/XDG 等设置；
+不去重、不调整覆盖顺序。shell 仍取 programs.bash，可读目录仍先放包目录、最后放环境根。
 HOME/XDG、uv/npm 配置和缓存使用 home 内专用位置；不继承宿主 Python、Node、shell 初始化变量。
 uv/npm 在普通执行时默认离线，防止常规启动顺带安装；显式命令仍受现有网络/执行权限控制。
 MCP managed stdio 使用同一环境规则和 home cwd，server 的显式 `env` 最后覆盖。
@@ -149,6 +170,9 @@ MCP managed stdio 使用同一环境规则和 home cwd，server 的显式 `env` 
 当前正在执行的搜索若失败会如实返回，不在工具内自动重试。
 Python 入口监听由后端持有写端的 stdin 管道，EOF 时结束进程组，后端异常退出也结束服务。
 服务在宿主运行，网络地位与模型 API 类似；真正的工具连接仍是 SRT 内 curl → 当前托管端点。
+SearXNG 的 Python 入口通过 `python_environment_program` 取得，POSIX 仍为环境下的 `bin/python`。
+代理变量通过 `base::environment_variable` 读取，依次透传 HTTP_PROXY、HTTPS_PROXY、ALL_PROXY、NO_PROXY
+及对应小写变量；缺失时不追加，已设置为空时仍追加空值，不改变基础环境项与代理项的顺序。
 
 SearXNG 入口 `libexec/searxng_server.py` 与 SRT bridge 的复制目标和安装规则仅在 Linux 启用，
 这些入口随二进制更新，定位基准为后端路径。

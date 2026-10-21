@@ -1,4 +1,5 @@
 #include "app/searxng.hpp"
+#include "app/toolchain_detail.hpp"
 
 #include <condition_variable>
 #include <fstream>
@@ -72,7 +73,7 @@ struct Searxng::Impl {
         fs::permissions(config, fs::perms::owner_read | fs::perms::owner_write);
         const auto executable = base::executable_path().parent_path();
         exec::Command command;
-        command.argv = {(environment / "bin/python").string(), "-u", (executable / "libexec/searxng_server.py").string()};
+        command.argv = {detail::python_environment_program(environment).string(), "-u", (executable / "libexec/searxng_server.py").string()};
         command.cwd = directory;
         command.inherit_env = false;
         command.env_set = {{"PYTHONPATH", (environment / "source").string()},
@@ -80,7 +81,7 @@ struct Searxng::Impl {
             {"PYTHONNOUSERSITE", "1"}, {"HOME", directory.string()}, {"LC_ALL", "C.UTF-8"}};
         // Infrastructure follows the backend's proxy configuration, just like model API connections.
         for (const auto* name : {"HTTP_PROXY", "HTTPS_PROXY", "ALL_PROXY", "NO_PROXY", "http_proxy", "https_proxy", "all_proxy", "no_proxy"})
-            if (const char* value = std::getenv(name)) command.env_set.emplace_back(name, value);
+            if (const auto value = base::environment_variable(name)) command.env_set.emplace_back(name, *value);
         auto current = std::make_shared<State>();
         state = current;
         child = exec::Child::spawn(command, process);

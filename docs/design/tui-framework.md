@@ -166,6 +166,8 @@ kitty 键盘协议、字素宽度模式、背景色。
 `terminal.cpp` 保留能力判断、ANSI 序列与模式状态；`terminal_posix.cpp` 实现原生终端操作。
 公共头只持有不透明的 `Native`，不暴露 termios、信号管道或其 fd。stdin/stdout 的终端判断分别调用
 `base::stdin_is_terminal` / `base::stdout_is_terminal`。
+`probe_caps() noexcept` 使用 getenv 返回的 TERM/COLORTERM 借用值和 string_view 做能力判断，不分配内存；
+未设置和空字符串都按空文本处理，不调用返回字符串副本的环境变量接口。
 
 构造先探测能力，再分配 Native、创建 self-pipe；成功时发布写端并安装处理器，失败仍降级运行。
 随后在 stdin 为终端且 tcgetattr 成功时保存原设置、进入 raw 模式，再进入界面模式，最后登记全局实例和 atexit。

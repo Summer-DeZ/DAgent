@@ -1,4 +1,5 @@
 #include "base/log.hpp"
+#include "base/platform.hpp"
 
 #include <chrono>
 #include <cstdlib>
@@ -106,8 +107,8 @@ void init_log(const LogOptions& opt) {
 
     auto& s = state();
     s.level = parse_level(opt.level);
-    if (const char* spec = std::getenv("DAGENT_LOG"); spec && *spec)
-        parse_level_spec(spec, s.level, s.module_levels);
+    if (const auto spec = environment_variable("DAGENT_LOG"); spec && !spec->empty())
+        parse_level_spec(*spec, s.level, s.module_levels);
 
     if (opt.file.empty()) throw std::invalid_argument("log file path is empty");
     const std::filesystem::path file = opt.file;

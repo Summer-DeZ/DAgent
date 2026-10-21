@@ -82,6 +82,7 @@ base::shutdown_log();                                    // 程序退出前
 
 `DAGENT_LOG` 会覆盖 `LogOptions::level`。写法是用逗号分隔的若干项：不带 `=` 的项设置默认级别，`模块=级别`
 单独设置某个模块的级别。各项的顺序不影响结果。
+初始化通过 `environment_variable` 读取独立副本，仅非空时解析；缺失和空字符串都不覆盖，非法非空值仍抛原异常。
 
 ```bash
 DAGENT_LOG=debug                  # 所有模块 debug

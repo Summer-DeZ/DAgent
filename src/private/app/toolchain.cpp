@@ -50,24 +50,6 @@ fs::path within(const fs::path& root, const fs::path& relative) {
     return result;
 }
 
-std::string execute(std::vector<std::string> argv, const fs::path& cwd,
-                    const std::vector<std::pair<std::string, std::string>>& env = {}) {
-    exec::Command command;
-    command.argv = std::move(argv);
-    command.cwd = cwd;
-    command.inherit_env = false;
-    command.env_set = env;
-    command.timeout = std::chrono::minutes(20);
-    exec::Options options;
-    options.max_output_bytes = 65536;
-    const auto result = exec::run(command, options);
-    if (result.exit_code != 0 || result.timed_out || result.signal)
-        throw std::runtime_error(command.argv.front() + " failed: " + result.err + result.out);
-    std::string out = result.out;
-    while (!out.empty() && (out.back() == '\n' || out.back() == '\r')) out.pop_back();
-    return out;
-}
-
 void download(const std::string& url, const fs::path& target) {
     if (!url.starts_with("https://")) throw std::runtime_error("runtime downloads require HTTPS");
     std::ofstream out(target, std::ios::binary);
@@ -104,46 +86,33 @@ void unpack_archive(const json& asset, const HomePaths& paths, const fs::path& d
                     fs::rename(partial, archive);
                 }
                 if (sha256(read(archive)) != hash) throw std::runtime_error("cached runtime archive checksum mismatch");
-                execute({"/usr/bin/tar", "-xf", archive.string(), "--strip-components=1", "-C", directory.string()}, paths.root);
+                detail::extract_runtime_archive(archive, directory, paths.root);
 }
 
 void replace_root(std::string& value, const fs::path& root) {
     if (value.starts_with("{root}")) value.replace(0, 6, root.string());
 }
 
-exec::Environment environment(const HomePaths& paths, const json& installed, std::string_view name) {
-    exec::Environment out;
-    std::string path;
-    fs::path root = paths.runtime / "homes" / name;
-    if (name != "managed") {
-        const auto& env = installed.at("environments").at(std::string(name));
-        root = env.at("directory").get<std::string>();
-        path = root.string() + "/bin:" + root.string() + "/node_modules/.bin:";
-        if (env.at("kind") == "python") out.variables.emplace_back("VIRTUAL_ENV", root.string());
-    }
-    for (const auto& [key, package] : installed.at("packages").items()) {
-        (void)key;
-        path += package.at("bin").get<std::string>() + ":";
-        out.readable.emplace_back(package.at("directory").get<std::string>());
-        const json variables = package.value("env", json::object());
-        for (const auto& [key, value] : variables.items())
-            out.variables.emplace_back(key, value.get<std::string>());
-    }
-    out.shell = installed.at("programs").at("bash").get<std::string>();
-    out.readable.push_back(root);
-    out.variables.insert(out.variables.end(), {
-        {"PATH", path + "/usr/bin:/bin"}, {"HOME", (paths.runtime / "homes" / name).string()},
-        {"XDG_CONFIG_HOME", (paths.runtime / "homes" / name / "config").string()},
-        {"XDG_CACHE_HOME", (paths.cache / std::string(name)).string()},
-        {"LC_ALL", "C.UTF-8"}, {"PYTHONNOUSERSITE", "1"}, {"PYTHONDONTWRITEBYTECODE", "1"},
-        {"UV_NO_CONFIG", "1"}, {"UV_OFFLINE", "1"}, {"UV_PYTHON_DOWNLOADS", "never"},
-        {"UV_CACHE_DIR", (paths.cache / "uv").string()}, {"NPM_CONFIG_OFFLINE", "true"},
-        {"NPM_CONFIG_USERCONFIG", (paths.runtime / "homes" / name / "user.npmrc").string()},
-        {"NPM_CONFIG_GLOBALCONFIG", (paths.runtime / "homes" / name / "global.npmrc").string()},
-        {"NPM_CONFIG_CACHE", (paths.cache / "npm").string()}});
+} // namespace
+
+std::string detail::execute_runtime_command(
+    std::vector<std::string> argv, const fs::path& cwd,
+    const std::vector<std::pair<std::string, std::string>>& env) {
+    exec::Command command;
+    command.argv = std::move(argv);
+    command.cwd = cwd;
+    command.inherit_env = false;
+    command.env_set = env;
+    command.timeout = std::chrono::minutes(20);
+    exec::Options options;
+    options.max_output_bytes = 65536;
+    const auto result = exec::run(command, options);
+    if (result.exit_code != 0 || result.timed_out || result.signal)
+        throw std::runtime_error(command.argv.front() + " failed: " + result.err + result.out);
+    std::string out = result.out;
+    while (!out.empty() && (out.back() == '\n' || out.back() == '\r')) out.pop_back();
     return out;
 }
-} // namespace
 
 Toolchain::Toolchain(HomePaths paths) : paths_(std::move(paths)) {
     config_ = read_json(paths_.runtime_config);
@@ -176,11 +145,11 @@ std::map<std::string, exec::Environment> Toolchain::environments() const {
         if (!base::can_execute(file.get<std::string>()))
             throw std::runtime_error("managed program is missing: " + name + "; run dagent runtime sync");
     std::map<std::string, exec::Environment> out;
-    out.emplace("managed", environment(paths_, installed_, "managed"));
+    out.emplace("managed", detail::runtime_environment(paths_, installed_, "managed"));
     for (const auto& [name, item] : installed_.at("environments").items()) {
         if (!fs::exists(fs::path(item.at("directory").get<std::string>()) / ".ready.json"))
             throw std::runtime_error("managed environment is missing: " + name + "; run dagent runtime sync");
-        out.emplace(name, environment(paths_, installed_, name));
+        out.emplace(name, detail::runtime_environment(paths_, installed_, name));
     }
     return out;
 }
@@ -234,15 +203,7 @@ json Toolchain::sync() {
                 }
             } else if (kind == "python") {
                 const auto uv = next.at("programs").at("uv").get<std::string>();
-                std::vector<std::pair<std::string, std::string>> env = {
-                    {"PATH", "/usr/bin:/bin"}, {"HOME", directory.string()}, {"UV_NO_CONFIG", "1"},
-                    {"UV_PYTHON_INSTALL_DIR", (directory / "install").string()},
-                    {"UV_PYTHON_BIN_DIR", (directory / "bin").string()}, {"UV_CACHE_DIR", (paths_.cache / "uv").string()}};
-                execute({uv, "python", "install", version, "--no-bin"}, directory, env);
-                const auto python = execute({uv, "python", "find", "--managed-python", "--no-python-downloads", version}, directory, env);
-                fs::create_directories(directory / "bin");
-                fs::create_symlink(fs::relative(python, directory / "bin"), directory / "bin/python");
-                fs::create_symlink("python", directory / "bin/python3");
+                detail::install_python_runtime(uv, version, directory, paths_.cache);
             } else throw std::runtime_error("unknown runtime package kind: " + kind);
             const auto bin = package.value("bin", "bin");
             entry["bin"] = (bin == "." ? directory : within(directory, bin)).string();
@@ -286,16 +247,16 @@ json Toolchain::sync() {
         if (!fs::exists(directory / ".ready.json")) {
             if (fs::exists(directory)) fs::remove_all(directory);
             fs::create_directories(directory);
-            auto env = environment(paths_, next, "managed").variables;
+            auto env = detail::runtime_environment(paths_, next, "managed").variables;
             std::erase_if(env, [](const auto& item) { return item.first == "UV_OFFLINE" || item.first == "NPM_CONFIG_OFFLINE"; });
             if (kind == "python") {
                 const auto uv = next["programs"]["uv"].get<std::string>();
-                execute({uv, "venv", "--python", next["programs"]["python"].get<std::string>(), directory.string()}, paths_.root, env);
-                execute({uv, "pip", "sync", "--python", (directory / "bin/python").string(), "--require-hashes", "--only-binary=:all:", lockfile.string()}, paths_.root, env);
+                detail::execute_runtime_command({uv, "venv", "--python", next["programs"]["python"].get<std::string>(), directory.string()}, paths_.root, env);
+                detail::execute_runtime_command({uv, "pip", "sync", "--python", detail::python_environment_program(directory).string(), "--require-hashes", "--only-binary=:all:", lockfile.string()}, paths_.root, env);
             } else if (kind == "node") {
                 fs::copy_file(package_json, directory / "package.json");
                 fs::copy_file(lockfile, directory / "package-lock.json");
-                execute({next["programs"]["npm"].get<std::string>(), "ci", "--no-audit", "--no-fund",
+                detail::execute_runtime_command({next["programs"]["npm"].get<std::string>(), "ci", "--no-audit", "--no-fund",
                          spec.value("install_scripts", false) ? "--ignore-scripts=false" : "--ignore-scripts"}, directory, env);
             } else throw std::runtime_error("environment kind must be python or node");
             if (spec.contains("source")) {
