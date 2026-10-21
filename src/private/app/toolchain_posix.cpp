@@ -17,8 +17,9 @@ std::string runtime_platform() {
 }
 
 void extract_runtime_archive(const fs::path& archive, const fs::path& destination,
-                             const fs::path& cwd) {
-    execute_runtime_command({"/usr/bin/tar", "-xf", archive.string(), "--strip-components=1", "-C", destination.string()}, cwd);
+                             const fs::path& cwd, int strip) {
+    execute_runtime_command({"/usr/bin/tar", "-xf", archive.string(),
+                             "--strip-components=" + std::to_string(strip), "-C", destination.string()}, cwd);
 }
 
 exec::Environment runtime_environment(const HomePaths& paths, const json& installed, std::string_view name) {

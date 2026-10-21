@@ -10,6 +10,17 @@
       },
       "programs": {
         "bash": "bin/bash"
+      },
+      "platforms": {
+        "Windows-x86_64": {
+          "kind": "system",
+          "version": "host-install",
+          "root": "C:/Program Files/Git",
+          "bin": "usr/bin",
+          "programs": {
+            "bash": "usr/bin/bash.exe"
+          }
+        }
       }
     },
     "git": {
@@ -27,6 +38,17 @@
       },
       "programs": {
         "git": "bin/git"
+      },
+      "platforms": {
+        "Windows-x86_64": {
+          "kind": "system",
+          "version": "host-install",
+          "root": "C:/Program Files/Git",
+          "bin": "cmd",
+          "programs": {
+            "git": "cmd/git.exe"
+          }
+        }
       }
     },
     "uv": {
@@ -45,6 +67,23 @@
           "url": "https://github.com/astral-sh/uv/releases/download/0.12.19/uv-x86_64-unknown-linux-musl.tar.gz",
           "sha256": "db7278c9f57981338fddff1fb250e11964bc0a4fafcb9eed8303fdb117dc067b"
         }
+      },
+      "platforms": {
+        "Windows-x86_64": {
+          "version": "0.12.19",
+          "bin": ".",
+          "assets": {
+            "Windows-x86_64": {
+              "url": "https://github.com/astral-sh/uv/releases/download/0.12.19/uv-x86_64-pc-windows-msvc.zip",
+              "sha256": "6dbb02d79e419522f1c500f0adb1cddcff0cda7d59b0d66ea7f5e3b4a1b2f5f0",
+              "strip": 0
+            }
+          },
+          "programs": {
+            "uv": "uv.exe",
+            "uvx": "uvx.exe"
+          }
+        }
       }
     },
     "rg": {
@@ -61,6 +100,21 @@
         "Linux-x86_64": {
           "url": "https://github.com/BurntSushi/ripgrep/releases/download/15.2.0/ripgrep-15.2.0-x86_64-unknown-linux-musl.tar.gz",
           "sha256": "33e15bcf1624b25cdd2a55813a47a2f95dbe126268203e76aa6a585d1e7b149c"
+        }
+      },
+      "platforms": {
+        "Windows-x86_64": {
+          "version": "15.2.0",
+          "bin": ".",
+          "assets": {
+            "Windows-x86_64": {
+              "url": "https://github.com/BurntSushi/ripgrep/releases/download/15.2.0/ripgrep-15.2.0-x86_64-pc-windows-msvc.zip",
+              "sha256": "71b2fef860abe467217a538ff31de02f5258807c0129f771846f87bd029aafc5"
+            }
+          },
+          "programs": {
+            "rg": "rg.exe"
+          }
         }
       }
     },
@@ -81,6 +135,23 @@
           "url": "https://nodejs.org/dist/v24.21.0/node-v24.21.0-linux-x64.tar.xz",
           "sha256": "fd8e59d5a511510f6a298afb548f18c7d2b1be404d8b4a27d94fbe49f56cb2d6"
         }
+      },
+      "platforms": {
+        "Windows-x86_64": {
+          "version": "24.21.0",
+          "bin": ".",
+          "assets": {
+            "Windows-x86_64": {
+              "url": "https://nodejs.org/dist/v24.21.0/node-v24.21.0-win-x64.zip",
+              "sha256": "158f7685b44de51f6c0df1d153526cbcd3e1bc739a8dfc607721cef75de9e541"
+            }
+          },
+          "programs": {
+            "node": "node.exe",
+            "npm": "node_modules/npm/bin/npm-cli.js",
+            "npx": "node_modules/npm/bin/npx-cli.js"
+          }
+        }
       }
     },
     "python": {
@@ -97,7 +168,10 @@
     "internal/sandbox": {
       "kind": "node",
       "lockfile": "config/sandbox/package-lock.json",
-      "package_json": "config/sandbox/package.json"
+      "package_json": "config/sandbox/package.json",
+      "platforms": {
+        "Windows-x86_64": null
+      }
     },
     "internal/searxng": {
       "kind": "python",
@@ -106,6 +180,9 @@
         "commit": "d48c4b555421e824342c51d68482dd0898e54d0f",
         "url": "https://codeload.github.com/searxng/searxng/tar.gz/d48c4b555421e824342c51d68482dd0898e54d0f",
         "sha256": "638cdb4bec31bed24e924c63ab5b343d24a64c6342fedd09dc9eb2bd17dacda8"
+      },
+      "platforms": {
+        "Windows-x86_64": null
       }
     }
   }

@@ -261,14 +261,16 @@ Windows require_private_file 检查磁盘普通文件（拒绝目录/reparse poi
 写入 FlushFileBuffers 后相对同目录 FileRenameInfoEx 替换，失败按临时句柄删除，删除使用 FileDispositionInfoEx。
 Windows 目录 flush 为尽力而为，不声称具备 POSIX 目录 fsync 的持久性保证；不读取或修改特权 SACL。
 
-Windows runtime_platform 返回 Windows-x86_64；tar 固定为系统目录的 tar.exe，保持 -xf/strip-components=1/-C 参数。
-runtime_environment 使用分号 PATH，包目录及变量按原迭代顺序排列，系统目录与 Windows 目录放在末尾；
+Windows runtime_platform 返回 Windows-x86_64；tar 固定为系统目录的 tar.exe，保持 -xf/strip-components=<strip>/-C 参数，
+strip 默认 1 并由 bsdtar 同时处理 .zip。runtime_environment 使用分号 PATH，包目录及变量按原迭代顺序排列，
+每个包 bin 之后追加 manifest programs 中各程序父目录（去重），系统目录与 Windows 目录放在末尾；
 Python 环境前置 Scripts，Node 前置 node_modules/.bin。HOME/USERPROFILE 指向所选受管 Home，
 XDG/UV/NPM 变量沿用原含义，另显式传入 SystemRoot、系统 COMSPEC、系统临时目录 TEMP/TMP，不继承宿主 PATH。
 install_python_runtime 返回 python/python3 程序映射；POSIX 仍创建并返回原两个链接，Windows 直接返回 uv find 的解释器路径。
 select_python_runtime_program 在 POSIX 保留配置路径，在 Windows 选择安装器路径；配置相对路径仍在原位置验证。
 程序校验、摘要、包/环境就绪标记和最终 manifest 发布顺序不变；Windows venv 程序为 Scripts/python.exe。
-当前配置模板仍未提供 Windows 的系统工具登记与资产定义。
+Windows 的系统 Bash/Git 与 uv/rg/node 归档由 home/config/runtime.json 的 platforms 覆盖登记；
+sandbox 与 SearXNG 环境在该平台解析为 null，不准备。
 
 以下锁与原生权限细节描述 POSIX 实现。
 

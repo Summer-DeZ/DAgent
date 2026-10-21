@@ -3,6 +3,7 @@
 #include "base/platform.hpp"
 #include "base/security_detail.hpp"
 
+#include <algorithm>
 #include <stdexcept>
 #include <system_error>
 #include <windows.h>
@@ -40,11 +41,12 @@ std::vector<std::pair<std::string, std::string>> native_environment() {
 
 std::string runtime_platform() { return "Windows-x86_64"; }
 
-void extract_runtime_archive(const fs::path& archive, const fs::path& destination, const fs::path& cwd) {
+void extract_runtime_archive(const fs::path& archive, const fs::path& destination, const fs::path& cwd, int strip) {
     const auto tar = windows_directory(::GetSystemDirectoryW) / L"tar.exe";
     auto env = native_environment();
     env.emplace_back("PATH", system_path());
-    execute_runtime_command({base::path_to_utf8(tar), "-xf", base::path_to_utf8(archive), "--strip-components=1",
+    execute_runtime_command({base::path_to_utf8(tar), "-xf", base::path_to_utf8(archive),
+                             "--strip-components=" + std::to_string(strip),
                              "-C", base::path_to_utf8(destination)}, cwd, env);
 }
 
@@ -52,23 +54,33 @@ exec::Environment runtime_environment(const HomePaths& paths, const json& instal
     exec::Environment out;
     const fs::path home = paths.runtime / "homes" / base::path_from_utf8(name);
     fs::path root = home;
-    std::string path;
+    std::vector<std::string> segments;
+    const auto add_path = [&](std::string segment) {
+        if (segment.empty() || std::ranges::find(segments, segment) != segments.end()) return;
+        segments.push_back(std::move(segment));
+    };
     if (name != "managed") {
         const auto& env = installed.at("environments").at(std::string(name));
         root = base::path_from_utf8(env.at("directory").get<std::string>());
         if (env.at("kind") == "python") {
-            path += base::path_to_utf8(root / L"Scripts") + ";";
+            add_path(base::path_to_utf8(root / L"Scripts"));
             out.variables.emplace_back("VIRTUAL_ENV", base::path_to_utf8(root));
         }
-        path += base::path_to_utf8(root / "node_modules/.bin") + ";";
+        add_path(base::path_to_utf8(root / "node_modules/.bin"));
     }
     for (const auto& [key, package] : installed.at("packages").items()) {
         (void)key;
-        path += package.at("bin").get<std::string>() + ";";
+        add_path(package.at("bin").get<std::string>());
         out.readable.push_back(base::path_from_utf8(package.at("directory").get<std::string>()));
         const json variables = package.value("env", json::object());
         for (const auto& [variable, value] : variables.items()) out.variables.emplace_back(variable, value.get<std::string>());
     }
+    for (const auto& [program, file] : installed.at("programs").items()) {
+        (void)program;
+        add_path(base::path_to_utf8(base::path_from_utf8(file.get<std::string>()).parent_path()));
+    }
+    std::string path;
+    for (const auto& segment : segments) path += segment + ";";
     out.shell = base::path_from_utf8(installed.at("programs").at("bash").get<std::string>());
     out.readable.push_back(root);
     out.variables.insert(out.variables.end(), {

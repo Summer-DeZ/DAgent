@@ -27,7 +27,8 @@ std::string execute_runtime_command(
 /// @brief 解压已经下载并验证摘要的归档；下载和校验仍由共享层负责。
 void extract_runtime_archive(const std::filesystem::path& archive,
                              const std::filesystem::path& destination,
-                             const std::filesystem::path& cwd);
+                             const std::filesystem::path& cwd,
+                             int strip);
 
 exec::Environment runtime_environment(const HomePaths& paths, const nlohmann::json& installed,
                                       std::string_view name);
