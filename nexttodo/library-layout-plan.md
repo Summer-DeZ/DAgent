@@ -1,6 +1,6 @@
 # agent / tui / ui 目录整理
 
-批准：2026-10-22。Windows 移植合并后进行。第一阶段（纯移动）已于 2026-10-22 完成并合并。
+批准：2026-10-22。Windows 移植合并后进行。第一阶段（纯移动）与第二阶段（大文件拆分）均于 2026-10-22 完成并合并。
 
 ## 目标
 
@@ -50,3 +50,20 @@ CMake 目标不变，仍为 `dagent_agent`、`dagent_tui`、`dagent_ui`。子目
 2. Linux：dev 预设零警告；`compile_commands.json` 与 master 比对，差异只应是源文件路径；安装产物比对；`temp/platform-check/det.sh` 确定性基线与一次 TUI 冒烟。
 3. Windows：虚拟机一次 Release 构建加 `--version`、`sandbox status`，与 Linux 检查并行；不跑 TUI 场景，不触发 CI。
 4. 通过后合并进 master。
+
+## 第二阶段：大文件按职责拆分
+
+只拆同一文件里并列着几块独立职责的文件；单个长函数（`syntax.cpp` 词法器、`decision_review.cpp` 等）不动。跨文件共享的私有声明放 `*_detail.hpp`，与 `exec/detail.hpp`、`app/config_detail.hpp` 同一做法。
+
+| 原文件 | 拆分结果 |
+| --- | --- |
+| `ui/shell.cpp` | `ui/shell_detail.hpp`（Shell 声明）；`shell.cpp` 生命周期、后端事件、快照应用、布局与各栏刷新；`shell_commands.cpp` 命令注册、提交、`/` 面板、权限动作与交互回答；`shell_panes.cpp` 子会话 Pane；`page/workspace.{hpp,cpp}` 排队标签、子 Agent 标签、调暗层、三栏工作区、滚动区框架；`bridge.cpp` FrontendBridge |
+| `ui/page/transcript.cpp` | `transcript.cpp` 事件到 Document 的投影；`transcript_render.cpp` 各块渲染器、链接识别与 `install_renderers`；diff 宽度约定经 `diff_required_width` / `diff_available_width` 暴露 |
+| `tui/document/markdown.cpp` | `markdown.cpp` 行分类与 MarkdownStream；`markdown_render.cpp` 行内解析、排版、单元格样式与 Markdown/表格渲染器；行级判定在 `markdown_detail.hpp` |
+| `agent/policy/permission.cpp` | `permission.cpp` 资源分类、规则匹配、`evaluate`、模式切换；`permission_grants.cpp` 审批有效性、会话授权记忆、撤销与网络记忆；`single_use_only` 成为 Policy 的私有静态成员 |
+| `agent/policy/authorization.cpp` | `authorization.cpp` ApprovalSupport 与 ActionAuthorizer；`execution_authorizer.cpp` ExecutionAuthorizer；`cancel_decision` 成为 ApprovalSupport 的静态成员 |
+| `tui/grid/grapheme.cpp` | `grapheme_tables.{hpp,cpp}` 脚本生成的 Unicode 区段表（保留生成标记）；`grapheme.cpp` 只剩解码与宽度逻辑 |
+
+不拆：`record_codec.cpp`、`input.cpp`、`document.cpp`、`runtime.cpp`、`syntax.cpp`、`decision_review.cpp`。
+
+验收：每个文件一个提交，逐步零警告构建；与 master 基线的安装产物比对 `dagent::` 强符号（无删除，新增仅为外露的成员与 detail 函数）；确定性 CLI 输出一致；用基线二进制生成的 Markdown/表格/代码块会话与 edit diff 会话在新旧二进制中回放画面一致；ask 模式的 bash 审批弹窗、放行与执行正常；虚拟机 Release 构建加冒烟。
