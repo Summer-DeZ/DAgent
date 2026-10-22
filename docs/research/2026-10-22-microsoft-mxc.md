@@ -107,8 +107,42 @@ DAgent 现有的执行模型与 MXC 的契约高度对应：
 - 命令行长度受 Windows 限制；路径与环境值必须是合法 Unicode。
 - 遥测同意提示由 MXC 自带，需要在首次使用时处理用户体验。
 
+## 8. 开发虚拟机上的探测记录（2026-10-22）
+
+目的：确认 MXC 的 BaseContainer 层在一台打满补丁的 Windows 11 25H2 上是否可用。
+
+| 步骤 | 结果 |
+| --- | --- |
+| 升级前 | Windows 11 Pro 25H2，build 26200.8037（2026-03 累积更新），`System32` 中没有 `processmodel.dll` |
+| 离线安装 KB5127648（2026-10 累积更新，含检查点包 KB5043080；Microsoft Update Catalog 下载，`DISM /Online /Add-Package`） | 约 50 分钟，退出码 3010，重启后 build 26200.9711 |
+| `wxc-exec.exe --probe`（MXC SDK 1.0.1 的 x64 执行器） | `tier = appcontainer-dacl`，`baseContainerApiPresent = false`，`isolationSessionAvailable = false`，`hyperlightAvailable = true`；告警提示需要 `wxc-host-prep prepare-system-drive` / `prepare-null-device`（均需管理员） |
+| `System32` 检查 | 仍没有 `processmodel.dll`；没有 `api-ms-win-*securityenvironment*` API set 文件 |
+| `WinSxS` 检查 | 存在组件 `amd64_microsoft-windows-a..nmodel-processmodel_…_10.0.26100.9711`，其中有 `processmodel.dll` 10.0.26100.9711，但未投影到 `System32` |
+
+结论：
+
+- 在 25H2 上，PSEC（`CreateProcessSecurityEnvironment` 等导出所在的 `processmodel.dll`）随累积更新一起下发到了组件仓库，但处于**未启用**状态。
+  这与 MXC 文档"符号存在但特性被禁用"的措辞一致，也与公开报告一致：一台 26H2（26300.9711）机器的 `System32` 里有同版本号
+  10.0.26100.9711 的 `processmodel.dll`，而 26H2 与 25H2 共用同一服务分支，仅由启用包（KB5121794，约 180 KB）切换特性。
+  因此 MXC 文档中"25H2 ≥ 26200.9278 支持进程隔离"的表述，至少在这台机器上不成立；实际门槛看起来是 26H2 启用包。
+- 启用包 KB5121794 不在 Microsoft Update Catalog 中（仅通过 Windows Update 分发），而本机环境到 Windows Update 端点不通；
+  现成的离线来源只有第三方镜像。本次没有继续安装。
+- 即便 API 存在，公开 issue（openai/codex #53650）显示普通用户会话中 `CreateProcessSecurityEnvironment` 在 26300.9711 上
+  返回 `0x80070005`（E_ACCESSDENIED），原因未明，微软尚无文档说明权限要求。这意味着 BaseContainer 目前对最终用户并不稳定可用。
+- 不选 BaseContainer 时，MXC 回退到 AppContainer + DACL：需要管理员一次性修改系统盘根 ACL，每次开机后修补 `\Device\Null`，
+  网络只有能力粒度而没有 WFP 规则。这一层不满足 DAgent 对"失败关闭"网络边界的要求，Codex 与 SRT 也都拒绝使用它。
+
+对 DAgent 的影响：第三步（Windows 沙箱）暂不启动开发。重新评估的触发条件：(1) 26H2 启用包可以通过可信渠道离线获得，
+或虚拟机能访问 Windows Update；(2) `CreateProcessSecurityEnvironment` 的 E_ACCESSDENIED 有官方解释或在后续更新中消失；
+(3) SRT PR #427 合并并在真实机器上验证通过。届时先在虚拟机上用 `wxc-exec --probe` 确认 `tier = base-container`，再决定接入方式。
+
+探测材料：`/home/jyt/winvm/shared/mxc/bin/`（SDK 1.0.1 的 x64 二进制）、`/home/jyt/winvm/shared/dagent/jobs/vmupdate/`（安装与探测脚本及输出）。
+升级前的整盘备份在 `/home/jyt/winvm/storage-pre-update-20261022/`。
+
 ## 来源
 
+- openai/codex issue #53650（CreateProcessSecurityEnvironment 0x80070005）：https://github.com/openai/codex/issues/53650
+- Windows 11 26H2 启用包 KB5121794 的第三方报道（未在 Update Catalog 中）：https://pureinfotech.com/windows-11-26h2-enablement-package-download/
 - Windows Developer Blog，2026-10-07：https://blogs.windows.com/windowsdeveloper/2026/10/07/microsoft-execution-containers-policy-driven-containment-for-ai-agents/
 - Windows Experience Blog，2026-10-07：https://blogs.windows.com/windowsexperience/2026/10/07/building-windows-for-hybrid-intelligence/
 - 仓库与文档：https://github.com/microsoft/mxc（`README.md`、`docs/containment-policy/1.0.0/policy.md`、`docs/backends/process-container/os-version-support.md`、`docs/backends/process-container/networking.md`、`docs/backends/process-container/host-prep.md`、`src/ffi/mxc_ffi/src/lib.rs`、`sdk/dotnet/README.md`）
