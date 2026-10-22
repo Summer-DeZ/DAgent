@@ -37,13 +37,16 @@ add_library(dagent_tui STATIC
     private/tui/widget/widget.cpp
     private/tui/widget/theme.cpp
     private/tui/document/document.cpp
+    private/tui/document/scrollback.cpp
     private/tui/document/wrap.cpp
     private/tui/document/markdown.cpp
     private/tui/document/markdown_render.cpp
     private/tui/document/syntax.cpp
     private/tui/runtime/input.cpp
+    private/tui/runtime/input_decode.cpp
     private/tui/runtime/runtime.cpp
     private/tui/runtime/keymap.cpp
+    private/tui/runtime/scrollback_mouse.cpp
 )
 
 target_include_directories(dagent_tui PUBLIC ${CMAKE_SOURCE_DIR}/src/public)
@@ -261,6 +264,7 @@ add_library(dagent_agent STATIC
     private/agent/policy/execution_registry.cpp
     private/agent/record/committer.cpp
     private/agent/record/record_codec.cpp
+    private/agent/record/record_decode.cpp
     private/agent/record/history.cpp
     private/agent/record/recovery.cpp
     private/agent/record/compaction.cpp

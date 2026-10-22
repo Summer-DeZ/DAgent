@@ -1,6 +1,6 @@
 # agent / tui / ui 目录整理
 
-批准：2026-10-22。Windows 移植合并后进行。第一阶段（纯移动）与第二阶段（大文件拆分）均于 2026-10-22 完成并合并。
+批准：2026-10-22。Windows 移植合并后进行。第一阶段（纯移动）、第二阶段（大文件拆分）与第三阶段（剩余大文件与大头文件）均于 2026-10-22 完成并合并。
 
 ## 目标
 
@@ -64,6 +64,19 @@ CMake 目标不变，仍为 `dagent_agent`、`dagent_tui`、`dagent_ui`。子目
 | `agent/policy/authorization.cpp` | `authorization.cpp` ApprovalSupport 与 ActionAuthorizer；`execution_authorizer.cpp` ExecutionAuthorizer；`cancel_decision` 成为 ApprovalSupport 的静态成员 |
 | `tui/grid/grapheme.cpp` | `grapheme_tables.{hpp,cpp}` 脚本生成的 Unicode 区段表（保留生成标记）；`grapheme.cpp` 只剩解码与宽度逻辑 |
 
-不拆：`record_codec.cpp`、`input.cpp`、`document.cpp`、`runtime.cpp`、`syntax.cpp`、`decision_review.cpp`。
+第二阶段未动的 `record_codec.cpp`、`input.cpp`、`document.{hpp,cpp}`、`runtime.hpp` 在第三阶段处理（见下）；`syntax.cpp`、`decision_review.cpp` 仍不拆。
 
 验收：每个文件一个提交，逐步零警告构建；与 master 基线的安装产物比对 `dagent::` 强符号（无删除，新增仅为外露的成员与 detail 函数）；确定性 CLI 输出一致；用基线二进制生成的 Markdown/表格/代码块会话与 edit diff 会话在新旧二进制中回放画面一致；ask 模式的 bash 审批弹窗、放行与执行正常；虚拟机 Release 构建加冒烟。
+
+## 第三阶段：剩余大文件与大头文件
+
+由三个子 Agent 在各自的工作树上并行完成，主会话负责分派、合并与验收。
+
+| 原文件 | 拆分结果 |
+| --- | --- |
+| `agent/record/record_codec.cpp` | `record_codec.cpp` 编码；`record_decode.cpp` 解码；`decision_state` / `decision_scope` 进入公开头 |
+| `tui/runtime/input.cpp` | `input.cpp` Decoder、EventRouter、InputBoxHandler；`input_decode.cpp` 转义序列解码；共享的 `SeqResult` 与解码函数在 `input_detail.hpp` |
+| `tui/runtime/runtime.hpp` | `keymap.hpp`（Command、Keymap，实现仍在 keymap.cpp）；`scrollback_mouse.{hpp,cpp}`；runtime.hpp 不再包含 document.hpp |
+| `tui/document/document.{hpp,cpp}` | `document.hpp` 块模型、渲染器基类与 Document；`renderers.hpp` 具体渲染器；`markdown.hpp` MarkdownStream；`scrollback.{hpp,cpp}`；共用的 `walk_line` 模板在 `document_detail.hpp` |
+
+验收同第二阶段：全量零警告构建；强符号比对只新增 `input_detail` 与 `record_codec` 的两组函数；确定性 CLI 输出一致；两段会话回放画面一致；虚拟机 Release 构建加冒烟。

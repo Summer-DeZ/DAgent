@@ -15,7 +15,9 @@
 #include <vector>
 
 #include "ui/shell.hpp"
-#include "tui/document/document.hpp"
+#include "tui/document/scrollback.hpp"
+#include "tui/runtime/keymap.hpp"
+#include "tui/runtime/scrollback_mouse.hpp"
 #include "ui/overlay/approval.hpp"
 #include "ui/overlay/completion_controller.hpp"
 #include "ui/overlay/memory_browser.hpp"

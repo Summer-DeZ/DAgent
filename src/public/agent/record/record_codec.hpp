@@ -33,6 +33,9 @@ Record permission(const Approval& approval, const Decision& decision,
                   const ExecutionGrant* grant = nullptr);
 Record parent_review(const Approval& approval, const Decision& decision);
 std::string permission_summary(const Approval& approval, const Decision& decision);
+/// @brief 记录里的决定状态名（approved / denied 或显式 state）与授权范围名（none / one_call / session / child_session）。
+std::string decision_state(const Decision& decision);
+std::string decision_scope(const Approval& approval, const Decision& decision);
 Record permission_revoked(std::string_view id);
 Record auto_review(const AutoReview& event);
 /// @brief 用户确认 unrestricted 警告的事实；schema 1，空载荷。
