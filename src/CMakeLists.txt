@@ -42,6 +42,7 @@ add_library(dagent_tui STATIC
     private/tui/document/markdown_render.cpp
     private/tui/document/syntax.cpp
     private/tui/runtime/input.cpp
+    private/tui/runtime/input_decode.cpp
     private/tui/runtime/runtime.cpp
     private/tui/runtime/keymap.cpp
 )
