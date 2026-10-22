@@ -11,7 +11,7 @@
 #include <string_view>
 #include <vector>
 
-#include "agent/history.hpp"
+#include "agent/record/history.hpp"
 #include "storage/storage.hpp"
 
 namespace dagent::storage {

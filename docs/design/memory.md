@@ -124,7 +124,7 @@ TUI 卡片显示操作、作用域、名字、元数据和正文；run 的 text/
 
 ## 5. 用户管理
 
-界面流程位于 `ui/memory_browser.hpp` / `private/ui/memory_browser.cpp` 的 `MemoryBrowser`。
+界面流程位于 `ui/overlay/memory_browser.hpp` / `private/ui/overlay/memory_browser.cpp` 的 `MemoryBrowser`。
 Shell 注入共享 `Panel&`、带成功/错误回调的 RPC、toast 与终端列数读取；RPC 继续经 Shell 的
 CallbackGate 在 UI 线程交付，不增加独立寿命机制。命令注册调用 `MemoryBrowser::open()`。
 

@@ -47,7 +47,7 @@ edit 和覆盖已有文件的 write 通过 `preview_request()` 声明读取需�
 
 后端为每个会话装配 `Context(root, control_root, tools, files, search, process)`、`Registry` 和
 `ToolSession`。普通工具用 `add_builtin` 注册，MCP 用 `add_mcp` 注册；真实调度入口见
-[Dispatcher](../../src/private/agent/dispatch.cpp)，不应直接绕过预览授权调用 execute。
+[Dispatcher](../../src/private/agent/loop/dispatch.cpp)，不应直接绕过预览授权调用 execute。
 
 | 类型 | 作用 |
 | --- | --- |

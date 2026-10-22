@@ -7,8 +7,8 @@
 #include <stdexcept>
 #include <utility>
 
-#include "agent/recovery.hpp"
-#include "agent/session.hpp"
+#include "agent/record/recovery.hpp"
+#include "agent/loop/session.hpp"
 #include "app/history.hpp"
 #include "app/prompt.hpp"
 #include "base/platform.hpp"

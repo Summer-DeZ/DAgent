@@ -15,12 +15,12 @@
 #include "agent/events.hpp"
 #include "agent/mcp_state.hpp"
 #include "agent/model_input.hpp"
-#include "agent/permission.hpp"
-#include "agent/port_lease.hpp"
-#include "agent/port_delegation.hpp"
+#include "agent/policy/permission.hpp"
+#include "agent/port/lease.hpp"
+#include "agent/port/delegation.hpp"
 #include "agent/public_model.hpp"
-#include "agent/run_services.hpp"
-#include "agent/session.hpp"
+#include "agent/loop/run_services.hpp"
+#include "agent/loop/session.hpp"
 #include "agent/subagent_def.hpp"
 
 namespace dagent::runtime {

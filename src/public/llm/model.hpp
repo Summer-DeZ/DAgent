@@ -11,7 +11,7 @@
 #include <stop_token>
 #include <string>
 
-#include "agent/port_model.hpp"
+#include "agent/port/model.hpp"
 #include "llm/provider.hpp"
 
 namespace dagent::llm {

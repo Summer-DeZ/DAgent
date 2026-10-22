@@ -1,13 +1,14 @@
 # ui：应用层交互界面
 
-`dagent` 不带子命令时进入全屏终端界面。公开头文件在 `src/public/ui/`，实现在 `src/private/ui/`，
+`dagent` 不带子命令时进入全屏终端界面。公开头文件在 `src/public/ui/`，实现在 `src/private/ui/`，根目录只有入口 `shell` 与 `browser`，
+其余按职责分在 `style/`（文案、外观、主题配置、显示辅助）、`state/`（投影、计量、分页等无控件的值类型）、`page/`（主区与边栏控件）和 `overlay/`（浮层）；
 库为 `dagent_ui`，只依赖 client、protocol、tui 与 base。界面运行在前端进程，只持有 `client::Client`、协议 DTO
 与页面状态：业务操作都经 [私有协议](protocol.md) 发给自己的后端，执行状态、队列、模式与模型的真值都在后端 runtime。
 它使用 [TUI 框架](tui-framework.md)；phase 4 解冻框架，新增通用超链接样式和块可见性查询；phase 5a 增加颜色令牌与显式 256 色回退，
 phase 5b 的对话结果挂钩、卡片、圆角输入框与未读提示也全部在应用层完成，没有新增框架接口。
 phase 5c 的自适应阅读宽度、双侧分节栏、导航焦点与 Layout 设置也全部在应用层实现，没有扩展 TUI 框架。
 
-界面 chrome 使用英文，统一来自 `ui/strings.hpp` 的 `Strings` 和 `ui/strings.cpp` 的常量表。
+界面 chrome 使用英文，统一来自 `ui/style/strings.hpp` 的 `Strings` 和 `ui/style/strings.cpp` 的常量表。
 `text()` 只返回英文表的常量引用；字段全为 `string_view`，格式串使用显式参数索引，由 `format_text()` 格式化。
 暂不提供语言配置、运行时切换或外部文案文件。工具结果、模型提示词、日志和 CLI 不进入此表；
 模型正文和用户提供的计划标题仍跟随用户语言，旧会话的历史文本不迁移。
@@ -197,10 +198,10 @@ dagent 使用计划 §9.3 的中性灰阶与橙色，深浅两套值及文件格
 控件、Document、浮层和事件处理器只由渲染线程访问。前端没有业务工作线程：
 
 - 输入、命令、权限切换、回答等发 RPC；同步等待只用于启动阶段，运行中都用 `call_async`，结果 `post` 回渲染线程。
-- 后端事件由 Client 读线程经 `FrontendBridge` post 到渲染线程；Shell 与 HistoryPager 共用 `ui/callback_gate.hpp` 中的 `CallbackGate`，保证 Shell 析构后在途回调不再触碰页面。
+- 后端事件由 Client 读线程经 `FrontendBridge` post 到渲染线程；Shell 与 HistoryPager 共用 `ui/state/callback_gate.hpp` 中的 `CallbackGate`，保证 Shell 析构后在途回调不再触碰页面。
 - Shell 记录当前 session_id 与 generation，丢弃旧 generation 的事件；`session.changed` 后取 `session.snapshot` 刷新标签。
   new/resume 时清空投影并用 `session.history` 分页回放；切模型保留 Transcript，只更新标签与上下文。
-- 列表、历史、项目信息与文件补全都是后端查询；主会话与子 Pane 各有一个 `HistoryPager`，关闭页面时发 `session.history_close`。分页器与启动时同步加载历史的 `load_history` 位于 `ui/history_pager.hpp/.cpp`。
+- 列表、历史、项目信息与文件补全都是后端查询；主会话与子 Pane 各有一个 `HistoryPager`，关闭页面时发 `session.history_close`。分页器与启动时同步加载历史的 `load_history` 位于 `ui/state/history_pager.hpp/.cpp`。
 
 Shell 进入全屏后调用 `Terminal::set_mouse(true)` 打开鼠标上报，ScrollbackMouse 才收得到滚轮、
 拖选与双击；退出时的终端还原由框架处理。
@@ -240,10 +241,10 @@ muted 的 `QUEUED`、按 FIFO 顺序最多三个 Chip、其余 `+N`，右侧 mut
 
 Activity 位于对话和队列之间，忙时一行，空闲零高度。左侧为 accent spinner 与
 `Working · 23.4s · 1.8k tokens · 64 tok/s`，右侧 muted 的 `esc interrupt`。
-计量状态与计算位于 `ui/turn_meter.hpp` / `private/ui/turn_meter.cpp`；TurnMeter 内部按原条件取
+计量状态与计算位于 `ui/state/turn_meter.hpp` / `private/ui/state/turn_meter.cpp`；TurnMeter 内部按原条件取
 steady clock 时间，每个 `TurnStarted` 都重置计量但不改阶段，Shell 仅在 busy 从 false 变为 true 时
 调用另一重置入口并设置 Working。计时器、控件更新、弹窗等待文案覆盖及 Pane 状态仍由 Shell 管理。
-压缩、恢复和模型切换的阶段由 Shell 设置，TurnMeter 保存；token 简写共用 `ui/display.hpp` 的 `compact_tokens`。
+压缩、恢复和模型切换的阶段由 Shell 设置，TurnMeter 保存；token 简写共用 `ui/style/display.hpp` 的 `compact_tokens`。
 token 数为零时只显示阶段与耗时（如 `Working · 0.1s`）；有输出量且有流式用时后才显示速率。
 宽度不足时依次整项省略速率、token 数、`esc interrupt`，不截断指标。
 耗时从本轮开始累计，跨多次模型调用和工具执行不重置；重试、压缩及等待审批沿用相应阶段名称。
@@ -277,7 +278,7 @@ token 数为零时只显示阶段与耗时（如 `Working · 0.1s`）；有输�
 | Ctrl+? | Keys and commands（帮助面板） |
 | PgUp/PgDn、Home/End | Page up/down、Go to top/bottom（翻页、回顶、回底） |
 
-输入补全控制位于 `ui/completion_controller.hpp` / `private/ui/completion_controller.cpp`。
+输入补全控制位于 `ui/overlay/completion_controller.hpp` / `private/ui/overlay/completion_controller.cpp`。
 Shell 注入现有 Runtime、PromptBox，以及 RPC、当前会话 ID、命令数据和提交回调；控制器不持有 Shell。
 命令数据按需从 Shell 的同一份命令表生成，保留注册顺序，不新增持久命令目录。
 RPC 仍经 Shell 的 CallbackGate 转回 UI 线程；Shell 在成员析构前关闭门禁，控制器直接使用注入的 RPC 回调。
@@ -365,7 +366,7 @@ Ctrl+D 在本次前端会话切换，主/子 Pane 共用临时状态，不改保
 命令面板 Transcript 分组登记 `Toggle side-by-side diff`。空闲 HintBar 仅在当前视口有可切换 diff 主体时
 增加 `ctrl+d unified` / `ctrl+d side by side`，滚动、切 Pane、侧栏移动和终端缩放后随可见性更新。
 
-Shell 通过统一的 `render_options()` 生成 `ui/transcript.hpp` 中的 `RenderOptions`，
+Shell 通过统一的 `render_options()` 生成 `ui/page/transcript.hpp` 中的 `RenderOptions`，
 供新建 Pane、Ctrl+D 和外观更新调用 `Transcript::set_render_options`。
 其中 `auto_diff` 表示 diff 配置，`unified` 表示临时切换状态，两者独立；另携带 `links` 和项目路径 `project`。
 

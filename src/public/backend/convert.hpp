@@ -6,7 +6,7 @@
 #include <utility>
 
 #include "agent/events.hpp"
-#include "agent/history.hpp"
+#include "agent/record/history.hpp"
 #include "lib/nlohmann/json.hpp"
 #include "protocol/dto.hpp"
 #include "protocol/rpc.hpp"

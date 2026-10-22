@@ -15,7 +15,7 @@ Request → encode → HTTP → SSE / NDJSON → decode → StreamEvent → Mode
 | 文件 | 职责 |
 | --- | --- |
 | `agent/message.hpp`（核心） | Role、Message、ToolCall、ToolSpec、ModelParams、Request |
-| `agent/reply.hpp`、`agent/port_model.hpp`（核心） | StreamEvent、Reply、Usage、ModelError、RetryOptions 与 `ModelSession::complete` 端口 |
+| `agent/reply.hpp`、`agent/port/model.hpp`（核心） | StreamEvent、Reply、Usage、ModelError、RetryOptions 与 `ModelSession::complete` 端口 |
 | `llm/codec.hpp` | Codec 接口与协议错误 `Error` |
 | `llm/provider.hpp` | ProviderConfig、ProviderInfo、Framing、providers、find_provider、make_codec |
 | `llm/provider_detail.hpp` | Provider 内部共用的报文原语与工厂声明，不供装配使用 |
@@ -121,7 +121,7 @@ extended thinking 尚未开放；配置试图启用时明确拒绝。虽然保�
 
 | 文件 | 职责 |
 | --- | --- |
-| `agent/port_decision.hpp` | `DecisionModel::evaluate(request, deadline, stop)` 与 `DecisionReviewStore` 端口 |
+| `agent/port/decision.hpp` | `DecisionModel::evaluate(request, deadline, stop)` 与 `DecisionReviewStore` 端口 |
 | `llm/decision_provider.*` | `DecisionProviderConfig`、适配器目录与 `make_decision_model` 工厂 |
 | `llm/decision_systemone.*` | `POST /v1/systemone`：编码 state + questions，解码 `answers.<键>.noul` / `.choice` 与 `probabilities` |
 

@@ -27,21 +27,21 @@ target_link_libraries(dagent_base PUBLIC spdlog::spdlog)
 target_link_libraries(dagent_base PRIVATE "$<$<PLATFORM_ID:Windows>:bcrypt;advapi32>")
 
 add_library(dagent_tui STATIC
-    private/tui/terminal.cpp
-    private/tui/terminal_${DAGENT_PLATFORM}.cpp
-    private/tui/grapheme.cpp
-    private/tui/surface.cpp
-    private/tui/present.cpp
-    private/tui/layout.cpp
-    private/tui/widget.cpp
-    private/tui/document.cpp
-    private/tui/wrap.cpp
-    private/tui/markdown.cpp
-    private/tui/syntax.cpp
-    private/tui/input.cpp
-    private/tui/runtime.cpp
-    private/tui/keymap.cpp
-    private/tui/theme.cpp
+    private/tui/terminal/terminal.cpp
+    private/tui/terminal/terminal_${DAGENT_PLATFORM}.cpp
+    private/tui/grid/grapheme.cpp
+    private/tui/grid/surface.cpp
+    private/tui/grid/present.cpp
+    private/tui/widget/layout.cpp
+    private/tui/widget/widget.cpp
+    private/tui/widget/theme.cpp
+    private/tui/document/document.cpp
+    private/tui/document/wrap.cpp
+    private/tui/document/markdown.cpp
+    private/tui/document/syntax.cpp
+    private/tui/runtime/input.cpp
+    private/tui/runtime/runtime.cpp
+    private/tui/runtime/keymap.cpp
 )
 
 target_include_directories(dagent_tui PUBLIC ${CMAKE_SOURCE_DIR}/src/public)
@@ -51,32 +51,32 @@ target_link_libraries(dagent_tui PRIVATE dagent_base)
 
 # 应用层：在 TUI 框架之上构建的界面（只持 Client、协议 DTO 与页面状态）。
 add_library(dagent_ui STATIC
-    private/ui/strings.cpp
-    private/ui/display.cpp
-    private/ui/theme_config.cpp
-    private/ui/projection.cpp
     private/ui/shell.cpp
-    private/ui/history_pager.cpp
-    private/ui/turn_meter.cpp
-    private/ui/transcript.cpp
-    private/ui/prompt_input.cpp
-    private/ui/header_bar.cpp
-    private/ui/hint_bar.cpp
-    private/ui/appearance.cpp
-    private/ui/settings_dialog.cpp
-    private/ui/approval.cpp
-    private/ui/center.cpp
-    private/ui/toast.cpp
-    private/ui/prompt_box.cpp
-    private/ui/completion.cpp
-    private/ui/completion_controller.cpp
-    private/ui/welcome.cpp
-    private/ui/panel.cpp
-    private/ui/model_picker.cpp
-    private/ui/memory_browser.cpp
     private/ui/browser_${DAGENT_PLATFORM}.cpp
-    private/ui/model_dialog.cpp
-    private/ui/side_panel.cpp
+    private/ui/style/strings.cpp
+    private/ui/style/display.cpp
+    private/ui/style/theme_config.cpp
+    private/ui/style/appearance.cpp
+    private/ui/state/projection.cpp
+    private/ui/state/history_pager.cpp
+    private/ui/state/turn_meter.cpp
+    private/ui/page/transcript.cpp
+    private/ui/page/prompt_input.cpp
+    private/ui/page/header_bar.cpp
+    private/ui/page/hint_bar.cpp
+    private/ui/page/center.cpp
+    private/ui/page/prompt_box.cpp
+    private/ui/page/welcome.cpp
+    private/ui/page/side_panel.cpp
+    private/ui/overlay/settings_dialog.cpp
+    private/ui/overlay/approval.cpp
+    private/ui/overlay/toast.cpp
+    private/ui/overlay/completion.cpp
+    private/ui/overlay/completion_controller.cpp
+    private/ui/overlay/panel.cpp
+    private/ui/overlay/model_picker.cpp
+    private/ui/overlay/memory_browser.cpp
+    private/ui/overlay/model_dialog.cpp
 )
 
 target_link_libraries(dagent_ui PUBLIC dagent_tui dagent_client dagent_protocol dagent_base)
@@ -241,26 +241,26 @@ target_link_libraries(dagent_app_cli
 add_library(dagent_agent STATIC
     private/agent/skills.cpp
     private/agent/action.cpp
-    private/agent/control.cpp
-    private/agent/catalog.cpp
-    private/agent/committer.cpp
-    private/agent/record_codec.cpp
-    private/agent/decision_review.cpp
-    private/agent/history.cpp
-    private/agent/recovery.cpp
-    private/agent/session.cpp
-    private/agent/compaction.cpp
-    private/agent/dispatch.cpp
-    private/agent/authorization.cpp
-    private/agent/parent_review.cpp
-    private/agent/model_budget.cpp
-    private/agent/turn_runner.cpp
     private/agent/tokens.cpp
     private/agent/tool_data.cpp
     private/agent/conversation.cpp
     private/agent/events.cpp
-    private/agent/permission.cpp
-    private/agent/execution_registry.cpp
+    private/agent/policy/decision_review.cpp
+    private/agent/policy/authorization.cpp
+    private/agent/policy/parent_review.cpp
+    private/agent/policy/permission.cpp
+    private/agent/policy/execution_registry.cpp
+    private/agent/record/committer.cpp
+    private/agent/record/record_codec.cpp
+    private/agent/record/history.cpp
+    private/agent/record/recovery.cpp
+    private/agent/record/compaction.cpp
+    private/agent/loop/control.cpp
+    private/agent/loop/catalog.cpp
+    private/agent/loop/session.cpp
+    private/agent/loop/dispatch.cpp
+    private/agent/loop/model_budget.cpp
+    private/agent/loop/turn_runner.cpp
 )
 
 target_include_directories(dagent_agent PUBLIC ${CMAKE_SOURCE_DIR}/src/public)

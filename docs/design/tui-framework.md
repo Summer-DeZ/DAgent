@@ -1,7 +1,7 @@
 # 终端 UI 框架
 
-DAgent 自带的终端 UI 框架。头文件在 `src/public/tui/`，实现在 `src/private/tui/`，构建为静态库
-`dagent_tui`，私有链接 `dagent_base` 的终端判断原语。源码注释中的 `§N` 指本文章节。
+DAgent 自带的终端 UI 框架。头文件在 `src/public/tui/`，实现在 `src/private/tui/`，两边都按层分子目录
+`terminal/`、`grid/`、`widget/`、`document/`、`runtime/`（见 §2 分层表），构建为静态库 `dagent_tui`，私有链接 `dagent_base` 的终端判断原语。源码注释中的 `§N` 指本文章节。
 
 框架于 2026-09-18 冻结；2026-10-20 的 TUI 改版 phase 4 解冻，扩展通用超链接和文档定位接口。
 DAgent 在这些原语上搭建的实际界面见 [ui：应用层交互界面](ui.md)。
@@ -60,15 +60,15 @@ L2 网格     Surface · Cell · Style · 字素与宽度
 L1 终端     Terminal
 ```
 
-| 层 | 头文件 | 实现 |
-| --- | --- | --- |
-| L1 终端 | `terminal.hpp` | `terminal.cpp`、`terminal_posix.cpp`、`terminal_win.cpp` |
-| L2 网格 | `surface.hpp`、`grapheme.hpp` | `surface.cpp`、`present.cpp`、`grapheme.cpp` |
-| L3 布局 | `layout.hpp` | `layout.cpp` |
-| L4 控件 | `widget.hpp` | `widget.cpp`、`theme.cpp` |
-| L5 文档层 | `document.hpp` | `document.cpp`、`wrap.cpp`、`markdown.cpp`、`syntax.cpp` |
-| L6 输入 | `input.hpp` | `input.cpp` |
-| L7 运行时 | `runtime.hpp`、`event_wait.hpp` | `runtime.cpp`、`keymap.cpp`；原生事件等待在 `terminal_{posix,win}.cpp` |
+| 层 | 子目录 | 头文件 | 实现 |
+| --- | --- | --- | --- |
+| L1 终端 | `terminal/` | `terminal.hpp`、`event_wait.hpp` | `terminal.cpp`、`terminal_posix.cpp`、`terminal_win.cpp` |
+| L2 网格 | `grid/` | `surface.hpp`、`grapheme.hpp` | `surface.cpp`、`present.cpp`、`grapheme.cpp` |
+| L3 布局 | `widget/` | `layout.hpp` | `layout.cpp` |
+| L4 控件 | `widget/` | `widget.hpp` | `widget.cpp`、`theme.cpp` |
+| L5 文档层 | `document/` | `document.hpp` | `document.cpp`、`wrap.cpp`、`markdown.cpp`、`syntax.cpp` |
+| L6 输入 | `runtime/` | `input.hpp` | `input.cpp` |
+| L7 运行时 | `runtime/` | `runtime.hpp` | `runtime.cpp`、`keymap.cpp`；原生事件等待在 `terminal/terminal_{posix,win}.cpp` |
 
 ### 对象关系
 

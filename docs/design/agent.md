@@ -2,7 +2,8 @@
 
 DAgent 的核心负责把用户输入变成「请求模型 → 执行动作 → 回填结果」的循环，并维护权限、上下文、会话记录语义与
 控制动作规则。头文件在 `src/public/agent/`，实现在 `src/private/agent/`，命名空间 `dagent::agent`，库为
-`dagent_agent`，**只依赖 base**。模型请求、工具、存储和 MCP 通过核心定义的端口由外层实现；会话控制与交互等待见
+`dagent_agent`，**只依赖 base**。根目录是公共词汇（消息、回复、事件、工具数据、授权与决策类型、选项、会话元数据），
+其余按职责分在 `port/`（外层实现的端口）、`policy/`（权限、授权与审阅）、`record/`（记录编解码、提交、恢复、历史、压缩）和 `loop/`（Session、Run、循环、调度、动作目录与控制动作）。模型请求、工具、存储和 MCP 通过核心定义的端口由外层实现；会话控制与交互等待见
 [runtime](runtime.md)，前后端进程与协议见 [protocol](protocol.md)，模型协议见 [llm](llm.md)。
 
 ## 1. 分层与对象
@@ -20,7 +21,7 @@ flowchart TD
     ST[storage] -. JournalWriter / SessionStore / Lease .-> AG
 ```
 
-核心不包含 HTTP、SQLite、shell 分析树、MCP Client、终端控件或配置文件读取。外层实现的端口（`agent/port_*.hpp`）：
+核心不包含 HTTP、SQLite、shell 分析树、MCP Client、终端控件或配置文件读取。外层实现的端口（`agent/port/*.hpp`）：
 
 | 端口 | 能力 | 实现 |
 | --- | --- | --- |
@@ -34,23 +35,23 @@ flowchart TD
 
 | 对象 | 头文件 | 职责 |
 | --- | --- | --- |
-| `Session` | `session.hpp` | 一份对话的长期状态：Conversation、WorkPlan、Policy、模型与工具环境、Compactor、控制动作执行器、提交器；只暴露构造请求、快照与策略控制 |
-| `SessionConfig` | `session.hpp` | 已解析的会话配置：Options、公开模型、提示词文本、cwd/项目根/控制根、沙箱中立值、权限档、只读/planning、是否主会话 |
-| `Run` | `run.hpp` | 一次 turn 或 compact：本轮技能、steps/tool_calls/usage、一次性 `finish` 返回 `RunOutcome`；不落库 |
-| `TurnRunner` | `turn_runner.hpp` | 阻塞循环算法与唯一收尾；无跨会话状态，只经 Session/Run/RunServices 工作 |
-| `ActionCatalog` | `catalog.hpp` | 稳定的动作顺序与准备入口：普通工具、控制动作、动态 MCP |
-| `ActionDispatcher` | `dispatch.hpp` | 一批调用的准备、权限、分组执行与有序提交 |
-| `ApprovalSupport` / `ActionAuthorizer` / `ExecutionAuthorizer` | `authorization.hpp` | 共用审批步骤与身份、执行前动作授权、单次执行的网络/网页授权及结果扫描 |
-| `ExecutionMailbox` / `ParentReviewer` | `execution_mailbox.hpp` / `parent_review.hpp` | worker 向所属 Dispatcher 交接事件；父等待 task 时串行审阅子权限请求 |
-| `BudgetedModel` | `model_budget.hpp` | 普通模型请求、父审阅、摘要与实际重试的共享预算 |
-| `ControlActionExecutor` | `control.hpp` | ask / exit_plan / todo / task / skill 的类型化规则 |
-| `Policy` | `permission.hpp` | 权限规则、会话授权与模式快照（短锁，跨线程可切换；撤销及其审计记录由执行线程串行提交） |
-| `Compactor` | `compaction.hpp` | 预算、裁剪、摘要与失败退化，只产出候选变化 |
-| `SessionCommitter` | `committer.hpp` | 内存状态、记录与通知的唯一提交入口；唯一持有 broken |
-| `RecordCodec` | `record_codec.hpp` | 11 种记录的编码与类型化解码，含父审阅审计 |
-| `SessionRecovery` / `HistoryProjector` | `recovery.hpp` / `history.hpp` | 从记录重建可执行状态 / 生成只读历史条目 |
+| `Session` | `loop/session.hpp` | 一份对话的长期状态：Conversation、WorkPlan、Policy、模型与工具环境、Compactor、控制动作执行器、提交器；只暴露构造请求、快照与策略控制 |
+| `SessionConfig` | `loop/session.hpp` | 已解析的会话配置：Options、公开模型、提示词文本、cwd/项目根/控制根、沙箱中立值、权限档、只读/planning、是否主会话 |
+| `Run` | `loop/run.hpp` | 一次 turn 或 compact：本轮技能、steps/tool_calls/usage、一次性 `finish` 返回 `RunOutcome`；不落库 |
+| `TurnRunner` | `loop/turn_runner.hpp` | 阻塞循环算法与唯一收尾；无跨会话状态，只经 Session/Run/RunServices 工作 |
+| `ActionCatalog` | `loop/catalog.hpp` | 稳定的动作顺序与准备入口：普通工具、控制动作、动态 MCP |
+| `ActionDispatcher` | `loop/dispatch.hpp` | 一批调用的准备、权限、分组执行与有序提交 |
+| `ApprovalSupport` / `ActionAuthorizer` / `ExecutionAuthorizer` | `policy/authorization.hpp` | 共用审批步骤与身份、执行前动作授权、单次执行的网络/网页授权及结果扫描 |
+| `ExecutionMailbox` / `ParentReviewer` | `policy/execution_mailbox.hpp` / `policy/parent_review.hpp` | worker 向所属 Dispatcher 交接事件；父等待 task 时串行审阅子权限请求 |
+| `BudgetedModel` | `loop/model_budget.hpp` | 普通模型请求、父审阅、摘要与实际重试的共享预算 |
+| `ControlActionExecutor` | `loop/control.hpp` | ask / exit_plan / todo / task / skill 的类型化规则 |
+| `Policy` | `policy/permission.hpp` | 权限规则、会话授权与模式快照（短锁，跨线程可切换；撤销及其审计记录由执行线程串行提交） |
+| `Compactor` | `record/compaction.hpp` | 预算、裁剪、摘要与失败退化，只产出候选变化 |
+| `SessionCommitter` | `record/committer.hpp` | 内存状态、记录与通知的唯一提交入口；唯一持有 broken |
+| `RecordCodec` | `record/record_codec.hpp` | 11 种记录的编码与类型化解码，含父审阅审计 |
+| `SessionRecovery` / `HistoryProjector` | `record/recovery.hpp` / `record/history.hpp` | 从记录重建可执行状态 / 生成只读历史条目 |
 
-`RunServices`（`run_services.hpp`）是一轮所需的全部外部能力：Sink、Approver、Asker、DelegationChannel、SessionResources、
+`RunServices`（`loop/run_services.hpp`）是一轮所需的全部外部能力：Sink、Approver、Asker、DelegationChannel、SessionResources、
 stop_token；不含配置、终端、数据库路径或查找任意对象的方法。
 
 ### 线程与取消
@@ -170,7 +171,7 @@ TurnEnded
 
 ### 给模型的状态说明
 
-标准说明集中在 `agent/conversation.hpp` 的 `texts` 常量及 `agent/compaction.*` 的格式化函数。
+标准说明集中在 `agent/conversation.hpp` 的 `texts` 常量及 `agent/record/compaction.*` 的格式化函数。
 实时提交与恢复共用它们；不在文档里复制一份可变的实现文本。
 
 | 标记 | 语义 |
@@ -570,7 +571,7 @@ usage 内字段是 `prompt, completion, cached`，避免被按 `token` 等敏感
 
 ### 提交路线
 
-SessionCommitter 为每种变化固定一条路线（实现见 [committer.cpp](../../src/private/agent/committer.cpp)）：
+SessionCommitter 为每种变化固定一条路线（实现见 [committer.cpp](../../src/private/agent/record/committer.cpp)）：
 user 出队时先加内存再写记录（L03）；完整回复写 assistant（L05）；普通动作执行前写 tool_started 再发 ToolStarted（L06/L07）；
 结果按槽位写 tool 并发 ToolFinished（L08）；审批有回答时先写 permission（L09），回答前取消则不写（L10）；撤销授权写
 permission_revoked（L11）；todo 在同一提交内更新 WorkPlan 并写 tool（L13）；取消时只保存「正文 + 中断标记」（L15）；

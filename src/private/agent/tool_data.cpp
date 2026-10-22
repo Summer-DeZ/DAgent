@@ -2,7 +2,7 @@
 
 #include <utility>
 
-#include "agent/port_journal.hpp"
+#include "agent/port/journal.hpp"
 #include "base/overloaded.hpp"
 
 namespace dagent::agent {

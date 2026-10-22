@@ -1,7 +1,7 @@
 # storage：SQLite 会话存储
 
 头文件在 `src/public/storage/`，实现在 `src/private/storage/`，构建为 `dagent_storage`，命名空间 `dagent::storage`。
-它实现核心定义的存储端口（`agent/port_journal.hpp`、`agent/port_store.hpp`、`agent/port_lease.hpp`），只依赖 agent 与 base；
+它实现核心定义的存储端口（`agent/port/journal.hpp`、`agent/port/store.hpp`、`agent/port/lease.hpp`），只依赖 agent 与 base；
 记录的字段与编解码由核心 `RecordCodec` 负责，本模块把 payload 当作不透明 JSON。SQLite amalgamation 随仓库放在
 `src/public/lib/sqlite/`，以 `SQLITE_OMIT_LOAD_EXTENSION`、`SQLITE_DQS=0`、`SQLITE_THREADSAFE=1` 编译；SQLite 类型不出现在对外存储接口里。
 

@@ -18,10 +18,10 @@
 #include "app/run.hpp"
 #include "client/client.hpp"
 #include "protocol/dto.hpp"
-#include "tui/grapheme.hpp"
+#include "tui/grid/grapheme.hpp"
 #include "ui/shell.hpp"
 #include "ui/browser.hpp"
-#include "ui/display.hpp"
+#include "ui/style/display.hpp"
 
 namespace {
 

@@ -13,7 +13,7 @@
 #include <vector>
 
 #include "agent/decision_types.hpp"
-#include "agent/port_decision.hpp"
+#include "agent/port/decision.hpp"
 #include "net/http.hpp"
 
 namespace dagent::llm {
