@@ -143,7 +143,7 @@ DAgent 现有的执行模型与 MXC 的契约高度对应：
 `catalog.sf.dl.delivery.mp.microsoft.com` 提供带 SHA-1 的 MSU 直链（`Windows11.0-KB5121794-x64_5e20a3cce48d6611b16bdec42b07167f5456586a.msu`，
 174 KB，Authenticode 签名为 Microsoft Corporation），`DISM /Online /Add-Package` 安装、重启后为 26300.9711，`wxc-exec --probe` 同样报告
 `tier = base-container`。因此 BaseContainer 在 26H2 上对普通用户可用，门槛确认为 26H2 启用包；沙箱后端切换计划见
-`nexttodo/mxc-sandbox-plan.md`。
+`docs/archive/2026-10-22-mxc-sandbox-plan.md`。
 
 探测材料：`/home/jyt/winvm/shared/mxc/bin/`（SDK 1.0.1 的 x64 二进制）、`/home/jyt/winvm/shared/dagent/jobs/vmupdate/`（安装与探测脚本及输出）。
 升级前的整盘备份在 `/home/jyt/winvm/storage-pre-update-20261022/`。
