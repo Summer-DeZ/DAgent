@@ -38,8 +38,8 @@ private:
         Result result;
         try {
             const auto& options = context_.options();
-            if (!options.srt || grant.backend != "srt" || grant.sandbox != agent::SandboxProfile::read_only)
-                throw std::runtime_error("web tools require read-only SRT; run dagent sandbox status");
+            if (!options.mxc || grant.backend != "mxc" || grant.sandbox != agent::SandboxProfile::read_only)
+                throw std::runtime_error("web tools require the read-only sandbox; run dagent sandbox status");
             if (stop.stop_requested()) throw exec::ExecError(exec::ExecError::Kind::cancelled, "web request cancelled");
             auto scoped = grant;
             std::string endpoint;
@@ -56,8 +56,7 @@ private:
                 };
             }
             const auto request = [&] {
-                auto value = detail::sandbox_request(scoped, *options.srt, context_.root(),
-                    options.sandbox_state_root, options.sandbox);
+                auto value = detail::sandbox_request(scoped, *options.mxc, context_.root(), options.sandbox);
                 value.environment = options.environments.at("managed").variables;
                 return value;
             };
@@ -90,7 +89,7 @@ private:
                     // 逐跳 URL 审阅只挂真实网络请求；缓存命中与分页读取不发请求，也不走审阅。
                     web::BeforeRequest before;
                     if (grant.web_request_decider) before = [decider = grant.web_request_decider](
-                        std::string_view normalized_url, std::size_t redirect_index, exec::SrtRequest& request, std::stop_token token) {
+                        std::string_view normalized_url, std::size_t redirect_index, exec::MxcRequest& request, std::stop_token token) {
                         const auto target = web::url_target(normalized_url);
                         if (!target) throw std::runtime_error("invalid web URL for network review");
                         const auto access = decider(agent::WebRequestIntent{

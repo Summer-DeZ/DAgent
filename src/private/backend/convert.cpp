@@ -18,7 +18,7 @@ const char* mcp_status(agent::McpServerState::Status status) {
 
 const char* mcp_boundary(std::string_view boundary) {
     if (boundary == "remote") return "remote";
-    if (boundary == "srt") return "srt";
+    if (boundary == "mxc") return "mxc";
     return "unknown";
 }
 

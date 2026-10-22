@@ -3,11 +3,13 @@
 
 #include <chrono>
 #include <filesystem>
+#include <memory>
 #include <optional>
 #include <string>
 #include <vector>
 
 #include "app/toolchain.hpp"
+#include "base/text.hpp"
 #include "exec/process.hpp"
 
 namespace dagent::app {
@@ -15,102 +17,97 @@ namespace {
 
 namespace fs = std::filesystem;
 
-fs::path executable_dir() {
-    std::error_code error;
-    const fs::path exe = base::executable_path(error);
-    if (error) return {};
-    return exe.parent_path();
-}
-
 bool runnable(const fs::path& file) { return !file.empty() && base::can_execute(file); }
 
-nlohmann::json parse_probe_output(std::string_view output) {
-    const std::size_t end = output.find_last_not_of(" \t\r\n");
-    if (end == std::string_view::npos) return nlohmann::json::object();
-    const std::size_t begin = output.rfind('\n', end);
-    const std::string_view line = output.substr(begin == std::string_view::npos ? 0 : begin + 1, end - begin);
+/// runtime 中与 MXC 后端相关的各项；sandbox_runtime 汇总，sandbox_status 分项报告。
+struct Resolved {
+    bool prepared = false;
+    fs::path library_file;
+    std::shared_ptr<const exec::MxcLibrary> library;
+    std::string library_error;
+    fs::path shell, rg;
+};
+
+Resolved resolve(const HomePaths& paths) {
+    Resolved out;
+    Toolchain toolchain(paths);
+    out.prepared = toolchain.status().value("current", false);
+    if (!out.prepared) return out;
+    out.shell = toolchain.program("bash");
+    out.rg = toolchain.program("rg");
+    out.library_file = toolchain.library("mxc");
+    // 没有后端的平台不加载原生库。
+    if (!detail::platform_sandbox_supported() || out.library_file.empty() || !fs::exists(out.library_file))
+        return out;
     try {
-        return nlohmann::json::parse(line);
-    } catch (...) {
-        return nlohmann::json::object();
+        out.library = exec::MxcLibrary::load(out.library_file);
+    } catch (const exec::ExecError& error) {
+        out.library_error = error.what();
+    }
+    return out;
+}
+
+std::expected<exec::MxcRuntime, std::string> to_runtime(const Resolved& resolved) {
+    if (!resolved.prepared)
+        return std::unexpected("the managed runtime is not prepared; run `dagent runtime sync`");
+    if (resolved.library_file.empty() || !fs::exists(resolved.library_file))
+        return std::unexpected("the MXC library is not installed; run `dagent runtime sync`");
+    if (!resolved.library) return std::unexpected(resolved.library_error);
+    if (!runnable(resolved.shell) || !runnable(resolved.rg))
+        return std::unexpected("managed bash or rg is missing; run `dagent runtime sync`");
+    return exec::MxcRuntime{resolved.library, std::string(detail::sandbox_containment()), resolved.shell, resolved.rg};
+}
+
+/// 跑一次探测命令；成功（退出 0 且输出符合）返回 nullopt，否则返回失败报告。
+std::optional<nlohmann::json> probe_step(std::string_view stage, const exec::MxcRequest& request,
+                                         std::string_view expected, nlohmann::json& elapsed) {
+    exec::Options options;
+    options.max_output_bytes = 64 << 10;
+    try {
+        const exec::Result result = exec::run_mxc(request, options);
+        elapsed[std::string(stage)] = result.elapsed.count();
+        if (result.exit_code == 0 && !result.timed_out && result.out == expected) return std::nullopt;
+        return nlohmann::json{{"ok", false},
+                              {"stage", stage},
+                              {"error", base::to_valid_utf8(result.err.empty() ? result.out : result.err)},
+                              {"exit_code", result.exit_code.value_or(-1)},
+                              {"timed_out", result.timed_out}};
+    } catch (const exec::ExecError& failure) {
+        return nlohmann::json{{"ok", false}, {"stage", stage}, {"error", failure.what()}};
     }
 }
 
 } // namespace
 
-std::optional<exec::SrtRuntime> sandbox_runtime(const HomePaths& paths) {
-    if (!detail::platform_sandbox_supported()) return std::nullopt;
-    Toolchain toolchain(paths);
-    const nlohmann::json status = toolchain.status();
-    if (!status.value("current", false)) return std::nullopt;
-    nlohmann::json installed = status.value("installed", nlohmann::json::object());
-    if (!installed.is_object()) installed = nlohmann::json::object();
-    const nlohmann::json programs = installed.value("programs", nlohmann::json::object());
-    const nlohmann::json environments = installed.value("environments", nlohmann::json::object());
-    if (!environments.contains("internal/sandbox")) return std::nullopt;
-
-    exec::SrtRuntime runtime;
-    runtime.node = programs.value("node", std::string{});
-    runtime.shell = programs.value("bash", std::string{});
-    runtime.rg = programs.value("rg", std::string{});
-    runtime.entry = fs::path(environments.at("internal/sandbox").value("directory", "")) /
-                    "node_modules/@anthropic-ai/sandbox-runtime/dist/index.js";
-    runtime.bridge = executable_dir() / "libexec/srt_bridge.mjs";
-    const auto bwrap = detail::host_bwrap();
-    const auto socat = detail::host_socat();
-    if (!bwrap || !socat) return std::nullopt;
-    runtime.bwrap = *bwrap;
-    runtime.socat = *socat;
-
-    if (!runnable(runtime.node) || !runnable(runtime.shell) || !runnable(runtime.rg) ||
-        !fs::exists(runtime.entry) || !fs::exists(runtime.bridge))
-        return std::nullopt;
-    return runtime;
+std::expected<exec::MxcRuntime, std::string> sandbox_runtime(const HomePaths& paths) {
+    if (!detail::platform_sandbox_supported()) return std::unexpected("this platform has no sandbox backend");
+    return to_runtime(resolve(paths));
 }
 
-nlohmann::json sandbox_probe(const exec::SrtRuntime& runtime, const fs::path& state_root) {
-    const fs::path workdir = state_root / ("probe-" + std::to_string(base::process_id()));
-    std::error_code error;
-    fs::remove_all(workdir, error);
-    fs::create_directories(workdir, error);
+nlohmann::json sandbox_probe(const exec::MxcRuntime& runtime) {
+    exec::MxcRequest request;
+    request.runtime = runtime;
+    // 只读探测不写工作目录；托管 bash 所在目录本就在可读范围内。
+    request.workspace = runtime.shell.parent_path();
+    request.policy.mode = exec::Mode::read_only;
+    request.policy.readable = {request.workspace};
+    request.environment = {{"PATH", exec::default_search_path()}, {"LC_ALL", "C.UTF-8"}};
+    request.timeout = std::chrono::seconds(30);
+    nlohmann::json elapsed = nlohmann::json::object();
 
-    exec::Command command;
-    command.argv = {runtime.node.string(), runtime.bridge.string(), "--mode=probe",
-                    "--srt=" + runtime.entry.string(), "--shell=" + runtime.shell.string(),
-                    "--rg=" + runtime.rg.string(), "--bwrap=" + runtime.bwrap.string(),
-                    "--socat=" + runtime.socat.string(), "--cwd=" + workdir.string(),
-                    "--workdir=" + workdir.string()};
-    command.timeout = std::chrono::milliseconds(60000);
-    exec::Options options;
-    options.default_timeout = std::chrono::milliseconds(60000);
-    options.max_output_bytes = 256 << 10;
+    request.command = R"(printf ok > "$HOME/probe.txt" && cat "$HOME/probe.txt")";
+    if (auto failed = probe_step("filesystem", request, "ok", elapsed)) return *failed;
 
-    nlohmann::json probe;
-    try {
-        const exec::Result result = exec::run(command, options);
-        const nlohmann::json parsed = parse_probe_output(result.out);
-        probe = parsed.empty() ? nlohmann::json{{"ok", false},
-                                                {"stage", "bridge"},
-                                                {"error", result.err.empty() ? result.out : result.err},
-                                                {"exit_code", result.exit_code.value_or(-1)},
-                                                {"timed_out", result.timed_out}}
-                               : parsed;
-    } catch (const exec::ExecError& failure) {
-        probe = nlohmann::json{{"ok", false}, {"stage", "spawn"}, {"error", failure.what()}};
-    }
-    fs::remove_all(workdir, error);
-    return probe;
+    request.command = "true";
+    request.network_gate = [](std::string_view, int, std::string& reason, std::stop_token) {
+        reason = "the sandbox probe allows no network target";
+        return exec::NetworkGateResult::deny;
+    };
+    if (auto failed = probe_step("network", request, "", elapsed)) return *failed;
+    return {{"ok", true}, {"stage", "completed"}, {"mxc", runtime.library->version()}, {"elapsed_ms", elapsed}};
 }
 
 nlohmann::json sandbox_status(const HomePaths& paths) {
-    Toolchain toolchain(paths);
-    const nlohmann::json status = toolchain.status();
-    nlohmann::json installed = status.value("installed", nlohmann::json::object());
-    if (!installed.is_object()) installed = nlohmann::json::object();
-    const nlohmann::json programs = installed.value("programs", nlohmann::json::object());
-    const nlohmann::json environments = installed.value("environments", nlohmann::json::object());
-    const std::optional<exec::SrtRuntime> runtime = sandbox_runtime(paths);
-
     nlohmann::json checks = nlohmann::json::array();
     std::vector<std::string> missing;
     const auto check = [&](std::string name, bool ok, std::string detail) {
@@ -118,48 +115,47 @@ nlohmann::json sandbox_status(const HomePaths& paths) {
         checks.push_back({{"name", std::move(name)}, {"ok", ok}, {"detail", std::move(detail)}});
     };
 
-    const bool prepared = status.value("current", false) && installed.is_object();
-    check("runtime", prepared, prepared ? "runtime is prepared for the current configuration"
-                                        : "run dagent runtime sync");
+    const Resolved resolved = resolve(paths);
+    check("runtime", resolved.prepared, resolved.prepared ? "runtime is prepared for the current configuration"
+                                                          : "run dagent runtime sync");
     if (!detail::platform_sandbox_supported()) {
-        // 没有后端的平台只报告 runtime 状态；不列 Linux 依赖、不启动探测、不读宿主诊断。
+        // 没有后端的平台只报告 runtime 状态；不列宿主依赖、不启动探测、不读宿主诊断。
         nlohmann::json out;
-        out["toolchain_current"] = prepared;
+        out["toolchain_current"] = resolved.prepared;
         out["static"] = checks;
         out["probe"] = nlohmann::json{{"ok", false}, {"stage", "unsupported"},
                                       {"error", "this platform has no sandbox backend"}};
         return out;
     }
 
-    const fs::path env = environments.contains("internal/sandbox")
-                             ? fs::path(environments.at("internal/sandbox").value("directory", ""))
-                             : fs::path{};
-    check("sandbox-runtime", runtime.has_value() && !runtime->entry.empty(),
-          (env / "node_modules/@anthropic-ai/sandbox-runtime/dist/index.js").string());
-    check("bridge", runtime.has_value() && fs::exists(runtime->bridge),
-          (executable_dir() / "libexec/srt_bridge.mjs").string());
-    check("node", runtime.has_value() && runnable(runtime->node),
-          programs.value("node", std::string{"managed node is missing"}));
-    check("bash", runtime.has_value() && runnable(runtime->shell),
-          programs.value("bash", std::string{"managed bash is missing"}));
-    check("rg", runtime.has_value() && runnable(runtime->rg),
-          programs.value("rg", std::string{"managed rg is missing"}));
-    const auto bwrap = detail::host_bwrap();
-    check("bwrap", bwrap.has_value(), bwrap ? bwrap->string() : "not found; install bubblewrap");
-    const auto socat = detail::host_socat();
-    check("socat", socat.has_value(), socat ? socat->string() : "not found; install socat");
+    const bool installed = !resolved.library_file.empty() && fs::exists(resolved.library_file);
+    check("mxc-library", installed, installed ? resolved.library_file.string() : "not installed; run dagent runtime sync");
+    if (resolved.library)
+        check("mxc-load", true, "version " + resolved.library->version());
+    else
+        check("mxc-load", false, installed ? resolved.library_error
+                                           : "requires MXC " + std::string(exec::kMxcVersion));
+    check("bash", runnable(resolved.shell),
+          resolved.shell.empty() ? "managed bash is missing" : resolved.shell.string());
+    check("rg", runnable(resolved.rg), resolved.rg.empty() ? "managed rg is missing" : resolved.rg.string());
+    for (auto& host : detail::host_prerequisites()) check(std::move(host.name), host.ok, std::move(host.detail));
 
     std::string joined;
     for (const auto& name : missing) joined += (joined.empty() ? "" : ", ") + name;
 
     nlohmann::json out;
-    out["toolchain_current"] = prepared;
+    out["toolchain_current"] = resolved.prepared;
     out["static"] = checks;
+    if (resolved.library) {
+        out["platform_support"] = resolved.library->platform_support();
+        out["available_backends"] = resolved.library->available_backends();
+    }
+    const auto runtime = to_runtime(resolved);
     if (!runtime) {
         out["probe"] = nlohmann::json{{"ok", false}, {"stage", "skipped"}, {"error", "missing: " + joined}};
         return out;
     }
-    out["probe"] = sandbox_probe(*runtime, paths.runtime / "sandbox");
+    out["probe"] = sandbox_probe(*runtime);
 
     detail::append_host_diagnostics(out);
     return out;

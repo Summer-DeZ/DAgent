@@ -1,13 +1,10 @@
 #include "mcp/transport.hpp"
 
-#include <filesystem>
 #include <format>
-#include <fstream>
 #include <utility>
 
 #include "base/log.hpp"
-#include "base/platform.hpp"
-#include "exec/child.hpp"
+#include "exec/mxc.hpp"
 #include "mcp/detail.hpp"
 
 namespace dagent::mcp::detail {
@@ -34,114 +31,35 @@ void StdioTransport::start() {
 
 void StdioTransport::start_sandboxed() {
     const StdioSandbox& sandbox = *config_.sandbox;
-    std::error_code error;
-    std::filesystem::create_directories(sandbox.state_root, error);
-    auto directory = base::create_unique_directory(sandbox.state_root / ("mcp-" + config_.name + "-XXXXXX"));
-    if (!directory)
-        throw McpError{McpError::Kind::spawn, config_.name + ": cannot create the sandbox state directory"};
-    state_dir_ = *directory;
-    // SRT 在 TMPDIR 下创建 Unix sockets；固定短路径避免 Home 或 server 名过长。
-    directory = base::create_unique_directory(base::default_temporary_directory() / "dagent-home-XXXXXX");
-    if (!directory)
-        throw McpError{McpError::Kind::spawn, config_.name + ": cannot create the sandbox private home"};
-    private_home_ = *directory;
-    const auto& private_home = private_home_;
-    std::filesystem::create_directories(private_home / "config", error);
-    std::filesystem::create_directories(private_home / "cache", error);
-    std::filesystem::create_directories(private_home / "run", error);
-
-    std::string command;
+    exec::MxcRequest request;
+    request.runtime = sandbox.runtime;
+    request.workspace = config_.cwd;
+    request.policy = sandbox.policy;
     for (const std::string& argument : config_.command) {
-        if (!command.empty()) command += ' ';
-        command += exec::shell_quote(argument);
+        if (!request.command.empty()) request.command += ' ';
+        request.command += exec::shell_quote(argument);
     }
-    nlohmann::json init;
-    init["command"] = command;
-    init["shell"] = sandbox.runtime.shell.string();
-    init["config"] = exec::srt_config(sandbox.runtime, sandbox.policy, private_home, true);
-    init["kill_grace_ms"] = opt_.process.kill_grace.count();
-    const std::filesystem::path init_file = state_dir_ / "init.json";
-    {
-        std::ofstream out(init_file, std::ios::binary | std::ios::trunc);
-        out << init.dump();
-        if (!out) throw McpError{McpError::Kind::spawn, config_.name + ": cannot write the sandbox init file"};
-    }
-
-    exec::Command cmd;
-    cmd.argv = {sandbox.runtime.node.string(), sandbox.runtime.bridge.string(), "--mode=stdio",
-                "--srt=" + sandbox.runtime.entry.string(),
-                "--bwrap=" + sandbox.runtime.bwrap.string(),
-                "--socat=" + sandbox.runtime.socat.string(),
-                "--rg=" + sandbox.runtime.rg.string(),
-                "--shell=" + sandbox.runtime.shell.string(),
-                "--init-file=" + init_file.string()};
-    cmd.cwd = state_dir_;
-    cmd.inherit_env = config_.environment == "project";
-    cmd.env_set = config_.env;
-    cmd.env_set.insert(cmd.env_set.end(),
-                       {{"HOME", private_home.string()},
-                        {"XDG_CONFIG_HOME", (private_home / "config").string()},
-                        {"XDG_CACHE_HOME", (private_home / "cache").string()},
-                        {"XDG_RUNTIME_DIR", (private_home / "run").string()},
-                        {"TMPDIR", private_home.string()},
-                        {"TMP", private_home.string()},
-                        {"TEMP", private_home.string()}});
-    cmd.env_unset = {"BASH_ENV", "ENV", "BASHOPTS", "SHELLOPTS", "CDPATH", "GLOBIGNORE",
-                     "PROMPT_COMMAND", "LD_PRELOAD", "LD_LIBRARY_PATH", "PYTHONPATH", "PERL5LIB",
-                     "RUBYOPT", "NODE_OPTIONS", "NODE_PATH", "NODE_EXTRA_CA_CERTS",
-                     "http_proxy", "https_proxy", "all_proxy", "ftp_proxy",
-                     "HTTP_PROXY", "HTTPS_PROXY", "ALL_PROXY", "FTP_PROXY"};
+    // HOME/XDG/TMPDIR 由 MxcChild 指向每连接私有目录；project 没有托管 PATH，与受限 bash 一样使用项目搜索路径。
+    // server 的 env 最后覆盖。
+    if (config_.environment == "project") request.environment.emplace_back("PATH", exec::project_search_path());
+    request.environment.insert(request.environment.end(), config_.env.begin(), config_.env.end());
+    // profile 的网络目标只经本连接的回环代理严格放行，没有运行中审批；没有目标时完全无网络。
+    if (!sandbox.policy.network_targets.empty())
+        request.network_gate = exec::allowlist_gate(sandbox.policy.network_targets);
     try {
         auto process = opt_.process;
         if (config_.environment == "project") process.environment.clear();
-        child_ = exec::Child::spawn(cmd, process);
+        child_ = exec::MxcChild::spawn(request, process);
     } catch (const exec::ExecError& e) {
         throw McpError{McpError::Kind::spawn, config_.name + ": " + e.what()};
     }
     child_->on_line([this](std::string_view line) { on_line(line); });
     child_->on_exit([this](std::optional<int> code, std::optional<int> signal) { on_exit(code, signal); });
-
-    child_->on_stderr([this](std::string_view line) { on_bridge_line(line); });
-    std::unique_lock<std::mutex> lock(bridge_mu_);
-    const bool settled = bridge_cv_.wait_for(lock, sandbox.startup_timeout,
-                                             [this] { return bridge_ready_ || bridge_failed_; });
-    if (!settled) throw McpError{McpError::Kind::handshake, config_.name + ": sandbox bridge did not become ready"};
-    if (bridge_failed_) throw McpError{McpError::Kind::handshake,
-                                       config_.name + ": sandbox bridge failed: " + bridge_error_};
-}
-
-void StdioTransport::on_bridge_line(std::string_view line) {
-    const nlohmann::json frame = nlohmann::json::parse(line, nullptr, false);
-    if (frame.is_discarded() || !frame.value("dagent_bridge", false)) {
-        base::logger("mcp")->info("{}", line); // server 自身的 stderr
-        return;
-    }
-    const std::string type = frame.value("type", "");
-    {
-        const std::lock_guard lock(bridge_mu_);
-        if (type == "ready") {
-            const bool ok = frame.value("protocol", 0) == 1 &&
-                            frame.value("environment", "") == config_.sandbox->runtime.entry.string() &&
-                            frame.value("sandboxing_enabled", false) &&
-                            frame.value("srt", "") == exec::kSrtVersion;
-            if (ok) bridge_ready_ = true;
-            else {
-                bridge_failed_ = true;
-                bridge_error_ = "SRT protocol, package version or environment identity mismatch";
-            }
-        } else if (type == "error") {
-            bridge_failed_ = true;
-            bridge_error_ = frame.value("stage", std::string{"bridge"}) + ": " + frame.value("error", "sandbox bridge failed");
-        } else if (type == "exited" && !bridge_ready_) {
-            bridge_failed_ = true;
-            bridge_error_ = "sandbox bridge exited before ready";
-        }
-    }
-    bridge_cv_.notify_all();
+    child_->on_stderr([](std::string_view line) { base::logger("mcp")->info("{}", line); }); // server 自身的 stderr
 }
 
 void StdioTransport::shutdown(const CloseProtocol& close_protocol) {
-    std::unique_ptr<exec::Child> child;
+    std::unique_ptr<exec::MxcChild> child;
     {
         std::lock_guard lock(connection_.mutex);
         if (connection_.closing) return;
@@ -157,18 +75,8 @@ void StdioTransport::shutdown(const CloseProtocol& close_protocol) {
     }
     cv_.notify_all();
     close_protocol();
-    if (child) child->terminate(); // 锁外等读取线程退出，之后不会再回调
+    if (child) child->terminate(); // 锁外等读取线程退出并清理私有目录，之后不会再回调
     child.reset();
-    if (!state_dir_.empty()) {
-        std::error_code error;
-        std::filesystem::remove_all(state_dir_, error);
-        state_dir_.clear();
-    }
-    if (!private_home_.empty()) {
-        std::error_code error;
-        std::filesystem::remove_all(private_home_, error);
-        private_home_.clear();
-    }
 }
 
 void StdioTransport::send(std::string_view line) {

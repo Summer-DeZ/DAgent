@@ -490,12 +490,16 @@ Config load_config(const LoadOptions& options) {
     }
     for (auto& server : config.mcp_servers) {
         if (server.transport != mcp::Transport::stdio) continue;
-        server.cwd = server.environment == "project" ? cwd : root;
-        if (server.environment == "project") continue;
+        if (server.environment == "project") {
+            server.cwd = cwd;
+            continue;
+        }
         if (fs::path(server.command.front()).has_parent_path() && fs::path(server.command.front()).is_relative())
             server.command.front() = (root / server.command.front()).lexically_normal().string();
         const auto found = config.tools.environments.find(server.environment);
         if (found == config.tools.environments.end()) fail(ConfigError::Kind::invalid, "unknown MCP environment: " + server.environment);
+        // 受限 server 的工作目录必须在沙箱可读范围内：取所选环境的根目录（环境可读列表的最后一项）。
+        server.cwd = found->second.readable.back();
         auto variables = found->second.variables;
         variables.insert(variables.end(), server.env.begin(), server.env.end());
         server.env = std::move(variables);

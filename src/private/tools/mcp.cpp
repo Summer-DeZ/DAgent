@@ -61,7 +61,7 @@ public:
         intent_.kind = agent::ToolKind::external;
         intent_.summary = std::format("Call MCP tool {}", tool_.qualified_name);
         intent_.external_boundary =
-            client_->transport() == mcp::Transport::http ? "remote" : "srt";
+            client_->transport() == mcp::Transport::http ? "remote" : "mxc";
     }
 
 private:

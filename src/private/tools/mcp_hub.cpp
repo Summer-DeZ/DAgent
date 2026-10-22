@@ -12,7 +12,7 @@
 namespace dagent::tools {
 namespace {
 
-/// @brief 启动前检查受信任 profile：缺 profile、stdio 缺 SRT 运行时、HTTP endpoint 未授权时不启动。
+/// @brief 启动前检查受信任 profile：缺 profile、stdio 缺沙箱运行时、HTTP endpoint 未授权时不启动。
 std::string startup_blocker(const mcp::ServerConfig& config) {
     if (!config.profile_present) return "no permissions profile is configured; the server will not start";
     if (config.transport == mcp::Transport::http) {
@@ -22,7 +22,7 @@ std::string startup_blocker(const mcp::ServerConfig& config) {
         return {};
     }
     if (!config.sandbox)
-        return config.sandbox_unavailable.empty() ? "no SRT runtime is available for this local server"
+        return config.sandbox_unavailable.empty() ? "no sandbox runtime is available for this local server"
                                                   : config.sandbox_unavailable;
     return {};
 }
@@ -43,7 +43,7 @@ McpHub::McpHub(std::vector<mcp::ServerConfig> configs, mcp::Options options)
     for (auto& config : configs) {
         auto server = std::make_unique<Server>();
         server->state.name = config.name;
-        server->state.boundary = config.transport == mcp::Transport::http ? "remote" : "srt";
+        server->state.boundary = config.transport == mcp::Transport::http ? "remote" : "mxc";
         server->config = std::move(config);
         servers_.push_back(std::move(server));
     }
