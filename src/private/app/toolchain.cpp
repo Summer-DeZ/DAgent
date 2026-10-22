@@ -308,6 +308,9 @@ json Toolchain::sync() {
             fs::create_directories(directory);
             auto env = detail::runtime_environment(paths_, next, "managed").variables;
             std::erase_if(env, [](const auto& item) { return item.first == "UV_OFFLINE" || item.first == "NPM_CONFIG_OFFLINE"; });
+            // 依赖下载与模型请求、SearXNG 一样跟随宿主的代理配置。
+            for (const auto* name : {"HTTP_PROXY", "HTTPS_PROXY", "ALL_PROXY", "NO_PROXY", "http_proxy", "https_proxy", "all_proxy", "no_proxy"})
+                if (const auto value = base::environment_variable(name)) env.emplace_back(name, *value);
             if (kind == "python") {
                 const auto uv = next["programs"]["uv"].get<std::string>();
                 detail::execute_runtime_command({uv, "venv", "--python", next["programs"]["python"].get<std::string>(), directory.string()}, paths_.root, env);
