@@ -126,6 +126,7 @@ target_link_libraries(dagent_exec
     PUBLIC dagent_base
     PRIVATE Boost::headers tree-sitter tree-sitter-bash Threads::Threads
         "$<$<PLATFORM_ID:Windows>:Boost::process;ws2_32;bcrypt>"
+        "$<$<NOT:$<PLATFORM_ID:Windows>>:${CMAKE_DL_LIBS}>"
 )
 
 # Web transport and document decoding; authorization is supplied by tools.

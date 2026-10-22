@@ -386,3 +386,72 @@ std::vector<fs::path> default_srt_readable_paths() { unsupported_sandbox(); }
 
 } // namespace detail
 } // namespace dagent::exec
+
+namespace dagent::exec::detail {
+namespace {
+
+std::string system_message(DWORD error) {
+    wchar_t* buffer = nullptr;
+    const DWORD size = ::FormatMessageW(FORMAT_MESSAGE_ALLOCATE_BUFFER | FORMAT_MESSAGE_FROM_SYSTEM |
+                                            FORMAT_MESSAGE_IGNORE_INSERTS,
+                                        nullptr, error, 0, reinterpret_cast<LPWSTR>(&buffer), 0, nullptr);
+    if (size == 0) return "error " + std::to_string(error);
+    std::wstring text(buffer, size);
+    ::LocalFree(buffer);
+    while (!text.empty() && (text.back() == L'\r' || text.back() == L'\n' || text.back() == L' ')) text.pop_back();
+    return utf8(text);
+}
+
+// CommandLineToArgvW 的引用规则：引号前的反斜杠加倍再转义引号，结尾的反斜杠加倍后闭合。
+std::string quote_argument(std::string_view argument) {
+    std::string quoted = "\"";
+    std::size_t backslashes = 0;
+    for (const char c : argument) {
+        if (c == '\\') {
+            ++backslashes;
+            continue;
+        }
+        quoted.append(c == '"' ? backslashes * 2 + 1 : backslashes, '\\');
+        quoted += c;
+        backslashes = 0;
+    }
+    quoted.append(backslashes * 2, '\\');
+    quoted += '"';
+    return quoted;
+}
+
+} // namespace
+
+struct SharedLibrary::Impl {
+    HMODULE module = nullptr;
+    ~Impl() {
+        if (module) ::FreeLibrary(module);
+    }
+};
+
+SharedLibrary::SharedLibrary() : impl_(std::make_unique<Impl>()) {}
+SharedLibrary::SharedLibrary(SharedLibrary&&) noexcept = default;
+SharedLibrary& SharedLibrary::operator=(SharedLibrary&&) noexcept = default;
+SharedLibrary::~SharedLibrary() = default;
+
+SharedLibrary SharedLibrary::open(const fs::path& file) {
+    SharedLibrary library;
+    library.impl_->module = ::LoadLibraryW(file.c_str());
+    if (!library.impl_->module) {
+        const DWORD error = ::GetLastError();
+        throw ExecError(ExecError::Kind::sandbox, "load " + base::path_to_utf8(file) + ": " + system_message(error));
+    }
+    return library;
+}
+
+void* SharedLibrary::symbol(const char* name) const noexcept {
+    return reinterpret_cast<void*>(::GetProcAddress(impl_->module, name));
+}
+
+std::string sandbox_command_line(const fs::path& shell, std::string_view script) {
+    return quote_argument(base::path_to_utf8(shell)) + " --noprofile --norc -c " + quote_argument(script);
+}
+
+bool loopback_peer_is_current_user(unsigned short, unsigned short) { return true; }
+
+} // namespace dagent::exec::detail
