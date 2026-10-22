@@ -14,10 +14,10 @@ runtime/
 ├── python/<version-generation>/
 ├── node/<version-generation>/
 ├── rg/<version-generation>/
+├── mxc/<version-generation>/        MXC 原生库（libmxc_ffi.so / mxc_ffi.dll）
 ├── envs/
 │   ├── skills/<name>/<generation>/
 │   ├── mcp/<name>/<generation>/
-│   ├── internal/sandbox/<generation>/
 │   └── internal/searxng/<generation>/
 ├── homes/<profile>/
 └── installed.json
@@ -69,10 +69,9 @@ Windows 的系统 Bash/Git 与 uv/rg/node 归档由 `runtime.json` 的 `platform
 它不是磁盘完整性扫描；正常启动还检查程序是否可执行、依赖环境是否就绪。
 修改配置或锁文件后必须重新 sync；执行命令和 MCP 启动都不隐式安装。
 
-内部环境 `internal/sandbox` 固定 SRT 0.0.77，声明与锁文件位于 `config/sandbox/`。
-它供执行层使用，不是模型可选的 Bash 环境。Node/SRT 由 runtime 管理，bubblewrap 和 socat 是宿主程序。
-bridge 位于后端二进制旁的 `libexec/`，跟随程序版本而不是 Home 的依赖快照更新。
-`runtime list` 不验证 namespace；使用 `dagent sandbox status` 获取真实启动结果。
+受限执行使用的 MXC 原生库是 runtime 的 `mxc` 包（见下文 `libraries`），由执行层在运行时加载；
+bubblewrap、slirp4netns 等是宿主程序，不由 runtime 管理。
+`runtime list` 不加载库、不验证 namespace；使用 `dagent sandbox status` 获取库版本与真实启动结果。
 
 ## 工具包配置
 
@@ -101,6 +100,8 @@ sync 只要求该文件存在、不检查可执行位，把绝对路径写入包
 由 `Toolchain::library(name)` 读取（未安装返回空路径）。库路径随平台或架构变化时沿用 `platforms` 整条覆盖：
 `mxc` 包的基础条目描述 Linux-x86_64（`bin/x64/libmxc_ffi.so`），Linux-aarch64 与 Windows-x86_64 的覆盖条目
 各自给出 `libraries`（`bin/arm64/libmxc_ffi.so`、`bin/x64/mxc_ffi.dll`）和指向同一 npm tgz、同一摘要的 `assets`。
+该 tgz 是 npm 上的 `@microsoft/mxc-sdk@1.0.1`，按普通归档下载、校验 SHA-256 后解压（默认 `strip` 1 去掉 `package/` 顶层目录）；
+执行层加载后还要求 `mxc_version()` 为 `1.0.1`，详见 [exec](exec.md#原生库与-c-abi)。
 
 `env` 可为包增加执行变量，值开头的 `{root}` 替换为该包目录，例如 Git helper 与模板路径。
 安装记录包含实际程序路径和准备时的程序摘要；下载包另记录归档摘要。
@@ -112,8 +113,8 @@ POSIX 准备 Python 时，环境按 PATH、HOME、UV_NO_CONFIG、UV_PYTHON_INSTA
 
 仓库配置固定 Node、uv、ripgrep 和 Python 版本，并为 Linux aarch64、x86_64 提供归档。
 Bash、Git 在 Linux 默认从准备机器导入快照，Git helper 路径采用 Ubuntu 布局；其它发行版应调整 `files`。
-Windows 覆盖把 Bash、Git 登记为 `C:/Program Files/Git` 的 system 包，uv、rg、node 使用 Windows 归档；
-`internal/sandbox` 与 `internal/searxng` 在 Windows 解析为 null，不准备。
+Windows 覆盖把 Bash、Git 登记为 `C:/Program Files/Git` 的 system 包，uv、rg、node 使用 Windows 归档，`mxc` 登记
+`mxc_ffi.dll`；`internal/searxng` 在 Windows 解析为 null，不准备。
 需要重新导入时修改该包 `version`，不能靠反复 sync 更新同名已发布快照。
 
 ## 独立依赖环境
@@ -176,13 +177,14 @@ POSIX 的 `runtime_environment` 对非 managed 环境先拼接 `<root>/bin:` 和
 不去重、不调整覆盖顺序。shell 仍取 programs.bash，可读目录仍先放包目录、最后放环境根。
 HOME/XDG、uv/npm 配置和缓存使用 home 内专用位置；不继承宿主 Python、Node、shell 初始化变量。
 uv/npm 在普通执行时默认离线，防止常规启动顺带安装；显式命令仍受现有网络/执行权限控制。
-MCP managed stdio 使用同一环境规则和 home cwd，server 的显式 `env` 最后覆盖。
+MCP managed stdio 使用同一环境规则，cwd 为所选环境的根目录，server 的显式 `env` 在环境变量之后；
+沙箱执行再把 HOME、XDG、TMPDIR 与 uv/npm 缓存改到每次执行私有的临时目录，见 [mcp](mcp.md#stdio)。
 
 `project` 用于主动使用项目/宿主工具；非受限 bash 继承经已有 deny 过滤的宿主环境，
 受限 bash 仍按沙箱清理环境。MCP project cwd 为工作目录。选择环境会进入命令意图，审批不跨环境复用。
 默认文件搜索使用托管 rg，显式 `search.rg_path` 可覆盖搜索程序。Bash 环境提供托管 Git；
 工作区上下文采集通过 `exec::system_git_program` 取得 POSIX 固定路径 `/usr/bin/git`，
-在只读 SRT 内运行并禁用 fsmonitor/hooks/pager 和全局/系统配置；没有改为托管 Git 或 PATH 查找。
+在只读 MXC 沙箱内运行并禁用 fsmonitor/hooks/pager 和全局/系统配置；没有改为托管 Git 或 PATH 查找。
 
 托管目录进入沙箱可读范围并禁止工具写入；config、data、logs、run 保持控制数据保护。
 环境管理不等于安全沙箱，命令仍遵守原权限与 OS 隔离规则。
@@ -198,7 +200,7 @@ MCP managed stdio 使用同一环境规则和 home cwd，server 的显式 `env` 
 
 ## 托管搜索基础设施
 
-`internal/searxng` 与 sandbox 同级，不暴露为 bash/MCP 可选环境。它使用 managed Python，依赖通过
+`internal/searxng` 是后端内部环境，不暴露为 bash/MCP 可选环境。它使用 managed Python，依赖通过
 `config/searxng/requirements.lock` 的精确版本和 SHA-256 安装，只接受预编译 wheel。
 环境声明可包含 `source`，其中的 HTTPS `url`、`sha256` 和固定 `commit` 进入环境代际标识；源码验证后解压到环境的 `source/`。
 当前 SearXNG commit 是 `d48c4b555421e824342c51d68482dd0898e54d0f`，依赖锁从该提交的 requirements 解析。
@@ -208,14 +210,15 @@ MCP managed stdio 使用同一环境规则和 home cwd，server 的显式 `env` 
 各后端互不共享实例。Child 管理进程组，正常退出时终止服务并清理 run 目录；搜索进程死亡后下次搜索重建。
 当前正在执行的搜索若失败会如实返回，不在工具内自动重试。
 Python 入口监听由后端持有写端的 stdin 管道，EOF 时结束进程组，后端异常退出也结束服务。
-服务在宿主运行，网络地位与模型 API 类似；真正的工具连接仍是 SRT 内 curl → 当前托管端点。
+服务在宿主运行，网络地位与模型 API 类似；真正的工具连接仍是沙箱内 curl → 本次执行的回环代理 → 当前托管端点。
 SearXNG 的 Python 入口通过 `python_environment_program` 取得，POSIX 仍为环境下的 `bin/python`。
 代理变量通过 `base::environment_variable` 读取，依次透传 HTTP_PROXY、HTTPS_PROXY、ALL_PROXY、NO_PROXY
 及对应小写变量；缺失时不追加，已设置为空时仍追加空值，不改变基础环境项与代理项的顺序。
+`runtime sync` 准备依赖环境时（`uv venv`、`uv pip sync`、`npm ci`）以同样的顺序和规则把这八个宿主代理变量追加到托管环境之后，
+使依赖下载与模型请求、SearXNG 一样跟随宿主代理；归档下载由进程内 libcurl 完成，按 libcurl 自身规则读取代理环境变量。
 
-SearXNG 入口 `libexec/searxng_server.py` 与 SRT bridge 的复制目标和安装规则仅在 Linux 启用，
-这些入口随二进制更新，定位基准为后端路径。
+SearXNG 入口 `libexec/searxng_server.py` 的复制目标和安装规则仅在 Linux 启用，
+入口随二进制更新，定位基准为后端路径。
 SearXNG 用 `base::executable_path()` 定位入口，向 `base::create_unique_directory` 传入
-`paths.run / "searxng-XXXXXX"` 路径模板创建实例目录，仍由调用方先创建父目录；
-SRT 资源定位保留 `executable_path(error_code&)` 的失败处理。目录清理仍由各自生命周期管理。
+`paths.run / "searxng-XXXXXX"` 路径模板创建实例目录，仍由调用方先创建父目录。目录清理仍由各自生命周期管理。
 依赖准备与用户配置升级见 [构建指南](../guide/build.md#升级已有-home-的-web-资源)，引擎、缓存和传输选项见 [网页指南](../guide/web.md)。

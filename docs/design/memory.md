@@ -114,7 +114,7 @@ memory(op, scope, name, type?, description?, content?)
 参数错误与文件错误沿用普通工具的 `is_error` 结果，不创建另一套异常协议。
 
 memory 是普通内置工具，使用独立的 `ToolKind::memory`。Policy 在所有权限模式以及 read_only、planning 下直接放行，
-无需人工或模型审批，也不依赖 SRT。`parallel()` 不将 memory 加入只读并行组，三种操作都串行执行。
+无需人工或模型审批，也不依赖 MXC 沙箱。`parallel()` 不将 memory 加入只读并行组，三种操作都串行执行。
 `home/memory/` 同时列入控制根受保护分类与沙箱 protected_read/protected_write；read、write、edit、bash
 访问它仍遵守现有控制路径权限策略，memory 的放行不扩展这些工具的权限。
 

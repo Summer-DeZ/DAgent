@@ -37,7 +37,7 @@ app 同时实现 `backend/configuration.hpp`、`backend/queries.hpp`、`backend/
 <root>/
 ├── dagent
 ├── dagent-backend     前端从同目录启动
-├── libexec/           SRT bridge、SearXNG 启动入口与按安装路径生成的 AppArmor profile
+├── libexec/           SearXNG 启动入口与按安装路径生成的 AppArmor profile（仅 Linux）
 ├── config/            config.json、models.json、mcp.json、runtime.json
 ├── prompts/           system.md、compact.md
 ├── AGENTS.md          可选的全局用户指令
@@ -57,7 +57,7 @@ app 同时实现 `backend/configuration.hpp`、`backend/queries.hpp`、`backend/
 前端解析安装根后在 `app.initialize` 里交给后端；后端不自行决定安装根。
 
 源码树中这些可管理文件统一放在 `home/`；dev 可执行文件无需设置环境变量就会读取这个目录。显式
-`DAGENT_HOME` 仍然具有最高优先级。安装只补充缺失的用户资源；二进制、两个 libexec 启动入口与生成的 profile 随版本更新。
+`DAGENT_HOME` 仍然具有最高优先级。安装只补充缺失的用户资源；二进制、libexec 中的 SearXNG 入口与生成的 profile 随版本更新。
 `libexec/` 始终相对后端二进制定位，不随 `DAGENT_HOME` 迁移。目录职责与首次配置见 [home](home.md)，工具环境见 [toolchain](toolchain.md)。
 
 ## 2. 配置与提示词
@@ -142,16 +142,21 @@ Windows ModelWriteLock 使用同步 LockFileEx 阻塞独占固定字节范围，
 
 `config/mcp.json` 独立保存 `mcpServers`、`connect_timeout_ms` 和 `probe_timeout_ms`，要求 0600。
 stdio 项支持 `command`、`args`、`env`、`environment`，HTTP 项支持 `url`、`headers`；`${VAR}` 从进程环境展开。
-两者都必须携带显式 `permissions` profile；stdio 在 SRT 内按范围启动，HTTP 要求 endpoint 网络目标获准。
+两者都必须携带显式 `permissions` profile；stdio 在 MXC 沙箱内按范围启动，HTTP 要求 endpoint 网络目标获准。
 `config/config.json` 不再允许重复声明 `mcp`。stdio 默认使用托管环境，可指定 `mcp/<name>` 或显式 `project`。
 
 提示词、主题等配置路径相对于安装根；`--set key=value` 中的对应路径相对于 cwd。沙箱额外路径始终按下文的工作目录规则解析。未知键记 warning，类型和值错误
 抛 `ConfigError`。`--set` 是一次性覆写，不写回配置；`--model` 命中名字时选择条目，否则临时覆写当前模型 ID。
 
-`sandbox` 是独立版本化对象，当前只接受 `version: 2`、`backend: srt`、`host_access: ask_once`；
-旧版配置被拒绝，不切换到旧后端。`extra_readable` / `extra_writable` 是宿主维护的持久范围，
+`sandbox` 是独立版本化对象，当前只接受 `version: 3`、`backend: mxc`、`host_access: ask_once`；
+旧版配置被拒绝并提示手改，不做静默迁移，也不切换到旧后端：`version` 不为 3 时报
+`… must be 3: sandbox.version 2 was the removed SRT backend and 1 the removed Landlock backend; set version=3 and backend=mxc`，
+`backend` 不为 `mxc` 时报 `… must be mxc: the SRT backend was removed; set version=3 and backend=mxc`。
+`extra_readable` / `extra_writable` 是宿主维护的持久范围，
 相对路径按 workspace cwd 解析，不改变实际沙箱能力，也不覆盖控制数据、敏感读取或 `.git` 保护。
-`allowed_targets/denied_targets` 表达网络目标；启动/网络审批超时与每执行网络请求预算由 sandbox 段配置。
+`allowed_targets/denied_targets` 表达网络目标；`network_approval_timeout_ms`（默认 120000）与
+`max_network_requests_per_execution`（默认 32）是运行中网络审批的等待上限与每次执行的提问预算，必须为正。
+`startup_timeout_ms` 仍被解析并要求为正，但当前没有任何代码读取它（旧 SRT 的 bridge 启动握手已随后端移除）。
 
 主要运行策略由 `home/config/config.json` 显式提供，缺少必填项时报配置错误。
 `run.max_total_tokens` 缺省为 0；`subagents.approval`、`web` 和 `memory` 缺省采用下表值，兼容未添加这些字段的配置。
@@ -171,7 +176,7 @@ stdio 项支持 `command`、`args`、`env`、`environment`，HTTP 项支持 `url
 | `memory.enabled` | 向主 Agent 提供 memory 工具与 system 索引，不控制用户管理面板 | true |
 | `memory.max_index_bytes` | 索引文本预算（含分组标题），正整数 | 8192 |
 | `memory.max_entry_bytes` | 含 frontmatter 的完整条目读写上限，正整数 | 4096 |
-| `web.timeout_ms` | 单次 SRT 网页请求上限，含等待审批；正整数 | 120000 |
+| `web.timeout_ms` | 单次网页请求（含全部重定向跳）的上限，含沙箱启动与等待审批；正整数 | 120000 |
 | `web.startup_timeout_ms` | SearXNG 启动等待上限；正整数 | 30000 |
 | `web.max_body_bytes` | HTTP 正文下载上限，1–67108864 | 2097152 |
 | `web.cache_bytes` | 每个 Context 的页面缓存预算，至少等于下载上限 | 16777216 |
@@ -295,13 +300,29 @@ run： --output <text|json|jsonl>
 ```
 
 `queries.cpp` 的 Git 状态查询通过 `exec::system_git_program` 取得 POSIX 固定路径 `/usr/bin/git`，
-不预先验证或搜索 PATH，仍沿用只读 SRT、命令参数和输出处理。
+不预先验证或搜索 PATH，仍沿用只读 MXC 沙箱、命令参数和输出处理。
 
-`sandbox_status.cpp` 保留 runtime 装配、静态检查与真实 probe；`sandbox_status_posix.cpp` 提供
-`detail::host_bwrap`、`detail::host_socat` 与 `detail::append_host_diagnostics`。
-宿主查找仍先用 exec::which，再检查 `/usr/bin/bwrap`、`/usr/bin/socat` 的执行权限；后备检查不增加普通文件校验。
-真实 probe 后才按原错误关键词追加 namespace 前置提示，读取两处 AppArmor `/proc` 信息；
-保留单行读取、空限制值不写字段、非空时直接 stoi 的行为与原错误文本。runtime 缺失时仍提前返回。
+`sandbox_status.cpp` 保留 runtime 装配、静态检查与真实 probe（`sandbox_runtime`、`sandbox_probe`、`sandbox_status`，
+探测语义见 [exec](exec.md#装配能力快照与探测)）；`sandbox_status_{posix,win}.cpp` 提供 `detail::platform_sandbox_supported`、
+`detail::sandbox_containment`、`detail::host_prerequisites` 与 `detail::append_host_diagnostics`。
+`sandbox_runtime` 失败时返回原因字符串（runtime 未准备、MXC 库未安装、库加载或版本错误、托管 bash/rg 缺失、本平台没有后端），
+装配层把它写入 `Support.missing`。
+
+`dagent sandbox status` 输出一个 JSON 对象：
+
+| 字段 | 内容 |
+| --- | --- |
+| `toolchain_current` | runtime 是否为当前配置准备好 |
+| `static` | 依次为 `runtime`、`mxc-library`（库文件路径）、`mxc-load`（成功时为库版本，加载失败时为错误文本，未安装时为 `requires MXC 1.0.1`）、`bash`、`rg`，以及宿主前置 `bwrap`（路径与版本，要求 ≥ 0.5）、`slirp4netns`、`unshare`、`nsenter`、`setsid`、`ip`、`iptables-restore`；缺失项给出所需的包名 |
+| `platform_support`、`available_backends` | 库加载成功时原样输出 `mxc_platform_support_json` 与 `mxc_available_backends_json`（如 `bubblewrapNetwork.proxyEnforcement`） |
+| `probe` | 真实启动结果；必要条件缺失时为 `{ok:false, stage:"skipped", error:"missing: <项>"}`，不启动 |
+| `host_prerequisite` | 探测失败且错误含 namespace、uid_map、uid map、loopback 或 unshare failed 时给出部署 `dagent.apparmor` 的提示 |
+| `host` | 可读取时的 `apparmor_restrict_unprivileged_userns`，以及后端进程当前的 AppArmor 标签 `apparmor_profile` |
+
+宿主程序查找先用 exec::which，再检查 `/usr/bin`、`/usr/sbin` 下的固定位置；bwrap 另以 `bwrap --version`（5 秒超时）取版本。
+真实 probe 后才按上述关键词追加 namespace 前置提示，读取两处 AppArmor `/proc` 信息；
+保留单行读取、空限制值不写字段、非空时直接 stoi 的行为。必要条件缺失时提前返回，不读取宿主诊断。
+没有后端的平台只输出 `toolchain_current`、只含 `runtime` 一项的 `static` 与 `probe.stage="unsupported"`。
 监听和宿主诊断源文件均由 `DAGENT_PLATFORM` 在 CMake 中选择。
 
 - `--read-only` 与权限三档正交；`--plan` 进入只读规划模式。
@@ -343,7 +364,7 @@ resume_id, continue_last, log_level}`。后端的 `app::assemble_backend` 依次
 
 权限初值优先用 `--permissions`，再用 config.json，默认 workspace。凭据只在 app 内部的 `llm::ProviderConfig` 中出现，
 对外只返回 `PublicModel`。CMake 安装两个可执行文件和分目录资源，模型与 MCP 由不含私有凭据的模板首次生成，
-Linux 安装时设置权限为 0600；`libexec` 中的 SRT、SearXNG 入口和 AppArmor profile 也仅在 Linux 生成或安装。
+Linux 安装时设置权限为 0600；`libexec` 中的 SearXNG 入口和 AppArmor profile 也仅在 Linux 生成或安装。
 
 ## 6. run 输出
 

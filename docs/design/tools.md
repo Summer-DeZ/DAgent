@@ -166,16 +166,18 @@ dangerous / known_readonly 仍由 exec 的原分析函数计算，核心不重�
   仅缺失时不追加，空值仍显式追加，不使用上述回退。
 - **每次调用都是新进程**：`cd`、`export` 不保留。说明里告诉模型需要换目录就写 `cd dir && …`；后台常驻进程
   （`server &`）会在主进程退出后被清理，说明里写明不支持。
-- **沙箱**：受限 grant 的读写范围、受保护路径、网络目标和私有临时空间交给 `exec::run_srt`；
-  full_access 明确使用宿主 `exec::run`。受限启动失败返回 `is_error`，没有隐式宿主回退。
-  运行中的网络请求通过 grant 的权限通道回到 Dispatcher，获批后原命令继续；最终 `BashView.network_targets` 保存实际获准目标。
+- **沙箱**：受限 grant 经 `tools::detail::sandbox_request` 映射为 `exec::MxcRequest`（读写范围、受保护路径、已批准网络目标），
+  由 `exec::run_mxc` 执行；full_access 明确使用宿主 `exec::run`。没有 MXC 运行时或 grant backend 不是 `mxc` 时返回
+  `` restricted execution is unavailable; run `dagent sandbox status` and fix the sandbox runtime ``；受限启动失败返回 `is_error`，没有隐式宿主回退。
+  受限 bash 总在代理模式下运行：运行中的网络请求经本次执行的回环代理和 grant 的权限通道回到 Dispatcher，
+  获批后原命令继续；最终 `BashView.network_targets` 保存实际获准目标。
 - **意图**：prepare 只调用一次 `exec::analyze`，完整 `Analysis` 留在 PreparedTool 内供执行复用，向核心公开
   `CommandIntent` 摘要（含 known_readonly / dangerous）；策略与审批只看摘要。语法错误在 prepare 返回带字节位置的未执行错误。
 - **给模型的文本**：`strip_ansi` → `to_valid_utf8` → `truncate_middle`，正文预算是 `max_result_bytes` 减去
   512 字节的余量，**截断之后**再追加状态行，保证状态行不会被切掉、整体仍在预算内：
   - 退出码非 0 时 `[退出码 N]`，超时 `[超时，已在 Ns 后终止]`，取消 `[已被用户中断]`，
     启动失败或执行层失败 `[无法执行命令：…]` / `[执行失败：…]`；没有输出时写 `（无输出）`；退出码 0 不写状态行。
-  - 退出码按 shell 的 `$?` 约定：顶层进程被信号终止记为 128+N。沙箱里 bwrap 对内部的信号终止只能这样回报，
+  - 退出码按 shell 的 `$?` 约定：顶层进程被信号终止记为 128+N。MXC 沙箱对受限 shell 的信号终止只能这样回报，
     宿主执行照同一约定换算，两种后端的报告一致。超时只写超时行，不附带被终止时的退出码；`BashView.exit_code` 同样为空。
   - 普通非零退出只按退出码/超时报告；不会仅凭 stderr 关键词声称是沙箱拒绝或自动请求扩权。
 - `is_error`：退出码非 0、超时、无法执行。
@@ -189,7 +191,7 @@ dangerous / known_readonly 仍由 exec 的原分析函数计算，核心不重�
 `files_only`。
 
 - 调 `workspace::grep`，`max_matches = grep_max_matches`；`path` 不存在时在 prepare 里报错。
-- 执行前消费读授权并将其范围交给只读 SRT；返回内容按可读范围过滤。批准目录不等于批准其中的敏感文件。
+- 执行前消费读授权并将其范围交给只读 MXC 沙箱（`ReadOnlySandbox`）；返回内容按可读范围过滤。批准目录不等于批准其中的敏感文件。
 - 输出沿用 rg 默认格式，模型最熟悉：匹配行 `path:line:text`，上下文行 `path-line-text`，不连续的组之间用
   `--` 分隔；`files_only` 时每行一个路径。路径都**相对工作区根**，模型可以直接拿去 read。没有匹配时输出
   `（无匹配）`；截断时补一行 `[结果已截断，请缩小范围]`。
@@ -201,7 +203,7 @@ dangerous / known_readonly 仍由 exec 的原分析函数计算，核心不重�
 参数：`pattern`，`path`（目录，默认工作区根）。
 
 - 调 `workspace::files`，`sort_by_mtime = true`，`max_files = glob_max_files`；每行一个路径，相对工作区根。
-- 使用获准的只读 SRT 范围，并过滤受保护路径；SRT 不可用时返回错误，不回退宿主搜索。
+- 使用获准的只读 MXC 沙箱范围，并过滤受保护路径；沙箱不可用时返回错误，不回退宿主搜索。
 - rg 的 `--glob` 是 **gitignore 语义**，不是 shell glob：`*.cpp` 匹配任意深度。说明里写清楚了，并给出
   `src/**/*.hpp` 这样的例子。被 `.gitignore` 忽略的文件和隐藏文件不列出。
 - `path` 不存在或不是目录时在 prepare 里报错（文件请用 read）。
@@ -211,9 +213,9 @@ dangerous / known_readonly 仍由 exec 的原分析函数计算，核心不重�
 
 用户操作与排障见 [网页指南](../guide/web.md)。
 
-两个工具使用 `ToolKind::network`，只允许串行执行。Policy 先确认只读 SRT 可用，实际连接（包括每一跳重定向）
-通过 Dispatcher 的运行中网络闸门授权。bash 和 web 共同调用 `tools::detail::sandbox_request`，只有这一处 Grant→SRT 映射。
-即使 unrestricted 也不把网页请求改成宿主 curl；SRT 不可用时策略拒绝两个工具。
+两个工具使用 `ToolKind::network`，只允许串行执行。Policy 先确认只读 MXC 沙箱可用，实际连接（包括每一跳重定向）
+经回环代理交给 Dispatcher 的运行中网络闸门授权。bash 和 web 共同调用 `tools::detail::sandbox_request`，只有这一处 Grant→MXC 请求映射。
+即使 unrestricted 也不把网页请求改成宿主 curl；沙箱不可用时策略拒绝两个工具。
 
 | 工具 | 参数 | 结果 |
 | --- | --- | --- |
