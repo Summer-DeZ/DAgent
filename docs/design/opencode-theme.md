@@ -1,7 +1,7 @@
 # DAgent 配色与主题文件
 
 DAgent 早期配色参考本机 OpenCode `orng`；phase 5a 改为
-[改版计划 §9.3](../../nexttodo/tui-redesign-plan.md#93-配色) 批准的配色。
+[改版计划 §9.3](../archive/2026-10-20-tui-redesign-plan.md#93-配色) 批准的配色。
 只保留 `home/themes/dagent.json`，框架 dark_theme / light_theme 同步提供完整缺省值。
 `midnight.json`、`paper.json` 已删除；`ui.appearance.theme` 接受 `dagent` 或主题文件路径，
 旧预设名称报配置错误，提示使用 dagent 或文件路径。`/settings` 删除 Theme 行，`/theme` 仍定位 Mode。

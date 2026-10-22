@@ -1,6 +1,8 @@
 # TUI 改版计划
 
-设计日期：2026-10-20。状态：已完成（第 1–5 期）。效果预览：[DAgent TUI 设计稿](https://claude.ai/artifact/QVi4ezzk4oJpudJgZrESuB)（按第 5 期定稿重画：深色页 D1–D11、浅色页 L1–L11、配色与外观页 S1–S2）；OpenCode Go 登录与选模型见 [模型登录与请求头计划](model-auth-plan.md)。
+归档日期：2026-10-22。原位置：`nexttodo/tui-redesign-plan.md`。
+
+设计日期：2026-10-20。状态：已完成（第 1–5 期）。效果预览：[DAgent TUI 设计稿](https://claude.ai/artifact/QVi4ezzk4oJpudJgZrESuB)（按第 5 期定稿重画：深色页 D1–D11、浅色页 L1–L11、配色与外观页 S1–S2）；OpenCode Go 登录与选模型见 [模型登录与请求头计划](2026-10-20-model-auth-plan.md)。
 
 ## 1. 目标
 
@@ -72,7 +74,7 @@
 | --- | --- | --- |
 | 1 外观基础 | `ui.appearance`、主题预设、背景模式、强调色、面板样式、密度、图标、信息栏位置；`/settings`；HeaderBar、HintBar；信息栏分节与用量条；Chip | 不改框架 |
 | 2 对话与浮层 | 工具卡片、活动行与排队、Panel 分组与高亮、命令面板、浮层变暗、审批框、toast、欢迎页、子 Agent 标签页 | 不改框架 |
-| 3 模型与登录 | 两栏模型选择，按 [model-auth 计划](model-auth-plan.md) 实现 OpenCode Go 登录与模型列表、凭据与请求头 | 不改框架 |
+| 3 模型与登录 | 两栏模型选择，按 [model-auth 计划](2026-10-20-model-auth-plan.md) 实现 OpenCode Go 登录与模型列表、凭据与请求头 | 不改框架 |
 | 4 宽屏增强 | 左右对比 diff；终端可点击链接（OSC 8） | 解冻 TUI 框架，按需扩展渲染与单元格属性 |
 | 5 宽屏布局、对话区与配色 | 正文自适应宽度、左侧导航栏、可配置板块；对话区按 Claude Code 的写法打磨；DAgent 配色重做，删除其它预设（第 9 节） | 按需 |
 

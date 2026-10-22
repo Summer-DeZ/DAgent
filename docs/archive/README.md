@@ -12,6 +12,10 @@ d3 阈值实验的当前记录统一见 [实验报告](../report/d3-threshold-ex
 | [2026-09-30 SRT 实施计划归档](2026-09-30-srt-permissions-plan.md) | 原技术决策、S00–S10 路线、分日期进度及验收矩阵；2026-10-04 从 nexttodo 归档 |
 | [2026-10-03 父 Agent 审批计划与验收](2026-10-03-parent-agent-approval-plan.md) | 父模型审批、共享预算、真实父子任务与 SRT 联合运行；2026-10-04 从 nexttodo 归档 |
 | [2026-10-05 web 工具计划与验收](2026-10-05-web-tools-plan.md) | `eec9829` 的搜索/抓取、SRT 网络权限、托管 SearXNG 生命周期、缓存/编码及本机验收边界 |
+| [2026-10-20 Agent 记忆计划](2026-10-20-memory-plan.md) | 全局与项目两层记忆、memory 工具、索引注入、`/memory` 面板（M1–M5）与 E1 评估，结果见 [报告](../report/memory-evaluation.md)；2026-10-22 从 nexttodo 归档 |
+| [2026-10-20 模型登录与请求头计划](2026-10-20-model-auth-plan.md) | `/model` 中登录 OpenCode Go 并选择模型、设备授权与自动刷新、通用模型请求头；2026-10-22 从 nexttodo 归档 |
+| [2026-10-20 TUI 改版计划](2026-10-20-tui-redesign-plan.md) | 第 1–5 期：标题栏与提示栏、分节信息栏、`/settings` 外观自定义、新组件与配色；2026-10-22 从 nexttodo 归档 |
+| [2026-10-22 agent / tui / ui 目录整理](2026-10-22-library-layout-plan.md) | 三阶段：按职责分子目录、大文件拆分、剩余文件与头文件拆分，含验收方式；2026-10-22 从 nexttodo 归档 |
 
 当前操作方法见 [指南](../README.md)，当前实现见 [设计索引](../design/README.md)，剩余验收见 [后续工作](../../nexttodo/README.md)。
 归档保留当时的设计目标和运行边界，不表示全部场景已经验收，也不表示历史主机或模型服务仍在运行。
