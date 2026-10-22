@@ -5,7 +5,8 @@
 
 ## 准备与使用
 
-先完成 [构建与安装](build.md)，确认宿主提供 curl 7.75+、bubblewrap 和 socat，然后执行：
+先完成 [构建与安装](build.md)，确认宿主提供 curl 7.75+ 与 MXC 沙箱的宿主依赖（bubblewrap、slirp4netns、util-linux、iproute2、
+nf_tables 后端的 iptables 等），然后执行：
 
 ```bash
 dagent runtime sync
@@ -15,7 +16,7 @@ dagent --permissions ask "用 web_search 查找 Python 官方 urllib 文档，�
 
 `runtime sync` 准备固定版本的 SearXNG 和独立 Python 依赖环境。
 首次 `web_search` 会启动本后端专用的搜索进程，端口自动分配；退出后端时结束进程。
-`web_fetch` 直接通过只读 SRT 内的 curl 请求网页，不需要启动 SearXNG。
+`web_fetch` 直接通过只读 MXC 沙箱内的 curl 请求网页，不需要启动 SearXNG；curl 只能经本次请求独占的回环代理出网。
 
 ask/workspace 中，新网页目标需要网络审批。允许本会话访问后，web 和受限 bash 可复用同一 host:port 授权；
 ask 下 bash 命令本身仍可能需要审批。重定向的每一跳重新判定（配置决策模型时每跳完整 URL 都重新审阅），`/permissions` 可撤销允许或拒绝规则；发现注入或扫描失败时该次抓取不返回正文。
@@ -35,7 +36,7 @@ dagent run --permissions ask \
 ```
 
 重定向到其它目标仍可能需要审批。unrestricted 下 web 连接自动放行新目标，但配置拒绝、会话拒绝及只读/规划上限仍生效；
-web 始终要求只读 SRT。SearXNG 的上游引擎连接属于宿主基础设施，不逐引擎走工具审批。详见 [权限与沙箱](permissions.md#网页搜索与抓取)。
+web 始终要求只读 MXC 沙箱。SearXNG 的上游引擎连接属于宿主基础设施，不逐引擎走工具审批。详见 [权限与沙箱](permissions.md#网页搜索与抓取)。
 
 ## 内容与分页
 
@@ -75,7 +76,7 @@ Home `config/config.json` 中的可选 `web` 段默认如下：
 引擎名必须对应托管 SearXNG 中的定义，列表不能为空；不配置固定端口，也不填外部 SearXNG 地址。
 不同网络出口可能遇到验证码、限流或封锁，有可用结果时会返回结果并列出失败引擎。
 
-`timeout_ms` 限制一次 SRT 请求，包括等待审批的时间；懒启动搜索服务另受 `startup_timeout_ms` 约束。
+`timeout_ms` 限制一次网页请求（含全部重定向跳），包括沙箱启动（每跳约 0.2 秒）和等待审批的时间；懒启动搜索服务另受 `startup_timeout_ms` 约束。
 正文下载上限必须大于 0、不超过 64 MiB，缓存预算至少等于下载上限。缓存按转换后的正文及元数据计费，
 Markdown 展开后可能大于下载体积。调整这些行为配置不需要重新安装依赖；修改 runtime 声明或锁文件后才需要 sync。
 
@@ -85,7 +86,7 @@ Markdown 展开后可能大于下载体积。调整这些行为配置不需要�
 | --- | --- |
 | `SearXNG is not prepared` | 检查 runtime 中的 `internal/searxng` 声明及锁文件，执行 `runtime sync` |
 | `SearXNG did not become ready` | 启动或健康检查失败；核对入口资源、引擎名称和错误文本 |
-| `required read-only SRT capabilities are unavailable` | 用 `sandbox status` 排查；两个 web 工具都不会回退宿主执行 |
+| `required read-only sandbox capabilities are unavailable` | 用 `sandbox status` 排查；两个 web 工具都不会回退宿主执行 |
 | `runtime network approval is unavailable in this run` | 当前目标没有授权且没有可用审批器；使用交互入口或明确配置所需目标 |
 | `network target is on the configured deny list` | 命中 `sandbox.denied_targets`，unrestricted 也不能覆盖 web 的这项拒绝 |
 | `the user denied this network target earlier in the session` | 已有会话拒绝；需要改变决定时由用户在 `/permissions` 撤销 |

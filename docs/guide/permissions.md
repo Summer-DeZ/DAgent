@@ -1,6 +1,6 @@
 # 权限与沙箱
 
-DAgent 的权限策略决定操作是否允许，SRT 负责受限进程的文件和网络边界。
+DAgent 的权限策略决定操作是否允许，MXC（Microsoft Execution Containers）沙箱负责受限进程的文件和网络边界。
 模型 API 连接与远端 MCP 服务不等同于本机工具沙箱。部署步骤见 [构建与安装](build.md)。
 
 ## 模式
@@ -8,8 +8,8 @@ DAgent 的权限策略决定操作是否允许，SRT 负责受限进程的文件
 | 模式 | 普通工作区操作 |
 | --- | --- |
 | `ask` | 普通读取自动；写入和非只读命令需要审批 |
-| `workspace` | 普通文件修改及具备 SRT 条件的工作区命令自动；界面称 auto-edit |
-| `unrestricted` | bash 使用宿主权限，web 仍使用只读 SRT；只读/规划上限和危险命令硬拦仍生效 |
+| `workspace` | 普通文件修改及具备沙箱条件的工作区命令自动；界面称 auto-edit |
+| `unrestricted` | bash 使用宿主权限，web 仍使用只读 MXC 沙箱；只读/规划上限和危险命令硬拦仍生效 |
 | `--read-only` | 与上述三档正交，禁止写入、非只读命令和外部 MCP 调用 |
 | `--plan` | 只读规划；交互确认后才进入执行模式 |
 
@@ -145,7 +145,7 @@ MCP 在低风险分支也检查方向，避免远端修改绕过审批。一个�
 
 ## 网页搜索与抓取
 
-`web_search` 和 `web_fetch` 在 ask、workspace、unrestricted、read_only 和 plan 下都可调用，但始终要求只读 SRT。
+`web_search` 和 `web_fetch` 在 ask、workspace、unrestricted、read_only 和 plan 下都可调用，但始终要求只读 MXC 沙箱。
 ask/workspace/read_only/plan 中，新目标走已有网络审批；headless 无审批路由时明确失败。
 子 Agent 还受 `agents/*.md` 的工具名单约束，只读权限不会自动向它添加 web 工具。
 unrestricted 对新目标自动放行，配置 `sandbox.denied_targets` 和会话拒绝仍优先。收窄权限会终止失去授权的活跃连接。
@@ -156,7 +156,7 @@ unrestricted 对新目标自动放行，配置 `sandbox.denied_targets` 和会�
 搜索服务由每个后端懒启动，使用独立的动态 loopback 端口，不配置固定端口。
 这个基础设施端点仅在 web_search 当前调用内预授权，仍受配置拒绝约束。SearXNG 的上游请求在宿主运行，
 属于 harness 基础设施；外部搜索引擎不逐个进入工具沙箱审批。
-`sandbox.allowed_targets/denied_targets` 控制 SRT 工具连接，不是全后端网络防火墙；它们不约束宿主 bash、模型 API 或 SearXNG 的上游连接。
+`sandbox.allowed_targets/denied_targets` 控制沙箱内工具经回环代理发出的连接，不是全后端网络防火墙；它们不约束宿主 bash、模型 API 或 SearXNG 的上游连接。
 抓取和搜索结果都是不可信资料。使用、配置及排障见 [网页指南](web.md)，实现边界见 [web 设计](../design/web.md)。
 
 ## 排查顺序
@@ -169,16 +169,26 @@ dagent sandbox status
 | 现象 | 处理 |
 | --- | --- |
 | `runtime list` 显示不匹配或依赖缺失 | 检查配置和锁文件后执行 `runtime sync` |
-| 静态依赖通过但 `probe.ok=false` | 查看 probe 的阶段和错误；检查宿主 bubblewrap/socat 与 namespace 策略 |
+| `mxc-library` / `mxc-load` 失败 | 执行 `runtime sync` 安装 `mxc` 包；库版本必须是 1.0.1，否则后端不可用 |
+| 静态依赖通过但 `probe.ok=false` | 查看 probe 的 `stage`（`filesystem` 或 `network`）和错误；`network` 阶段失败多为 slirp4netns、iptables 后端或 nf_conntrack 问题，见 [构建与安装](build.md) |
 | `loopback`、`uid_map` 或 namespace 拒绝 | 按构建指南部署匹配实际后端路径的 AppArmor profile，重新启动后端再探测 |
-| `read-only SRT execution unavailable` | 先恢复 SRT 能力；glob/grep 和两个 web 工具也依赖只读 SRT，增加子 Agent 额度不能修复它 |
+| `read-only sandbox execution unavailable` / `required read-only sandbox capabilities are unavailable` | 先恢复沙箱能力；glob/grep 和两个 web 工具也依赖只读沙箱，增加子 Agent 额度不能修复它 |
 | `no interactive approver` / `Permission approval unavailable` | 当前请求没有可用审批路由；改用交互入口或明确配置。父审批仅接手符合上述条件的子请求 |
-| 模型连接失败 | 检查所选模型地址与服务状态，和 SRT 探测分开处理 |
+| 模型连接失败 | 检查所选模型地址与服务状态，和沙箱探测分开处理 |
 
-SRT 是唯一受限执行后端，不保留旧 Landlock 回退。沙箱不可用时受限命令不启动；
+MXC 是唯一受限执行后端，不保留旧 SRT 或 Landlock 回退。沙箱不可用时受限命令不启动；
 符合策略的 Bash 请求可以询问一次性 host access，但不会自动变成宿主执行，
 只读/规划限制也不会因此放宽。普通原生 `read` 成功不能证明 glob/grep 或 Bash 已可用。
 
 `sandbox status` 会报告当前后端的 AppArmor 标签与可读取到的 userns 开关。
-profile 的 `unconfined` 标记表示该 profile 提供 namespace 前置，具体工具隔离仍由 SRT 建立；
-判断受限能力应看真实 `probe.ok`，执行记录再看实际 backend 与 sandbox。
+profile 的 `unconfined` 标记表示该 profile 提供 namespace 前置，具体工具隔离仍由 MXC 建立；
+判断受限能力应看真实 `probe.ok`，执行记录再看实际 backend（受限执行为 `mxc`，宿主执行为 `host`）与 sandbox。
+
+沙箱内的几处行为与直觉不同，排查命令输出时注意：
+
+- 受限命令只看到系统目录（`/usr/bin`、`/usr/lib`、`/etc` 等）、授权的读写范围和私有 `/tmp`；宿主 HOME、`/opt`、`/usr/local`、`/sys` 不可见。
+- `.env` 等敏感文件与受保护目录被遮蔽：被遮蔽的文件读写都报 `Permission denied`；被遮蔽的目录显示为空且可以写入，但写入只存在于本次命令，
+  宿主文件不受影响。`.git` 等受保护写入路径可读，写入报 `Read-only file system`。
+- 受限 bash 的网络只经本次执行的代理：沙箱内已设置 `HTTP_PROXY`、`HTTPS_PROXY` 等变量，命令需要遵循它们（curl 默认遵循），
+  不经代理的直连没有 DNS 和路由；被拒绝的目标由代理返回 403（HTTPS 下 curl 报 CONNECT 失败，退出码 56）。
+- 超时或取消直接终止整个沙箱，没有 SIGTERM 宽限。

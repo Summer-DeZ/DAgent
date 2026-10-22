@@ -32,7 +32,7 @@ $CM --build --preset dev -j 8 --target dagent_tui   # 只编一个库，改动�
 
 | 工具 | 用途 | 用法 |
 | --- | --- | --- |
-| `det.sh` | 确定性 CLI 输出（`sandbox status`、`runtime list`、`sessions`、`--list-models`、backend 参数错误等） | `det.sh <绝对输出目录> <程序目录>`，然后 `diff -r` 基线目录；只允许 `elapsed_ms`、`srt_bridge` 路径和会话列表不同 |
+| `det.sh` | 确定性 CLI 输出（`sandbox status`、`runtime list`、`sessions`、`--list-models`、backend 参数错误等） | `det.sh <绝对输出目录> <程序目录>`，然后 `diff -r` 基线目录；只允许 `elapsed_ms` 和会话列表不同（`sandbox status` 已没有程序目录旁的 bridge 路径） |
 | `capture2.py` | 在真实 PTY 里跑 TUI，按步骤发键并保存每步画面帧 | `temp/tui-verify/venv/bin/python temp/platform-check/capture2.py <前缀> <列> <行> '<步骤 JSON>'`；步骤为 `[文本, 等待秒]`，文本可含 `<enter>`、`<esc>`、`<s-tab>`、`<resize:C:R>`、`<signal:TERM>`；环境变量 `DAGENT_BIN`、`DAGENT_HOME`、`CAPTURE_CWD`、`CAPTURE_ARGS` |
 | `runs.py` / `f_runs.py` / `g_runs.py` | 用模型跑 `dagent run` 的工具场景（bash、grep、edit、MCP、web、memory、网络…） | `python3 runs.py <标签> [场景...]` |
 | `h_rpc.py` / `watch_rpc.py` | 直接用 socketpair 驱动 `dagent-backend` 的 RPC | 见脚本头部 |
@@ -80,7 +80,7 @@ WIN_BUILD_MAX=3000 /home/jyt/winvm/tools/win-build.sh $sha 1 Release  # 2. 在�
 ssh dagent-win 'cmd /c "C:\dev\DAgent-stage\dagent.exe --version & C:\dev\DAgent-stage\dagent.exe sandbox status & echo rc=%ERRORLEVEL%"'
 ```
 
-Windows 没有沙箱后端，`sandbox status` 应输出 `probe.stage="unsupported"` 且 `rc=0`；启动时 TUI 欢迎页和 `dagent run` 的 stderr 都会提示 workspace 模式不可用并以 ask 模式启动。
+当前版本的 Windows 尚未启用沙箱后端（ProcessContainer 接入进行中），`sandbox status` 应输出 `probe.stage="unsupported"` 且 `rc=0`；启动时 TUI 欢迎页和 `dagent run` 的 stderr 都会提示 workspace 模式不可用并以 ask 模式启动。
 
 什么时候需要虚拟机：改了 `*_win.cpp`、CMake 源列表或平台边界（`docs/design/platform.md` 里列的文件）时做一次 Release 构建加冒烟；平台中立的改动靠 Linux 验证即可。虚拟机构建和 Linux 检查并行跑，不要串行等。
 
