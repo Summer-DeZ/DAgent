@@ -383,8 +383,10 @@ SharedLibrary SharedLibrary::open(const std::filesystem::path& file) {
 
 void* SharedLibrary::symbol(const char* name) const noexcept { return ::dlsym(impl_->handle, name); }
 
+// setsid -w 让受限 shell 自成会话：命令里的 kill 0 只打到自己的进程组，不会连带杀掉同组的 bwrap
+// （那样 MXC 只能报告 -1），退出码经 setsid 原样回传。
 std::string sandbox_command_line(const std::filesystem::path& shell, std::string_view script) {
-    return "exec " + shell_quote(shell.string()) + " --noprofile --norc -c " + shell_quote(script);
+    return "exec setsid -w " + shell_quote(shell.string()) + " --noprofile --norc -c " + shell_quote(script);
 }
 
 // /proc/net/tcp 每行：sl local_address rem_address st tx:rx tr:when retrnsmt uid ...；地址为

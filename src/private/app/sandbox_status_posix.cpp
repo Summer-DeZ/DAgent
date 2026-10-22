@@ -72,7 +72,7 @@ std::vector<HostCheck> host_prerequisites() {
         checks.push_back({"bwrap", false, "not found; install bubblewrap 0.5 or newer"});
     }
     constexpr std::pair<std::string_view, std::string_view> network_tools[] = {
-        {"slirp4netns", "slirp4netns"}, {"unshare", "util-linux"}, {"nsenter", "util-linux"},
+        {"slirp4netns", "slirp4netns"}, {"unshare", "util-linux"}, {"nsenter", "util-linux"}, {"setsid", "util-linux"},
         {"ip", "iproute2"},             {"iptables-restore", "iptables (nf_tables backend)"}};
     for (const auto& [name, package] : network_tools) {
         const auto program = host_program(name);
