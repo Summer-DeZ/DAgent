@@ -54,6 +54,9 @@ target_link_libraries(dagent_tui PRIVATE dagent_base)
 # 应用层：在 TUI 框架之上构建的界面（只持 Client、协议 DTO 与页面状态）。
 add_library(dagent_ui STATIC
     private/ui/shell.cpp
+    private/ui/shell_commands.cpp
+    private/ui/shell_panes.cpp
+    private/ui/bridge.cpp
     private/ui/browser_${DAGENT_PLATFORM}.cpp
     private/ui/style/strings.cpp
     private/ui/style/display.cpp
@@ -71,6 +74,7 @@ add_library(dagent_ui STATIC
     private/ui/page/prompt_box.cpp
     private/ui/page/welcome.cpp
     private/ui/page/side_panel.cpp
+    private/ui/page/workspace.cpp
     private/ui/overlay/settings_dialog.cpp
     private/ui/overlay/approval.cpp
     private/ui/overlay/toast.cpp

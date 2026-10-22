@@ -9,8 +9,6 @@
 #include <charconv>
 #include <format>
 
-#include "base/overloaded.hpp"
-#include "base/text.hpp"
 #include "tui/grid/grapheme.hpp"
 
 namespace dagent::ui {

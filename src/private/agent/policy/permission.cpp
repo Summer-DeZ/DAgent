@@ -9,7 +9,6 @@
 
 #include "base/platform.hpp"
 #include "base/path.hpp"
-#include "base/text.hpp"
 
 namespace dagent::agent {
 namespace {

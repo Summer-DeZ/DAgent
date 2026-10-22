@@ -2,11 +2,9 @@
 #include "ui/style/display.hpp"
 #include "ui/style/strings.hpp"
 #include "ui/style/appearance.hpp"
-#include "ui/page/center.hpp"
 
 #include <algorithm>
 #include <cctype>
-#include <charconv>
 #include <format>
 
 #include "base/overloaded.hpp"

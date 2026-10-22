@@ -6,7 +6,6 @@
 #include "agent/record/committer.hpp"
 #include "agent/policy/execution_registry.hpp"
 #include "agent/policy/permission.hpp"
-#include "agent/log.hpp"
 
 namespace dagent::agent {
 
