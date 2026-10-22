@@ -24,7 +24,7 @@
 #include "agent/grant.hpp"
 #include "agent/intent.hpp"
 #include "agent/message.hpp"
-#include "agent/port_tool.hpp"
+#include "agent/port/tool.hpp"
 #include "agent/tool_data.hpp"
 #include "exec/process.hpp"
 #include "exec/sandbox.hpp"

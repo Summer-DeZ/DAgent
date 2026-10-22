@@ -13,7 +13,7 @@
 #include <vector>
 
 #include "agent/model_input.hpp"
-#include "agent/port_model.hpp"
+#include "agent/port/model.hpp"
 #include "agent/public_model.hpp"
 #include "llm/provider.hpp"
 #include "app/session_assembly.hpp"

@@ -5,7 +5,7 @@
 #include <algorithm>
 #include <mutex>
 
-#include "agent/permission.hpp"
+#include "agent/policy/permission.hpp"
 
 namespace dagent::tools {
 namespace fs = std::filesystem;

@@ -7,8 +7,8 @@
 #include <stdexcept>
 #include <utility>
 
-#include "agent/run.hpp"
-#include "agent/turn_runner.hpp"
+#include "agent/loop/run.hpp"
+#include "agent/loop/turn_runner.hpp"
 #include "base/log.hpp"
 #include "base/text.hpp"
 

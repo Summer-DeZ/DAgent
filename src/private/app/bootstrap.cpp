@@ -19,7 +19,7 @@
 #include "app/session_assembly.hpp"
 #include "base/log.hpp"
 #include "exec/sandbox.hpp"
-#include "agent/decision_review.hpp"
+#include "agent/policy/decision_review.hpp"
 #include "llm/decision_provider.hpp"
 #include "llm/llm.hpp"
 #include "storage/decision_store.hpp"

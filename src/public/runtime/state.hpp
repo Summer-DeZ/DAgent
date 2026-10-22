@@ -9,7 +9,7 @@
 #include <vector>
 #include "agent/events.hpp"
 #include "agent/mcp_state.hpp"
-#include "agent/permission.hpp"
+#include "agent/policy/permission.hpp"
 #include "agent/public_model.hpp"
 
 namespace dagent::runtime {

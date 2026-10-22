@@ -13,9 +13,9 @@
 #include <string_view>
 
 #include "agent/options.hpp"
-#include "agent/port_decision.hpp"
+#include "agent/port/decision.hpp"
 #include "agent/skills.hpp"
-#include "agent/port_model.hpp"
+#include "agent/port/model.hpp"
 #include "agent/public_model.hpp"
 #include "tools/mcp_hub.hpp"
 #include "workspace/context.hpp"

@@ -8,7 +8,7 @@
 #include <memory>
 #include <optional>
 
-#include "agent/port_decision.hpp"
+#include "agent/port/decision.hpp"
 
 namespace dagent::storage {
 

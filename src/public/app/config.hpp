@@ -12,8 +12,8 @@
 #include <vector>
 
 #include "agent/options.hpp"
-#include "agent/permission.hpp"
-#include "agent/port_decision.hpp"
+#include "agent/policy/permission.hpp"
+#include "agent/port/decision.hpp"
 #include "agent/subagent_def.hpp"
 #include "llm/decision_provider.hpp"
 #include "llm/provider.hpp"

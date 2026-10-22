@@ -6,7 +6,7 @@
 #include "base/text.hpp"
 #include "base/path.hpp"
 #include <algorithm>
-#include "agent/permission.hpp"
+#include "agent/policy/permission.hpp"
 
 #include "storage/history_read.hpp"
 #include "workspace/context.hpp"

@@ -12,8 +12,8 @@
 #include <string>
 #include <vector>
 
-#include "agent/permission.hpp"
-#include "agent/port_delegation.hpp"
+#include "agent/policy/permission.hpp"
+#include "agent/port/delegation.hpp"
 #include "runtime/factory.hpp"
 
 namespace dagent::runtime {

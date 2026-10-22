@@ -241,26 +241,26 @@ target_link_libraries(dagent_app_cli
 add_library(dagent_agent STATIC
     private/agent/skills.cpp
     private/agent/action.cpp
-    private/agent/control.cpp
-    private/agent/catalog.cpp
-    private/agent/committer.cpp
-    private/agent/record_codec.cpp
-    private/agent/decision_review.cpp
-    private/agent/history.cpp
-    private/agent/recovery.cpp
-    private/agent/session.cpp
-    private/agent/compaction.cpp
-    private/agent/dispatch.cpp
-    private/agent/authorization.cpp
-    private/agent/parent_review.cpp
-    private/agent/model_budget.cpp
-    private/agent/turn_runner.cpp
     private/agent/tokens.cpp
     private/agent/tool_data.cpp
     private/agent/conversation.cpp
     private/agent/events.cpp
-    private/agent/permission.cpp
-    private/agent/execution_registry.cpp
+    private/agent/policy/decision_review.cpp
+    private/agent/policy/authorization.cpp
+    private/agent/policy/parent_review.cpp
+    private/agent/policy/permission.cpp
+    private/agent/policy/execution_registry.cpp
+    private/agent/record/committer.cpp
+    private/agent/record/record_codec.cpp
+    private/agent/record/history.cpp
+    private/agent/record/recovery.cpp
+    private/agent/record/compaction.cpp
+    private/agent/loop/control.cpp
+    private/agent/loop/catalog.cpp
+    private/agent/loop/session.cpp
+    private/agent/loop/dispatch.cpp
+    private/agent/loop/model_budget.cpp
+    private/agent/loop/turn_runner.cpp
 )
 
 target_include_directories(dagent_agent PUBLIC ${CMAKE_SOURCE_DIR}/src/public)

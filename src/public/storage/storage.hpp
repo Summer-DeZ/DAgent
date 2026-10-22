@@ -13,7 +13,7 @@
 #include <string_view>
 #include <vector>
 
-#include "agent/port_lease.hpp"
+#include "agent/port/lease.hpp"
 #include "agent/session_meta.hpp"
 
 namespace dagent::agent {

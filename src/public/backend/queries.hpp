@@ -14,7 +14,7 @@
 #include <utility>
 #include <vector>
 
-#include "agent/history.hpp"
+#include "agent/record/history.hpp"
 #include "agent/skills.hpp"
 #include "agent/tool_data.hpp"
 #include "lib/nlohmann/json.hpp"
