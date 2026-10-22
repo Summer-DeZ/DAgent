@@ -54,7 +54,7 @@ std::size_t on_header(char* p, std::size_t size, std::size_t n, void* ud) {
     const std::size_t colon = ln.find(':');
     if (colon == std::string_view::npos) return size * n;
     std::string name(trim(ln.substr(0, colon)));
-    std::ranges::transform(name, name.begin(), [](unsigned char c) { return std::tolower(c); });
+    std::ranges::transform(name, name.begin(), [](unsigned char c) { return static_cast<char>(std::tolower(c)); });
     t.resp.headers.emplace_back(std::move(name), std::string(trim(ln.substr(colon + 1))));
     return size * n;
 }
