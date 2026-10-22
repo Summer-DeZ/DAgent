@@ -13,9 +13,13 @@
 #include <csignal>
 #include <cstdlib>
 #include <cstring>
+#include <format>
+#include <fstream>
 #include <limits>
 #include <mutex>
+#include <sstream>
 
+#include <dlfcn.h>
 #include <fcntl.h>
 #include <fnmatch.h>
 #include <sys/socket.h>
@@ -348,6 +352,58 @@ void spawn_child(const Command& cmd, const fs::path& program_, const std::vector
     out.read = -1;
     err_pipe_.assign(err.read);
     err.read = -1;
+}
+
+} // namespace dagent::exec::detail
+
+namespace dagent::exec::detail {
+
+struct SharedLibrary::Impl {
+    void* handle = nullptr;
+    ~Impl() {
+        if (handle != nullptr) ::dlclose(handle);
+    }
+};
+
+SharedLibrary::SharedLibrary() : impl_(std::make_unique<Impl>()) {}
+SharedLibrary::SharedLibrary(SharedLibrary&&) noexcept = default;
+SharedLibrary& SharedLibrary::operator=(SharedLibrary&&) noexcept = default;
+SharedLibrary::~SharedLibrary() = default;
+
+SharedLibrary SharedLibrary::open(const std::filesystem::path& file) {
+    SharedLibrary library;
+    library.impl_->handle = ::dlopen(file.c_str(), RTLD_NOW | RTLD_LOCAL);
+    if (library.impl_->handle == nullptr) {
+        const char* error = ::dlerror();
+        throw ExecError{ExecError::Kind::sandbox,
+                        "load " + file.string() + ": " + (error != nullptr ? error : "dlopen failed")};
+    }
+    return library;
+}
+
+void* SharedLibrary::symbol(const char* name) const noexcept { return ::dlsym(impl_->handle, name); }
+
+std::string sandbox_command_line(const std::filesystem::path& shell, std::string_view script) {
+    return "exec " + shell_quote(shell.string()) + " --noprofile --norc -c " + shell_quote(script);
+}
+
+// /proc/net/tcp 每行：sl local_address rem_address st tx:rx tr:when retrnsmt uid ...；地址为
+// 小端十六进制 IPv4 加大端十六进制端口。客户端一侧的条目是 本端=对端端口、远端=代理端口。
+bool loopback_peer_is_current_user(unsigned short local_port, unsigned short peer_port) {
+    const std::string local = std::format("0100007F:{:04X}", peer_port);
+    const std::string remote = std::format("0100007F:{:04X}", local_port);
+    std::ifstream table("/proc/net/tcp");
+    std::string line;
+    std::getline(table, line); // 表头
+    while (std::getline(table, line)) {
+        std::istringstream fields(line);
+        std::string slot, local_address, remote_address, state, queues, timer, retransmits;
+        unsigned long uid = 0;
+        if (!(fields >> slot >> local_address >> remote_address >> state >> queues >> timer >> retransmits >> uid))
+            continue;
+        if (local_address == local && remote_address == remote) return uid == ::getuid();
+    }
+    return false;
 }
 
 } // namespace dagent::exec::detail
