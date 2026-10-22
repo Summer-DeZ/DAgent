@@ -115,6 +115,7 @@ add_library(dagent_exec STATIC
     private/exec/shell.cpp
     private/exec/sandbox.cpp
     private/exec/srt.cpp
+    private/exec/mxc.cpp
     private/exec/proxy.cpp
 )
 
