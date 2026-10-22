@@ -1,5 +1,6 @@
 #include "exec/detail.hpp"
 
+#include "base/text.hpp"
 
 #include <algorithm>
 #include <string>
@@ -69,6 +70,36 @@ std::string_view find_env(const std::vector<std::string>& env, std::string_view 
         if (entry_has_name(entry, name)) return std::string_view(entry).substr(entry.find('=') + 1);
     }
     return {};
+}
+
+OutputCollector::OutputCollector(std::size_t max_bytes)
+    : head_cap_(max_bytes / 2), tail_cap_(max_bytes - max_bytes / 2) {}
+
+void OutputCollector::append(std::string_view chunk) {
+    total_ += chunk.size();
+    if (head_.size() < head_cap_) {
+        const std::size_t take = std::min(head_cap_ - head_.size(), chunk.size());
+        head_.append(chunk.substr(0, take));
+        chunk.remove_prefix(take);
+    }
+    if (chunk.empty()) return;
+    tail_.append(chunk);
+    if (tail_.size() > tail_cap_) tail_.erase(0, tail_.size() - tail_cap_);
+}
+
+std::string OutputCollector::finish() const {
+    if (total_ <= head_cap_ + tail_cap_) return head_ + tail_;
+
+    const std::size_t head_end = base::utf8_floor(head_, head_.size());
+    std::size_t tail_skip = 0;
+    while (tail_skip < tail_.size() && (static_cast<unsigned char>(tail_[tail_skip]) & 0xC0) == 0x80)
+        ++tail_skip;
+    const std::size_t omitted = total_ - head_end - (tail_.size() - tail_skip);
+
+    std::string text = head_.substr(0, head_end);
+    text += "\n... " + std::to_string(omitted) + " bytes omitted ...\n";
+    text += tail_.substr(tail_skip);
+    return text;
 }
 
 } // namespace dagent::exec::detail
