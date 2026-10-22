@@ -9,6 +9,7 @@
 
 #include <algorithm>
 #include <array>
+#include <future>
 #include <atomic>
 #include <bit>
 #include <cctype>
@@ -116,13 +117,41 @@ public:
 
         json document = mxc_policy(request.runtime, request.policy, home_,
                                    proxy_ ? std::optional(proxy_->url()) : std::nullopt);
-        const std::string script = (request.merge_stderr ? "exec 2>&1\n" : "") + request.command;
+        // MXC 总是给沙箱一个 stdin 管道；不保留 stdin 时改接 /dev/null，否则 rg 这类工具会把可读的空管道当成搜索输入。
+        const std::string script = std::string(keep_stdin ? "" : "exec </dev/null\n") +
+                                   (request.merge_stderr ? "exec 2>&1\n" : "") + request.command;
         document["process"] = {{"commandLine", detail::sandbox_command_line(request.runtime.shell, script)},
                                {"cwd", base::path_to_utf8(request.workspace)},
                                {"env", environment(request, options)},
                                {"timeout", 0}};
         const std::string text = document.dump(-1, ' ', false, json::error_handler_t::replace);
 
+        // bwrap 以 --die-with-parent（PDEATHSIG）跟随创建它的线程：spawn 必须发生在活到进程结束的线程上，
+        // 所以由 stdout 读取线程负责 spawn，再继续读 stdout；调用线程只等待 spawn 结果。
+        std::promise<void> spawned;
+        std::future<void> ready = spawned.get_future();
+        readers_[0] = std::thread([this, text, keep_stdin, promise = std::move(spawned)]() mutable {
+            try {
+                spawn(text, keep_stdin);
+                promise.set_value();
+            } catch (...) {
+                promise.set_exception(std::current_exception());
+                return;
+            }
+            if (streams_[0] == nullptr) closed_(Stream::out);
+            else read_loop(streams_[0], Stream::out);
+        });
+        try {
+            ready.get();
+        } catch (...) {
+            readers_[0].join();
+            throw;
+        }
+        if (streams_[1] == nullptr) closed_(Stream::err);
+        else readers_[1] = std::thread([this] { read_loop(streams_[1], Stream::err); });
+    }
+
+    void spawn(const std::string& text, bool keep_stdin) {
         ffi::MxcErrorDetail error_detail{};
         const std::int32_t status = f_.spawn_json(text.c_str(), 0, &sandbox_, &error_detail);
         std::string message = error_detail.message_utf8 != nullptr ? error_detail.message_utf8 : "";
@@ -150,11 +179,6 @@ public:
         streams_[1] = f_.sandbox_take_stderr(sandbox_);
         closers_[0] = f_.sandbox_stdout_closer(sandbox_);
         closers_[1] = f_.sandbox_stderr_closer(sandbox_);
-        for (std::size_t i = 0; i < 2; ++i) {
-            const Stream which = i == 0 ? Stream::out : Stream::err;
-            if (streams_[i] == nullptr) closed_(which);
-            else readers_[i] = std::thread([this, i, which] { read_loop(streams_[i], which); });
-        }
     }
 
     /// 仍在运行时返回空；退出后反复调用返回同一结果。
