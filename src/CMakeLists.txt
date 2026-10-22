@@ -30,6 +30,7 @@ add_library(dagent_tui STATIC
     private/tui/terminal/terminal.cpp
     private/tui/terminal/terminal_${DAGENT_PLATFORM}.cpp
     private/tui/grid/grapheme.cpp
+    private/tui/grid/grapheme_tables.cpp
     private/tui/grid/surface.cpp
     private/tui/grid/present.cpp
     private/tui/widget/layout.cpp
