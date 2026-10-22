@@ -1,6 +1,9 @@
 # 沙箱后端切换到 MXC
 
-批准：2026-10-22。调研依据见 [MXC 调研](../docs/research/2026-10-22-microsoft-mxc.md)；当前 SRT 实现见 [exec](../docs/design/exec.md) 和 [agent §7](../docs/design/agent.md#7-权限与沙箱)。
+归档日期：2026-10-22。原位置：`nexttodo/mxc-sandbox-plan.md`。
+
+批准：2026-10-22。S0–S4 于 2026-10-22 完成并合并；验收结果见文末。Windows 受限执行因上游问题未验收，
+项目负责人决定等待上游进展（选项 1），接入代码保留。调研依据见 [MXC 调研](../docs/research/2026-10-22-microsoft-mxc.md)；当前 SRT 实现见 [exec](../docs/design/exec.md) 和 [agent §7](../docs/design/agent.md#7-权限与沙箱)。
 
 ## 目标
 
@@ -67,3 +70,20 @@
 - 非 BaseContainer 层（AppContainer + BFS / DACL）的任何支持或验收。
 - macOS seatbelt 后端、hyperlight / microvm / lxc 等其它后端。
 - MXC 的 Learning / Permissive 模式与活动报告。
+
+## 验收结果（2026-10-22）
+
+材料：`temp/mxc-check/RESULT.md`（S0 与 Linux S1/S2）、`temp/mxc-check/exec-driver/RESULT.md`（exec 真实驱动）、
+`temp/mxc-check/win/RESULT.md`（Windows S3）。
+
+| 项目 | 结果 |
+| --- | --- |
+| Linux 构建 | dev 预设全量零警告 |
+| `runtime sync` / `sandbox status` | `mxc` 包安装；探针 filesystem 31 ms、network 155–172 ms；sync 现在向 uv/npm 透传宿主代理变量 |
+| 确定性输出 `det.sh` | 与基线只差 `runtime.txt`（包清单）、`sandbox.txt`（新格式）、会话列表 |
+| 模型驱动场景 | bash（stderr 合并、退出码、信号 143、超时、后台进程、大输出）、grep、edit、web_fetch、web_search、bash 联网（d3 代批）、MCP stdio、memory、env 通过；fds 与基线一致（策略层审批） |
+| ask 模式审批 | 截帧确认审批框、`y` 放行、执行与 `/exit` |
+| 实现期间修复 | MCP 子进程随连接线程退出被 PDEATHSIG 杀死（spawn 移到读取线程）；rg 把 stdin 管道当搜索输入（`exec </dev/null`）；`kill 0` 连带杀掉 bwrap（`setsid -w`） |
+| Windows 构建 | MSVC Release 全量零警告 |
+| Windows `sandbox status` | 26H2 虚拟机 `mxc-tier = base-container`、无告警；库移走时正确报告缺失并以 ask 模式启动 |
+| Windows 受限执行 | **未验收**：Git bash 的 MSYS2 运行库无法在 ProcessContainer 内初始化（microsoft/mxc#1061），探针在 filesystem 阶段失败，失败关闭回落为无沙箱模式；另有授权路径无执行权与运行时 `cd` 被拒（microsoft/mxc#1467）。重新评估触发条件：#1061 有可用修复（MSYS 或 OS），且 #1467 修复后在虚拟机上重跑 S3 验收 |

@@ -16,6 +16,7 @@ d3 阈值实验的当前记录统一见 [实验报告](../report/d3-threshold-ex
 | [2026-10-20 模型登录与请求头计划](2026-10-20-model-auth-plan.md) | `/model` 中登录 OpenCode Go 并选择模型、设备授权与自动刷新、通用模型请求头；2026-10-22 从 nexttodo 归档 |
 | [2026-10-20 TUI 改版计划](2026-10-20-tui-redesign-plan.md) | 第 1–5 期：标题栏与提示栏、分节信息栏、`/settings` 外观自定义、新组件与配色；2026-10-22 从 nexttodo 归档 |
 | [2026-10-22 agent / tui / ui 目录整理](2026-10-22-library-layout-plan.md) | 三阶段：按职责分子目录、大文件拆分、剩余文件与头文件拆分，含验收方式；2026-10-22 从 nexttodo 归档 |
+| [2026-10-22 沙箱后端切换到 MXC](2026-10-22-mxc-sandbox-plan.md) | SRT 换成 MXC 原生库：策略映射、回环代理、MCP 子进程、`mxc` 运行时包、配置 v3；Linux 全部验收，Windows 层级探测通过但受限执行受上游 #1061 阻塞；2026-10-22 从 nexttodo 归档 |
 
 当前操作方法见 [指南](../README.md)，当前实现见 [设计索引](../design/README.md)，剩余验收见 [后续工作](../../nexttodo/README.md)。
 归档保留当时的设计目标和运行边界，不表示全部场景已经验收，也不表示历史主机或模型服务仍在运行。
