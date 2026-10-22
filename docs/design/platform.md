@@ -24,7 +24,9 @@ exec 保留 `BOOST_PROCESS_USE_STD_FS`，使用具体的 Boost.Process v2 分头
 Windows 系统库按使用目标链接：base 用 `bcrypt`、`advapi32`，workspace 用 `ntdll`、`advapi32`、`bcrypt`，ui 和 app_cli 用 `shell32`；
 ipc 的私有管道 ACL 和随机名称使用 `advapi32`、`bcrypt`；llm 用 `ntdll`、`advapi32`、`bcrypt`，app_config 用 `advapi32`；web 用 `Iconv::Iconv`。这些依赖均不会进入 Linux 链接行。
 
-SRT bridge/wrapper 与 SearXNG 入口的构建复制目标、可执行文件对它们的依赖及安装规则仅在 Linux 启用。
+SearXNG 入口的构建复制目标、可执行文件对它的依赖及安装规则仅在 Linux 启用；构建目录的 `src/libexec/` 只有
+`searxng_server.py`，安装后的 `libexec/` 另有按最终路径生成的 `dagent.apparmor`。MXC 原生库不由 CMake 构建或安装，
+而由 `runtime sync` 准备。
 AppArmor profile 的构建生成和安装生成也仅在 Linux 启用，后者仍使用不含 `DESTDIR` 的最终后端路径。
 Windows 的安装目标登记 `RUNTIME_DEPENDENCY_SET`，从 vcpkg 的运行时目录收集依赖 DLL 并安装到可执行文件旁；
 排除 `api-ms-win-*`、`ext-ms-*` 等转发 DLL 以及 System32/WinSxS 中的系统组件，不收集 VC 运行库。
@@ -39,7 +41,7 @@ Linux 的资源路径、文件权限和 profile 内容不变。
 - I1：自有 C++ 中的平台头文件和原生平台操作集中到 `src/private/**/*_posix.cpp` 或 `*_win.cpp`。
   范围包括 unistd/fcntl/poll/signal/termios/spawn/pthread、sys/linux 头文件，进程与信号、fd I/O、
   socketpair、文件锁、原生文件和目录操作、终端、时间转换、uname、监听及 `/proc` 路径。
-  第三方 `src/public/lib/**`、SRT 资源脚本和 bash 语义分析字面量不受此限制；
+  第三方 `src/public/lib/**` 和 bash 语义分析字面量不受此限制；
   Boost.Asio/Process 的跨平台用法可以留在共享实现，POSIX 钩子与 fd 操作属于平台实现。
   iconv 是两个平台共用的库接口，转换循环位于共享 `web/charset.cpp`。
 - I2：`src/public/**`（除 lib）不直接包含平台头文件，不在接口或成员中暴露 fd、pid_t、
@@ -62,7 +64,7 @@ Linux 的资源路径、文件权限和 profile 内容不变。
 | `src/private/ipc/channel_{posix,win}.cpp` | `src/public/ipc/channel.hpp` | `InheritedEndpoint` 参数解析、`Channel` 原生状态与传输、`BackendProcess` 不透明进程标识、`backend_binary_path`、`spawn_backend`、`wait_or_terminate` |
 | `src/private/tui/terminal/terminal_posix.cpp` | `src/public/tui/terminal/terminal.hpp`、`src/public/tui/terminal/event_wait.hpp` | Terminal 生命周期、原生状态、尺寸、字节写入、输入恢复与信号；EventWait 的等待、输入读取、唤醒及排空 |
 | `src/private/tui/terminal/terminal_win.cpp` | `src/public/tui/terminal/terminal.hpp`、`src/public/tui/terminal/event_wait.hpp` | Windows 控制台版：Terminal 生命周期、能力基线、尺寸、字节写入、输入模式与输出代码页还原、控制台事件；EventWait 的等待、`ReadConsoleInputW` 解码、唤醒及排空 |
-| `src/private/exec/platform_{posix,win}.cpp` | `src/public/exec/detail.hpp`、`src/public/exec/platform.hpp`、`src/public/exec/process.hpp` | `inherited_environment`、`environment_names_equal`、`environment_name_matches`、`resolve_program`、`system_git_program`、`default_search_path`、`project_search_path`、执行权限、SIGPIPE、ProcessGroup、退出状态、spawn_command/spawn_child、InheritedResources、SrtControl、默认 SRT 可读目录 |
+| `src/private/exec/platform_{posix,win}.cpp` | `src/public/exec/detail.hpp`、`src/public/exec/platform.hpp`、`src/public/exec/process.hpp` | `inherited_environment`、`environment_names_equal`、`environment_name_matches`、`resolve_program`、`system_git_program`、`default_search_path`、`project_search_path`、执行权限、SIGPIPE、ProcessGroup、退出状态、spawn_command/spawn_child、InheritedResources、`SharedLibrary`、`sandbox_command_line`、`loopback_peer_is_current_user` |
 | `src/private/workspace/files_{posix,win}.cpp` | `src/public/workspace/files.hpp` | `probe`、`read_text`、`write_text`、`stamp_of`、FileReference 原生状态与操作、DirectoryEntries 惰性枚举 |
 | `src/private/storage/storage_{posix,win}.cpp` | `src/public/storage/platform.hpp` | `detail::SessionFileLock` |
 | `src/private/storage/decision_store_{posix,win}.cpp` | `src/public/storage/platform.hpp` | `detail::make_decision_file_private` |
@@ -70,7 +72,7 @@ Linux 的资源路径、文件权限和 profile 内容不变。
 | `src/private/app/models_{posix,win}.cpp` | `src/public/app/config_detail.hpp` | `detail::ModelWriteLock` |
 | `src/private/llm/auth_{posix,win}.cpp` | `src/public/llm/auth.hpp`、`src/public/llm/auth_detail.hpp` | `read_credentials`、`detail::CredentialLock`、`detail::write_credentials`、`detail::remove_credentials` |
 | `src/private/app/queries_posix.cpp` | `src/public/app/queries.hpp` | `QueryGatewayImpl::watch_workspace` |
-| `src/private/app/sandbox_status_posix.cpp` | `src/public/app/sandbox_status.hpp` | `detail::platform_sandbox_supported`、`detail::host_bwrap`、`detail::host_socat`、`detail::append_host_diagnostics` |
+| `src/private/app/sandbox_status_{posix,win}.cpp` | `src/public/app/sandbox_status.hpp` | `detail::platform_sandbox_supported`、`detail::sandbox_containment`、`detail::host_prerequisites`、`detail::append_host_diagnostics` |
 
 ## 接口语义与资源所有权
 
@@ -92,7 +94,7 @@ Linux 的资源路径、文件权限和 profile 内容不变。
 - ui/browser：URL 从 UTF-8 转为 UTF-16 后交给 `ShellExecuteW` 的 `open` 动作，不拼 shell 命令；
   返回值只表示启动请求是否被系统接受，不等待浏览器退出。
 - web/document：Windows 链接 libiconv，POSIX 使用 glibc iconv，共用同一转换循环及错误文本。
-  该解码实现不改变工具层对只读 SRT 的要求。
+  该解码实现不改变工具层对只读 MXC 沙箱的要求。
 
 Windows 的 exec 与进程边界：
 
@@ -116,9 +118,11 @@ Windows 的 exec 与进程边界：
   `terminate` 尝试发 Ctrl-Break；没有共同控制台或程序不处理时，仍由既有宽限计时器执行 `TerminateJobObject`。
   退出状态的 signal 为空，DWORD 退出码保留 32 位到既有 int 接口（最高位为 1 时显示为负数），不作 POSIX 状态解码。
 - InheritedResources 保存不拥有资源的句柄清单；launch 临时设置并恢复额外句柄的继承位，仅白名单进入子进程。
-  SIGPIPE 操作为空；SrtControl 构造、通信入口及默认 SRT 可读路径明确抛 `sandbox is unsupported on Windows`，
-  无资源的 close/shutdown/析构为空操作，不建立伪造连接，不改变授权或 MCP 的上层启动策略。
-  Windows 没有沙箱后端，权限模式与 bash 授权的差异见 [agent 的启动自检未找到可用沙箱时](agent.md#启动自检未找到可用沙箱时)。
+  SIGPIPE 操作为空。`SharedLibrary` 用 `LoadLibraryW` 打开、`GetProcAddress` 取符号，失败时 `ExecError{sandbox}` 带系统错误文本；
+  `sandbox_command_line` 按 CreateProcess 的引用规则拼出 `"<shell>" --noprofile --norc -c "<script>"`；
+  `loopback_peer_is_current_user` 第一版固定返回 true。
+  Windows 后端为 ProcessContainer，接入（S3）进行中；当前装配不启用沙箱后端，权限模式与 bash 授权的差异见
+  [agent 的启动自检未找到可用沙箱时](agent.md#启动自检未找到可用沙箱时)。
 
 Windows 的 IPC 与中断边界：
 
@@ -166,8 +170,7 @@ local/UTC 转换返回是否成功，UTC 时间戳转换保留原返回值和对
 POSIX 的 `can_execute` 只检查执行权限，不附加普通文件判断；exec 的 stat 检查由 `regular_executable` 在平台实现中完成。
 POSIX 的 `create_unique_directory` 接收 `filesystem::path` 形式的完整 XXXXXX 模板，复制原生字节后调用 mkdtemp，
 成功返回目录，失败返回 strerror 文本。`default_temporary_directory` 在 POSIX 固定返回 `/tmp`，
-不读取 TMPDIR 等环境变量，供 SRT 与 MCP 的私有 HOME 使用。SRT 控制目录既有的
-`filesystem::temp_directory_path()` 回退保持独立；SearXNG 仍在 Home 的 run 下创建目录。
+不读取 TMPDIR 等环境变量，供 MXC 受限执行（含 MCP stdio）的私有 HOME 使用；SearXNG 仍在 Home 的 run 下创建目录。
 父目录创建、业务异常、资源获取及清理顺序仍由各调用方保留。
 
 `os_description` 返回 uname 的 `sysname release`，失败为 `unknown`；`shell_description` 返回非空 SHELL，
@@ -203,8 +206,6 @@ exec 的跨平台 Asio/Boost.Process 对象和调度保留在共享文件，POSI
 两条 spawn 路径独立，原创建、标记、关闭、移交顺序见 [exec](exec.md)。ProcessGroup 状态在 Runner/Child::Impl
 构造阶段分配，早于创建子进程管道；其析构不发送信号。继承清单只保存元数据，不拥有资源，fork 前借用其中的 fd span。
 
-SrtControl 用 optional 延迟到原 socketpair 位置构造，不把连接创建提前到目录创建之前；其 Impl 在 socketpair 前分配。
-设置 Command 继承清单时，在已有控制连接上分配共享元数据及原有 fd 列表存储，均在 fork 前；失败走原资源清理路径。
 `inherited_environment` 在父进程中返回有所有权的字符串快照，保留原环境顺序与重复项，不缓存。
 `make_environment` 直接使用快照容器并稳定过滤无名、无等号和 env_deny 匹配项，随后依次应用默认项、
 `Options::environment`、`env_unset`、`env_set`。`environment_names_equal` 在 POSIX 区分大小写；
@@ -216,12 +217,16 @@ unset 删除全部同名项，不额外去重。fork 后钩子不展开不透明
 Runner 和 Child 传入合并后的子进程环境；`which` 传入未经过滤和覆盖的宿主环境快照。
 `system_git_program` 固定返回 `/usr/bin/git`，不预先检查或增加 fallback，供 context 和 queries 使用；
 workspace 的 HEAD diff 仍执行 `git`，通过其传入 PATH 搜索。
-`default_search_path` 返回 `/usr/bin:/bin`，只读 SRT 在原位置追加该变量。
+`default_search_path` 返回 `/usr/bin:/bin`，`ReadOnlySandbox` 与 sandbox probe 用它作为受限命令的 PATH。
 `project_search_path` 供 project 受限 Bash 使用：非空宿主 PATH 原样保留，未设置或空值时回退到
 `/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin`。project 宿主 Bash 和 HEAD diff 则通过
 `base::environment_variable` 读取 PATH，缺失时不追加，空值时追加空 PATH，不使用六目录回退。
 
-SRT 配置 JSON、控制帧和线程编排保持共享，各控制 I/O 方法保留原短写、EINTR、EPIPE 与关闭语义。
+MXC 后端的库加载、策略 JSON、流读写线程、等待与终止以及回环代理都在共享的 `mxc.cpp`、`proxy.cpp`；
+平台文件只提供三项：`SharedLibrary`（POSIX 为 `dlopen(RTLD_NOW | RTLD_LOCAL)`/`dlsym`，析构 `dlclose`）、
+`sandbox_command_line`（POSIX 为 `exec '<shell>' --noprofile --norc -c '<script>'`，sh 单引号转义，由 MXC 的 `/bin/sh -c` 解释）
+和 `loopback_peer_is_current_user`（Linux 读 `/proc/net/tcp`，按对端端口找到客户端一侧的条目，比较 uid 与 `getuid()`；
+找不到条目返回 false）。
 
 Windows 文件原语使用 NtCreateFile 的 RootDirectory 逐分量打开，prepare 仅获取元数据权限，
 固定最近存在的祖先及目标；拒绝 reparse point、上跳与 ADS。validate 以 FILE_ID_INFO 的卷序列及完整 128 位标识
@@ -275,8 +280,8 @@ XDG/UV/NPM 变量沿用原含义，另显式传入 SystemRoot、系统 COMSPEC�
 install_python_runtime 返回 python/python3 程序映射；POSIX 仍创建并返回原两个链接，Windows 直接返回 uv find 的解释器路径。
 select_python_runtime_program 在 POSIX 保留配置路径，在 Windows 选择安装器路径；配置相对路径仍在原位置验证。
 程序校验、摘要、包/环境就绪标记和最终 manifest 发布顺序不变；Windows venv 程序为 Scripts/python.exe。
-Windows 的系统 Bash/Git 与 uv/rg/node 归档由 home/config/runtime.json 的 platforms 覆盖登记；
-sandbox 与 SearXNG 环境在该平台解析为 null，不准备。
+Windows 的系统 Bash/Git 与 uv/rg/node 归档由 home/config/runtime.json 的 platforms 覆盖登记，`mxc` 包的 Windows 覆盖
+登记 `bin/x64/mxc_ffi.dll`；SearXNG 环境在该平台解析为 null，不准备。
 
 以下锁与原生权限细节描述 POSIX 实现。
 
@@ -294,9 +299,10 @@ QueryGatewayImpl 持有 watcher jthread，重新设置监听先停止并等待�
 线程内部持有 inotify/eventfd，取消回调写 eventfd 唤醒 poll；取消回调销毁后才按原顺序关闭两个 fd。
 目录保护判断由共享私有成员 `should_watch_directory` 提供，原生实现保留根目录加入、4096 上限、事件掩码、重扫与通知顺序。
 
-宿主 bwrap/socat 查找先走 exec::which，再按原规则检查固定后备路径；返回路径值，不持有进程或文件资源。
-AppArmor 诊断保持在真实 sandbox probe 之后追加，缺少 runtime 的提前返回不读取宿主诊断。
-资源脚本的 Unix socket、信号和文件操作仍在 SRT bridge/wrapper 内；这些脚本与第三方代码属于 I1 的明确例外。
+`host_prerequisites` 在 POSIX 检查 bwrap（`bwrap --version` ≥ 0.5）、slirp4netns、unshare、nsenter、ip、iptables-restore：
+先走 exec::which，再检查 `/usr/bin`、`/usr/sbin` 下的固定位置；只返回路径与版本文本，不持有进程或文件资源。
+Windows 返回空列表。AppArmor 诊断保持在真实 sandbox probe 之后追加，缺少 runtime 的提前返回不读取宿主诊断。
+bubblewrap、slirp4netns 等进程由 MXC 原生库在后端进程内生成，不属于自有 C++ 的平台调用。
 Git 命令参数及 unified diff 中的 `/dev/null` 是外部命令配置或文本格式，bash 分析中的设备路径是待分析命令的语义，
 均不是共享 C++ 对本机原生 API 的调用。中立封装、标准流或跨平台库的 read/write/close 等同名方法也不等同于 fd 系统调用。
 
@@ -307,9 +313,11 @@ watcher 线程中消费；目录筛选、4096 上限、不跟随 reparse point �
 其余事件触发 changed 回调；停止时投递完成键 0 唤醒，`CancelIoEx` 取消在途请求并收齐完成通知后才释放缓冲区和句柄。
 Windows 没有 `IN_CLOSE_WRITE` 的精确对应物，通知可能在写入结束前或多次到达，契约只要求最终刷新正确。
 
-`detail::platform_sandbox_supported()` 在 POSIX 返回 true，Windows 返回 false。为 false 时 `sandbox_runtime` 直接返回
-nullopt，`dagent sandbox status` 只报告 runtime 是否准备好，`probe` 为 `{ok:false, stage:"unsupported"}`，不列 bwrap/socat、
-不启动探测、不读宿主诊断；启动装配把"本平台没有沙箱后端"记入 `Support.missing`。Linux 路径不受影响。
+`detail::platform_sandbox_supported()` 在 POSIX 返回 true，Windows 目前返回 false（ProcessContainer 接入进行中）；
+`detail::sandbox_containment()` 在 POSIX 返回 `bubblewrap`，Windows 返回 `processcontainer`。为 false 时 `sandbox_runtime`
+直接返回 `this platform has no sandbox backend`，`dagent sandbox status` 只报告 runtime 是否准备好，`probe` 为
+`{ok:false, stage:"unsupported"}`，不加载 MXC 库、不列宿主前置、不启动探测、不读宿主诊断；启动装配把该原因记入
+`Support.missing`，stdio MCP server 报 `stdio servers require a sandbox backend; this platform has none`。Linux 路径不受影响。
 
 ## Windows：终端
 

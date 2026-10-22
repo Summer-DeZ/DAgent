@@ -17,7 +17,7 @@ flowchart TD
     LLM[llm] -. ModelSession .-> AG
     TOOLS[tools] -. ToolSession / PreparedTool .-> AG
     TOOLS --> WEB[web：网页传输与解码]
-    WEB --> EXEC[exec：SRT 与子进程]
+    WEB --> EXEC[exec：MXC 与子进程]
     ST[storage] -. JournalWriter / SessionStore / Lease .-> AG
 ```
 
@@ -273,7 +273,7 @@ task 在权限判定里直接放行（真正的检查发生在子会话自己的
 ## 7. 权限与沙箱
 
 Policy 是纯逻辑，不弹窗、不读配置。它依据 `PreparedIntent` 的规范化路径、命令意图（`CommandIntent`）和外部工具名给出 allow / ask / deny；
-允许时的 `Grant` 决定执行范围；bash 与 web 在 tools 层共用 Grant→SRT 映射。工作区根决定写入范围。
+允许时的 `Grant` 决定执行范围；bash 与 web 在 tools 层共用 Grant→MXC 请求的映射。工作区根决定写入范围。
 
 ### 决策模型代批（auto-review）
 
@@ -334,16 +334,18 @@ workspace（auto-edit）下可配置决策模型（第一版为 System One 协�
 | 写入型 bash 的 workspace profile 不可用 | 请求一次性 full_access，明确提示可访问网络、受保护数据和 `.git`；没有人工或合格父审批路由时不执行 |
 | MCP 工具 | ask / workspace 询问；unrestricted 放行；plan 拒绝 |
 | memory | 所有模式直接放行（含 read_only / planning），不进入并行组 |
-| web_search / web_fetch | 所有模式都要求只读 SRT；目标由运行中网络闸门决定，工具不进入并行组 |
+| web_search / web_fetch | 所有模式都要求只读 MXC 沙箱；目标由运行中网络闸门决定，工具不进入并行组 |
 
 显式 host access 不属于旧沙箱兼容后端：每次请求须由用户或符合条件的父模型明确批准，不提供会话级复用；拒绝后不执行。
 控制面写入、显式网络 deny、语法错误、高危硬拦和 read-only / plan 限制等属于不能通过普通批准扩大的条件。
 
-沙箱能力由 `exec::Support` 按真实 SRT 启动结果报告；只读与 workspace profile 分别调用 `read_only_ready()`、
-`workspace_ready()`。workspace 不授予 bash 网络权限，
-能力缺失也不会自动降级 full_access；只有明确获批的 host-access 单次调用使用 host。具体限制见 [exec](exec.md)。
+沙箱能力由 `exec::Support` 按启动时真实 MXC 隔离探测的结果报告；只读与 workspace profile 分别调用 `read_only_ready()`、
+`workspace_ready()`。workspace 不授予 bash 网络权限：受限 bash 只能经每次执行独占的回环代理联网，
+目标逐个交给运行中网络闸门判定。能力缺失也不会自动降级 full_access；只有明确获批的 host-access 单次调用使用 host。
+具体限制见 [exec](exec.md#5-受限执行mxc-后端)。
 
-**启动自检未找到可用沙箱时**（任何平台：Windows 无后端、Linux 上 SRT 未就绪或缺 bwrap/socat）：模式只有 `ask` 与
+**启动自检未找到可用沙箱时**（任何平台：Windows 当前未启用后端，ProcessContainer 接入进行中；Linux 上 runtime 未准备、
+MXC 库缺失或版本不符、缺 bwrap/slirp4netns 等宿主前置或探测失败）：模式只有 `ask` 与
 `unrestricted`；`workspace` 由启动自检映射为 `ask`，Shift+Tab 与 exit_plan 不提供该档。`ask` 下每条 bash 都请求
 `host_command`，已知只读命令可做会话级精确命令复用；敏感或控制面路径额外叠加一次性的 `sensitive_read`。
 plan / read_only 不执行命令；web 工具因缺少只读沙箱而不可用。启动时 TUI 欢迎页与 headless 的 stderr 都提示
@@ -356,7 +358,7 @@ plan 在此基础上给出规划专用反馈，使模型改为调研和提案而
 `ToolKind::memory` 用于跨会话笔记，Policy 在只读/规划限制前直接放行，不扩展普通工具的文件权限。
 其 `MemoryView` 通过统一 View 编解码进入会话记录、历史投影、协议事件与界面，详见 [memory](memory.md)。
 
-`ToolKind::network` 专供 web_search/web_fetch：所有模式都先要求只读 SRT，包括 unrestricted、read_only 和 plan。
+`ToolKind::network` 专供 web_search/web_fetch：所有模式都先要求只读 MXC 沙箱，包括 unrestricted、read_only 和 plan。
 它不属于只读工具并行组，也不按 external 工具名审批。运行中闸门按「配置拒绝 → 会话拒绝 →
 当前搜索调用的托管端点或生效 unrestricted → 父/会话允许 → 配置允许 → 审批」判定。
 只读/规划上限会屏蔽 unrestricted 的自动放行。托管端点是工具内部绑定的实际 `127.0.0.1:动态端口`，
