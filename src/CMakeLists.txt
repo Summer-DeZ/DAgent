@@ -63,6 +63,7 @@ add_library(dagent_ui STATIC
     private/ui/state/history_pager.cpp
     private/ui/state/turn_meter.cpp
     private/ui/page/transcript.cpp
+    private/ui/page/transcript_render.cpp
     private/ui/page/prompt_input.cpp
     private/ui/page/header_bar.cpp
     private/ui/page/hint_bar.cpp
