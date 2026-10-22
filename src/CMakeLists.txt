@@ -39,6 +39,7 @@ add_library(dagent_tui STATIC
     private/tui/document/document.cpp
     private/tui/document/wrap.cpp
     private/tui/document/markdown.cpp
+    private/tui/document/markdown_render.cpp
     private/tui/document/syntax.cpp
     private/tui/runtime/input.cpp
     private/tui/runtime/runtime.cpp
