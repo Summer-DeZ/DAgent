@@ -136,6 +136,12 @@ DAgent 现有的执行模型与 MXC 的契约高度对应：
 或虚拟机能访问 Windows Update；(2) `CreateProcessSecurityEnvironment` 的 E_ACCESSDENIED 有官方解释或在后续更新中消失；
 (3) SRT PR #427 合并并在真实机器上验证通过。届时先在虚拟机上用 `wxc-exec --probe` 确认 `tier = base-container`，再决定接入方式。
 
+2026-10-22 补充：一台 Windows 11 26H2（build 26300.9711，`System32` 下有 `processmodel.dll`）物理机以普通用户运行
+`wxc-exec.exe --probe`，结果 `tier = base-container`、`warnings` 为空、`baseContainerApiPresent`、
+`baseContainerSupportsDenyPaths`、`baseContainerSupportsIngressHostLoopbackAllow`、`baseContainerSupportsIdentitylessLoopbackProxy`
+均为 true，未出现 E_ACCESSDENIED。因此 BaseContainer 在 26H2 上对普通用户可用，门槛确认为 26H2；沙箱后端切换计划见
+`nexttodo/mxc-sandbox-plan.md`，Windows 隔离在该机器上验收。
+
 探测材料：`/home/jyt/winvm/shared/mxc/bin/`（SDK 1.0.1 的 x64 二进制）、`/home/jyt/winvm/shared/dagent/jobs/vmupdate/`（安装与探测脚本及输出）。
 升级前的整盘备份在 `/home/jyt/winvm/storage-pre-update-20261022/`。
 

@@ -13,7 +13,10 @@
 - `libmxc_ffi.so` 1.0.1 可直接 dlopen；`mxc_platform_support_json` 报告 bubblewrap 可用、`proxyEnforcement: supported`（需 slirp4netns）。
 - FFI 真实执行受限命令成功：以当前用户身份运行、`/tmp` 为私有 tmpfs、未列出的路径不可见、`deniedPaths` 读取被拒；超时返回 `timed_out=1`；信号终止以 128+N 退出码报告。
 - 代理模式的宿主前置（slirp4netns、unshare、nsenter、ip、nf_tables 后端 iptables、nf_conntrack）本机齐备。
-- Windows 开发虚拟机（25H2 build 26200.9711）探测层级为 `appcontainer-dacl`，BaseContainer 不可用；本期 Windows 无法验收真实隔离执行。
+- Windows 开发虚拟机（25H2 build 26200.9711）探测层级为 `appcontainer-dacl`，BaseContainer 不可用。
+- 用户的 Windows 11 26H2 机器（build 26300.9711，`System32` 含 `processmodel.dll`）以普通用户运行 `wxc-exec.exe --probe`：
+  `tier = base-container`、无告警、`baseContainerSupportsDenyPaths`、`baseContainerSupportsIngressHostLoopbackAllow`、
+  `baseContainerSupportsIdentitylessLoopbackProxy` 均为 true。Windows 真实隔离在这台机器上验收。
 
 ## 用户决定
 
@@ -51,7 +54,9 @@
 
 ### S3 Windows 接入
 
-`mxc_ffi.dll` 加载、`mxc_probe_request_json` 探测并只接受 `base-container`、`fallback.allowDaclMutation=false`、Windows 命令行拼接、`sandbox status` 报告层级与所缺 OS 版本。验收：虚拟机 Release 构建零警告、`sandbox status` 报告 `appcontainer-dacl` 并以无沙箱模式启动、TUI 欢迎页提示原因。与 S1、S2 并行。
+`mxc_ffi.dll` 加载、`mxc_probe_request_json` 探测并只接受 `base-container`、`fallback.allowDaclMutation=false`、Windows 命令行拼接、`sandbox status` 报告层级与所缺 OS 版本。验收分两处：虚拟机 Release 构建零警告，`sandbox status` 报告 `appcontainer-dacl` 并以无沙箱模式启动、TUI 欢迎页提示原因；
+把 `C:\dev\DAgent-stage` 复制到用户的 26H2 机器，`sandbox status` 的 probe 通过且报告 `base-container`，受限 bash 的文件边界、
+`.env` 保护、代理模式网络审批与拒绝、超时与取消各跑一次真实场景。与 S1、S2 并行。
 
 ### S4 文档与收尾
 
@@ -59,6 +64,6 @@
 
 ## 本期不做
 
-- Windows BaseContainer 的真实隔离验收（等 26H2 可离线获得或 `E_ACCESSDENIED` 有解释）。
+- 虚拟机上的 Windows 隔离验收（25H2 没有 BaseContainer；真实验收在用户的 26H2 机器上进行）。
 - macOS seatbelt 后端、hyperlight / microvm / lxc 等其它后端。
 - MXC 的 Learning / Permissive 模式与活动报告。
