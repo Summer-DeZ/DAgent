@@ -118,7 +118,7 @@ Windows 的 exec 与进程边界：
 - InheritedResources 保存不拥有资源的句柄清单；launch 临时设置并恢复额外句柄的继承位，仅白名单进入子进程。
   SIGPIPE 操作为空；SrtControl 构造、通信入口及默认 SRT 可读路径明确抛 `sandbox is unsupported on Windows`，
   无资源的 close/shutdown/析构为空操作，不建立伪造连接，不改变授权或 MCP 的上层启动策略。
-  Windows 没有沙箱后端，权限模式与 bash 授权的差异见 [agent 的无沙箱后端平台](agent.md#无沙箱后端的平台)。
+  Windows 没有沙箱后端，权限模式与 bash 授权的差异见 [agent 的启动自检未找到可用沙箱时](agent.md#启动自检未找到可用沙箱时)。
 
 Windows 的 IPC 与中断边界：
 

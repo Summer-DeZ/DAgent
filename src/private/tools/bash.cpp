@@ -349,10 +349,10 @@ private:
 
 class BashTool final : public Tool {
 public:
-    explicit BashTool(bool sandbox_supported) {
+    explicit BashTool(bool sandbox_available) {
         spec_.name = "bash";
         spec_.description = std::string(kDescriptionHead);
-        spec_.description += sandbox_supported ? kDescriptionSandbox : kDescriptionHost;
+        spec_.description += sandbox_available ? kDescriptionSandbox : kDescriptionHost;
         spec_.parameters = {
             {"type", "object"},
             {"properties",
@@ -409,8 +409,8 @@ private:
 
 } // namespace
 
-std::unique_ptr<Tool> detail::make_bash_tool(bool sandbox_supported) {
-    return std::make_unique<BashTool>(sandbox_supported);
+std::unique_ptr<Tool> detail::make_bash_tool(bool sandbox_available) {
+    return std::make_unique<BashTool>(sandbox_available);
 }
 
 } // namespace dagent::tools

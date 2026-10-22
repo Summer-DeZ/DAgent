@@ -73,7 +73,7 @@ public:
 
     Verdict evaluate(const ToolCall&, const PreparedIntent&) const;
 
-    bool workspace_mode_available() const { return sandbox_.backend_supported; }
+    bool workspace_mode_available() const { return sandbox_.workspace_ready; }
 
     struct AuthorityView {
         EffectivePermission permission;

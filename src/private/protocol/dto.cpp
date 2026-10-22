@@ -128,6 +128,8 @@ void to_json(nlohmann::json& json, const SessionSnapshot& snapshot) {
         {"context", snapshot.context},
         {"work_plan", snapshot.work_plan},
         {"mcp", snapshot.mcp},
+        {"sandbox_available", snapshot.sandbox_available},
+        {"sandbox_missing", snapshot.sandbox_missing},
         {"recording", snapshot.recording},
         {"permission_confirmation", snapshot.permission_confirmation
                                         ? nlohmann::json(*snapshot.permission_confirmation)
@@ -151,6 +153,8 @@ void from_json(const nlohmann::json& json, SessionSnapshot& snapshot) {
     snapshot.context = json.value("context", ContextInfo{});
     snapshot.work_plan = json.value("work_plan", nlohmann::json::array());
     snapshot.mcp = json.value("mcp", nlohmann::json::array());
+    snapshot.sandbox_available = json.value("sandbox_available", true);
+    snapshot.sandbox_missing = json.value("sandbox_missing", std::vector<std::string>{});
     snapshot.recording = json.value("recording", RecordingInfo{});
     if (const auto it = json.find("permission_confirmation"); it != json.end() && !it->is_null())
         snapshot.permission_confirmation = it->get<PermissionConfirmation>();

@@ -81,6 +81,8 @@ protocol::SessionSnapshot to_protocol(const runtime::RuntimeSnapshot& snapshot) 
                                          {"protocol_version", state.protocol_version},
                                          {"boundary", mcp_boundary(state.boundary)}});
     }
+    out.sandbox_available = snapshot.sandbox_available;
+    out.sandbox_missing = snapshot.sandbox_missing;
     out.recording.broken = snapshot.recording_broken;
     out.recording.error = snapshot.recording_error;
     if (snapshot.pending_permission_confirmation) {

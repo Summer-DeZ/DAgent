@@ -225,6 +225,7 @@ Publisher 在捕获快照前后比较已发布 seq，并在同一短锁边界分
 前端拒绝旧 generation 或低于已应用状态水位的快照；已被快照覆盖的状态事件不再覆盖快照。
 快照不包含正文，正文/工具展示仍按顺序投影到所属会话文档，与当前选中的页面无关。
 context 显式携带 used/limit/window/trigger_percent；删除空的 phase、children、context.usage 与未使用事件身份字段。
+快照还携带 `sandbox_available`（默认 true）与 `sandbox_missing`（默认空数组），前端据此隐藏 workspace 并提示原因。
 
 `tool_output` 的原始字节可能截断 UTF-8 字符：backend 按调用 id 暂存不完整的尾部字节，在 JSON 编码前与下一块拼接，
 `tool_finished` 前补发剩余部分。

@@ -108,8 +108,6 @@ struct ExecutionGrant {
 /// @brief 沙箱支持能力：启动时探测一次的中立事实；选型规则由策略按这些布尔值执行。
 struct SandboxSupport {
     std::string backend = "none";
-    /// 本平台是否存在沙箱后端；false 时不存在 workspace 档，bash 直接在宿主运行。
-    bool backend_supported = true;
     bool read_only_ready = false;   ///< 已知只读命令要求的边界
     bool workspace_ready = false;   ///< 动态 workspace 命令要求的完整边界
     std::vector<std::string> missing;

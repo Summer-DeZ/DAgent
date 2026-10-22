@@ -38,6 +38,8 @@ struct RuntimeSnapshot {
     std::filesystem::path cwd, project_root;
     agent::TodoView work_plan;
     std::vector<agent::McpServerState> mcp;
+    bool sandbox_available = true;
+    std::vector<std::string> sandbox_missing;
     bool recording_broken = false;
     std::string recording_error;
     std::vector<agent::Policy::SessionGrant> grants;

@@ -33,6 +33,8 @@ RuntimeSnapshot snapshot_from_session(SessionInstance& instance) {
     project_usage(next, values.used_tokens, values.token_limit);
     next.work_plan = values.plan;
     next.grants = values.grants;
+    next.sandbox_available = session.config().sandbox.workspace_ready;
+    next.sandbox_missing = session.config().sandbox.missing;
     next.recording_broken = session.committer().broken();
     next.recording_error = session.committer().error();
     return next;

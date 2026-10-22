@@ -225,6 +225,8 @@ struct Strings {
     // unrestricted 首次开启确认
     std::string_view permission_unrestricted_title;
     std::string_view permission_unrestricted_body;
+    std::string_view sandbox_unavailable_notice;
+    std::string_view sandbox_unavailable_toast;
     std::string_view permission_enable;
     std::string_view permission_cancel;
     std::string_view panel_count;

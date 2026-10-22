@@ -33,7 +33,7 @@ void WelcomeView::render(tui::Surface& s) {
     const std::string subtitle_prefix = version + std::string(icons().separator);
     const auto subtitle = fit_columns(w >= display_width(subtitle_prefix) + 4
         ? subtitle_prefix + std::string(text().welcome_tagline) : version, w);
-    const auto notice_rows = wrap(mode == "unrestricted" ? text().permission_unrestricted_body : std::string_view{}, w);
+    const auto notice_rows = wrap(notice, w);
     struct Field { std::string_view key; std::string value; tui::Style tone; };
     std::vector<Field> fields{{text().welcome_project, path, t.text}};
     if (!branch.empty()) fields.push_back({text().welcome_branch, std::string(icons().branch) + " " + branch, t.text});

@@ -143,7 +143,7 @@ std::string_view to_string(GrantSource source) {
 Policy::Policy(PermissionMode mode, bool read_only, bool planning, SandboxSupport sandbox,
                SandboxConfig sandbox_options, int analysis_version,
                fs::path workspace_root, fs::path project_root, fs::path control_root)
-    : mode_(supported_mode(mode, sandbox.backend_supported)), read_only_(read_only || planning),
+    : mode_(supported_mode(mode, sandbox.workspace_ready)), read_only_(read_only || planning),
       planning_(planning), sandbox_(std::move(sandbox)),
       sandbox_options_(std::move(sandbox_options)), analysis_version_(analysis_version),
       workspace_root_(std::move(workspace_root)), project_root_(std::move(project_root)),
@@ -372,9 +372,7 @@ Verdict Policy::evaluate(const ToolCall& call, const PreparedIntent& intent) con
         if (intent.kind == ToolKind::exec && intent.command && intent.command->known_readonly) {
             if (!sandbox_.read_only_ready) {
                 verdict.kind = Verdict::Kind::deny;
-                verdict.reason = sandbox_.backend_supported
-                                     ? "required read-only sandbox capabilities are unavailable"
-                                     : "planning and read-only modes run commands only inside a read-only sandbox; this platform has none";
+                verdict.reason = "planning and read-only modes run commands only inside a read-only sandbox; none is available";
                 return verdict;
             }
         } else if (intent.kind != ToolKind::read) {
@@ -466,7 +464,7 @@ Verdict Policy::evaluate(const ToolCall& call, const PreparedIntent& intent) con
     case ToolKind::exec: {
         if (!intent.command) break;
         const CommandIntent& cmd = *intent.command;
-        if (!sandbox_.backend_supported) {
+        if (!sandbox_.workspace_ready) {
             verdict.approval.requests.push_back({
                 Approval::Request::Kind::host_command, cmd.command,
                 "runs directly on the host with your account's full access; no OS isolation",
@@ -580,7 +578,7 @@ Verdict Policy::evaluate(const ToolCall& call, const PreparedIntent& intent) con
     if (!single_use_only(verdict.approval) && matches_session(verdict.approval, intent)) {
         verdict.kind = Verdict::Kind::allow;
         if (intent.kind == ToolKind::exec) {
-            if (!sandbox_.backend_supported) {
+            if (!sandbox_.workspace_ready) {
                 verdict.grant = grant_for_exec(SandboxProfile::full_access, GrantSource::session);
             } else {
                 const bool readonly = intent.command && intent.command->known_readonly;
@@ -917,7 +915,7 @@ void Policy::change_permission(const std::function<void()>& change) {
 }
 
 void Policy::set_mode(PermissionMode mode) {
-    change_permission([&] { mode_.store(supported_mode(mode, sandbox_.backend_supported)); });
+    change_permission([&] { mode_.store(supported_mode(mode, sandbox_.workspace_ready)); });
 }
 PermissionMode Policy::mode() const { return mode_.load(); }
 void Policy::set_read_only(bool value) { change_permission([&] { read_only_.store(value); }); }
@@ -945,7 +943,7 @@ EffectivePermission Policy::effective() const {
 
 EffectivePermission Policy::set_parent_cap(PermissionMode mode, bool read_only, bool planning) {
     change_permission([&] {
-        cap_mode_.store(supported_mode(mode, sandbox_.backend_supported));
+        cap_mode_.store(supported_mode(mode, sandbox_.workspace_ready));
         cap_read_only_.store(read_only);
         cap_planning_.store(planning);
         cap_active_.store(true);

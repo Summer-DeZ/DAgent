@@ -5,7 +5,9 @@
 #include <chrono>
 #include <functional>
 #include <memory>
+#include <string>
 #include <system_error>
+#include <vector>
 
 #include "app/config.hpp"
 #include "app/decision_profile.hpp"
@@ -28,6 +30,15 @@ namespace dagent::app {
 namespace {
 
 using ModelFactory = std::function<std::shared_ptr<agent::ModelSession>(const llm::ProviderConfig&)>;
+
+std::string join_reasons(const std::vector<std::string>& reasons) {
+    std::string out;
+    for (const auto& reason : reasons) {
+        if (!out.empty()) out += "; ";
+        out += reason;
+    }
+    return out;
+}
 
 /// @brief 后端共享的模型客户端工厂：HTTP 调整与重试参数来自配置。
 ModelFactory make_model_factory(const Config& config) {
@@ -130,10 +141,7 @@ SessionAssembly::Options session_options(const Config& config, const backend::Bo
                                       : "this platform has no sandbox backend");
         out.sandbox = std::move(support);
     }
-    // 启动自检确定一次平台后端事实；下游只读这个值。
-    out.sandbox.backend_supported = detail::platform_sandbox_supported();
     out.tools.sandbox = out.sandbox_options;
-    out.tools.sandbox_supported = out.sandbox.backend_supported;
     if (out.srt) {
         out.tools.srt = out.srt;
         out.tools.sandbox_state_root = paths.runtime / "sandbox";
@@ -146,10 +154,11 @@ SessionAssembly::Options session_options(const Config& config, const backend::Bo
     out.system_prompt = workspace::read_text(config.system_prompt_file, config.files).content;
     out.compact_prompt = workspace::read_text(config.compact_prompt_file, config.files).content;
     out.initial.mode = permission_mode(config, options);
-    const agent::PermissionMode mapped = agent::supported_mode(out.initial.mode, out.sandbox.backend_supported);
+    const agent::PermissionMode mapped = agent::supported_mode(out.initial.mode, out.sandbox.workspace_ready());
     if (mapped != out.initial.mode)
         base::logger("app")->warn(
-            "workspace mode is unavailable on this platform (no sandbox backend); starting in ask");
+            "no sandbox is available ({}); workspace mode is hidden, starting in ask",
+            join_reasons(out.sandbox.missing));
     out.initial.mode = mapped;
     out.initial.read_only = options.read_only;
     out.initial.planning = options.plan;
@@ -225,7 +234,7 @@ backend::Assembled assemble_backend(const backend::BootstrapOptions& options) {
         if (server.transport != mcp::Transport::stdio || !server.profile_present) continue;
         if (!session.srt) {
             server.sandbox_unavailable =
-                session.sandbox.backend_supported
+                detail::platform_sandbox_supported()
                     ? "the sandbox runtime is not ready; run dagent sandbox status"
                     : "stdio servers require a sandbox backend; this platform has none";
             continue;

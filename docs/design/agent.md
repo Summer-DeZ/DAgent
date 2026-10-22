@@ -342,9 +342,11 @@ workspace（auto-edit）下可配置决策模型（第一版为 System One 协�
 `workspace_ready()`。workspace 不授予 bash 网络权限，
 能力缺失也不会自动降级 full_access；只有明确获批的 host-access 单次调用使用 host。具体限制见 [exec](exec.md)。
 
-**无沙箱后端的平台**：模式只有 `ask` 与 `unrestricted`；`workspace` 由启动自检映射为 `ask`，Shift+Tab 与 exit_plan
-不提供该档。`ask` 下每条 bash 都请求 `host_command`，已知只读命令可做会话级精确命令复用；敏感或控制面路径
-额外叠加一次性的 `sensitive_read`。plan / read_only 不执行命令；web 工具因缺少只读沙箱而不可用。
+**启动自检未找到可用沙箱时**（任何平台：Windows 无后端、Linux 上 SRT 未就绪或缺 bwrap/socat）：模式只有 `ask` 与
+`unrestricted`；`workspace` 由启动自检映射为 `ask`，Shift+Tab 与 exit_plan 不提供该档。`ask` 下每条 bash 都请求
+`host_command`，已知只读命令可做会话级精确命令复用；敏感或控制面路径额外叠加一次性的 `sensitive_read`。
+plan / read_only 不执行命令；web 工具因缺少只读沙箱而不可用。启动时 TUI 欢迎页与 headless 的 stderr 都提示
+workspace 不可用及原因。
 
 `read_only` 与三档正交：普通文件写入、非只读 bash 和 external 都走策略拒绝，已知只读 bash 强制 read_only 沙箱。
 plan 在此基础上给出规划专用反馈，使模型改为调研和提案而不结束本轮。`mkfs*`、裸写块设备、大范围 `rm -rf`、
@@ -508,7 +510,7 @@ system 在创建或恢复时渲染一次，之后不随日期、git 状态或权
 | `cwd, os, shell, date` | workspace 环境采集 |
 | `git` | 仓库根、分支、状态、近期提交；不可用时 null |
 | `instructions` | 全局到当前目录的 AGENTS.md，包含来源、内容和截断标记 |
-| `model, project_root, sandbox, workspace_sandbox, sandbox_backend, sandbox_missing, sandbox_child_signals, permission_mode` | 装配配置、启动环境及实际沙箱能力 |
+| `model, project_root, sandbox, sandbox_available, workspace_sandbox, sandbox_backend, sandbox_missing, sandbox_child_signals, permission_mode` | 装配配置、启动环境及实际沙箱能力 |
 
 内置 system / compact 模板与核心给模型的文本固定英文，不随界面语言切换。
 主模板明确 `Reply in the user's language.`，即界面英文、模型回复跟随用户语言。
