@@ -384,20 +384,14 @@ std::string system_message(DWORD error) {
     return utf8(text);
 }
 
-// CommandLineToArgvW 的引用规则：引号前的反斜杠加倍再转义引号，结尾的反斜杠加倍后闭合。
-std::string quote_argument(std::string_view argument) {
+// MSYS2 运行库从 Windows 父进程取命令行时，双引号内的 `\\` 与 `\"` 都还原为一个字符，其余字符原样；
+// 与 CommandLineToArgvW 不同，不在引号前的成对反斜杠也会减半，所以每个反斜杠都要转义。
+std::string msys_quote(std::string_view argument) {
     std::string quoted = "\"";
-    std::size_t backslashes = 0;
     for (const char c : argument) {
-        if (c == '\\') {
-            ++backslashes;
-            continue;
-        }
-        quoted.append(c == '"' ? backslashes * 2 + 1 : backslashes, '\\');
+        if (c == '\\' || c == '"') quoted += '\\';
         quoted += c;
-        backslashes = 0;
     }
-    quoted.append(backslashes * 2, '\\');
     quoted += '"';
     return quoted;
 }
@@ -431,7 +425,17 @@ void* SharedLibrary::symbol(const char* name) const noexcept {
 }
 
 std::string sandbox_command_line(const fs::path& shell, std::string_view script) {
-    return quote_argument(base::path_to_utf8(shell)) + " --noprofile --norc -c " + quote_argument(script);
+    // argv[0] 只按引号切分、不做转义还原；路径里不会有双引号。
+    return "\"" + base::path_to_utf8(shell) + "\" --noprofile --norc -c " + msys_quote(script);
+}
+
+std::vector<std::pair<std::string, std::string>> sandbox_environment(const fs::path& home) {
+    // ProcessContainer 把 LOCALAPPDATA 与 TEMP/TMP 改写到 <LOCALAPPDATA>\Packages\<容器>\AC 下；只有用户真实的
+    // LOCALAPPDATA 下才会建出这个随容器删除的目录，其它取值会让容器内的临时目录不存在。
+    return {{"SystemRoot", utf8(system_directory(::GetWindowsDirectoryW))},
+            {"USERPROFILE", base::path_to_utf8(home)},
+            {"APPDATA", base::path_to_utf8(home / "config")},
+            {"LOCALAPPDATA", base::environment_variable("LOCALAPPDATA").value_or(base::path_to_utf8(home))}};
 }
 
 bool loopback_peer_is_current_user(unsigned short, unsigned short) { return true; }
