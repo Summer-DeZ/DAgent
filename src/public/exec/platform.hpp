@@ -77,4 +77,32 @@ private:
 
 std::vector<std::filesystem::path> default_srt_readable_paths();
 
+/// 动态库句柄：MXC 原生库在运行时加载，不在链接期依赖。
+class SharedLibrary {
+public:
+    /// 失败抛 ExecError{sandbox}，消息含文件名与平台错误文本。
+    static SharedLibrary open(const std::filesystem::path& file);
+    SharedLibrary(SharedLibrary&&) noexcept;
+    SharedLibrary& operator=(SharedLibrary&&) noexcept;
+    SharedLibrary(const SharedLibrary&) = delete;
+    SharedLibrary& operator=(const SharedLibrary&) = delete;
+    ~SharedLibrary();
+
+    /// 缺失的符号返回 nullptr。
+    void* symbol(const char* name) const noexcept;
+
+private:
+    SharedLibrary();
+    struct Impl;
+    std::unique_ptr<Impl> impl_;
+};
+
+/// 受限命令的 MXC `process.commandLine`：POSIX 为 `exec '<shell>' --noprofile --norc -c '<script>'`
+/// （sh 单引号转义，由 /bin/sh -c 解释）；Windows 按 CreateProcess 的引用规则拼出
+/// `"<shell>" --noprofile --norc -c "<script>"`。
+std::string sandbox_command_line(const std::filesystem::path& shell, std::string_view script);
+
+/// 127.0.0.1 上的入站连接对端是否属于当前用户：Linux 按 /proc/net/tcp 的 uid 判断；Windows 第一版返回 true。
+bool loopback_peer_is_current_user(unsigned short local_port, unsigned short peer_port);
+
 } // namespace dagent::exec::detail

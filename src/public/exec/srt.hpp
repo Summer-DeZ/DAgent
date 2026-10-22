@@ -24,12 +24,6 @@ namespace dagent::exec {
 /// 适配基线的 SRT 版本；握手与状态检查使用同一常量。
 inline constexpr std::string_view kSrtVersion = "0.0.77";
 
-/// 运行中网络目标的判定结果。
-enum class NetworkGateResult { allow, deny, cancel };
-
-/// 由调度层提供的运行中网络判定；为空表示拒绝全部请求。
-using NetworkGate = std::function<NetworkGateResult(std::string_view host, int port, std::string& reason, std::stop_token)>;
-
 /// @brief internal/sandbox 环境里的绝对路径；启动装配时解析一次。
 struct SrtRuntime {
     std::filesystem::path node;
