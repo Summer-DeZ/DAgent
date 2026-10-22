@@ -8,6 +8,7 @@ std::string render_system_prompt(std::string_view tmpl, const workspace::Environ
     data["model"] = vars.model;
     data["project_root"] = vars.project_root.string();
     data["sandbox"] = vars.sandbox;
+    data["sandbox_supported"] = vars.sandbox_supported;
     data["workspace_sandbox"] = vars.workspace_sandbox;
     data["sandbox_backend"] = vars.sandbox_backend;
     data["sandbox_missing"] = vars.sandbox_missing;

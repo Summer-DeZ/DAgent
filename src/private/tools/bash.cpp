@@ -37,14 +37,21 @@ std::size_t count_diff_lines(std::string_view text) {
     return lines;
 }
 
-constexpr std::string_view kDescription = R"(Run a bash command in the workspace root.
+constexpr std::string_view kDescriptionHead = R"(Run a bash command in the workspace root.
 
 - The default environment is managed by DAgent. Use environment=project only for the user project's host toolchain; use a skill's configured environment when instructed.
 - Every call already starts in the workspace root. Do not prefix commands with cd to that same directory; use relative paths. Use cd subdir && ... only to enter a different directory. Directory and environment changes do not persist between calls.
-- stdout and stderr are returned together. Commands are terminated on timeout; timeout_ms is in milliseconds and capped at 10 minutes.
+- stdout and stderr are returned together. Commands are terminated on timeout; timeout_ms is in milliseconds and capped at 10 minutes.)";
+
+constexpr std::string_view kDescriptionSandbox = R"(
 - Commands run in a sandbox by default: no writes outside the workspace (except /tmp) and no network access. Sandbox restrictions are reported in the result. Use another approach or explain the restriction to the user; do not keep retrying.
 - Background daemons (such as server &) are not supported; they are cleaned up when the main process exits.
 - Read-only commands (such as git status and ls) are allowed automatically without approval.)";
+
+constexpr std::string_view kDescriptionHost = R"(
+- Commands run directly on the host without a sandbox: they can reach the network and any file your account can access. Unless the session is unrestricted, every command needs approval; a read-only command can be allowed for the rest of the session.
+- Background daemons (such as server &) are not supported; they are cleaned up when the main process exits.)";
+
 
 
 class BashCall final : public PreparedTool {
@@ -80,7 +87,7 @@ public:
         }
         // 只存中立值：目标脚本与只读读取路径按工作区根解析成绝对路径。
         const auto to_absolute = [this](const std::string& raw) {
-            return workspace::resolve(root_, raw).path;
+            return workspace::resolve(root_, exec::shell_path_to_native(raw).string()).path;
         };
         const bool changes_cwd = analysis_.cwd_unknown || std::ranges::any_of(analysis_.commands, [](const auto& c) {
             return !c.argv.empty() && c.argv.front() == "cd";
@@ -88,15 +95,16 @@ public:
         cmd.script_targets.reserve(analysis_.script_targets.size());
         cmd.has_unresolved_execution = analysis_.has_unresolved_execution;
         for (const exec::ScriptTarget& target : analysis_.script_targets) {
-            if (changes_cwd && !std::filesystem::path(target.path).is_absolute()) {
+            if (changes_cwd && !exec::shell_path_to_native(target.path).is_absolute()) {
                 cmd.has_unresolved_execution = true;
                 continue; // 不拿工作区根下的同名文件替代实际执行目标。
             }
             cmd.script_targets.push_back(agent::ScriptTarget{to_absolute(target.path), target.command_index});
         }
         for (const std::string& raw : exec::readonly_read_paths(analysis_)) {
-            if (changes_cwd && !std::filesystem::path(raw).is_absolute()) continue;
-            const auto resolved = workspace::resolve(root_, raw);
+            const std::filesystem::path native = exec::shell_path_to_native(raw);
+            if (changes_cwd && !native.is_absolute()) continue;
+            const auto resolved = workspace::resolve(root_, native.string());
             std::error_code ec;
             const bool directory = std::filesystem::is_directory(resolved.path, ec);
             cmd.read_paths.push_back(resolved.path);
@@ -341,9 +349,10 @@ private:
 
 class BashTool final : public Tool {
 public:
-    BashTool() {
+    explicit BashTool(bool sandbox_supported) {
         spec_.name = "bash";
-        spec_.description = std::string(kDescription);
+        spec_.description = std::string(kDescriptionHead);
+        spec_.description += sandbox_supported ? kDescriptionSandbox : kDescriptionHost;
         spec_.parameters = {
             {"type", "object"},
             {"properties",
@@ -400,6 +409,8 @@ private:
 
 } // namespace
 
-std::unique_ptr<Tool> detail::make_bash_tool() { return std::make_unique<BashTool>(); }
+std::unique_ptr<Tool> detail::make_bash_tool(bool sandbox_supported) {
+    return std::make_unique<BashTool>(sandbox_supported);
+}
 
 } // namespace dagent::tools

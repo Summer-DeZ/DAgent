@@ -108,7 +108,7 @@ private:
     ToolResult run_plan_confirmation(const PlanConfirmation&, std::stop_token);
     ToolResult run_plan_replacement(const PlanReplacement&);
     ToolResult run_delegation(const DelegationRequest&, std::stop_token);
-    PlanDecision plan_decision(const Answer&) const;
+    PlanDecision plan_decision(const Answer&, bool workspace_available) const;
 
     Services services_;
     const Approver* parent_reviewer_ = nullptr;

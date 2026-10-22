@@ -48,12 +48,12 @@ std::vector<const Spec*> Registry::specs() const {
     return out;
 }
 
-void add_builtin(Registry& registry, std::shared_ptr<const MemoryStore> memory) {
+void add_builtin(Registry& registry, std::shared_ptr<const MemoryStore> memory, bool sandbox_supported) {
     if (memory) registry.add(make_memory_tool(std::move(memory)));
     registry.add(detail::make_read_tool());
     registry.add(detail::make_write_tool());
     registry.add(detail::make_edit_tool());
-    registry.add(detail::make_bash_tool());
+    registry.add(detail::make_bash_tool(sandbox_supported));
     registry.add(detail::make_grep_tool());
     registry.add(detail::make_glob_tool());
     registry.add(detail::make_web_search_tool());

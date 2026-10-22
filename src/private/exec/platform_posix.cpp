@@ -28,6 +28,10 @@ namespace dagent::exec {
 
 std::filesystem::path system_git_program() { return "/usr/bin/git"; }
 
+std::filesystem::path shell_path_to_native(std::string_view shell_path) {
+    return std::filesystem::path(shell_path);
+}
+
 std::string default_search_path() { return "/usr/bin:/bin"; }
 
 std::string project_search_path() {

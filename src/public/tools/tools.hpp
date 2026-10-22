@@ -51,6 +51,7 @@ struct Options {
     std::optional<exec::SrtRuntime> srt;             ///< SRT 后端资源；为空表示受限执行不可用
     std::filesystem::path sandbox_state_root;        ///< 每执行私有目录的父目录（SRT）
     exec::SandboxOptions sandbox;                    ///< 启动/审批超时与每执行网络请求预算
+    bool sandbox_supported = true;                   ///< 本平台是否存在沙箱后端（决定 bash 描述）
     std::size_t max_result_bytes = 0; ///< 每次调用交给模型的文本上限
     std::size_t bash_collect_bytes = 0; ///< 中断时保留的命令输出上限
     int read_default_lines = 0;
@@ -133,7 +134,8 @@ private:
 
 /// @brief 注册内置工具：read / write / edit / bash / grep / glob。
 class MemoryStore;
-void add_builtin(Registry&, std::shared_ptr<const MemoryStore> memory = {});
+void add_builtin(Registry&, std::shared_ptr<const MemoryStore> memory = {},
+                 bool sandbox_supported = true);
 
 /// @brief 把一个 MCP server 的所有工具包进 Registry（名字 mcp__<server>__<name>）。
 /// 工具项持有 Client 的 shared_ptr：刷新/重连替换目录时，仍被子快照引用的连接不会悬空。

@@ -193,6 +193,10 @@ std::string permission_summary(const Approval& approval, const Decision& decisio
             text += "; host full access";
             break;
         }
+        if (request.kind == Approval::Request::Kind::host_command) {
+            text += "; host command (no sandbox)";
+            break;
+        }
     }
     if (!decision.feedback.empty()) text += ": " + decision.feedback;
     return text;
@@ -210,6 +214,7 @@ Record permission(const Approval& approval, const Decision& decision, const Exec
         case Approval::Request::Kind::sensitive_read: kind = "sensitive_read"; break;
         case Approval::Request::Kind::protected_write: kind = "protected_write"; break;
         case Approval::Request::Kind::host_access: kind = "host_access"; break;
+        case Approval::Request::Kind::host_command: kind = "host_command"; break;
         }
         requests.push_back({{"kind", kind}, {"target", request.target}, {"reason", request.reason}});
     }
@@ -488,8 +493,10 @@ DecodedRecord decode(std::string_view type, const nlohmann::json& payload) {
         else if (record.answer == "deny_with_feedback") decision.answer = Decision::Answer::deny_with_feedback;
         else if (record.answer != "deny") corrupt(type, "unknown approval answer");
         for (const auto& request : *requests) {
-            if (request["kind"] == "host_access")
-                approval.requests.push_back({Approval::Request::Kind::host_access,
+            if (request["kind"] == "host_access" || request["kind"] == "host_command")
+                approval.requests.push_back({request["kind"] == "host_access"
+                                                 ? Approval::Request::Kind::host_access
+                                                 : Approval::Request::Kind::host_command,
                     request["target"].get<std::string>(), request["reason"].get<std::string>()});
         }
         if (schema >= 4) {

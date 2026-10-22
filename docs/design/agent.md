@@ -342,6 +342,10 @@ workspace（auto-edit）下可配置决策模型（第一版为 System One 协�
 `workspace_ready()`。workspace 不授予 bash 网络权限，
 能力缺失也不会自动降级 full_access；只有明确获批的 host-access 单次调用使用 host。具体限制见 [exec](exec.md)。
 
+**无沙箱后端的平台**：模式只有 `ask` 与 `unrestricted`；`workspace` 由启动自检映射为 `ask`，Shift+Tab 与 exit_plan
+不提供该档。`ask` 下每条 bash 都请求 `host_command`，已知只读命令可做会话级精确命令复用；敏感或控制面路径
+额外叠加一次性的 `sensitive_read`。plan / read_only 不执行命令；web 工具因缺少只读沙箱而不可用。
+
 `read_only` 与三档正交：普通文件写入、非只读 bash 和 external 都走策略拒绝，已知只读 bash 强制 read_only 沙箱。
 plan 在此基础上给出规划专用反馈，使模型改为调研和提案而不结束本轮。`mkfs*`、裸写块设备、大范围 `rm -rf`、
 关机重启、对根/HOME 的递归 chmod/chown、下载后直接 pipe 到 shell 会在全部模式中直接拒绝。

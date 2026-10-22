@@ -8,6 +8,7 @@
 #include <boost/process/v2/windows/default_launcher.hpp>
 
 #include <algorithm>
+#include <cctype>
 #include <functional>
 #include <system_error>
 #include <utility>
@@ -77,6 +78,20 @@ std::wstring system_directory(UINT (WINAPI *query)(LPWSTR, UINT)) {
 } // namespace
 
 fs::path system_git_program() { return fs::path(L"C:\\Program Files\\Git\\cmd\\git.exe"); }
+
+fs::path shell_path_to_native(std::string_view shell_path) {
+    // MSYS 形式 /c/dir 或 /C/...：单个字母盘符后跟 / 或串尾。
+    if (shell_path.size() >= 2 && shell_path.front() == '/' &&
+        ((shell_path[1] >= 'a' && shell_path[1] <= 'z') || (shell_path[1] >= 'A' && shell_path[1] <= 'Z')) &&
+        (shell_path.size() == 2 || shell_path[2] == '/')) {
+        std::string native;
+        native += static_cast<char>(std::toupper(static_cast<unsigned char>(shell_path[1])));
+        native += ':';
+        native += shell_path.substr(2);
+        return fs::path(native);
+    }
+    return fs::path(shell_path);
+}
 
 std::string default_search_path() {
     const auto git_root = system_git_program().parent_path().parent_path();

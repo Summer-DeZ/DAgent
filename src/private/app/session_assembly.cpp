@@ -75,13 +75,15 @@ std::chrono::system_clock::time_point parse_created(std::string_view text) {
     return std::chrono::system_clock::now();
 }
 
-std::string render_prompt(const SessionAssembly::Options& base, const SessionSpec& spec,
+std::string render_prompt(const SessionAssembly::Options& base, SessionSpec& spec,
                           const workspace::Environment& env) {
+    spec.state.mode = agent::supported_mode(spec.state.mode, base.sandbox.backend_supported);
     const bool sandboxed = spec.state.mode != agent::PermissionMode::unrestricted;
     PromptVars vars;
     vars.model = spec.model.provider.model;
     vars.project_root = base.project_root;
     vars.sandbox = base.sandbox.read_only_ready() && sandboxed;
+    vars.sandbox_supported = base.sandbox.backend_supported;
     vars.workspace_sandbox = base.sandbox.workspace_ready() && sandboxed;
     vars.sandbox_backend = base.sandbox.backend;
     vars.sandbox_missing = base.sandbox.missing;
@@ -129,7 +131,8 @@ agent::SessionConfig make_session_config(const SessionAssembly::Options& base, S
     std::ranges::sort(config.sandbox_options.runtime_readable);
     const auto unique_paths = std::ranges::unique(config.sandbox_options.runtime_readable);
     config.sandbox_options.runtime_readable.erase(unique_paths.begin(), unique_paths.end());
-    config.sandbox = agent::SandboxSupport{base.sandbox.backend, base.sandbox.read_only_ready(),
+    config.sandbox = agent::SandboxSupport{base.sandbox.backend, base.sandbox.backend_supported,
+                                           base.sandbox.read_only_ready(),
                                            base.sandbox.workspace_ready(), base.sandbox.missing};
     config.permission_mode = spec.state.mode;
     config.read_only = spec.state.read_only;
@@ -260,7 +263,8 @@ struct SessionAssembly::Impl {
         spec.unrestricted_acked = unrestricted_acked;
         if (spec.state.mode == agent::PermissionMode::unrestricted && !unrestricted_acked) {
             spec.pending_permission = agent::PermissionMode::unrestricted;
-            spec.state.mode = agent::PermissionMode::workspace;
+            spec.state.mode = agent::supported_mode(agent::PermissionMode::workspace,
+                                                    options.sandbox.backend_supported);
         }
         spec.model = pick(!model_name.empty() ? std::string(model_name) : spec.state.model);
         spec.agent = options.agent;
@@ -285,7 +289,8 @@ struct SessionAssembly::Impl {
         auto context = std::make_unique<tools::Context>(options.cwd, options.control_root, options.tools,
                                                         options.files, options.search, options.process);
         auto registry = std::make_unique<tools::Registry>();
-        tools::add_builtin(*registry, spec.child ? nullptr : options.memory);
+        tools::add_builtin(*registry, spec.child ? nullptr : options.memory,
+                           options.tools.sandbox_supported);
         // 每个新目录先继承现有连接，再按该会话的工具限制收窄。
         // 只读/规划上限的会话不接触外部工具 lease：server 进程的权限高于该上限。
         if (!spec.state.read_only && !spec.state.planning) options.hub->snapshot(*registry);

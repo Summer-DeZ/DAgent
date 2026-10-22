@@ -33,6 +33,7 @@ std::string request_kind(std::string_view kind) {
     if (kind == "sensitive_read") return std::string(text.approve_need_sensitive);
     if (kind == "protected_write") return std::string(text.approve_need_protected);
     if (kind == "host_access") return std::string(text.approve_need_host);
+    if (kind == "host_command") return std::string(text.approve_need_host_command);
     return std::string(kind);
 }
 std::string category(std::string_view kind) {
@@ -43,6 +44,7 @@ std::string category(std::string_view kind) {
     if (kind == "sensitive_read") return std::string(t.approve_category_sensitive);
     if (kind == "protected_write") return std::string(t.approve_category_protected);
     if (kind == "host_access") return std::string(t.approve_category_host);
+    if (kind == "host_command") return std::string(t.approve_category_host_command);
     return std::string(t.approve_category_command);
 }
 
@@ -284,6 +286,7 @@ void ApprovalDialog::open(const ApprovalRequest& approval,
     if (!approval.session_rule.empty()) detail(ui::text().approve_session_label, approval.session_rule);
     if (!approval.agent.empty()) detail(ui::text().approve_via, format_text(ui::text().approve_task, approval.agent));
     if (kinds.contains("host_access")) detail({}, std::string(ui::text().approve_host_boundary));
+    if (kinds.contains("host_command")) detail({}, std::string(ui::text().approve_host_only_boundary));
     if (approval.partially_executed) detail({}, std::string(ui::text().approve_partial));
     if (approval.session_rule.empty()) detail({}, std::string(ui::text().approve_once_only));
     panel_->preview->scroll_home();

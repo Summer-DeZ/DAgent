@@ -55,6 +55,8 @@ std::vector<std::filesystem::path> sensitive_paths(const std::filesystem::path& 
 /// @brief 启动时真实探测一次：不支持的机器上核心要降级为「必须询问用户」。
 struct Support {
     std::string backend = "none"; ///< "srt" 或 "none"
+    /// 本平台是否存在沙箱后端；false 时不存在隔离，也不存在 workspace 档。
+    bool backend_supported = true;
     /// SRT 内命令能向自己的子孙发信号。
     bool child_signals = false;
     std::vector<std::string> missing;

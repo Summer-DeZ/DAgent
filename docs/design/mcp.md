@@ -47,6 +47,8 @@ stdio 超时和取消仍发送 `notifications/cancelled`。协商由共享客户
 stdio 的发现和初始化各使用 `probe_timeout`，HTTP 各使用 `connect_timeout`；超时直接失败，不触发回退。
 
 stdio server 冷启动时间包含在发现超时内，调用方需要按真实启动耗时配置 `probe_timeout`。
+没有沙箱运行时时 stdio server 不在宿主直接启动；无沙箱后端的平台报
+`stdio servers require a sandbox backend; this platform has none`，其余情况报运行时未就绪。
 
 ### 兼容矩阵与内部结构
 

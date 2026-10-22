@@ -21,7 +21,9 @@ std::string startup_blocker(const mcp::ServerConfig& config) {
             return "the HTTP endpoint is not authorized by the permissions profile";
         return {};
     }
-    if (!config.sandbox) return "no SRT runtime is available for this local server";
+    if (!config.sandbox)
+        return config.sandbox_unavailable.empty() ? "no SRT runtime is available for this local server"
+                                                  : config.sandbox_unavailable;
     return {};
 }
 

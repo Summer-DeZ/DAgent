@@ -188,6 +188,8 @@ SRT 用 tmpfs 遮蔽 `denyRead` 目录，而 tmpfs 本身可写。bridge 把 SRT
 `Support` 是启动时真实做一次最小隔离启动后的结果：`backend` 为 `srt` 或 `none`，并提供
 `read_only_ready()` / `workspace_ready()`。权限层只在对应 profile 真实满足时启用；能力不足时受限命令
 不启动。符合策略的 Bash 请求可询问一次性 host access，由人工或符合条件的父模型审批；没有可用审批路由时不执行。
+没有沙箱后端的平台上，普通 Bash 请求改记为 `host_command`（命令直接在宿主以用户账户完整权限运行），
+它与 `host_access` 不同：已知只读命令可会话级精确复用，敏感/控制面路径仍叠加一次性 `sensitive_read`。
 只读/规划上限不能借此突破，glob/grep 和 web_search/web_fetch 不提供宿主回退。
 unrestricted 的 bash 使用 host；web 仍强制进入只读 SRT，由运行中网络闸门自动放行未被拒绝的目标。
 `tools::detail::sandbox_request` 统一把核心 Grant 映射为 SRT 请求，web 传输不自行建立另一套权限规则。

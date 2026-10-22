@@ -110,7 +110,8 @@ Decision ParentReviewer::review(const Approval& approval, std::stop_token reques
         return denied("Parent permission review cancelled or authority changed.", "cancelled");
     // 放宽 workspace 父复批入口不等于允许它授予主机完全访问：host access 仍要求 unrestricted 父。
     if (std::ranges::any_of(approval.requests, [](const Approval::Request& request) {
-            return request.kind == Approval::Request::Kind::host_access;
+            return request.kind == Approval::Request::Kind::host_access ||
+                   request.kind == Approval::Request::Kind::host_command;
         }) &&
         session_.policy().authority_view().permission.mode != PermissionMode::unrestricted)
         return denied("host access requires an unrestricted parent review; user approval is required");

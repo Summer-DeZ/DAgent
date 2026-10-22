@@ -105,6 +105,7 @@ nlohmann::json approval_payload(const agent::Approval& approval) {
         case agent::Approval::Request::Kind::sensitive_read: kind = "sensitive_read"; break;
         case agent::Approval::Request::Kind::protected_write: kind = "protected_write"; break;
         case agent::Approval::Request::Kind::host_access: kind = "host_access"; break;
+        case agent::Approval::Request::Kind::host_command: kind = "host_command"; break;
         }
         requests.push_back({{"kind", kind}, {"target", request.target}, {"reason", request.reason}});
     }
