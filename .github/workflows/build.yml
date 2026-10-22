@@ -50,7 +50,7 @@ jobs:
 
       - name: Install vcpkg dependencies
         shell: pwsh
-        run: '& "$env:VCPKG_INSTALLATION_ROOT/vcpkg.exe" install boost-asio boost-process curl[schannel] openssl libiconv --triplet x64-windows --x-install-root ${{ github.workspace }}/vcpkg_installed'
+        run: '& "$env:VCPKG_INSTALLATION_ROOT/vcpkg.exe" install boost-asio boost-process curl openssl libiconv --triplet x64-windows --x-install-root ${{ github.workspace }}/vcpkg_installed'
 
       - name: Configure
         shell: pwsh
