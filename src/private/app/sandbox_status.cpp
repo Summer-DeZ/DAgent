@@ -3,6 +3,7 @@
 
 #include <chrono>
 #include <filesystem>
+#include <format>
 #include <memory>
 #include <optional>
 #include <string>
@@ -26,7 +27,40 @@ struct Resolved {
     std::shared_ptr<const exec::MxcLibrary> library;
     std::string library_error;
     fs::path shell, rg;
+    nlohmann::json tier;    ///< Windows 请求探测的结果；库没有探测入口时为 null
+    std::string tier_error; ///< 层级不是 base-container 或探测失败的原因
 };
+
+/// 两次真实启动共用的最小请求：只读模式、托管 bash 所在目录为工作目录（本就在可读范围内），不写工作目录。
+exec::MxcRequest probe_request(const exec::MxcRuntime& runtime) {
+    exec::MxcRequest request;
+    request.runtime = runtime;
+    request.workspace = runtime.shell.parent_path();
+    request.policy.mode = exec::Mode::read_only;
+    request.policy.readable = {request.workspace};
+    request.environment = {{"PATH", exec::default_search_path()}, {"LC_ALL", "C.UTF-8"}};
+    request.timeout = std::chrono::seconds(30);
+    return request;
+}
+
+/// Windows 只接受 ProcessContainer 的 base-container 层：用与代理网络探测同形的请求询问 MXC 的层级选择，
+/// 其它层（AppContainer + BFS / DACL）按无沙箱处理。其它平台的库没有探测入口，不做层级判断。
+void check_tier(Resolved& out) {
+    auto request = probe_request(exec::MxcRuntime{out.library, std::string(detail::sandbox_containment()), out.shell, out.rg});
+    request.network_gate = [](std::string_view, int, std::string&, std::stop_token) { return exec::NetworkGateResult::deny; };
+    try {
+        const auto probe = exec::probe_mxc(request);
+        if (!probe) return;
+        out.tier = *probe;
+        const std::string tier = probe->value("tier", "");
+        if (tier != "base-container")
+            out.tier_error = std::format("MXC selected the ProcessContainer tier '{}'; DAgent accepts only 'base-container', "
+                                         "which requires Windows 11 26H2 (build 26300) or newer",
+                                         tier.empty() ? "unknown" : tier);
+    } catch (const exec::ExecError& error) {
+        out.tier_error = std::string("MXC tier probe failed: ") + error.what();
+    }
+}
 
 Resolved resolve(const HomePaths& paths) {
     Resolved out;
@@ -43,7 +77,9 @@ Resolved resolve(const HomePaths& paths) {
         out.library = exec::MxcLibrary::load(out.library_file);
     } catch (const exec::ExecError& error) {
         out.library_error = error.what();
+        return out;
     }
+    check_tier(out);
     return out;
 }
 
@@ -53,6 +89,7 @@ std::expected<exec::MxcRuntime, std::string> to_runtime(const Resolved& resolved
     if (resolved.library_file.empty() || !fs::exists(resolved.library_file))
         return std::unexpected("the MXC library is not installed; run `dagent runtime sync`");
     if (!resolved.library) return std::unexpected(resolved.library_error);
+    if (!resolved.tier_error.empty()) return std::unexpected(resolved.tier_error);
     if (!runnable(resolved.shell) || !runnable(resolved.rg))
         return std::unexpected("managed bash or rg is missing; run `dagent runtime sync`");
     return exec::MxcRuntime{resolved.library, std::string(detail::sandbox_containment()), resolved.shell, resolved.rg};
@@ -67,9 +104,13 @@ std::optional<nlohmann::json> probe_step(std::string_view stage, const exec::Mxc
         const exec::Result result = exec::run_mxc(request, options);
         elapsed[std::string(stage)] = result.elapsed.count();
         if (result.exit_code == 0 && !result.timed_out && result.out == expected) return std::nullopt;
+        // 失败输出常带缩进与结尾换行（如 MSYS2 的 fatal 行）；状态报告与欢迎页只要正文。
+        std::string error = base::to_valid_utf8(result.err.empty() ? result.out : result.err);
+        error.erase(0, error.find_first_not_of(" \t\r\n"));
+        error.erase(error.find_last_not_of(" \t\r\n") + 1);
         return nlohmann::json{{"ok", false},
                               {"stage", stage},
-                              {"error", base::to_valid_utf8(result.err.empty() ? result.out : result.err)},
+                              {"error", error},
                               {"exit_code", result.exit_code.value_or(-1)},
                               {"timed_out", result.timed_out}};
     } catch (const exec::ExecError& failure) {
@@ -85,14 +126,7 @@ std::expected<exec::MxcRuntime, std::string> sandbox_runtime(const HomePaths& pa
 }
 
 nlohmann::json sandbox_probe(const exec::MxcRuntime& runtime) {
-    exec::MxcRequest request;
-    request.runtime = runtime;
-    // 只读探测不写工作目录；托管 bash 所在目录本就在可读范围内。
-    request.workspace = runtime.shell.parent_path();
-    request.policy.mode = exec::Mode::read_only;
-    request.policy.readable = {request.workspace};
-    request.environment = {{"PATH", exec::default_search_path()}, {"LC_ALL", "C.UTF-8"}};
-    request.timeout = std::chrono::seconds(30);
+    exec::MxcRequest request = probe_request(runtime);
     nlohmann::json elapsed = nlohmann::json::object();
 
     request.command = R"(printf ok > "$HOME/probe.txt" && cat "$HOME/probe.txt")";
@@ -135,6 +169,9 @@ nlohmann::json sandbox_status(const HomePaths& paths) {
     else
         check("mxc-load", false, installed ? resolved.library_error
                                            : "requires MXC " + std::string(exec::kMxcVersion));
+    if (!resolved.tier.is_null() || !resolved.tier_error.empty())
+        check("mxc-tier", resolved.tier_error.empty(),
+              resolved.tier_error.empty() ? resolved.tier.value("tier", "") : resolved.tier_error);
     check("bash", runnable(resolved.shell),
           resolved.shell.empty() ? "managed bash is missing" : resolved.shell.string());
     check("rg", runnable(resolved.rg), resolved.rg.empty() ? "managed rg is missing" : resolved.rg.string());
@@ -150,6 +187,7 @@ nlohmann::json sandbox_status(const HomePaths& paths) {
         out["platform_support"] = resolved.library->platform_support();
         out["available_backends"] = resolved.library->available_backends();
     }
+    if (!resolved.tier.is_null()) out["tier_probe"] = resolved.tier;
     const auto runtime = to_runtime(resolved);
     if (!runtime) {
         out["probe"] = nlohmann::json{{"ok", false}, {"stage", "skipped"}, {"error", "missing: " + joined}};
