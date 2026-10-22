@@ -43,6 +43,9 @@ public:
     std::string version() const;
     nlohmann::json platform_support() const;   ///< mxc_platform_support_json 的解析结果
     nlohmann::json available_backends() const; ///< mxc_available_backends_json 的解析结果
+    /// mxc_probe_request_json_with_error 的解析结果（tier、needsDaclAugmentation、warnings、probes），不创建容器。
+    /// 库没有该入口（只有 Windows 构建导出）时返回 nullopt；探测失败抛 ExecError{sandbox}。
+    std::optional<nlohmann::json> probe_request(const nlohmann::json& request) const;
     const ffi::Functions& functions() const noexcept; ///< exec 内部使用
 
 private:
@@ -80,8 +83,14 @@ struct MxcRequest {
 /// 映射：readable → readonlyPaths；writable 与私有 HOME → readwritePaths（read_only 模式不含 writable）；
 /// protected_read 与可读树内的敏感路径 → deniedPaths；protected_write 与可写树内的敏感路径 →
 /// 嵌套在可写路径内的 readonlyPaths；read_exceptions 从 deniedPaths 剔除。只传已存在的路径。
+/// ProcessContainer 另加 `fallback.allowDaclMutation=false`；其代理模式要求 `ingress.default=allow`，
+/// 且 DAgent 的代理没有包身份，只能用无身份映射 `ingress.hostLoopback=allow`（WFP 仍只放行到代理端点的出站）。
 nlohmann::json mxc_policy(const MxcRuntime& runtime, const Policy& policy,
                           const std::filesystem::path& private_home, std::optional<std::string> proxy_url);
+
+/// @brief 不启动命令，用 run_mxc 会提交的同一份请求文档询问 MXC 的层级选择（Windows 的请求探测）；
+/// 私有 HOME 以临时目录代替，network_gate 非空时代理地址用占位端口。库没有探测入口时返回 nullopt。
+std::optional<nlohmann::json> probe_mxc(const MxcRequest& request, const Options& options = {});
 
 /// @brief 列表内 `host` 或 `host:port` 直接放行，其余交给 fallback（为空则拒绝）。
 NetworkGate allowlist_gate(std::vector<std::string> targets, NetworkGate fallback = {});

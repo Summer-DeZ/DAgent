@@ -4,6 +4,9 @@
 
 #include <memory>
 #include <span>
+#include <string>
+#include <utility>
+#include <vector>
 
 #include <boost/asio/io_context.hpp>
 #include <boost/asio/readable_pipe.hpp>
@@ -72,9 +75,14 @@ private:
 };
 
 /// 受限命令的 MXC `process.commandLine`：POSIX 为 `exec '<shell>' --noprofile --norc -c '<script>'`
-/// （sh 单引号转义，由 /bin/sh -c 解释）；Windows 按 CreateProcess 的引用规则拼出
-/// `"<shell>" --noprofile --norc -c "<script>"`。
+/// （sh 单引号转义，由 /bin/sh -c 解释）；Windows 为 `"<shell>" --noprofile --norc -c "<script>"`，
+/// 脚本按 Git bash（MSYS2 运行库）的命令行规则转义：双引号内 `\\` 与 `\"` 各还原为一个字符。
 std::string sandbox_command_line(const std::filesystem::path& shell, std::string_view script);
+
+/// 受限命令在 HOME/XDG/TMP 之外的平台变量，叠加在调用方变量之上：POSIX 没有；Windows 为 SystemRoot、
+/// 用户真实的 LOCALAPPDATA（ProcessContainer 拒绝缺少 SYSTEMROOT 或 LOCALAPPDATA 的环境，并把它与 TEMP/TMP
+/// 改写到容器自己的 AppContainer 目录），以及指向私有 HOME 的 USERPROFILE 与 APPDATA（home/config）。
+std::vector<std::pair<std::string, std::string>> sandbox_environment(const std::filesystem::path& home);
 
 /// 127.0.0.1 上的入站连接对端是否属于当前用户：Linux 按 /proc/net/tcp 的 uid 判断；Windows 第一版返回 true。
 bool loopback_peer_is_current_user(unsigned short local_port, unsigned short peer_port);

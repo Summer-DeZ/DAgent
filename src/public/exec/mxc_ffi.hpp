@@ -101,6 +101,11 @@ struct Functions {
     std::int32_t (*sandbox_kill_for_timeout)(MxcSandbox*); ///< 同上，之后 wait 报告 timed_out=1
     void (*sandbox_free)(MxcSandbox*);                     ///< 仍在运行则先杀进程树；只能调用一次
     std::int32_t (*sandbox_warnings_json)(MxcSandbox*, char** out);
+
+    /// 只有 Windows 构建导出，其它平台为 nullptr。按一份完整的一次性 ProcessContainer 请求探测可用层级，
+    /// 不创建容器；成功时 *out_json 用 string_free 释放，失败时 out_error 用 error_detail_free 释放。
+    std::int32_t (*probe_request_json_with_error)(const char* request_json, char** out_json,
+                                                  MxcErrorDetail* out_error);
 };
 
 } // namespace dagent::exec::ffi

@@ -389,6 +389,8 @@ std::string sandbox_command_line(const std::filesystem::path& shell, std::string
     return "exec setsid -w " + shell_quote(shell.string()) + " --noprofile --norc -c " + shell_quote(script);
 }
 
+std::vector<std::pair<std::string, std::string>> sandbox_environment(const std::filesystem::path&) { return {}; }
+
 // /proc/net/tcp 每行：sl local_address rem_address st tx:rx tr:when retrnsmt uid ...；地址为
 // 小端十六进制 IPv4 加大端十六进制端口。客户端一侧的条目是 本端=对端端口、远端=代理端口。
 bool loopback_peer_is_current_user(unsigned short local_port, unsigned short peer_port) {
