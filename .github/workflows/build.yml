@@ -37,16 +37,15 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - name: Resolve vcpkg revision
-        id: vcpkg
-        shell: pwsh
-        run: echo "revision=$(git -C $env:VCPKG_INSTALLATION_ROOT rev-parse HEAD)" >> $env:GITHUB_OUTPUT
-
       - name: Cache vcpkg installed tree
         uses: actions/cache@v4
         with:
           path: ${{ github.workspace }}/vcpkg_installed
-          key: ${{ runner.os }}-vcpkg-x64-windows-boost1.92-curl-openssl-iconv-${{ steps.vcpkg.outputs.revision }}
+          # 键只跟依赖清单走：runner 镜像更新（vcpkg 提交号变化）时仍复用已装好的树；
+          # 经典模式下已装的包不会被新端口版本替换，升级依赖时改这里的清单名即可。
+          key: ${{ runner.os }}-vcpkg-x64-windows-boost1.92-curl-openssl-iconv-v1
+          restore-keys: |
+            ${{ runner.os }}-vcpkg-x64-windows-
 
       - name: Install vcpkg dependencies
         shell: pwsh
