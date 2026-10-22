@@ -115,6 +115,7 @@ add_library(dagent_exec STATIC
     private/exec/shell.cpp
     private/exec/sandbox.cpp
     private/exec/srt.cpp
+    private/exec/proxy.cpp
 )
 
 target_include_directories(dagent_exec PUBLIC ${CMAKE_SOURCE_DIR}/src/public)
