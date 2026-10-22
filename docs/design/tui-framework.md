@@ -68,7 +68,7 @@ L1 终端     Terminal
 | L4 控件 | `widget/` | `widget.hpp` | `widget.cpp`、`theme.cpp` |
 | L5 文档层 | `document/` | `document.hpp`、`markdown_detail.hpp` | `document.cpp`、`wrap.cpp`、`markdown.cpp`（行分类与 MarkdownStream）、`markdown_render.cpp`（行内解析、排版与 Markdown/表格渲染器）、`syntax.cpp` |
 | L6 输入 | `runtime/` | `input.hpp`、`input_detail.hpp` | `input.cpp`（Decoder、EventRouter、InputBoxHandler）、`input_decode.cpp`（转义序列解码） |
-| L7 运行时 | `runtime/` | `runtime.hpp` | `runtime.cpp`、`keymap.cpp`；原生事件等待在 `terminal/terminal_{posix,win}.cpp` |
+| L7 运行时 | `runtime/` | `runtime.hpp`、`keymap.hpp`、`scrollback_mouse.hpp` | `runtime.cpp`、`keymap.cpp`、`scrollback_mouse.cpp`；原生事件等待在 `terminal/terminal_{posix,win}.cpp` |
 
 ### 对象关系
 

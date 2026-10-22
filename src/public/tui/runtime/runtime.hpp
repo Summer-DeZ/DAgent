@@ -15,7 +15,6 @@
 #include <utility>
 #include <vector>
 
-#include "tui/document/document.hpp"
 #include "tui/runtime/input.hpp"
 #include "tui/terminal/terminal.hpp"
 #include "tui/widget/widget.hpp"
@@ -206,80 +205,6 @@ private:
     std::string out_; ///< 输出缓冲（复用容量）
     std::optional<Point> cursor_;
     std::unique_ptr<EventWait> wait_; ///< 输入、信号与跨线程唤醒的等待
-};
-
-/// @brief 滚动区鼠标处理：左键拖拽选择、双击选词、三击选行、滚轮滚动；
-/// 释放时把选区写入剪贴板（copy_on_release 控制）。
-/// @note 必须先于 Runtime 与 Scrollback 销毁。
-class ScrollbackMouse : public EventHandler {
-public:
-    static constexpr std::chrono::milliseconds k_multi_click{400};
-
-    ScrollbackMouse(Runtime& rt, Scrollback& sb) noexcept : rt_(rt), sb_(sb) {}
-    ~ScrollbackMouse() override;
-    ScrollbackMouse(const ScrollbackMouse&) = delete;
-    ScrollbackMouse& operator=(const ScrollbackMouse&) = delete;
-
-    bool copy_on_release = true;
-
-    bool on_event(const Event& e) override;
-
-private:
-    Runtime& rt_;
-    Scrollback& sb_;
-    TimerId click_timer_ = 0; ///< 连击窗口计时器
-    int clicks_ = 0;
-    Point last_press_{-1, -1};
-    Location press_{};      ///< 拖拽起点
-    bool dragging_ = false;
-};
-
-/// @brief 命令表项：id 供绑定引用，title/category 供命令面板显示。
-struct Command {
-    std::string id;       ///< 如 "session.new"
-    std::string title;
-    std::string category;
-    std::function<void()> run;
-    std::function<bool()> enabled; ///< 空 = 始终可用
-};
-
-/// @brief 快捷键与命令层：绑定串（空格分隔，如 "ctrl+p"、"<leader> n"）到命令。
-/// @note 必须先于 Runtime 销毁。
-class Keymap : public EventHandler {
-public:
-    Keymap() = default;
-    Keymap(const Keymap&) = delete;
-    Keymap& operator=(const Keymap&) = delete;
-
-    /// @brief 添加命令；重复 id 覆盖。
-    void add(Command c);
-    /// @brief 注册绑定；按键串非法或命令 id 不存在时返回 false。
-    bool bind(std::string_view keys, std::string_view command_id);
-    const std::vector<Command>& commands() const noexcept { return commands_; }
-
-    bool on_event(const Event& e) override;
-
-private:
-    struct KeyPress {
-        Key key = Key::none;
-        char32_t ch = 0; ///< 可打印码点；与 key 互斥
-        Mods mods = Mods::none;
-        bool operator==(const KeyPress&) const noexcept = default;
-    };
-    struct Binding {
-        KeyPress key;
-        size_t command = 0; ///< commands_ 下标
-    };
-
-    static std::optional<KeyPress> press_from(const Event& e);
-    static bool parse_key(std::string_view text, Mods mods, KeyPress& out);
-    static bool parse_binding(std::string_view text, KeyPress& out);
-
-    void execute(size_t command_index);
-
-    std::vector<Command> commands_;
-    std::vector<Binding> bindings_;
-
 };
 
 } // namespace dagent::tui
