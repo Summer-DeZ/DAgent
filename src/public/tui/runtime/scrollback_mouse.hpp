@@ -4,7 +4,7 @@
 
 #include <chrono>
 
-#include "tui/document/document.hpp"
+#include "tui/document/scrollback.hpp"
 #include "tui/runtime/runtime.hpp"
 
 namespace dagent::tui {

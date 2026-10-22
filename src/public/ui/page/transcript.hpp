@@ -11,6 +11,8 @@
 
 #include "protocol/dto.hpp"
 #include "tui/document/document.hpp"
+#include "tui/document/markdown.hpp"
+#include "tui/document/scrollback.hpp"
 #include "ui/state/projection.hpp"
 
 namespace dagent::ui {

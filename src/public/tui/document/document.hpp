@@ -1,5 +1,5 @@
 /// @file document.hpp
-/// @brief 大内容滚动区：块模型、折行缓存与 Scrollback 控件。
+/// @brief 大内容滚动区的文档模型：块、锚点与选区、折行接口、渲染器基类与 Document。
 #pragma once
 
 #include <array>
@@ -127,54 +127,6 @@ public:
                           std::vector<Line>& out) const = 0;
 };
 
-/// @brief 文本渲染器：每行一段，样式取指定的 ThemeTokens 槽位。
-class TextRenderer final : public BlockRenderer {
-public:
-    explicit TextRenderer(Style ThemeTokens::*slot = &ThemeTokens::text) noexcept
-        : slot_(slot) {}
-
-    size_t render(const Block& block, int width, const ThemeTokens& theme, size_t from,
-                  size_t valid, std::vector<Line>& out) const override;
-
-private:
-    Style ThemeTokens::*slot_;
-};
-
-/// @brief 差异渲染器：'+' / '-' / '@' 开头的行用 diff_* 令牌，其余正文。
-class DiffRenderer final : public BlockRenderer {
-public:
-    size_t render(const Block& block, int width, const ThemeTokens& theme, size_t from,
-                  size_t valid, std::vector<Line>& out) const override;
-};
-
-/// @brief Markdown 渲染器：隐藏行内标记，按显示文本折行。
-class MarkdownRenderer final : public BlockRenderer {
-public:
-    WrapResult measure(std::string_view source, size_t from,
-                       int width) const override;
-    size_t render(const Block& block, int width, const ThemeTokens& theme, size_t from,
-                  size_t valid, std::vector<Line>& out) const override;
-};
-
-/// @brief 表格渲染器：列宽依赖全部行，每次变化整块重排。
-class TableRenderer final : public BlockRenderer {
-public:
-    WrapResult measure(std::string_view source, size_t from,
-                       int width) const override;
-    size_t render(const Block& block, int width, const ThemeTokens& theme, size_t from,
-                  size_t valid, std::vector<Line>& out) const override;
-};
-
-/// @brief 语法高亮渲染器：语言取自 Block::meta 的首个词，左侧留 k_gutter 列。
-class SyntaxRenderer final : public BlockRenderer {
-public:
-    static constexpr int k_gutter = 2;
-
-    WrapResult measure(std::string_view source, size_t from, int width) const override;
-    size_t render(const Block& block, int width, const ThemeTokens& theme, size_t from,
-                  size_t valid, std::vector<Line>& out) const override;
-};
-
 /// @brief 文档：块序列 + 行数前缀和 + 折行缓存。
 class Document {
 public:
@@ -269,115 +221,5 @@ private:
     uint32_t theme_epoch_ = 0;
 };
 
-/// @brief 把增量 Markdown 原文切成 Document 块，只有最后一个块增长。
-class MarkdownStream {
-public:
-    /// @param first_margin 每条消息第一块的上边距（消息内其余块为 1）。
-    explicit MarkdownStream(Document& doc, uint8_t first_margin = 0) noexcept
-        : doc_(&doc), first_margin_(first_margin) {}
-    MarkdownStream(const MarkdownStream&) = delete;
-    MarkdownStream& operator=(const MarkdownStream&) = delete;
-
-    /// @brief 追加任意分块的原文。
-    void feed(std::string_view chunk);
-    /// @brief 消息结束：未完成的行保留在块内，关闭最后一个块。
-    void finish();
-
-private:
-    enum class Mode : uint8_t { none, markdown, code, table };
-    enum class Family : uint8_t { text, heading, list, quote };
-
-    void on_partial();              ///< pending_ 增长（尚无换行）
-    void on_line(bool has_newline); ///< pending_ 是一整行
-    void handle_markdown_line(std::string_view line, bool has_newline);
-    void handle_detached_line(std::string_view line, bool has_newline,
-                              bool allow_table);
-    void open_markdown(std::string source, bool pipe);
-    void open_table(std::string source);
-    void start_code(char fence, size_t len, std::string info);
-    Block new_block(BlockKind kind); ///< 按消息内位置设置上边距
-    void close_current();
-    void remove_last(size_t bytes);
-
-    Document* doc_;
-    Mode mode_ = Mode::none;
-    Family family_ = Family::text;
-    uint64_t cur_ = 0;            ///< 当前 open 块
-    char fence_ch_ = 0;           ///< 代码围栏字符
-    size_t fence_len_ = 0;        ///< 围栏长度
-    bool code_candidate_ = false; ///< 未完成行可能是闭合围栏
-    bool line_in_block_ = false;  ///< 当前行已（部分）写入当前块
-    bool line_new_ = false;       ///< 当前行的块是行中途新建的
-    bool last_line_pipe_ = false; ///< 当前 markdown 块最后一行以 '|' 开头
-    size_t last_line_len_ = 0;    ///< 该行字节数（含换行）
-    size_t sent_ = 0;             ///< pending_ 中已追加的字节数
-    std::string pending_;         ///< 未完成行（不含换行）
-    std::string staged_;          ///< 暂存的表格候选表头（含换行）
-    bool staging_ = false;
-    bool started_ = false; ///< 本条消息已建过块
-    uint8_t first_margin_ = 0;
-};
-
-/// @brief 大内容滚动区：Document 的门面 widget。
-class Scrollback : public Widget {
-public:
-    Document& document() noexcept { return doc_; }
-    const Document& document() const noexcept { return doc_; }
-
-    /// @brief 换主题（更改样式后需递增 ThemeTokens::epoch）。
-    void set_theme(ThemeTokens theme) {
-        theme_ = std::move(theme);
-        invalidate();
-    }
-    const ThemeTokens& theme() const noexcept { return theme_; }
-
-    // ---- 滚动（正数 = 向下/新内容方向） ----
-    void scroll_lines(int lines);
-    void scroll_pages(int pages);
-    void scroll_home();
-    void scroll_end(); ///< 贴底并保持跟随
-
-    [[nodiscard]] bool pinned() const noexcept {
-        return doc_.anchor().pinned_to_bottom;
-    }
-    /// @brief 视口下方的行数（不贴底时 > 0）。
-    [[nodiscard]] size_t unseen_rows() const noexcept { return unseen_; }
-
-    /// @brief 块内容是否出现在最近绘制的视口。
-    bool block_visible(uint64_t id) const noexcept {
-        return doc_.block_visible(id, top_, static_cast<size_t>(view_));
-    }
-
-    // ---- 选择 ----
-
-    /// @brief 视图坐标 → 内容位置；文档为空时返回 nullopt。
-    std::optional<Location> hit(Point p);
-    void select(Selection s);
-    void clear_selection();
-    [[nodiscard]] const std::optional<Selection>& selection() const noexcept {
-        return selection_;
-    }
-    /// @brief 选区的源文本；无选区时为空串。
-    [[nodiscard]] std::string selected_text() const;
-
-    Size measure(Size available) const override;
-    void render(Surface& s) override;
-    bool dirty_tree() const noexcept override;
-
-private:
-    void draw_row(Surface& s, int y, size_t row, const Line& ln);
-    size_t max_top() const noexcept;
-    /// @brief 把视口顶行锚到绝对行 row；dir < 0 表示向上滚动。
-    void anchor_to(size_t row, int dir);
-
-    Document doc_;
-    ThemeTokens theme_ = dark_theme();
-    uint64_t rendered_rev_ = 0; ///< 已渲染到的内容版本
-    size_t total_ = 0;          ///< 上次渲染的文档总行数
-    size_t top_ = 0;            ///< 上次渲染的视口顶行
-    size_t unseen_ = 0;         ///< 视口下方行数
-    int view_ = 0;              ///< 上次渲染的视口高度
-    std::optional<Selection> selection_;
-};
 
 } // namespace dagent::tui
