@@ -1,4 +1,4 @@
-# SRT supplies filesystem/network isolation; this profile permits its namespaces.
+# MXC (bubblewrap) supplies filesystem/network isolation; this profile permits its namespaces.
 abi <abi/4.0>,
 include <tunables/global>
 

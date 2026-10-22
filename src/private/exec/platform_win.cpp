@@ -282,10 +282,6 @@ void launch(const Command& command, const fs::path& program, const std::vector<s
     }
 }
 
-[[noreturn]] void unsupported_sandbox() {
-    throw ExecError(ExecError::Kind::sandbox, "sandbox is unsupported on Windows");
-}
-
 } // namespace
 
 bool environment_name_matches(std::string_view name, const std::string& pattern) {
@@ -369,20 +365,6 @@ void spawn_child(const Command& command, const fs::path& program, const std::vec
                  asio::readable_pipe& output, asio::readable_pipe& error, ProcessGroup& group) {
     launch(command, program, environment, context, process, input, output, error, group, true, false);
 }
-
-struct SrtControl::Impl {};
-SrtControl::SrtControl() { unsupported_sandbox(); }
-SrtControl::~SrtControl() = default;
-void SrtControl::inherit_bridge_endpoint(Command&) const { unsupported_sandbox(); }
-std::string SrtControl::bridge_argument() const { unsupported_sandbox(); }
-std::optional<std::string> SrtControl::send_initial(std::string_view) { unsupported_sandbox(); }
-void SrtControl::send_decision(std::string_view) { unsupported_sandbox(); }
-void SrtControl::send_start(std::string_view) { unsupported_sandbox(); }
-std::size_t SrtControl::read_chunk(std::span<char>) { unsupported_sandbox(); }
-void SrtControl::shutdown_host() noexcept {}
-void SrtControl::close_bridge() noexcept {}
-void SrtControl::close() noexcept {}
-std::vector<fs::path> default_srt_readable_paths() { unsupported_sandbox(); }
 
 } // namespace detail
 } // namespace dagent::exec

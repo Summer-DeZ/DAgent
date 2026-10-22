@@ -51,32 +51,6 @@ void spawn_child(const Command& cmd, const std::filesystem::path& program,
                  boost::asio::writable_pipe& input, boost::asio::readable_pipe& output,
                  boost::asio::readable_pipe& error, ProcessGroup& group);
 
-class SrtControl {
-public:
-    SrtControl();
-    ~SrtControl();
-    SrtControl(const SrtControl&) = delete;
-    SrtControl& operator=(const SrtControl&) = delete;
-
-    void inherit_bridge_endpoint(Command&) const;
-    std::string bridge_argument() const;
-
-    std::optional<std::string> send_initial(std::string_view);
-    void send_decision(std::string_view);
-    void send_start(std::string_view);
-    std::size_t read_chunk(std::span<char>);
-
-    void shutdown_host() noexcept;
-    void close_bridge() noexcept;
-    void close() noexcept;
-
-private:
-    struct Impl;
-    std::unique_ptr<Impl> impl_;
-};
-
-std::vector<std::filesystem::path> default_srt_readable_paths();
-
 /// 动态库句柄：MXC 原生库在运行时加载，不在链接期依赖。
 class SharedLibrary {
 public:
