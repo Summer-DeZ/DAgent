@@ -261,6 +261,7 @@ add_library(dagent_agent STATIC
     private/agent/policy/execution_registry.cpp
     private/agent/record/committer.cpp
     private/agent/record/record_codec.cpp
+    private/agent/record/record_decode.cpp
     private/agent/record/history.cpp
     private/agent/record/recovery.cpp
     private/agent/record/compaction.cpp
