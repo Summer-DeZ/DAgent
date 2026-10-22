@@ -18,7 +18,7 @@ namespace dagent::exec {
 enum class Mode { read_only, workspace_write, full_access };
 
 struct SandboxOptions {
-    int version = 2;
+    int version = 3;
     /// 用户维护的持久读取/写入范围；相对路径由配置层按 workspace 解析。
     std::vector<std::filesystem::path> extra_readable;
     std::vector<std::filesystem::path> extra_writable;

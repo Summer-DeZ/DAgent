@@ -59,7 +59,7 @@
   },
   "sandbox": {
     "allowed_targets": [],
-    "backend": "srt",
+    "backend": "mxc",
     "denied_targets": [],
     "extra_readable": [],
     "extra_writable": [],
@@ -67,7 +67,7 @@
     "max_network_requests_per_execution": 32,
     "network_approval_timeout_ms": 120000,
     "startup_timeout_ms": 15000,
-    "version": 2
+    "version": 3
   },
   "search": {
     "rg_path": ""
