@@ -15,7 +15,7 @@ dev 构建的安装根是源码树 `home/`，`DAGENT_HOME` 可覆盖。
 ## Windows
 
 先决条件：Visual Studio 2022 Build Tools（MSVC C++ 工作负载与 Windows SDK）、
-vcpkg（`boost-asio`、`boost-process`、`curl[schannel]`、`openssl`、`libiconv`，triplet `x64-windows`）
+vcpkg（`boost-asio`、`boost-process`、`curl`（默认 ssl 特性即 schannel）、`openssl`、`libiconv`，triplet `x64-windows`）
 和 Git for Windows（`runtime sync` 使用系统安装的 `git.exe` 与 `bash.exe`）。
 
 ```powershell
