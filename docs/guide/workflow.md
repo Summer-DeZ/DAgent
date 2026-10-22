@@ -62,7 +62,7 @@ Windows 11 Pro 25H2 虚拟机（dockur/windows，容器名 `dagent-win`），全
 - 连接：`ssh dagent-win`（127.0.0.1:2222，登录 shell 是 PowerShell）；网页控制台 http://127.0.0.1:8006/ ，RDP 127.0.0.1:33890。截图 `tools/shot.sh [out.png]`，注入按键 `tools/type.py`。
 - 客户机已装：VS 2022 Build Tools（MSVC、CMake、Ninja、Windows SDK）、Git for Windows、Python 3.12（pywinpty、pyte）、vcpkg 在 `C:\dev\vcpkg`（boost-asio/boost-process、curl、openssl、libiconv，triplet x64-windows）。源码树 `C:\dev\DAgent`，开发用 Home 是源码树的 `home/`，测试项目 `C:\dev\proj 测试`（故意带空格和中文）。
 - 网络：客户机只经宿主转发的代理访问 GitHub、微软 CDN、npm 等；Windows Update 不通，不要指望它自我更新。`pip` 用 TUNA 镜像。代理转发器 `socat TCP-LISTEN:1081,bind=172.25.0.1,fork,reuseaddr TCP:127.0.0.1:1081` 不是服务，宿主重启后要重新起（用 `ss -tln | grep 172.25.0.1:1081` 检查）。
-- 磁盘备份：`storage-base-20261021/`（干净系统）和 `storage-pre-update-20261022/`（装好开发环境，更新前）。恢复方法：停容器，把备份目录复制回 `storage/`。
+- 不保留磁盘备份（2026-10-22 项目负责人决定）；需要回退时按 `compose.yml` 重装并重跑 `oem/` 与 `shared/` 里的安装脚本。
 
 ### 3.2 同步与构建
 
