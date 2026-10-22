@@ -42,8 +42,8 @@ web 始终要求只读 MXC 沙箱。SearXNG 的上游引擎连接属于宿主基
 
 | 工具 | 参数 | 返回内容 |
 | --- | --- | --- |
-| `web_search` | `query`；`limit` 默认 8，范围 1–20 | 标题、URL、摘要及引擎失败说明 |
-| `web_fetch` | `url`；`offset` 默认 0；`limit` 默认 16000，范围 4–1000000 | 最终 URL、标题、HTTP 状态、正文及分页信息 |
+| `web_search` | `query`（≤300 个 Unicode 码点，原始字节 ≤8192）；`limit` 默认 8，范围 1–20 | 标题、URL、摘要及引擎失败说明 |
+| `web_fetch` | `url`（原始字节 ≤8192）；`offset` 默认 0；`limit` 默认 16000，范围 4–1000000 | 最终 URL、标题、HTTP 状态、正文及分页信息 |
 
 抓取只接受不含用户名/密码的 HTTP(S) URL。HTML 转为带绝对链接的 Markdown；文本和 JSON 等文本类型转换为 UTF-8。
 GB2312/GBK 页面可以解码；不执行 JavaScript，不解析 PDF 或图片。

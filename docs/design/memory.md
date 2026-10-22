@@ -17,8 +17,9 @@ home/memory/
 └── projects/<project-key>/<name>.md
 ```
 
-`HomePaths::memory` 给出记忆根，`project_memory(project_root)` 给出项目目录。项目根与工作区指令使用同一来源：
-git 根，非仓库退回 cwd。project-key 为规范化项目根的目录名，加 `-` 和完整规范化绝对路径的 SHA-256 前 8 位小写十六进制字符，
+`HomePaths::memory` 给出记忆根，`project_memory(project_root)` 给出项目目录。项目根由装配层从 cwd 向上查找 `.git`
+文件或目录得到，非仓库退回 cwd；工作区指令另由 `git rev-parse --show-toplevel` 收集，常规仓库中两者一致。
+project-key 为规范化项目根的目录名，加 `-` 和完整规范化绝对路径的 SHA-256 前 8 位小写十六进制字符，
 例如 `DAgent-3f9a1c2e`。项目移动到另一个路径会使用另一个目录；旧格式目录不再使用，不做迁移。
 目录在第一次保存时创建。
 dev Home 的 `/home/memory/` 已被 git 忽略，安装也不打包本机记忆。

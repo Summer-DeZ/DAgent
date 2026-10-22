@@ -27,7 +27,8 @@ classDiagram
 | `SubagentExecutor` | 本次委派组的子实例（调用栈内） | 实现核心 `DelegationChannel`：创建子会话、跑一轮、收集 `TaskView`、销毁 |
 
 `SessionInstance` 是一个已装配会话：核心 `Session` 与其工具目录、MCP 资源、记录写入器和写租约同寿。
-runtime 只看到核心类型；`tools::Context`、`Registry`、`SqliteJournal` 等具体对象留在 app 装配内部。
+runtime 只看到核心类型；`tools::Context`、`Registry` 等具体对象留在 app 装配内部，
+`SqliteJournal` 由 storage 实现并只通过 `agent::JournalWriter` 端口暴露。
 网页缓存跟随 Context 生命周期；新建/恢复/切换模型产生的新实例不继承缓存。SearXNG 由 app 中的后端级管理器持有，
 同后端的会话通过回调共享服务，单次工具或子会话结束不会关闭它。详细生命周期见 [web](web.md#托管搜索)。
 
@@ -95,7 +96,7 @@ new/resume/切模型先在旧会话空闲时准备候选（`PendingReplace`）�
 | 操作 | 保留 | 重置 |
 | --- | --- | --- |
 | `/new` | 当前权限档 | planning、对话、计划 |
-| resume | 当前权限档 | planning；按记录重建对话与计划 |
+| resume | 当前权限档与 planning | 按记录重建对话与计划 |
 | 切模型（同 session_id） | 模式、planning、Transcript、WorkPlan 显示 | 临时授权、FileTracker、token 校准；从持久记录重建对话并写新 system（B13/B14） |
 
 切模型把当前 lease 交给候选，不再次 flock 同一会话。添加模型先原子保存 models.json，再按切模型路径切换；保存成功但切换失败时
@@ -104,7 +105,8 @@ new/resume/切模型先在旧会话空闲时准备候选（`PendingReplace`）�
 ## 3. 快照与事件发布
 
 `RuntimeSnapshot` 是面向前端的只读状态：session_id、generation、公开模型、权限档/planning/read_only、busy 与当前操作
-（turn/compact/replacing + run_id）、排队输入、上下文用量与窗口、项目路径、WorkPlan、MCP 状态、记录 broken、会话授权。
+（turn/compact/replacing + run_id）、排队输入、上下文用量与窗口、项目路径、WorkPlan、MCP 状态、沙箱可用性与缺失项、
+记录 broken、会话授权，以及待确认的 unrestricted 升权目标与入口。
 
 会话与事件投影位于 `src/public/runtime/snapshot_projection.hpp` 和
 `src/private/runtime/snapshot_projection.cpp`，命名空间为 `dagent::runtime::detail`。
@@ -119,7 +121,7 @@ ModelChanged 仍只更新模型标识，ToolFinished 仅在结果包含 TodoView
 不更新 pending permission。控制字段函数先清空 queue/operation/run_id，再填写 generation、busy、队列及当前操作；
 它自身不加锁，由调用方保证锁边界。
 
-控制器用一把发布锁完成「应用事件到快照、交给 `EventSink`」。线上 seq/state_seq 仅由 backend Publisher 分配；
+控制器用一把发布锁完成「应用事件到快照、交给 `Frontend`」。线上 seq/state_seq 仅由 backend Publisher 分配；
 runtime 不维护重复计数。事件载荷是核心 `agent::Event` 或 runtime 自己的 `ControlEvent`：
 
 | ControlEvent | 含义 |
@@ -128,13 +130,13 @@ runtime 不维护重复计数。事件载荷是核心 `agent::Event` 或 runtime
 | `operation_finished` | 手动压缩结束，带 status/error |
 | `failed` | 控制命令失败，`operation` 指出动作 |
 
-`EventSink` 必须在锁内快速入队，不得阻塞；背压与发送在 backend 的 Publisher 里处理。
+`Frontend` 必须在锁内快速入队，不得阻塞；背压与发送在 backend 的 Publisher 里处理。
 
 ## 4. 交互代理
 
 核心的 `Approver` / `Asker` 由 runtime 接到 `InteractionBroker`：
 
-1. 执行线程调用 `request_approval` / `request_answer`，生成 `interaction-N`，进入等待队列；同一时刻只有队首激活，
+1. 执行线程调用 `request_approval` / `request_answer`，生成 `i-N`，进入等待队列；同一时刻只有队首激活，
    经 `InteractionOutlet::interaction_requested` 通知前端（并发子 Agent 的审批因此串行显示）。
 2. 任意线程的 `answer_*` 把 pending 一次性终结，唤醒等待方，再激活下一个。已结束的交互返回 false（协议 `interaction_closed`）。
 3. stop 触发时 pending 立即以取消结束（审批返回 deny、问答返回 cancelled），核心按取消处理而不是普通拒绝，并通知前端关闭对话框。
@@ -150,7 +152,7 @@ runtime 不维护重复计数。事件载荷是核心 `agent::Event` 或 runtime
 1. 从 `DelegationContext`（父 session/call、权限快照、父工具名单、模型名、父 Sink/Approver、只读父 Policy、parent_reviewer、stop）和子定义派生权限，
    `SessionFactory::create_child` 创建子实例；子会话自己取得写租约，Meta 带 `parent_id` / `agent_name`。
 2. 登记子 Policy 和独立 stop_source；父取消通过 stop_callback 级联到子 Run，父权限收窄可以只终止子执行。
-   `may_ask` 时装配带来源身份的审批路由：父当前 unrestricted 且无只读/规划上限、启用父审阅时，经 `parent_reviewer`
+   `may_ask` 时装配带来源身份的审批路由：父无只读/规划上限、模式为 workspace 或 unrestricted 且启用父审阅时，经 `parent_reviewer`
    把请求投递到父 Dispatcher 邮箱；否则使用父人工 Approver。两条路由都不可用时返回 approval unavailable；子 Asker 恒空。
 3. 子事件包成 `SubEvent` 交给父 Sink，只实时展示，不写进父历史。
 4. 使用 `RunOutcome` 的真实结束状态构造结果。非 done 状态设置 `is_error=true`，文字包含状态与调用计数，
@@ -161,11 +163,11 @@ runtime 不维护重复计数。事件载荷是核心 `agent::Event` 或 runtime
 不在解锁后继续使用可能已经销毁的子 Policy 指针。父会话授权不复制到子会话。
 
 父 Dispatcher 等待 task 时串行处理审阅，子线程只等待自己的决定；超时包括排队时间。
-父审阅失败、取消或降权不把同一个请求转成人工审批。父授权取消句柄在首次审阅后持续关联子执行，
+父审阅失败、超时或输出无效时，同一请求转人工审批；取消或降权直接结束，不转人工。父授权取消句柄在首次审阅后持续关联子执行，
 因此创建时父为 workspace、运行中升级后获批的子任务，也会在父再次降权时中断。
 父审阅共享父 turn 的调用与 token 预算；一次/子会话授权和审计见 [agent](agent.md#子-agent-的权限派生)。
 
-子工具默认不含 task/ask/exit_plan 和未显式允许的 `mcp__*`；子只用创建时的 MCP 快照（B18–B20）。
+子工具默认不含 task/ask/exit_plan/memory 和未显式允许的 `mcp__*`；子只用创建时的 MCP 快照（B18–B20）。
 
 ## 6. 线程与关闭
 

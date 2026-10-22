@@ -52,7 +52,7 @@ Windows 的 `toolchain_win.cpp` 提供 Windows-x86_64 平台标识和非阻塞 L
 锁文件创建时私有、句柄不继承、不共享删除，持有范围覆盖整个 sync，析构关闭释放。
 解包明确调用 Windows 系统目录的 tar.exe（x64 上为 SystemRoot/System32），保持 -xf、`--strip-components=<strip>` 和 -C；
 `strip` 来自资产且默认 1，Windows 自带的 bsdtar 因此也能解压 .zip。
-运行环境不继承宿主 PATH；按包顺序拼接分号 PATH，每个包的 bin 目录之后追加 manifest `programs` 中各程序的父目录（去重），
+运行环境不继承宿主 PATH；先按包顺序追加各包的 `bin` 目录，再追加 manifest `programs` 中各程序的父目录（去重），
 最后追加系统目录和 Windows 目录。
 Python venv 前置 Scripts，Node 环境前置 node_modules/.bin；HOME/USERPROFILE 指向所选 runtime/homes/<name>。
 XDG、离线选项、uv/npm 缓存与配置变量保留原含义，增加 SystemRoot、系统 COMSPEC 及系统临时目录 TEMP/TMP。
@@ -75,8 +75,8 @@ bubblewrap、slirp4netns 等是宿主程序，不由 runtime 管理。
 
 ## 工具包配置
 
-`version: 1`，`packages` 按名称声明包；每个包有 `version`、`bin` 和 `programs`（程序名到包内相对路径）。
-当前完整工具集要求提供 bash、git、rg、uv、python、python3、node、npm。
+`version: 1`，`packages` 按名称声明包；常规包有 `version`、`bin` 和 `programs`（程序名到包内相对路径）。
+`mxc` 包是例外，只声明 `version` 与 `libraries`。当前完整工具集要求提供 bash、git、rg、uv、python、python3、node、npm。
 
 | kind | 来源与准备方式 |
 | --- | --- |

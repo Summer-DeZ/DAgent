@@ -267,4 +267,4 @@ SRT 控制通道改为显式 fd 白名单和 SOCK_CLOEXEC，真实三子 Agent �
 - [SRT v0.0.77 README：Linux 前置与 filesystem/network 限制](https://github.com/anthropics/sandbox-runtime/blob/v0.0.77/README.md)
 - [SRT CLI 信号与退出处理](https://github.com/anthropics/sandbox-runtime/blob/v0.0.77/src/cli.ts)
 - [Ubuntu 非特权 user namespace 限制](https://documentation.ubuntu.com/release-notes/24.04/)
-- [本项目后端调研](../research/command-sandbox-backend.md)、[方案比较](../research/sandbox-repair-options.md)
+- 本项目后端调研、方案比较（原始材料已移除）

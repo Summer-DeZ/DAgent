@@ -219,8 +219,8 @@ dangerous / known_readonly 仍由 exec 的原分析函数计算，核心不重�
 
 | 工具 | 参数 | 结果 |
 | --- | --- | --- |
-| `web_search` | 必填 `query`；`limit` 默认 8，范围 1–20 | 标题、URL、摘要；单独报告失败的搜索引擎 |
-| `web_fetch` | 必填 http/https `url`；`offset` 默认 0；`limit` 默认 16000，范围 4–1000000 | HTML 转 Markdown、文本/JSON 解码到 UTF-8；最终 URL、HTTP 状态、分页与截断信息 |
+| `web_search` | 必填 `query`（≤300 个 Unicode 码点，原始字节 ≤8192）；`limit` 默认 8，范围 1–20 | 标题、URL、摘要；单独报告失败的搜索引擎 |
+| `web_fetch` | 必填 http/https `url`（原始字节 ≤8192）；`offset` 默认 0；`limit` 默认 16000，范围 4–1000000 | HTML 转 Markdown、文本/JSON 解码到 UTF-8；最终 URL、HTTP 状态、分页与截断信息 |
 
 分页使用 UTF-8 **字节**偏移，下一页传结果中的 `next_offset`。`Context` 按规范化原 URL 缓存转换后的页面，
 命中不联网；缺失缓存的非零 offset 要求重新获取第一页。输出仍受 `tools.max_result_bytes` 限制。
@@ -232,7 +232,7 @@ dangerous / known_readonly 仍由 exec 的原分析函数计算，核心不重�
 
 ### todo / ask / exit_plan / task
 
-这四个名字仍出现在模型的工具列表里（顺序 read、write、edit、bash、grep、glob、web_search、web_fetch、todo、ask、exit_plan，主会话再按配置加 task；有技能时再加 skill），
+这四个名字仍出现在模型的工具列表里（顺序 read、write、edit、bash、grep、glob、web_search、web_fetch、todo、ask、exit_plan，主会话再按配置加 task；有技能时再加 skill；memory 作为普通工具排在这些固定项之后），
 但它们是核心控制动作，不在工具层注册。Schema、说明、给模型的文本与 View（TodoView / AskView / TaskView）保持原样；
 解析与执行规则见 [agent §7](agent.md#控制动作askexit_plantodotask) 与 [agent §12](agent.md#12-子-agent-与-task)。
 
@@ -253,12 +253,13 @@ dangerous / known_readonly 仍由 exec 的原分析函数计算，核心不重�
 
 ### McpHub
 
-`tools::McpHub`（`tools/mcp_hub.hpp`）管理配置的全部 MCP server：构造时为每个 server 启动后台连接；`apply_pending`
-在主会话的模型步骤之间处理重连、等待与工具合并；`snapshot` 把已就绪工具合并进子会话的注册表；`mark_disconnected`
-返回追加给模型的 T12 / T13；`states` 线程安全地给出状态快照。生命周期规则见 [agent §11](agent.md#11-mcp-生命周期)。
+`tools::McpHub`（`tools/mcp_hub.hpp`）管理配置的全部 MCP server：构造时为通过启动前置检查的 server 启动后台连接，
+其余 server 直接标为 failed 并记录 notice；`apply_pending` 在主会话的模型步骤之间处理重连、等待与工具合并；
+`snapshot` 把已就绪工具合并进子会话的注册表；`mark_disconnected` 返回追加给模型的 T12 / T13；`states` 线程安全地给出状态快照。
+生命周期规则见 [agent §11](agent.md#11-mcp-生命周期)。
 
-连接只接受 MCP `2026-07-28`，通过 `server/discover` 确认版本，不回退旧协议。Hub 在连接或重连后合并工具，
-不接收服务端工具变更通知，也不周期刷新工具列表。
+连接优先使用 MCP `2026-07-28`，通过 `server/discover` 确认版本；发现方法返回 `-32601` 或 HTTP 404/405 时回退到旧版
+`initialize`。Hub 在连接或重连后合并工具，不接收服务端工具变更通知，也不周期刷新工具列表。
 
 ---
 
@@ -268,7 +269,7 @@ dangerous / known_readonly 仍由 exec 的原分析函数计算，核心不重�
 
 | View | 字段 |
 | --- | --- |
-| `WebView` | 搜索/抓取类型、query/url/title、正文、状态、offset/next_offset/total_bytes、缓存/截断、实际网络目标和耗时 |
+| `WebView` | 搜索/抓取类型、query/url/title、content_type、正文、状态、offset/next_offset/total_bytes、缓存/截断、实际网络目标和耗时 |
 | `ReadView` | `path`、`start_line`、`end_line`、`total_lines`、`truncated`、`directory` |
 | `FileChangeView` | `path`、`diff`（unified diff 文本）、`added`、`removed`、`created`；edit 和 write 共用 |
 | `BashView` | `command`、`output`、退出状态、实际 backend/profile、grant source、analysis version、读写/保护范围、敏感名称规则、network/local sockets/private tmp、`elapsed_ms` |
@@ -277,7 +278,7 @@ dangerous / known_readonly 仍由 exec 的原分析函数计算，核心不重�
 | `McpView` | `server`、`tool`、`content`、`structured`、`disconnected` |
 | `TodoView` | `items` 整份列表；`TodoItem` 含 `text` 与四态 `state` |
 | `TaskView` | `agent`、`task`、`session_id`（父到子的跳转锚点）、`result`、`steps`（`TaskStep`：`summary`、`is_error`）、`model_calls`、`tool_calls`、`seconds`、`interrupted` |
-| `AskView` | 问题、选项、选择和自由文本，供人工问答回放 |
+| `AskView` | `header`、问题、选项、选择、自由文本，以及 `multi_select`、`allow_other`、`cancelled`，供人工问答回放 |
 | `MemoryView` | `op`、`scope`、`name`、`type`、`updated`、`description`、`content`，记忆操作结果 |
 | `SkillView` | `name`、`path`，记录本轮技能激活，不保存技能正文 |
 
@@ -285,7 +286,7 @@ dangerous / known_readonly 仍由 exec 的原分析函数计算，核心不重�
   `monostate` 表示 prepare 阶段就失败的调用（参数错误等），界面只显示文本。前端不链接核心，
   由 `ui/projection` 把协议里的 View JSON 解码成自己的投影类型，未知 kind 按文本回退。
 - `agent::to_json(view)` 输出 `{"kind": ..., 各字段}`，写进 tool 记录的 `view`，协议也原样传给前端；`kind` 为 `read`、`change`、
-  `bash`、`grep`、`glob`、`mcp`、`todo`、`ask`、`task`、`skill`，`monostate` 使用显式 `kind: null`。
+  `bash`、`grep`、`glob`、`mcp`、`web`、`todo`、`ask`、`task`、`skill`、`memory`，`monostate` 使用显式 `kind: null`。
 - `view_from_json` 严格读取当前完整字段；未知 `kind`、缺失字段、非法字段类型或损坏条目均报错。
   不为旧会话补默认字段，也不把损坏展示数据转换成 `monostate`。
 
@@ -316,7 +317,7 @@ dangerous / known_readonly 仍由 exec 的原分析函数计算，核心不重�
 
 - 选项对应 `home/config/config.json` 的 `tools` 段：`max_result_bytes`（32 KiB，约 8k token）、
   `read_default_lines`（2000）、`read_max_line_bytes`（2000）、`grep_max_matches`（200）、`glob_max_files`（200）、
-  `bash_max_timeout_ms`（600000）、`mcp_call_timeout_ms`（120000），由 app 映射。文件读写上限沿用 `files` 段：
+  `bash_collect_bytes`（4194304）、`bash_max_timeout_ms`（600000）、`mcp_call_timeout_ms`（120000），由 app 映射。文件读写上限沿用 `files` 段：
   `max_read_bytes` 是 read 能翻页的最大文件（8 MiB），`max_write_bytes` 是写入上限（1 MiB）。
 - memory 使用独立的 `memory` 配置段；默认索引 8192 字节、完整条目 4096 字节，详见 [memory](memory.md)。
 - web 请求和缓存使用独立的 `web` 段，默认值及约束见 [web](web.md#配置)；启动需要宿主 curl 7.75+，

@@ -5,7 +5,7 @@ Windows 为 `win`，其他系统以 `Unsupported target system` 错误拒绝配�
 显式列出 `private/<模块>/<文件>_${DAGENT_PLATFORM}.cpp`，不使用运行时平台选择或虚函数端口。
 当前包含完整 POSIX 实现及 base、workspace/context、app/cli、app/paths、ui/browser、web/document、
 exec/platform、ipc/channel、app/interrupts、app/backend_main、workspace/files、storage/storage、storage/decision_store、
-app/config_detail、app/models、llm/auth、app/toolchain、tui/terminal 十八个 Windows 实现。
+app/config_detail、app/models、llm/auth、app/toolchain、tui/terminal、app/queries、app/sandbox_status 二十个 Windows 实现。
 Windows 配置可用：在 MSVC 开发环境中使用 Windows 宿主专属的 `win-dev` 或 `win-release` preset，并按 vcpkg 实际安装位置传入
 `-DCMAKE_TOOLCHAIN_FILE`；配置随后照常查找依赖并生成全部目标。Windows 终端设计见
 [Windows：终端](#windows终端)。
@@ -71,7 +71,7 @@ Linux 的资源路径、文件权限和 profile 内容不变。
 | `src/private/app/config_detail_{posix,win}.cpp` | `src/public/app/config_detail.hpp` | `detail::require_private_file` |
 | `src/private/app/models_{posix,win}.cpp` | `src/public/app/config_detail.hpp` | `detail::ModelWriteLock` |
 | `src/private/llm/auth_{posix,win}.cpp` | `src/public/llm/auth.hpp`、`src/public/llm/auth_detail.hpp` | `read_credentials`、`detail::CredentialLock`、`detail::write_credentials`、`detail::remove_credentials` |
-| `src/private/app/queries_posix.cpp` | `src/public/app/queries.hpp` | `QueryGatewayImpl::watch_workspace` |
+| `src/private/app/queries_{posix,win}.cpp` | `src/public/app/queries.hpp` | `QueryGatewayImpl::watch_workspace` |
 | `src/private/app/sandbox_status_{posix,win}.cpp` | `src/public/app/sandbox_status.hpp` | `detail::platform_sandbox_supported`、`detail::sandbox_containment`、`detail::host_prerequisites`、`detail::append_host_diagnostics` |
 
 ## 接口语义与资源所有权

@@ -43,12 +43,15 @@ if (resp.status != 200) { /* resp.body 是错误体 */ }
 | `stream(req, on_data, stop)` | 状态码为 2xx 时，每收到一段数据就调用一次 `on_data`，数据的切分位置是任意的；状态码不是 2xx 时不调用回调，错误体放进返回值的 `body`，超过 `max_error_body_bytes` 的部分截掉 |
 
 两者都会返回状态码和响应头。**HTTP 状态码不是错误**：404、429、500 都正常返回，由调用方看 `status` 自行处理。
+`send` 另有接收绝对截止时间的重载，`stream` 另有在最终响应头收齐时触发的 `on_headers` 回调；`HttpResponse::body_truncated`
+表示 `stream` 的错误体被截断。
 
 ### 请求
 
 - `method` 是任意方法名，默认 `POST`；`GET` 不发送请求体；`POST` 会发送 `body`（空的也发送）。其他方法有 `body` 就发送。
 - `headers` 原样发送，不需要自己写 `Content-Length`。客户端会禁用 `Expect: 100-continue`，大请求体不再等服务器的 100 响应。
-- User-Agent 是 `DAgent/0.1`；开启 TCP keepalive。
+- User-Agent 是 `DAgent/<构建版本>`；开启 TCP keepalive。
+- 不跟随重定向：3xx 原样返回，由调用方决定是否继续请求。
 - 代理：遵循 libcurl 的默认行为，读取 `http_proxy`、`https_proxy`、`no_proxy` 这几个环境变量。
 
 ### 响应
@@ -58,13 +61,14 @@ if (resp.status != 200) { /* resp.body 是错误体 */ }
 
 ### 选项：HttpOptions
 
-对应 `home/config/config.json` 的 `"http"` 段。时长为 0 表示不限制。
+对应 `home/config/config.json` 的 `"http"` 段；下表是随附配置的默认值。`HttpOptions` 结构体本身把未设置的时长和大小字段初始化为 0，
+除 `connect_timeout` 外，时长为 0 表示不限制。
 
-| 字段 | 默认值 | 说明 |
+| 字段 | 随附默认值 | 说明 |
 | --- | --- | --- |
-| `timeout` | 300s | 整个请求的总时长上限 |
+| `timeout` | 0（不限） | 整个请求的总时长上限 |
 | `connect_timeout` | 30s | 建连（含 TLS 握手）上限；为 0 时用 libcurl 自己的默认值 300 秒 |
-| `idle_timeout` | 0 | 连续这么久收不到任何字节就判为超时 |
+| `idle_timeout` | 300s | 连续这么久收不到任何字节就判为超时 |
 | `max_body_bytes` | 2 MiB | `send()` 响应体的上限 |
 | `max_error_body_bytes` | 4 KiB | `stream()` 保留错误体的最大长度 |
 | `verify_peer` / `verify_host` | true | TLS 证书校验 |

@@ -31,7 +31,7 @@ phase 5c 的自适应阅读宽度、双侧分节栏、导航焦点与 Layout 设
 | `AgentTabs` | HeaderBar 下方的主会话与子 Agent 标签、状态、选中下划线与鼠标切换；无子 Pane 时隐藏 |
 | `Activity`、`QueueLabel` | 当前轮耗时、输出 token 与生成速率；单行队列 Chip 和取回提示 |
 | `HintBar` | 底部项目路径与随浮层、审批、运行状态变化的键位提示 |
-| `Chip` / `appearance` | 标签绘制、外观令牌变换、统一 Unicode/Nerd/ASCII 图标表 |
+| `draw_chip` / `appearance` | 标签绘制、外观令牌变换、统一 Unicode/Nerd/ASCII 图标表 |
 | `SettingsDialog` | Appearance / Layout、分节移动和排序、即时预览、后端保存与撤回 |
 | `Completion` | `/` 命令、`@` 文件和 `$` 技能的贴输入框补全浮层 |
 | `CompletionController` | 拥有 Completion、当前补全类型及文件防抖计时器，负责来源请求、筛选与选中后的输入替换 |
@@ -198,7 +198,7 @@ dagent 使用计划 §9.3 的中性灰阶与橙色，深浅两套值及文件格
 
 控件、Document、浮层和事件处理器只由渲染线程访问。前端没有业务工作线程：
 
-- 输入、命令、权限切换、回答等发 RPC；同步等待只用于启动阶段，运行中都用 `call_async`，结果 `post` 回渲染线程。
+- 输入、命令、权限切换、回答等发 RPC；同步等待只用于启动阶段、`input.recall_last` 和退出时的 `backend.shutdown`，其余运行中操作都用 `call_async`，结果 `post` 回渲染线程。
 - 后端事件由 Client 读线程经 `FrontendBridge` post 到渲染线程；Shell 与 HistoryPager 共用 `ui/state/callback_gate.hpp` 中的 `CallbackGate`，保证 Shell 析构后在途回调不再触碰页面。
 - Shell 记录当前 session_id 与 generation，丢弃旧 generation 的事件；`session.changed` 后取 `session.snapshot` 刷新标签。
   new/resume 时清空投影并用 `session.history` 分页回放；切模型保留 Transcript，只更新标签与上下文。
@@ -267,7 +267,7 @@ token 数为零时只显示阶段与耗时（如 `Working · 0.1s`）；有输�
 | Shift/Alt+Enter | 输入换行 |
 | Esc | Interrupt turn（先关闭补全/面板；否则中断当前轮） |
 | Ctrl+C | Clear or exit（先关浮层；忙时中断；有输入时清空；空闲连续两次退出） |
-| Shift+Tab | 按 ask → workspace → unrestricted → ask 循环权限模式；unrestricted 用 error 色警示 |
+| Shift+Tab | 按 ask → workspace → unrestricted → ask 循环权限模式；workspace 不可用时只在 ask ↔ unrestricted 间循环；unrestricted 用 error 色警示 |
 | Ctrl+G | 进入或退出 plan 模式 |
 | Ctrl+O | Expand tool output（已完成工具输出展开/折叠） |
 | Ctrl+D | Toggle side-by-side diff（auto 且有宽度足够的 diff 卡片时，本次会话切换双栏/统一） |
@@ -289,7 +289,7 @@ RPC 仍经 Shell 的 CallbackGate 转回 UI 线程；Shell 在成员析构前关
 输入是单行且以 `/` 开头时，CompletionController 从 Shell 注册的命令表按前缀过滤。Tab 只补全，Enter 直接执行，
 不把命令提交给模型。命令表同时驱动 ctrl+p 与帮助面板，避免维护第二份标题和分类。
 
-光标前最后一个非空白串以 `@` 开头时打开文件补全。80 ms 防抖后发 `workspace.complete`，后端用 `workspace::files`
+输入文本最后一个非空白串以 `@` 开头时打开文件补全（当前实现按整段文本取 token，不使用光标位置）。80 ms 防抖后发 `workspace.complete`，后端用 `workspace::files`
 按 `ui.completion_max_files` 列举当前项目文件，再用 `fuzzy_rank` 取前八项；每次请求带 Completion 代次，过期结果被丢弃。Enter 用仓库相对路径替换 `@式` 并补空格。
 
 | 命令 | 行为 |
@@ -444,7 +444,7 @@ HeaderBar 左侧为 primary 粗体品牌与首条用户输入的首行（未输�
 HintBar 左侧是缩成 `~` 的项目路径；右侧按 key=text、description=text_muted 绘制，项目间用 text_faint 的 ` · `。
 项目路径经 `base::path_to_utf8` 取文本，Home 由 `base::home_directory` 返回独立副本；
 与审批 cwd 一样，仅在 HOME 存在时执行原有文本前缀缩写，空字符串仍参与比较，不额外规范化或修复 UTF-8。
-空闲显示 ctrl+p commands、ctrl+t sidebar、shift+tab mode；忙碌显示 esc interrupt，
+空闲显示 ctrl+p commands、ctrl+t status panel、shift+tab mode；忙碌显示 esc interrupt，
 有排队输入时加 ↑ recall queued，有子 Pane 时加 ctrl+a agents。Panel/Completion 打开时显示
 enter select、esc close；Settings 显示 enter save、esc revert。
 ModelPicker 显示 `enter switch · → open provider · a add custom · esc close`；
@@ -459,7 +459,7 @@ SidePanel 留一行上边距和两列左右留白，章节标题为大写 muted�
 
 | 节 | 内容 |
 | --- | --- |
-| SESSION | 首次用户输入标题，最多两行；会话 UUIDv7 创建时间转本地 HH:MM、回放和实时 user 轮数（窄栏自动折行） |
+| SESSION | 首次用户输入标题，单行显示，超出按列宽截断；会话 UUIDv7 创建时间转本地 HH:MM、回放和实时 user 轮数 |
 | CONTEXT | 标题右侧百分比、primary/border 用量条，已用和未用部分均为 `█`（ASCII 为 `#`），未用部分使用 border 色；简写的 used / limit tokens；达到压缩阈值用 warning |
 | PLAN | 仅收到 TodoView 后显示；done/total；与 Plan 卡片共用图标表：完成 `☒` success、正文 muted；当前 `☐` accent、正文加粗；待办 `☐` 与正文均 muted；ASCII 使用 `[x]` / `[ ]`，按图标宽度缩进正文 |
 | RUNNING AGENTS | 默认位于 CHANGED 之后，仅当前会话有子任务时显示；左侧状态图标和 Agent 名，右侧耗时，运行中随动画刷新 |
@@ -503,7 +503,7 @@ ToastStack 保持右上角、最多三条、新通知在上、五秒到期；每
 
 ApprovalDialog 使用风险色圆角框：一般命令、network/read/write 为 warning，host access、protected write、
 sensitive read 或 partially_executed 为 error。标题为加粗 `Approval needed`，两侧各留一个空格，随后是同色类别 Chip，
-采用首项请求的 `COMMAND / NETWORK / READ / WRITE / SENSITIVE READ / PROTECTED WRITE / HOST ACCESS`；
+采用首项请求的 `COMMAND / NETWORK / READ / WRITE / SENSITIVE READ / PROTECTED WRITE / HOST ACCESS / HOST`；
 其他不同 kind 的数量显示为 `+N`。摘要使用原 summary，只显示一次。
 
 预览位于页面底色矩形中；命令复用既有 SyntaxRenderer 的 bash 高亮，并用 muted `$` 替代原代码装订线。
@@ -563,7 +563,7 @@ MCP 未配置时省略；全部 ready 为 success，失败为 error，其余为 
 
 再空一行后并排显示 `RECENT` 与 `SHORTCUTS`，标题为大写 text_muted。
 `RECENT` 从已有的当前项目 session.list 中选取最多五个有标题的非当前会话；
-`/sessions` 仍保留空会话。最近会话列最多 44 列，标题在左，相对时间紧邻列右侧且为 text_muted：
+`/sessions` 仍保留空会话。最近会话列最多 42 列，标题在左，相对时间紧邻列右侧且为 text_muted：
 `2h ago`、本地日期的 `yesterday`、更早为 `Oct 18`。列尾为 text_faint 的
 `↑↓ pick · enter resume · /sessions all`。
 无符合条件的会话，或导航栏可见且包含 SESSIONS 分节时，省略 RECENT，并将 SHORTCUTS 单独居中。

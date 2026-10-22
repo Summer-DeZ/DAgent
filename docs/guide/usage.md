@@ -174,7 +174,7 @@ Enter 保存外观与布局，Esc / Ctrl+C 还原打开前状态，包括临时�
 
 `ui.appearance.diff` 可选 `auto`（默认）或 `unified`，也可在 `/settings` 的 Diff 行切换。
 `auto` 在主区足够宽、每侧至少有 60 个代码列时，将 edit/write 卡片主体显示为左右对比；
-普通对话仍保持 88 列阅读宽度。窄屏自动回到统一 diff；Ctrl+D 临时切换两种视图，不改变保存值，
+普通对话的阅读宽度仍按 `ui.layout.width`（默认 auto，最多 120 列；compact 为 88）。窄屏自动回到统一 diff；Ctrl+D 临时切换两种视图，不改变保存值，
 Ctrl+O 仍负责展开/折叠。Diff 行右侧有两行双栏预览。
 
 `ui.appearance.links` 可选 `on`（默认）或 `off`，对应 `/settings` 的 Links 行。

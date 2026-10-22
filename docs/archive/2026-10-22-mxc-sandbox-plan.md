@@ -3,7 +3,7 @@
 归档日期：2026-10-22。原位置：`nexttodo/mxc-sandbox-plan.md`。
 
 批准：2026-10-22。S0–S4 于 2026-10-22 完成并合并；验收结果见文末。Windows 受限执行因上游问题未验收，
-项目负责人决定等待上游进展（选项 1），接入代码保留。调研依据见 [MXC 调研](../docs/research/2026-10-22-microsoft-mxc.md)；当前 SRT 实现见 [exec](../docs/design/exec.md) 和 [agent §7](../docs/design/agent.md#7-权限与沙箱)。
+项目负责人决定等待上游进展（选项 1），接入代码保留。调研依据见 [MXC 调研](../research/2026-10-22-microsoft-mxc.md)；当前实现见 [exec](../design/exec.md) 和 [agent §7](../design/agent.md#7-权限与沙箱)。
 
 ## 目标
 
@@ -63,7 +63,7 @@
 
 ### S4 文档与收尾
 
-同步 `docs/design/exec.md`、`agent.md §7`、`platform.md`、`web.md`、`mcp.md`、`toolchain.md`、`home.md`、`guide/build.md`、`guide/permissions.md`、`guide/workflow.md`；按 [workflow §2.3](../docs/guide/workflow.md) 做整套回归；`--no-ff` 合并进 master；调研文档第 8 节补本次结论；本计划归档。
+同步 `docs/design/exec.md`、`agent.md §7`、`platform.md`、`web.md`、`mcp.md`、`toolchain.md`、`home.md`、`guide/build.md`、`guide/permissions.md`、`guide/workflow.md`；按 [workflow §2.3](../guide/workflow.md) 做整套回归；`--no-ff` 合并进 master；调研文档第 8 节补本次结论；本计划归档。
 
 ## 本期不做
 

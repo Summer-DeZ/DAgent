@@ -1,7 +1,7 @@
 # llm：模型客户端与 Provider 编解码
 
 模块 `llm`，库 `dagent_llm`，头文件在 `src/public/llm/`，实现在 `src/private/llm/`，命名空间 `dagent::llm`。
-只依赖 agent（中立消息与 `ModelSession` 端口）、net 与 base。核心只传中立 `Request`、消费 `Reply`；
+只依赖 agent（中立消息与 `ModelSession` 端口）、net 与 base；认证实现另外直接使用 libcurl。核心只传中立 `Request`、消费 `Reply`；
 llm 负责 URL、鉴权、报文、流式累积、重试和错误分类。工具执行与压缩仍由 [agent](agent.md) 负责。
 
 ```text
@@ -112,8 +112,9 @@ SSE 按块 index 处理文本及工具 JSON 分片；message_start 汇总输入�
 message_delta 使用累计 output_tokens。end_turn/stop_sequence、max_tokens、tool_use、refusal
 分别归 stop、length、tool_calls、content_filter。
 
-extended thinking 尚未开放；配置试图启用时明确拒绝。虽然保留思考文本和 signature 的流/记录通道，
-仍未声称支持完整 thinking 块回传。实现依据 [Claude 流式接口文档](https://platform.claude.com/docs/en/build-with-claude/streaming)。
+extended thinking 尚未作为独立能力开放；`extra_body` 中的 `thinking` 会原样并入请求体，由调用方自行承担协议兼容性。
+虽然保留思考文本和 signature 的流/记录通道，仍未声称支持完整 thinking 块回传。
+实现依据 [Claude 流式接口文档](https://platform.claude.com/docs/en/build-with-claude/streaming)。
 
 ## 4.1 决策适配器（systemone）
 

@@ -8,12 +8,12 @@ DAgent 的权限策略决定操作是否允许，MXC（Microsoft Execution Conta
 | 模式 | 普通工作区操作 |
 | --- | --- |
 | `ask` | 普通读取自动；写入和非只读命令需要审批 |
-| `workspace` | 普通文件修改及具备沙箱条件的工作区命令自动；界面称 auto-edit |
+| `workspace` | 普通文件修改及具备沙箱条件的工作区命令自动；界面显示 `workspace`（旧称 auto-edit） |
 | `unrestricted` | bash 使用宿主权限，web 仍使用只读 MXC 沙箱；只读/规划上限和危险命令硬拦仍生效 |
 | `--read-only` | 与上述三档正交，禁止写入、非只读命令和外部 MCP 调用 |
 | `--plan` | 只读规划；交互确认后才进入执行模式 |
 
-进入 unrestricted 之前会先弹出风险警告，用户确认后才升权；取消则留在 auto-edit。
+进入 unrestricted 之前会先弹出风险警告，用户确认后才升权；取消则留在 workspace。
 每个会话首次切入时提示一次，同一会话再次进入不再提示，状态栏保留 error 色提示。
 以 unrestricted 启动 TUI 时同样在启动阶段提示；headless（run）不弹框，只向 stderr 打印同样内容的警告并立即启用。
 
@@ -30,24 +30,25 @@ DAgent 的权限策略决定操作是否允许，MXC（Microsoft Execution Conta
 例如普通工作区写入授权可用于后续 write/edit，目录读取授权可用于其普通子文件。
 
 子 Agent 不继承父的 unrestricted 或会话授权，只能在自身定义与父上限的交集中运行。
-父取消会传到子执行；父权限收窄会取消超出新上限的子执行。父当前没有只读/规划上限、模式为 auto-edit 或
+父取消会传到子执行；父权限收窄会取消超出新上限的子执行。父当前没有只读/规划上限、模式为 workspace 或
 unrestricted，且 `subagents.approval.mode` 允许该模式时，可审批的子请求先交给父模型审阅；
 父拒绝、超时、模型失败转人工，父停止、请求取消或权限失效直接结束。
-`parent_when_workspace_or_unrestricted`（新默认）覆盖两种模式，`parent_when_unrestricted` 只覆盖 unrestricted，
-`user` 完全交给人工。host access 仍只允许无只读/规划上限的 unrestricted 父复批，否则转人工。
+随附配置默认 `parent_when_workspace_or_unrestricted`，覆盖两种模式；`parent_when_unrestricted` 只覆盖 unrestricted，
+`user` 完全交给人工。省略 `subagents.approval.mode` 时，加载器仍按 `parent_when_unrestricted` 处理。
+host access 仍只允许无只读/规划上限的 unrestricted 父复批，否则转人工。
 审阅显示 `Reviewing subagent permission`，不弹出人工审批框；headless 运行同样可用。硬拒绝不能被父模型覆盖。
 
 父批准可以限定一次调用或当前子会话；兄弟任务不共享授权。host access 始终只限一次，并且表示宿主全访问，
 不会伪装成仅放行某个域名。记录以 `authority=parent_model` 区分父模型与 `user`，保存范围、理由和实际执行后端。
 父降权或取消使待审阅与尚未消费的授权失效，并取消依赖被撤销父权限的活跃执行；已发生的副作用无法回滚。
 
-受信任 Home 的 `config.json` 配置示例：
+受信任 Home 的 `config.json` 配置示例（使用随附默认值；需要更严格时改为 `parent_when_unrestricted`）：
 
 ```json
 {
   "subagents": {
     "approval": {
-      "mode": "parent_when_unrestricted",
+      "mode": "parent_when_workspace_or_unrestricted",
       "max_reviews_per_turn": 16,
       "review_timeout_ms": 60000,
       "failure": "deny_with_feedback"
@@ -73,7 +74,7 @@ unrestricted，且 `subagents.approval.mode` 允许该模式时，可审批的�
 
 ## 决策模型代批（auto-review）
 
-auto-edit（workspace）下可以配置决策模型（第一版为 System One 协议上的 d3）。它只在下列场景里代批，
+workspace（旧称 auto-edit）下可以配置决策模型（第一版为 System One 协议上的 d3）。它只在下列场景里代批，
 不覆盖硬拒绝、不扩大写入范围，也不改变 ask / unrestricted / 只读的既有语义；未配置时全部保持原行为。
 
 | 场景 | 交给决策模型的证据 | 判定维度 |

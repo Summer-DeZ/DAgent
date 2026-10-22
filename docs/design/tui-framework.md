@@ -163,7 +163,8 @@ SIGTERM、SIGHUP 退出时同样会还原。stdout 不是终端时不进入界�
 当前终端的能力记录在 `Terminal::Caps`：真彩色、同步输出、鼠标、括号粘贴、
 kitty 键盘协议、字素宽度模式、背景色。
 
-`terminal.cpp` 保留能力判断、ANSI 序列与模式状态；`terminal_posix.cpp` 实现原生终端操作。
+`terminal.cpp` 保留 ANSI 序列与模式状态；`terminal_posix.cpp` / `terminal_win.cpp` 实现原生终端操作，
+能力探测 `probe_caps()` 也位于平台文件。
 公共头只持有不透明的 `Native`，不暴露 termios、信号管道或其 fd。stdin/stdout 的终端判断分别调用
 `base::stdin_is_terminal` / `base::stdout_is_terminal`。
 `probe_caps() noexcept` 使用 getenv 返回的 TERM/COLORTERM 借用值和 string_view 做能力判断，不分配内存；
@@ -345,7 +346,7 @@ EOF 或非 EAGAIN 错误请求退出，EAGAIN 不产生输入。Windows 以 `Wai
 | --- | --- |
 | `run()` / `quit()` | 进入主循环 / 请求退出 |
 | `post(fn)` | 从任意线程把更新交给渲染线程 |
-| `set_focus` / `set_global` / `push_modal` / `pop_modal` | 键盘路由 |
+| `set_focus` / `set_global` | 键盘路由；模态栈使用 `EventRouter::push` / `pop` |
 | `open_overlay` / `close_overlay` | 打开、关闭浮层；打开时可接管键盘与光标，关闭时恢复 |
 | `bind_mouse` / `unbind_mouse` | 为控件绑定鼠标处理器 |
 | `after` / `every` / `cancel` | 定时器；动画用 `every`，回调返回 false 即停止 |

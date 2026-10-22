@@ -11,16 +11,16 @@
 
 | 模块 | 职责 |
 | --- | --- |
-| `app/config`、`app/bootstrap` | 读取决策模型选择、装配客户端与存储、绑定版本 |
-| `app/decision_profile` | 加载阈值文件，核对完整身份并解析场景参数 |
-| `agent/decision_types`、`agent/port_decision` | 场景、评分、阈值、证据、结果与外部端口 |
-| `agent/decision_review` | 构造 state、提供固定问句、风险分流、授权判定、网页抽样与理由 |
-| `agent/dispatch` | 选择审阅入口、聚合多目标结果、转父复批或人工、消费审批结果 |
-| `agent/permission` | 确定性规则、权限范围与授权消费 |
-| `llm/decision_provider`、`llm/decision_systemone` | 适配器目录、真实 d3 请求编码、响应解析、截止时间与取消 |
-| `storage/decision_store` | 独立审阅库、阈值导入、记录与人工反馈 |
+| `app/config.*`、`app/bootstrap.*` | 读取决策模型选择、装配客户端与存储、绑定版本 |
+| `app/decision_profile.*` | 加载阈值文件，核对完整身份并解析场景参数 |
+| `agent/decision_types.hpp`、`agent/port/decision.hpp` | 场景、评分、阈值、证据、结果与外部端口 |
+| `agent/policy/decision_review.*` | 构造 state、提供固定问句、风险分流、授权判定、网页抽样与理由 |
+| `agent/loop/dispatch.*` | 选择审阅入口、聚合多目标结果、转父复批或人工、消费审批结果 |
+| `agent/policy/permission.*` | 确定性规则、权限范围与授权消费 |
+| `llm/decision_provider.*`、`llm/decision_systemone.*` | 适配器目录、真实 d3 请求编码、响应解析、截止时间与取消 |
+| `storage/decision_store.*` | 独立审阅库、阈值导入、记录与人工反馈 |
 
-代批用于 workspace（auto-edit）模式的指定场景。ask、unrestricted、read_only/planning 硬限制及配置明确拒绝不通过 d3 放宽。
+代批用于 workspace（旧称 auto-edit）模式的指定场景。ask、unrestricted、read_only/planning 硬限制及配置明确拒绝不通过 d3 放宽。
 普通 edit/write 继续按已有工作区权限规则执行，不增加一条通用的 d3 编辑审批链。
 敏感路径、受保护控制数据和不可代批权限仍走原有规则。
 

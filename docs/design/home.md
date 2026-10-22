@@ -11,6 +11,7 @@ home/
 │   ├── models.json       模型与认证，0600
 │   ├── mcp.json          MCP 连接与显式环境变量，0600
 │   ├── runtime.json      工具版本、MXC 原生库、下载校验、独立依赖环境
+│   ├── decision/         决策阈值模板
 │   └── searxng/          SearXNG requirements.lock
 ├── AGENTS.md             可选的全局用户指令
 ├── prompts/
@@ -20,16 +21,22 @@ home/
 ├── agents/               子 Agent 定义
 ├── themes/               UI 主题
 ├── memory/              Agent 记忆：global/ 与 projects/<project-key>/
-├── data/dagent.db        会话；SQLite WAL/SHM 与它同目录
+├── data/
+│   ├── dagent.db         会话；SQLite WAL/SHM 与它同目录
+│   ├── decision.sqlite   决策审阅与阈值
+│   └── credentials/      登录凭据（0700；各 JSON 0600）
 ├── logs/                 按进程记录日志
-├── run/                  模型、runtime、会话写锁；searxng-*/settings.yml
+├── run/                  模型、runtime、会话与凭据写锁；searxng-*/settings.yml
+│   └── credentials/      固定登录锁
 ├── runtime/              已准备的工具和依赖环境
-└── cache/packages/       可重新下载的归档与包缓存
+└── cache/
+    ├── opencode-go.json  公共模型清单
+    └── packages/         可重新下载的归档与包缓存
 ```
 
 `config` 表达用户配置，`prompts/skills/agents/themes` 保存可编辑资源，`data` 保存不可丢弃的会话，
 `memory` 保存用户可编辑的跨会话笔记（详见 [memory](memory.md)），`run` 保存协调状态，`runtime` 保存实际执行环境。缓存不是会话或配置的来源。
-提示词、主题等配置路径相对于 home，命令行 `--set` 中的对应路径相对于工作目录；
+提示词、主题等配置路径相对于 home，命令行 `--set` 中的对应路径相对于工作目录（`ui.appearance.theme` 例外，始终相对 home）；
 `sandbox.extra_readable/extra_writable` 始终相对于工作目录，详见 [配置契约](app.md#2-配置与提示词)。
 
 ## 用户指令
@@ -98,7 +105,7 @@ MCP 连接只使用 `config/mcp.json` 中的 `mcpServers`，不转换旧 `server
 
 stdio server 在 MXC 沙箱内按该范围启动（网络是严格 allowlist，经每连接的回环代理判定）；HTTP server 的 `network` 必须显式列出
 endpoint 目标。
-个人模型配置和凭据保存在 `config/models.json`。新安装没有数据库时由首次写入自动创建；
+个人模型配置与 `api_key` 保存在 `config/models.json`；OpenCode 登录凭据单独保存在 `data/credentials/`。新安装没有数据库时由首次写入自动创建；
 之后的新会话追加到已有数据库，升级和重启不清空历史。
 
 runtime sync 使用 `run/runtime.lock`，模型写入和会话写入分别使用

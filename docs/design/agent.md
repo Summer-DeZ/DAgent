@@ -48,11 +48,11 @@ flowchart TD
 | `Policy` | `policy/permission.hpp` | 权限规则、会话授权与模式快照（短锁，跨线程可切换；撤销及其审计记录由执行线程串行提交） |
 | `Compactor` | `record/compaction.hpp` | 预算、裁剪、摘要与失败退化，只产出候选变化 |
 | `SessionCommitter` | `record/committer.hpp` | 内存状态、记录与通知的唯一提交入口；唯一持有 broken |
-| `RecordCodec` | `record/record_codec.hpp` | 11 种记录的编码与类型化解码，含父审阅审计 |
+| `RecordCodec` | `record/record_codec.hpp` | 14 种记录的编码与类型化解码，含父审阅、自动审阅与委派上下文 |
 | `SessionRecovery` / `HistoryProjector` | `record/recovery.hpp` / `record/history.hpp` | 从记录重建可执行状态 / 生成只读历史条目 |
 
 `RunServices`（`loop/run_services.hpp`）是一轮所需的全部外部能力：Sink、Approver、Asker、DelegationChannel、SessionResources、
-stop_token；不含配置、终端、数据库路径或查找任意对象的方法。
+stop_token，以及可选的本轮共享 `RunReviewGate`；不含配置、终端、数据库路径或查找任意对象的方法。
 
 ### 线程与取消
 
@@ -77,7 +77,7 @@ Session 只在所属执行线程推进对话、工具目录、模型和记录。
 | `TurnRunner::run(Session&, Run&, RunServices, input)` | 阻塞完成一轮，返回 `RunOutcome{status, error, steps, tool_calls, usage}` |
 | `TurnRunner::compact(...)` | 手动摘要；不追加 user 或 turn_end，使用同一收尾约束 |
 | `Session::begin_run` / `end_run` | 绑定本轮 Sink 与控制动作能力、重置本轮提问计数 / 解除绑定 |
-| `Session::snapshot` | 执行线程上的即时快照（模型、模式、计划、授权、用量），由 runtime 发布给其他线程 |
+| `Session::snapshot` | 执行线程上的即时快照（模式、计划、授权、用量）；模型由 runtime 快照另行从会话配置补入 |
 
 运行中的模型与 MCP 已知失败转换成结束状态；工具失败作为 `ToolResult` 回填；记录失败由提交器进入 broken。
 未预期异常仍可传播，调用方最外层负责收尾。
@@ -113,6 +113,7 @@ Session 只在所属执行线程推进对话、工具目录、模型和记录。
 | `ModeChanged` / `mode_changed` | `mode, planning`；`exit_plan` 后同步前端状态 |
 | `ContextUpdate` / `context` | `prompt, completion, cached, used, limit` |
 | `Notice` / `notice` | `level` 为 info / warn / error，另有 `text`；可选 `persistent` 保留审批审计提示 |
+| `AutoReview` / `auto_review` | `id, review_ids, result, reason`；一次决策模型代批的轻量结果 |
 | `TurnEnded` / `turn_ended` | `status, error, steps, tool_calls, usage`；本轮结束 |
 
 正常一轮的主线如下，等待、重试和失败会使其中部分阶段省略：
@@ -279,7 +280,7 @@ Policy 是纯逻辑，不弹窗、不读配置。它依据 `PreparedIntent` 的�
 
 完整的场景、风险判定、授权范围、配置版本和反馈契约见 [d3 授权设计](d3-authorization.md)。
 
-workspace（auto-edit）下可配置决策模型（第一版为 System One 协议上的 d3）：`config/models.json` 的
+workspace（旧称 auto-edit）下可配置决策模型（第一版为 System One 协议上的 d3）：`config/models.json` 的
 `decision_models` 目录与 `decision` 选择，行为参数在 `config.json` 的 `decision_review`。
 未配置时不建客户端、不发请求，审批行为与原来一致；ask / unrestricted / 只读与硬拒绝不经过决策模型。
 
@@ -300,7 +301,7 @@ workspace（auto-edit）下可配置决策模型（第一版为 System One 协�
    每个目标分别审查，全部通过后才可批准整条命令；不展开 npm run / make 或追踪其他文件。
 4. 批准经 `Policy::consume_approval()` / `consume_network_approval()` 消费：网络与 MCP 只限一次，
    工作区外普通文件保存文件级会话授权。阈值按模型/问句/配置版本隔离，未标定场景转人工。
-5. 决策模型未批准时保留审阅编号，转人工（子会话先父复批）；父复批允许 auto-edit 父会话，
+5. 决策模型未批准时保留审阅编号，转人工（子会话先父复批）；父复批允许 workspace 父会话，
    但 host access 仍只允许无只读/规划上限的 unrestricted 父复批。
 6. `web_fetch` 每跳 URL 单独审阅；结果在交付前按既定 16 KB 切片规则扫描注入。问句区分安全教学中的引用/防御说明和要求当前助手执行的攻击指令；模型仍可能误报，阈值实验结果单独记录。
    发现注入或扫描失败时本轮（含子 Agent）关闭自动代批，
@@ -412,11 +413,13 @@ Policy，随子 Agent 销毁，一次 task 不会给父会话种规则。高危�
 父权限上限实时传播：父 Policy 是子 Policy 的活上限（`set_parent_cap`），子只能取更严者；父降权后子不能
 再从旧上限消费授权，生效权限变窄的活跃子执行被取消，旧 MCP lease 由 Hub 作废。
 
-`subagents.approval.mode=parent_when_unrestricted` 时，当前 unrestricted 且无只读/规划上限的活跃父会话可审阅子请求。
-父 Dispatcher 在等待 task 期间消费审批邮箱，用独立、无工具的父模型请求串行审阅，不在未闭合的 task 中插入普通会话轮次。
+`subagents.approval.mode` 为 `parent_when_workspace_or_unrestricted`（随附配置的默认值）时，无只读/规划上限的
+workspace 或 unrestricted 活跃父会话可审阅子请求；显式设为 `parent_when_unrestricted` 时只有 unrestricted 父会话可审阅，
+`user` 则完全交给人工。父 Dispatcher 在等待 task 期间消费审批邮箱，用独立、无工具的父模型请求串行审阅，不在未闭合的 task 中插入普通会话轮次。
 模型答复仍须通过 Policy 的身份、资源范围、父/子 revision 与取消状态校验；不能覆盖硬拒绝或扩大子工具名单。
 批准只作用于一次调用或当前子会话，host access 仅可一次。父降权/退出撤销审批来源，取消依赖它的执行。
-审阅失败、超时、输出无效或预算耗尽均拒绝并反馈，不自动转人工。其它路由继续使用用户 Approver。
+审阅失败、超时、输出无效或预算耗尽均拒绝并反馈；交互式运行随后把同一请求转给用户 Approver，
+headless 没有人工出口时返回 approval unavailable。其它路由继续使用用户 Approver。
 
 ### 控制动作：ask、exit_plan、todo、task
 
@@ -549,7 +552,7 @@ compact 模板保留六段结构，标题为 `User requests`、`Decisions made`�
 | `tool` | `n, call_id, name, summary, text, is_error, interrupted, view` |
 | `permission` | `schema: 5`、call_id、answer、explicit_denial、rule、cwd、mode、partially_executed、requests、authority、approval_scope、review_ids、identity、state、scope、approved_requests、reason、model、usage/usage_owner、estimated_budget_tokens、actual_grant；另有原始 arguments、委派任务与意图证据 |
 | `auto_review` | `schema: 1`、call_id、review_ids、result（approved/needs_approval/unavailable/cancelled）、reason；只回放展示，不插入模型对话 |
-| `delegation_context` | `schema: 1`、子会话主要任务与最多两条辅助用户原话；缺失时不从 user 记录补造 |
+| `delegation_context` | `schema: 1`、子会话主要任务与父会话最近最多三条辅助用户原话；审阅时最多使用其中两条，缺失时不从 user 记录补造 |
 | `unrestricted_ack` | `schema: 1`、该会话用户已确认 unrestricted 警告；缺失表示未确认 |
 | `parent_review` | `schema: 5`、同 permission 的审阅证据；父会话独立审计，不插入 Conversation，actual_grant 为 null |
 | `permission_revoked` | `schema: 1, id` |
@@ -597,13 +600,13 @@ UI 显示完成不代表记录可靠保存；broken 状态进入会话快照。
 不根据任何记录自动重做工具。第二次恢复不会重复补齐。FileTracker 和会话授权从空开始，MCP 使用当前连接。
 不认识的类型、缺失或非法的必需字段、不一致历史直接报 corrupt，不猜测修复。
 `system.model`、`reasoning_signature`、`protect_sensitive_names` 和当前 View 的字段必填。
-`tool_started` 接受 schema 1/2/3，`permission` 与 `parent_review` 接受 schema 2/3/4/5；这是旧记录的解码兼容，
+`tool_started` 接受 schema 1/2/3，`permission` 接受 schema 2/3/4/5，`parent_review` 只接受 schema 4/5；这是旧记录的解码兼容，
 不恢复历史授权，也不恢复旧执行后端。新写入统一使用上表版本。
 `assistant.usage` 仍为可选，因为当前模型响应可以没有 usage；View 仅以显式 `kind: null` 表示没有结构化展示。
 
 ### 历史投影
 
-`HistoryProjector` 把每条记录投影为 0 或 1 个 `HistoryItem`（user、assistant 含正文与思考、tool_started、tool、permission/parent_review 审计、system 的模型标签、
+`HistoryProjector` 把每条记录投影为 0 或 1 个 `HistoryItem`（user、assistant 含正文与思考、tool_started、tool、permission/parent_review/auto_review 审计、system 的模型标签、
 turn_end）；`HistoryCursor` 跨页只保存 ordinal、角色、开放调用与裁剪目标等元数据，校验 ordinal 连续、工具配对、
 prune 目标和 compaction 切点。投影不构造 Session、模型或 MCP，也不追加记录；压缩不删除可见历史，历史 turn_end 不触发当前队列 drain。
 
@@ -612,11 +615,12 @@ prune 目标和 compaction 切点。投影不构造 Session、模型或 MCP，�
 
 ## 11. MCP 生命周期
 
-协议和单个 Client 见 [mcp](mcp.md)，Hub 与工具包装见 [tools](tools.md)。`tools::McpHub` 在后端装配时为每个 server
-启动后台连接并立即返回；**启动不等 MCP，主会话每一步模型请求前经 `SessionResources::begin_step` 等待连接结果**，
+协议和单个 Client 见 [mcp](mcp.md)，Hub 与工具包装见 [tools](tools.md)。`tools::McpHub` 在后端装配时为通过启动前置检查的
+server 启动后台连接并立即返回，缺少权限 profile 或运行时的 server 直接标为 failed；**启动不等 MCP，主会话每一步模型请求前经 `SessionResources::begin_step` 等待连接结果**，
 防止模型因首轮没有工具而直接放弃任务。
 
-Client 仅接受 MCP `2026-07-28`，通过 `server/discover` 确认版本；旧协议连接直接失败，不回退握手。
+Client 优先使用 MCP `2026-07-28`，通过 `server/discover` 确认版本；发现方法返回 `-32601` 或 HTTP 404/405 时
+回退到旧版 `initialize` 握手，并接受服务端协商的 `2025-11-25`、`2025-06-18` 或 `2025-03-26`。其它握手失败不回退。
 
 ```mermaid
 stateDiagram-v2

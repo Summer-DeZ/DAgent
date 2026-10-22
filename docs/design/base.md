@@ -15,7 +15,7 @@ DAgent 外围模块的最底层。头文件在 `src/public/base/`，实现在 `s
 | 日志：全局初始化、按模块命名的 logger、滚动文件、崩溃时刷盘 | `base/log.hpp` | `init_log`、`logger`、`shutdown_log` |
 | 文本处理：UTF-8 校验与修复、按字符边界截断、清理 ANSI 转义、base64 解码 | `base/text.hpp` | `to_valid_utf8`、`truncate_middle`、`strip_ansi`、`base64_decode` |
 | 路径文本转换与规范化：保留原生或 generic 格式，解析符号链接时逐级回退 | `base/path.hpp` | `path_from_utf8`、`path_to_utf8`、`path_to_generic_utf8`、`canonical_or_absolute_or_lexical` |
-| 平台原语：程序路径、环境变量、HOME、进程号、终端判断、时间转换、执行权限和临时目录 | `base/platform.hpp` | `executable_path`、`environment_variable`、`home_directory`、`process_id`、`stdin_is_terminal`、`stdout_is_terminal`、`local_time`、`utc_time`、`utc_timestamp`、`can_execute`、`default_temporary_directory`、`create_unique_directory` |
+| 平台原语：程序路径、环境变量、HOME、进程号、终端判断、时间转换、执行权限、私有文件权限和临时目录 | `base/platform.hpp` | `executable_path`、`environment_variable`、`home_directory`、`process_id`、`stdin_is_terminal`、`stdout_is_terminal`、`local_time`、`utc_time`、`utc_timestamp`、`can_execute`、`make_file_private`、`default_temporary_directory`、`create_unique_directory` |
 | frontmatter 文本切分：返回 header/body 视图，区分缺少开头与结尾分隔符 | `base/frontmatter.hpp` | `split_frontmatter` |
 | JSON 参数解析与脱敏 | `base/json.hpp` | `parse_arguments`、`require_string`、`get_string`、`get_int`、`get_bool`、`redact` |
 
@@ -51,12 +51,13 @@ app 配置、workspace 上下文与 storage 会话路径共用 `canonical_or_abs
 
 ### 接入方式
 
-入口在启动时调用一次 `init_log`，退出前调用 `shutdown_log`；各模块在**用到的地方**调用 `logger("模块名")`：
+入口在启动时调用一次 `init_log`；当前正常退出路径不显式调用 `shutdown_log`，已写入的内容按 spdlog 的周期刷盘策略落盘，
+`std::terminate` 处理器会先刷盘。各模块在**用到的地方**调用 `logger("模块名")`：
 
 ```cpp
 base::init_log({.file = log_file, .level = "info"});    // log_file 为非空日志路径
 base::logger("net")->debug("POST {} → {}", url, status); // 模块内部
-base::shutdown_log();                                    // 程序退出前
+base::shutdown_log();                                    // 可选：需要显式收尾时调用
 ```
 
 - 所有 logger 共用同一组 sink：一个按大小滚动的文件，另外在 `also_stderr` 打开时加一个 stderr sink（只在非交互模式下使用）。

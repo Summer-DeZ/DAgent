@@ -40,7 +40,7 @@ Boost.Filesystem、libcurl、libcrypto、iconv、zlib 对应配置。系统 DLL 
 
 正式安装的 Home 首次仍需执行 `dagent runtime sync`，它使用系统 Git for Windows 的 git/bash，
 并下载 node、uv、rg 的 Windows 归档和 `mxc` 包（`@microsoft/mxc-sdk@1.0.1` 中的 `mxc_ffi.dll`）。网络受限时可先把归档按 SHA-256 放到
-`home/cache/<sha256>.archive`，`runtime sync` 校验后直接使用，不再下载。
+`home/cache/packages/<sha256>.archive`，`runtime sync` 校验后直接使用，不再下载。
 Windows 的沙箱后端是 ProcessContainer，需要 Windows 11 26H2（build 26300）或更新：`dagent sandbox status` 加载 `mxc_ffi.dll`、
 报告 `mxc-tier`（只接受 `base-container`）并做真实探测。目前 Git for Windows 的 bash 无法在 ProcessContainer 内初始化
 （microsoft/mxc#1061），探测在 filesystem 阶段失败并给出 `host_prerequisite`，DAgent 以 ask 模式启动、不提供 workspace 模式；

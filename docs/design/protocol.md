@@ -95,13 +95,13 @@ Windows 找同目录的 `dagent-backend.exe`；CreateProcessW 的显式继承清
 | 方法 | 执行位置 | 结果 |
 | --- | --- | --- |
 | `backend.hello` | 读线程 | 协议版本、后端版本、backend_instance_id |
-| `app.initialize` | 命令线程，只允许一次 | mode、session 快照或 null（查询模式）、resumed、`ui.theme_file`、`ui.appearance`、`ui.layout`、`ui.themes_directory`、progress_interval_ms |
+| `app.initialize` | 命令线程，只允许一次 | mode、session 快照或 null（查询模式）、resumed、`ui.theme_file`、`ui.appearance`、`ui.layout`、`ui.themes_directory`、progress_interval_ms；维护模式返回 `{maintenance: ...}` |
 | `backend.shutdown` | 读线程 | 实际收尾后返回 closed=true；重复关闭幂等 |
 | `session.snapshot` | 读线程 | SessionSnapshot |
 | `input.submit` / `input.recall_last` | 读线程 | input_id（仅表示入队）/ 取回的最后一条排队输入或 null |
 | `run.cancel` | 读线程 | cancel_requested 或 already_finished；不是运行终态 |
 | `interaction.answer` | 读线程 | accepted；已关闭返回 `interaction_closed` |
-| `session.cycle_permission` / `toggle_planning` / `grants` | 读线程 | 生效后的快照 / 授权列表 |
+| `session.cycle_permission` / `set_permission` / `toggle_planning` / `grants` | 读线程 | 生效后的快照 / 授权列表 |
 | `session.revoke_grant` | 读线程校验后走即时控制路径 | 提交撤销记录、终止使用旧授权的活跃执行后返回 removed（运行中也可用） |
 | `model.list` | 读线程 | 公开模型、provider 种类、default_name、selected_name |
 | `session.new` / `resume` / `select_model`、`model.add`、`session.compact` | 命令线程 | 成功返回快照；`model.add` 返回 model/selected/selection_error；compact 返回 operation_id，完成走 `operation.finished` |
@@ -184,7 +184,7 @@ appearance / layout 中缺失且等于默认值的键不补写；修改原有行
 `workspace.git_status` 可带当前 `session_id`（与 workspace.info 一样，查询本后端固定的项目根）；不要求 SessionTarget，不联网。
 `repository` 为布尔值；非仓库为 false，branch 为空、ahead/behind 为 0、files 为空。
 branch 是分支名，detached HEAD 使用短 SHA；ahead/behind 使用本地 upstream 信息，不 fetch。
-files 的 path 相对项目根，status 归一化为 M / A / D / ?（冲突和重命名归入 M），added/removed 来自暂存与未暂存 numstat 的合计，
+files 的 path 相对项目根，status 归一化为 M / A / D / ?：未跟踪为 ?；XY 中含 `D` 记为 D、含 `A` 记为 A，其余含改动或冲突的条目记为 M。added/removed 来自暂存与未暂存 numstat 的合计，
 二进制或 untracked 没有 numstat 时为 0。使用 managed git 只读沙箱，禁用 hooks/fsmonitor/外部 diff/textconv；
 每条命令 2 秒、每路输出 1 MiB，只解析完整 NUL 记录，最多返回 2048 个文件，超出时返回有界前缀。
 
@@ -199,7 +199,7 @@ files 的 path 相对项目根，status 归一化为 M / A / D / ?（冲突和�
 `session.history` 首次调用捕获高水位，返回不透明游标；每页最多扫描 `session.history_scan_limit` 条记录（随附值 100），读完、`history_close` 或连接关闭时释放，
 每页分配连接内唯一、单次消费且绑定 session_id 的游标。跨会话、已消费或已释放游标返回 `invalid_state`。历史查询不取写锁、不恢复会话、不构造模型或 MCP（记录路线 L22）。
 
-历史条目新增 `kind=permission/parent_review`：`text` 为审批来源、终态、范围和理由，`audit` 保留完整审批记录。
+历史条目新增 `kind=permission/parent_review/auto_review`：`text` 为审批来源、终态、范围和理由，`audit` 保留完整审批记录。
 `permission` 属于实际请求的子会话（或直接操作的主会话），`parent_review` 属于作出审阅的父会话；只有父记录的顶层
 `usage` 计入审阅归属，子记录中的审阅 usage 仅作关联证据。旧条目没有 `audit` 时按 null 读取。
 `audit.estimated_budget_tokens` 记录服务端未报告用量时的审阅预算估算；它影响运行中的共享 token 上限，但不加入实测 `usage`。
@@ -212,11 +212,11 @@ files 的 path 相对项目根，status 归一化为 M / A / D / ?（冲突和�
 | --- | --- |
 | `turn_started` `step_started` `text` `reasoning` `stream_reset` `retrying` | 核心执行事件 |
 | `tool_pending` `tool_started` `tool_output` `tool_finished` | 工具事件；data 与原实时 JSON 形状一致，工具展示数据保持 View JSON |
-| `context` `compacted` `model_changed` `mode_changed` `notice` `turn_ended` | 核心状态变化 |
+| `context` `compacted` `model_changed` `mode_changed` `notice` `auto_review` `turn_ended` | 核心状态变化 |
 | `workspace.changed` | 工作区文件或 Git 元数据变化；无会话身份，提示前端防抖重查 |
 | `session.changed` | new/resume/切模型安装完成；data 为 replace_transcript、resumed，前端随后用 `session.snapshot` 取权威状态 |
 | `operation.finished` | 手动压缩结束 |
-| `interaction.requested` / `interaction.closed` | 审批/问答的激活（data 为 InteractionRequest：id、approval/question、载荷）与关闭 |
+| `interaction.requested` / `interaction.closed` | 审批/问答的激活（data 为 InteractionRequest：`interaction_id`、`kind`、`payload` 及会话身份）与关闭 |
 
 `session.compact` 在任务可执行前登记 operation_id，并通过接受屏障保证成功响应先于该任务的事件入发送队列。
 `operation.finished.data.operation_id` 与接受响应一致，即使空历史压缩立即完成，前端也会先进入压缩状态再退出。
@@ -230,7 +230,7 @@ context 显式携带 used/limit/window/trigger_percent；删除空的 phase、ch
 `tool_output` 的原始字节可能截断 UTF-8 字符：backend 按调用 id 暂存不完整的尾部字节，在 JSON 编码前与下一块拼接，
 `tool_finished` 前补发剩余部分。
 
-`tool_started.data` 增加当前调用的 `execution_id`、`authority=user/parent_model` 与 `approval` 身份对象。审批身份包括 `request_id`、父/子
+`tool_started.data` 增加当前调用的 `execution_id`、`authority=user/parent_model/decision_model` 与 `approval` 身份对象。审批身份包括 `request_id`、父/子
 `session_id`、`origin_call_id`、`call_id`、`execution_id` 及父/子权限 revision；实际 backend、sandbox 与授权范围仍由
 同一事件报告。审批交互载荷使用相同字段，身份对象名称为 `identity`。这些字段供关联审计，不构成可恢复的授权。
 会话授权复用时 `approval` 保留原始批准来源，当前工具由顶层 `id/execution_id` 标识；旧记录缺少 execution_id 时读为空。

@@ -1,7 +1,7 @@
 # workspace：文件、搜索、diff、项目上下文
 
 给读、写、编辑、搜索类工具提供的底座。头文件在 `src/public/workspace/`，实现在 `src/private/workspace/`，
-构建为静态库 `dagent_workspace`，命名空间 `dagent::workspace`。依赖 base 和 exec（调用 `rg`、`git`）。
+构建为静态库 `dagent_workspace`，命名空间 `dagent::workspace`。依赖 base 和 exec（调用 `rg`、`git`），模板渲染私有链接 inja。
 
 **工具语义不在这里**：edit 用什么匹配规则、read 的输出要不要带行号，属于 tools 层。这里只做「对工作区
 做操作或读取工作区信息」。

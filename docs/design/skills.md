@@ -33,7 +33,8 @@ The frontend sees metadata and diagnostics via `skills.list`, never the parser o
 
 Activation changes context, so it belongs to the core control action executor, not the filesystem
 tool registry. It runs serially on the session execution thread. Explicit references use the same
-activation implementation before the first model call. Repeated activation within a turn is a no-op.
+activation implementation before the first model call. Repeated activation within a turn does not
+add the skill again; it returns a short "already active" note to the model.
 
 ## Context lifetime and history
 

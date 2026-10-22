@@ -38,7 +38,7 @@ app 同时实现 `backend/configuration.hpp`、`backend/queries.hpp`、`backend/
 ├── dagent
 ├── dagent-backend     前端从同目录启动
 ├── libexec/           SearXNG 启动入口与按安装路径生成的 AppArmor profile（仅 Linux）
-├── config/            config.json、models.json、mcp.json、runtime.json
+├── config/            config.json、models.json、mcp.json、runtime.json、decision/ 阈值模板
 ├── prompts/           system.md、compact.md
 ├── AGENTS.md          可选的全局用户指令
 ├── themes/
@@ -145,8 +145,9 @@ stdio 项支持 `command`、`args`、`env`、`environment`，HTTP 项支持 `url
 两者都必须携带显式 `permissions` profile；stdio 在 MXC 沙箱内按范围启动，HTTP 要求 endpoint 网络目标获准。
 `config/config.json` 不再允许重复声明 `mcp`。stdio 默认使用托管环境，可指定 `mcp/<name>` 或显式 `project`。
 
-提示词、主题等配置路径相对于安装根；`--set key=value` 中的对应路径相对于 cwd。沙箱额外路径始终按下文的工作目录规则解析。未知键记 warning，类型和值错误
-抛 `ConfigError`。`--set` 是一次性覆写，不写回配置；`--model` 命中名字时选择条目，否则临时覆写当前模型 ID。
+提示词、`ui.theme_file`、`decision_review.threshold_file` 与 `search.rg_path` 等配置路径相对于安装根；`--set key=value`
+中的这些路径相对于 cwd，但 `ui.appearance.theme` 始终相对安装根解析。沙箱额外路径始终按下文的工作目录规则解析。
+未知键不报配置错误；类型和值错误抛 `ConfigError`。`--set` 是一次性覆写，不写回配置；`--model` 命中名字时选择条目，否则临时覆写当前模型 ID。
 
 `sandbox` 是独立版本化对象，当前只接受 `version: 3`、`backend: mxc`、`host_access: ask_once`；
 旧版配置被拒绝并提示手改，不做静默迁移，也不切换到旧后端：`version` 不为 3 时报
@@ -159,7 +160,8 @@ stdio 项支持 `command`、`args`、`env`、`environment`，HTTP 项支持 `url
 `startup_timeout_ms` 已随 SRT 的 bridge 握手一起移除，配置里出现它会按未知键处理。
 
 主要运行策略由 `home/config/config.json` 显式提供，缺少必填项时报配置错误。
-`run.max_total_tokens` 缺省为 0；`subagents.approval`、`web` 和 `memory` 缺省采用下表值，兼容未添加这些字段的配置。
+`run.max_total_tokens` 缺省为 0；`web` 和 `memory` 缺省采用下表值，兼容未添加这些字段的配置。
+`subagents.approval` 的其它字段缺省采用下表值，`mode` 省略时的回退行为见该行说明。
 
 | 配置位置 | 用途 | 随附值 |
 |---|---|---|
@@ -169,10 +171,10 @@ stdio 项支持 `command`、`args`、`env`、`environment`，HTTP 项支持 `url
 | `run.max_model_retries` | 模型请求重试次数 | 2 |
 | `run.max_parallel_tasks` | 子 Agent 并发数，必须为正整数 | 4 |
 | `run.max_parallel_tools` | 只读工具并发数，必须为正整数 | 8 |
-| `subagents.approval.mode` | `parent_when_unrestricted` 或 `user`，决定子请求是否可交父模型审阅 | parent_when_unrestricted |
+| `subagents.approval.mode` | `parent_when_workspace_or_unrestricted`、`parent_when_unrestricted` 或 `user`，决定子请求是否可交父模型审阅；省略该键时加载器仍按 `parent_when_unrestricted` 处理 | parent_when_workspace_or_unrestricted |
 | `subagents.approval.max_reviews_per_turn` | 每父 turn 审阅次数上限，0 表示不允许审阅 | 16 |
 | `subagents.approval.review_timeout_ms` | 从请求创建起计时，包含排队、模型调用和重试；必须为正 | 60000 |
-| `subagents.approval.failure` | 仅支持拒绝并反馈，不自动转人工 | deny_with_feedback |
+| `subagents.approval.failure` | 仅接受 `deny_with_feedback`；父审阅失败的实际处理见 [agent](agent.md#子-agent-的权限派生) | deny_with_feedback |
 | `memory.enabled` | 向主 Agent 提供 memory 工具与 system 索引，不控制用户管理面板 | true |
 | `memory.max_index_bytes` | 索引文本预算（含分组标题），正整数 | 8192 |
 | `memory.max_entry_bytes` | 含 frontmatter 的完整条目读写上限，正整数 | 4096 |
@@ -276,8 +278,9 @@ Chat 编码为 `max_completion_tokens`，Anthropic 编码为 `max_tokens`，Olla
 
 ## 3. 工作目录与项目根
 
-`Args::cwd` 是 `-C` 指定目录或进程启动目录，工具路径、沙箱和会话列表都以它为准。`project_root(cwd)` 仍用于
-收集 git 与 AGENTS.md 上下文：能执行 `git rev-parse --show-toplevel` 时取 git 根，否则就是 cwd。进程不 chdir。
+`Args::cwd` 是 `-C` 指定目录或进程启动目录，工具路径、沙箱和会话列表都以它为准。`project_root(cwd)` 从 cwd 向上查找
+`.git` 文件或目录，找到时取该目录，否则返回 cwd；它不执行 git 命令。工作区上下文中的 git 根与 AGENTS.md 另由
+`workspace::collect_environment` 执行 `git rev-parse --show-toplevel` 收集，正常情况下与 `project_root` 一致。进程不 chdir。
 
 会话归属只比较规范化后的精确 cwd，不再用 git 根合并不同子目录。
 
@@ -313,9 +316,10 @@ run： --output <text|json|jsonl>
 | 字段 | 内容 |
 | --- | --- |
 | `toolchain_current` | runtime 是否为当前配置准备好 |
-| `static` | 依次为 `runtime`、`mxc-library`（库文件路径）、`mxc-load`（成功时为库版本，加载失败时为错误文本，未安装时为 `requires MXC 1.0.1`）、`bash`、`rg`，以及宿主前置 `bwrap`（路径与版本，要求 ≥ 0.5）、`slirp4netns`、`unshare`、`nsenter`、`setsid`、`ip`、`iptables-restore`；缺失项给出所需的包名 |
+| `static` | 依次为 `runtime`、`mxc-library`（库文件路径）、`mxc-load`（成功时为库版本，加载失败时为错误文本，未安装时为 `requires MXC 1.0.1`）、可选的 `mxc-tier`、`bash`、`rg`，以及宿主前置 `bwrap`（路径与版本，要求 ≥ 0.5）、`slirp4netns`、`unshare`、`nsenter`、`setsid`、`ip`、`iptables-restore`；缺失项给出所需的包名 |
 | `platform_support`、`available_backends` | 库加载成功时原样输出 `mxc_platform_support_json` 与 `mxc_available_backends_json`（如 `bubblewrapNetwork.proxyEnforcement`） |
 | `probe` | 真实启动结果；必要条件缺失时为 `{ok:false, stage:"skipped", error:"missing: <项>"}`，不启动 |
+| `tier_probe` | 平台提供层级探测时输出原始层级结果（如 Windows 的 ProcessContainer 层级与告警） |
 | `host_prerequisite` | 探测失败且错误含 namespace、uid_map、uid map、loopback 或 unshare failed 时给出部署 `dagent.apparmor` 的提示 |
 | `host` | 可读取时的 `apparmor_restrict_unprivileged_userns`，以及后端进程当前的 AppArmor 标签 `apparmor_profile` |
 
@@ -409,7 +413,7 @@ Windows 的 `--ipc-fd` 严格解析为十进制 uintptr_t 句柄，拒绝溢出�
 | run 的 done；正常关闭交互；列表成功 | 0 |
 | run 的 failed / limit / denied，启动或通信失败，jsonl 写出失败 | 1 |
 | 参数或配置错误（包括后端返回 `config_error`） | 2 |
-| run 被信号中断，或交互因进程中断信号退出 | 130 |
+| run 被信号中断，交互因进程中断信号退出，或 `login` 等待被 Ctrl+C 取消 | 130 |
 
 ## 7. 全局技能
 
