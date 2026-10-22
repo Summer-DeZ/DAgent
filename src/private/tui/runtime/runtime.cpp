@@ -1,5 +1,5 @@
-#include "tui/runtime.hpp"
-#include "tui/event_wait.hpp"
+#include "tui/runtime/runtime.hpp"
+#include "tui/terminal/event_wait.hpp"
 
 #include <algorithm>
 #include <climits>

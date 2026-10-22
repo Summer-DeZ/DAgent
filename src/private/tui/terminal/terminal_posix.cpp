@@ -3,8 +3,8 @@
 #define _GNU_SOURCE
 #endif
 
-#include "tui/terminal.hpp"
-#include "tui/event_wait.hpp"
+#include "tui/terminal/terminal.hpp"
+#include "tui/terminal/event_wait.hpp"
 #include "base/platform.hpp"
 
 #include <cerrno>

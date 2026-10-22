@@ -7,7 +7,7 @@
 #include <optional>
 #include <vector>
 
-#include "tui/surface.hpp"
+#include "tui/grid/surface.hpp"
 
 namespace dagent::tui {
 

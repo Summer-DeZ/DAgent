@@ -27,21 +27,21 @@ target_link_libraries(dagent_base PUBLIC spdlog::spdlog)
 target_link_libraries(dagent_base PRIVATE "$<$<PLATFORM_ID:Windows>:bcrypt;advapi32>")
 
 add_library(dagent_tui STATIC
-    private/tui/terminal.cpp
-    private/tui/terminal_${DAGENT_PLATFORM}.cpp
-    private/tui/grapheme.cpp
-    private/tui/surface.cpp
-    private/tui/present.cpp
-    private/tui/layout.cpp
-    private/tui/widget.cpp
-    private/tui/document.cpp
-    private/tui/wrap.cpp
-    private/tui/markdown.cpp
-    private/tui/syntax.cpp
-    private/tui/input.cpp
-    private/tui/runtime.cpp
-    private/tui/keymap.cpp
-    private/tui/theme.cpp
+    private/tui/terminal/terminal.cpp
+    private/tui/terminal/terminal_${DAGENT_PLATFORM}.cpp
+    private/tui/grid/grapheme.cpp
+    private/tui/grid/surface.cpp
+    private/tui/grid/present.cpp
+    private/tui/widget/layout.cpp
+    private/tui/widget/widget.cpp
+    private/tui/widget/theme.cpp
+    private/tui/document/document.cpp
+    private/tui/document/wrap.cpp
+    private/tui/document/markdown.cpp
+    private/tui/document/syntax.cpp
+    private/tui/runtime/input.cpp
+    private/tui/runtime/runtime.cpp
+    private/tui/runtime/keymap.cpp
 )
 
 target_include_directories(dagent_tui PUBLIC ${CMAKE_SOURCE_DIR}/src/public)

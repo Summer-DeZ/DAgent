@@ -1,6 +1,6 @@
 // Windows 控制台版：输入走 ReadConsoleInputW，输出走 VT 序列。
-#include "tui/event_wait.hpp"
-#include "tui/terminal.hpp"
+#include "tui/terminal/event_wait.hpp"
+#include "tui/terminal/terminal.hpp"
 #include "base/platform.hpp"
 
 #include <algorithm>

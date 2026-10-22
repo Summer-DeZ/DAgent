@@ -3,7 +3,7 @@
 #include <utility>
 
 #include "client/client.hpp"
-#include "tui/runtime.hpp"
+#include "tui/runtime/runtime.hpp"
 
 namespace dagent::ui {
 

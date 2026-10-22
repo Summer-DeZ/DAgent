@@ -3,7 +3,7 @@
 #include <algorithm>
 #include <format>
 
-#include "tui/grapheme.hpp"
+#include "tui/grid/grapheme.hpp"
 
 namespace dagent::ui {
 std::string compact_tokens(std::size_t n) {

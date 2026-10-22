@@ -3,7 +3,7 @@
 #include <functional>
 #include <memory>
 
-#include "tui/runtime.hpp"
+#include "tui/runtime/runtime.hpp"
 #include "ui/projection.hpp"
 
 namespace dagent::ui {

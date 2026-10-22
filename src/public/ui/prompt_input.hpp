@@ -1,6 +1,6 @@
 #pragma once
 #include <functional>
-#include "tui/input.hpp"
+#include "tui/runtime/input.hpp"
 
 namespace dagent::ui {
 class PromptInput final : public tui::EventHandler {

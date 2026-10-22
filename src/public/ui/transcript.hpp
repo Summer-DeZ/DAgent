@@ -10,7 +10,7 @@
 #include <filesystem>
 
 #include "protocol/dto.hpp"
-#include "tui/document.hpp"
+#include "tui/document/document.hpp"
 #include "ui/projection.hpp"
 
 namespace dagent::ui {

@@ -7,7 +7,7 @@
 #include <vector>
 
 #include "ui/prompt_box.hpp"
-#include "tui/runtime.hpp"
+#include "tui/runtime/runtime.hpp"
 
 namespace dagent::ui {
 

@@ -25,7 +25,7 @@
 #include "base/path.hpp"
 #include "base/log.hpp"
 #include "base/overloaded.hpp"
-#include "tui/document.hpp"
+#include "tui/document/document.hpp"
 #include "ui/approval.hpp"
 #include "ui/callback_gate.hpp"
 #include "ui/center.hpp"

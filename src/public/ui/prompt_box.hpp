@@ -5,7 +5,7 @@
 #include <string>
 #include <vector>
 
-#include "tui/widget.hpp"
+#include "tui/widget/widget.hpp"
 #include "ui/strings.hpp"
 #include "ui/appearance.hpp"
 

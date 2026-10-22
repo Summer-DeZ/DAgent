@@ -1,7 +1,7 @@
 #pragma once
 
 #include <algorithm>
-#include "tui/input.hpp"
+#include "tui/runtime/input.hpp"
 #include "ui/appearance.hpp"
 #include "ui/projection.hpp"
 

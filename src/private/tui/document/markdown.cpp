@@ -1,4 +1,4 @@
-#include "tui/document.hpp"
+#include "tui/document/document.hpp"
 
 #include <algorithm>
 #include <cctype>
@@ -8,7 +8,7 @@
 #include <utility>
 #include <vector>
 
-#include "tui/grapheme.hpp"
+#include "tui/grid/grapheme.hpp"
 
 namespace dagent::tui {
 

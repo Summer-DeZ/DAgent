@@ -1,6 +1,6 @@
-#include "tui/surface.hpp"
+#include "tui/grid/surface.hpp"
 
-#include "tui/grapheme.hpp"
+#include "tui/grid/grapheme.hpp"
 
 #include <atomic>
 #include <cstring>

@@ -4,7 +4,7 @@
 #include <utility>
 #include <vector>
 
-#include "tui/document.hpp"
+#include "tui/document/document.hpp"
 #include "ui/strings.hpp"
 
 namespace dagent::ui {

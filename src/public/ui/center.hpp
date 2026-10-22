@@ -2,8 +2,8 @@
 
 #include <memory>
 
-#include "tui/layout.hpp"
-#include "tui/widget.hpp"
+#include "tui/widget/layout.hpp"
+#include "tui/widget/widget.hpp"
 
 namespace dagent::ui {
 

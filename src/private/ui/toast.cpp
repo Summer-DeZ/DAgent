@@ -7,7 +7,7 @@
 #include <deque>
 #include <utility>
 
-#include "tui/grapheme.hpp"
+#include "tui/grid/grapheme.hpp"
 
 namespace dagent::ui {
 namespace {

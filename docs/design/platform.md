@@ -60,8 +60,8 @@ Linux 的资源路径、文件权限和 profile 内容不变。
 | `src/private/ui/browser_{posix,win}.cpp` | `src/public/ui/browser.hpp` | `open_browser` |
 | `src/private/web/document_{posix,win}.cpp` | `src/public/web/detail.hpp` | `detail::convert_charset`（共用 `web/charset.cpp` 的 `convert_charset_iconv`） |
 | `src/private/ipc/channel_{posix,win}.cpp` | `src/public/ipc/channel.hpp` | `InheritedEndpoint` 参数解析、`Channel` 原生状态与传输、`BackendProcess` 不透明进程标识、`backend_binary_path`、`spawn_backend`、`wait_or_terminate` |
-| `src/private/tui/terminal_posix.cpp` | `src/public/tui/terminal.hpp`、`src/public/tui/event_wait.hpp` | Terminal 生命周期、原生状态、尺寸、字节写入、输入恢复与信号；EventWait 的等待、输入读取、唤醒及排空 |
-| `src/private/tui/terminal_win.cpp` | `src/public/tui/terminal.hpp`、`src/public/tui/event_wait.hpp` | Windows 控制台版：Terminal 生命周期、能力基线、尺寸、字节写入、输入模式与输出代码页还原、控制台事件；EventWait 的等待、`ReadConsoleInputW` 解码、唤醒及排空 |
+| `src/private/tui/terminal/terminal_posix.cpp` | `src/public/tui/terminal/terminal.hpp`、`src/public/tui/terminal/event_wait.hpp` | Terminal 生命周期、原生状态、尺寸、字节写入、输入恢复与信号；EventWait 的等待、输入读取、唤醒及排空 |
+| `src/private/tui/terminal/terminal_win.cpp` | `src/public/tui/terminal/terminal.hpp`、`src/public/tui/terminal/event_wait.hpp` | Windows 控制台版：Terminal 生命周期、能力基线、尺寸、字节写入、输入模式与输出代码页还原、控制台事件；EventWait 的等待、`ReadConsoleInputW` 解码、唤醒及排空 |
 | `src/private/exec/platform_{posix,win}.cpp` | `src/public/exec/detail.hpp`、`src/public/exec/platform.hpp`、`src/public/exec/process.hpp` | `inherited_environment`、`environment_names_equal`、`environment_name_matches`、`resolve_program`、`system_git_program`、`default_search_path`、`project_search_path`、执行权限、SIGPIPE、ProcessGroup、退出状态、spawn_command/spawn_child、InheritedResources、SrtControl、默认 SRT 可读目录 |
 | `src/private/workspace/files_{posix,win}.cpp` | `src/public/workspace/files.hpp` | `probe`、`read_text`、`write_text`、`stamp_of`、FileReference 原生状态与操作、DirectoryEntries 惰性枚举 |
 | `src/private/storage/storage_{posix,win}.cpp` | `src/public/storage/platform.hpp` | `detail::SessionFileLock` |

@@ -8,7 +8,7 @@
 #include <string_view>
 #include <vector>
 
-#include "tui/layout.hpp"
+#include "tui/widget/layout.hpp"
 
 namespace dagent::tui {
 

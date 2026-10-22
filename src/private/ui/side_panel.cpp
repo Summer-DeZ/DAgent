@@ -2,7 +2,7 @@
 #include "base/platform.hpp"
 #include "ui/display.hpp"
 #include "ui/strings.hpp"
-#include "tui/document.hpp"
+#include "tui/document/document.hpp"
 #include <algorithm>
 #include <charconv>
 #include <ctime>

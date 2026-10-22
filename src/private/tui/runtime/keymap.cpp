@@ -1,4 +1,4 @@
-#include "tui/runtime.hpp"
+#include "tui/runtime/runtime.hpp"
 
 #include <cstddef>
 #include <optional>
@@ -7,7 +7,7 @@
 #include <utility>
 #include <vector>
 
-#include "tui/grapheme.hpp"
+#include "tui/grid/grapheme.hpp"
 
 namespace dagent::tui {
 

@@ -4,7 +4,7 @@
 #include <filesystem>
 #include <string>
 #include "lib/nlohmann/json.hpp"
-#include "tui/widget.hpp"
+#include "tui/widget/widget.hpp"
 
 namespace dagent::ui {
 struct Appearance {

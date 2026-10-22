@@ -6,7 +6,7 @@
 #include <algorithm>
 #include <cctype>
 #include <utility>
-#include "tui/grapheme.hpp"
+#include "tui/grid/grapheme.hpp"
 
 namespace dagent::ui {
 

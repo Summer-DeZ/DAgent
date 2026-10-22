@@ -2,7 +2,7 @@
 #include <functional>
 #include <string>
 #include <vector>
-#include "tui/widget.hpp"
+#include "tui/widget/widget.hpp"
 
 namespace dagent::ui {
 struct KeyHint { std::string key, description; bool operator==(const KeyHint&) const = default; };

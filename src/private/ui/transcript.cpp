@@ -11,7 +11,7 @@
 
 #include "base/overloaded.hpp"
 #include "base/text.hpp"
-#include "tui/grapheme.hpp"
+#include "tui/grid/grapheme.hpp"
 
 namespace dagent::ui {
 namespace {

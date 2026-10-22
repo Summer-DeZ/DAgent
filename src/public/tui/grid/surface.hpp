@@ -8,7 +8,7 @@
 #include <string_view>
 #include <vector>
 
-#include "tui/terminal.hpp"
+#include "tui/terminal/terminal.hpp"
 
 namespace dagent::tui {
 

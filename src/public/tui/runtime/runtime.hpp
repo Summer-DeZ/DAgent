@@ -15,10 +15,10 @@
 #include <utility>
 #include <vector>
 
-#include "tui/document.hpp"
-#include "tui/input.hpp"
-#include "tui/terminal.hpp"
-#include "tui/widget.hpp"
+#include "tui/document/document.hpp"
+#include "tui/runtime/input.hpp"
+#include "tui/terminal/terminal.hpp"
+#include "tui/widget/widget.hpp"
 
 namespace dagent::tui {
 

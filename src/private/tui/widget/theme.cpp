@@ -1,4 +1,4 @@
-#include "tui/widget.hpp"
+#include "tui/widget/widget.hpp"
 
 namespace dagent::tui {
 

@@ -4,7 +4,7 @@
 #include <algorithm>
 #include <utility>
 
-#include "tui/document.hpp"
+#include "tui/document/document.hpp"
 
 namespace dagent::ui {
 namespace {

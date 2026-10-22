@@ -1,6 +1,6 @@
-#include "tui/widget.hpp"
+#include "tui/widget/widget.hpp"
 
-#include "tui/grapheme.hpp"
+#include "tui/grid/grapheme.hpp"
 
 #include <algorithm>
 #include <iterator>

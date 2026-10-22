@@ -12,7 +12,7 @@
 #include <string_view>
 #include <vector>
 
-#include "tui/widget.hpp"
+#include "tui/widget/widget.hpp"
 
 namespace dagent::tui {
 

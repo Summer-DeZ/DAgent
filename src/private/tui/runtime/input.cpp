@@ -1,4 +1,4 @@
-#include "tui/input.hpp"
+#include "tui/runtime/input.hpp"
 
 #include <algorithm>
 #include <iterator>

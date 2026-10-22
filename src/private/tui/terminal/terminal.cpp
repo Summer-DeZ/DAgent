@@ -1,4 +1,4 @@
-#include "tui/terminal.hpp"
+#include "tui/terminal/terminal.hpp"
 #include "base/platform.hpp"
 
 #include <string>

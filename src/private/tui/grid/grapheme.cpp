@@ -1,4 +1,4 @@
-#include "tui/grapheme.hpp"
+#include "tui/grid/grapheme.hpp"
 
 #include <algorithm>
 #include <array>
