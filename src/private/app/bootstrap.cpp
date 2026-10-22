@@ -240,7 +240,6 @@ backend::Assembled assemble_backend(const backend::BootstrapOptions& options) {
                                  paths.root / "run", paths.memory};
         policy.protected_write = policy.protected_read;
         policy.protect_sensitive_names = true;
-        policy.private_tmp = true;
         const auto environment = config.tools.environments.find(server.environment);
         if (environment != config.tools.environments.end())
             policy.readable.insert(policy.readable.end(), environment->second.readable.begin(),

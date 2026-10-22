@@ -101,7 +101,7 @@ const std::set<std::string>& known_keys() {
         "ui.appearance.density", "ui.appearance.icons", "ui.appearance.sidebar",
         "ui.layout.width", "ui.layout.status_panel", "ui.layout.navigator",
         "ui.layout.navigator_sections", "ui.layout.status_sections", "ui.appearance.diff", "ui.appearance.links", "sandbox.version", "sandbox.backend",
-        "sandbox.host_access", "sandbox.startup_timeout_ms", "sandbox.network_approval_timeout_ms",
+        "sandbox.host_access", "sandbox.network_approval_timeout_ms",
         "sandbox.max_network_requests_per_execution", "sandbox.allowed_targets", "sandbox.denied_targets",
         "mcp.connect_timeout_ms", "mcp.probe_timeout_ms",
         "tools.max_result_bytes", "tools.bash_collect_bytes", "tools.read_default_lines", "tools.read_max_line_bytes",
@@ -171,15 +171,12 @@ exec::SandboxOptions map_sandbox(const Node& n, const fs::path& workspace) {
     options.host_access = n.child("host_access").str(options.host_access);
     if (options.host_access != "ask_once")
         fail(ConfigError::Kind::invalid, n.child("host_access").pointer() + " must be ask_once");
-    options.startup_timeout = std::chrono::milliseconds(
-        n.child("startup_timeout_ms").integer(static_cast<int>(options.startup_timeout.count())));
     options.network_approval_timeout = std::chrono::milliseconds(
         n.child("network_approval_timeout_ms").integer(static_cast<int>(options.network_approval_timeout.count())));
     options.max_network_requests_per_execution =
         static_cast<int>(n.child("max_network_requests_per_execution")
                              .integer(options.max_network_requests_per_execution));
-    if (options.startup_timeout.count() <= 0 || options.network_approval_timeout.count() <= 0 ||
-        options.max_network_requests_per_execution <= 0) {
+    if (options.network_approval_timeout.count() <= 0 || options.max_network_requests_per_execution <= 0) {
         fail(ConfigError::Kind::invalid, "sandbox timeouts and the network request budget must be positive");
     }
     const auto paths = [&](std::string_view key) {
