@@ -247,6 +247,7 @@ add_library(dagent_agent STATIC
     private/agent/events.cpp
     private/agent/policy/decision_review.cpp
     private/agent/policy/authorization.cpp
+    private/agent/policy/execution_authorizer.cpp
     private/agent/policy/parent_review.cpp
     private/agent/policy/permission.cpp
     private/agent/policy/execution_registry.cpp
