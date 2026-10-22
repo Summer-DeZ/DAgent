@@ -96,6 +96,12 @@ bridge 位于后端二进制旁的 `libexec/`，跟随程序版本而不是 Home
 `system` 包要求 `root` 存在，否则报 `system package root is missing`；`bin`、`programs` 仍相对 `root` 校验，
 程序摘要照常计算，两个 system 包可以共用同一个 root。
 
+包可声明 `libraries`（库名到包内相对路径），登记执行层在运行时加载的原生库，此时 `programs` 可省略。
+sync 只要求该文件存在、不检查可执行位，把绝对路径写入包记录与 `installed.json` 的 `libraries`，
+由 `Toolchain::library(name)` 读取（未安装返回空路径）。库路径随平台或架构变化时沿用 `platforms` 整条覆盖：
+`mxc` 包的基础条目描述 Linux-x86_64（`bin/x64/libmxc_ffi.so`），Linux-aarch64 与 Windows-x86_64 的覆盖条目
+各自给出 `libraries`（`bin/arm64/libmxc_ffi.so`、`bin/x64/mxc_ffi.dll`）和指向同一 npm tgz、同一摘要的 `assets`。
+
 `env` 可为包增加执行变量，值开头的 `{root}` 替换为该包目录，例如 Git helper 与模板路径。
 安装记录包含实际程序路径和准备时的程序摘要；下载包另记录归档摘要。
 Python 发行包由固定 uv 版本的 managed Python 下载目录解析和校验。
