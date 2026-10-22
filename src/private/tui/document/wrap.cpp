@@ -1,4 +1,4 @@
-#include "tui/document/document.hpp"
+#include "tui/document/renderers.hpp"
 
 #include "tui/grid/grapheme.hpp"
 

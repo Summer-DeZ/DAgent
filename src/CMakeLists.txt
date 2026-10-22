@@ -37,6 +37,7 @@ add_library(dagent_tui STATIC
     private/tui/widget/widget.cpp
     private/tui/widget/theme.cpp
     private/tui/document/document.cpp
+    private/tui/document/scrollback.cpp
     private/tui/document/wrap.cpp
     private/tui/document/markdown.cpp
     private/tui/document/markdown_render.cpp

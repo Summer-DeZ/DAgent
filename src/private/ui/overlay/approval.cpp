@@ -4,6 +4,8 @@
 #include "ui/style/strings.hpp"
 #include "ui/style/display.hpp"
 #include "ui/style/theme_config.hpp"
+#include "tui/document/renderers.hpp"
+#include "tui/document/scrollback.hpp"
 
 #include <algorithm>
 #include <format>

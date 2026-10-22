@@ -9,7 +9,7 @@
 #include <vector>
 
 #include "protocol/dto.hpp"
-#include "tui/document/document.hpp"
+#include "tui/document/scrollback.hpp"
 #include "tui/runtime/input.hpp"
 #include "tui/widget/layout.hpp"
 #include "tui/widget/widget.hpp"
