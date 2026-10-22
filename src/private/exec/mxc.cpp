@@ -73,6 +73,54 @@ json path_array(const std::vector<fs::path>& paths) {
     return out;
 }
 
+/// 释放 FFI 错误详情并给出消息（含 remediation）；没有消息时按 operation 与状态码描述。
+std::string error_message(const ffi::Functions& f, ffi::MxcErrorDetail& detail, std::string_view operation,
+                          std::int32_t status) {
+    std::string message = detail.message_utf8 != nullptr ? detail.message_utf8 : "";
+    if (detail.remediation_utf8 != nullptr) message += std::format(" ({})", detail.remediation_utf8);
+    f.error_detail_free(&detail);
+    return message.empty() ? std::format("{} failed with status {}", operation, status) : "sandbox: " + message;
+}
+
+/// 命令环境：调用方变量之上把 HOME/XDG/TMPDIR 系列与平台变量指向私有 HOME，并清掉会改变 shell 或
+/// 代理行为的变量（代理由 MXC 按 runtimeConfig 设置）。
+std::vector<std::string> environment(const MxcRequest& request, const Options& options, const fs::path& home) {
+    Command cmd;
+    cmd.inherit_env = false;
+    cmd.env_set = request.environment;
+    cmd.env_set.insert(cmd.env_set.end(),
+                       {{"HOME", base::path_to_utf8(home)},
+                        {"XDG_CONFIG_HOME", base::path_to_utf8(home / "config")},
+                        {"XDG_CACHE_HOME", base::path_to_utf8(home / "cache")},
+                        // 托管环境把包缓存指向 Home，沙箱内不可见也不可写；与 XDG 缓存一样落到私有 HOME。
+                        {"UV_CACHE_DIR", base::path_to_utf8(home / "cache" / "uv")},
+                        {"NPM_CONFIG_CACHE", base::path_to_utf8(home / "cache" / "npm")},
+                        {"XDG_RUNTIME_DIR", base::path_to_utf8(home / "run")},
+                        {"TMPDIR", base::path_to_utf8(home)},
+                        {"TMP", base::path_to_utf8(home)},
+                        {"TEMP", base::path_to_utf8(home)}});
+    const auto platform = detail::sandbox_environment(home);
+    cmd.env_set.insert(cmd.env_set.end(), platform.begin(), platform.end());
+    cmd.env_unset = {"BASH_ENV", "ENV", "BASHOPTS", "SHELLOPTS", "CDPATH", "GLOBIGNORE",
+                     "PROMPT_COMMAND", "LD_PRELOAD", "LD_LIBRARY_PATH", "PYTHONPATH", "PERL5LIB",
+                     "RUBYOPT", "NODE_OPTIONS", "NODE_PATH", "NODE_EXTRA_CA_CERTS",
+                     "http_proxy", "https_proxy", "all_proxy", "ftp_proxy",
+                     "HTTP_PROXY", "HTTPS_PROXY", "ALL_PROXY", "FTP_PROXY"};
+    return detail::make_environment(cmd, options);
+}
+
+/// 一次受限执行提交给 MXC 的完整请求：策略加 process（managed bash 执行脚本，超时由本进程落实）。
+json request_document(const MxcRequest& request, const Options& options, const fs::path& home,
+                      std::optional<std::string> proxy_url) {
+    json document = mxc_policy(request.runtime, request.policy, home, std::move(proxy_url));
+    const std::string script = (request.merge_stderr ? "exec 2>&1\n" : "") + request.command;
+    document["process"] = {{"commandLine", detail::sandbox_command_line(request.runtime.shell, script)},
+                           {"cwd", base::path_to_utf8(request.workspace)},
+                           {"env", environment(request, options, home)},
+                           {"timeout", 0}};
+    return document;
+}
+
 struct Exit {
     std::optional<int> code;
     bool timed_out = false;
@@ -114,25 +162,16 @@ public:
                 });
         }
 
-        json document = mxc_policy(request.runtime, request.policy, home_,
-                                   proxy_ ? std::optional(proxy_->url()) : std::nullopt);
-        const std::string script = (request.merge_stderr ? "exec 2>&1\n" : "") + request.command;
-        document["process"] = {{"commandLine", detail::sandbox_command_line(request.runtime.shell, script)},
-                               {"cwd", base::path_to_utf8(request.workspace)},
-                               {"env", environment(request, options)},
-                               {"timeout", 0}};
-        const std::string text = document.dump(-1, ' ', false, json::error_handler_t::replace);
+        const std::string text =
+            request_document(request, options, home_, proxy_ ? std::optional(proxy_->url()) : std::nullopt)
+                .dump(-1, ' ', false, json::error_handler_t::replace);
 
         ffi::MxcErrorDetail error_detail{};
         const std::int32_t status = f_.spawn_json(text.c_str(), 0, &sandbox_, &error_detail);
-        std::string message = error_detail.message_utf8 != nullptr ? error_detail.message_utf8 : "";
-        if (error_detail.remediation_utf8 != nullptr) message += std::format(" ({})", error_detail.remediation_utf8);
-        f_.error_detail_free(&error_detail);
+        const std::string message = error_message(f_, error_detail, "mxc_spawn_json", status);
         if (status != ffi::ok || sandbox_ == nullptr) {
             sandbox_ = nullptr;
-            throw ExecError{ExecError::Kind::sandbox,
-                            message.empty() ? std::format("mxc_spawn_json failed with status {}", status)
-                                            : "sandbox: " + message};
+            throw ExecError{ExecError::Kind::sandbox, message};
         }
         running_ = true;
 
@@ -229,29 +268,6 @@ public:
     }
 
 private:
-    std::vector<std::string> environment(const MxcRequest& request, const Options& options) const {
-        Command cmd;
-        cmd.inherit_env = false;
-        cmd.env_set = request.environment;
-        cmd.env_set.insert(cmd.env_set.end(),
-                           {{"HOME", base::path_to_utf8(home_)},
-                            {"XDG_CONFIG_HOME", base::path_to_utf8(home_ / "config")},
-                            {"XDG_CACHE_HOME", base::path_to_utf8(home_ / "cache")},
-                            // 托管环境把包缓存指向 Home，沙箱内不可见也不可写；与 XDG 缓存一样落到私有 HOME。
-                            {"UV_CACHE_DIR", base::path_to_utf8(home_ / "cache" / "uv")},
-                            {"NPM_CONFIG_CACHE", base::path_to_utf8(home_ / "cache" / "npm")},
-                            {"XDG_RUNTIME_DIR", base::path_to_utf8(home_ / "run")},
-                            {"TMPDIR", base::path_to_utf8(home_)},
-                            {"TMP", base::path_to_utf8(home_)},
-                            {"TEMP", base::path_to_utf8(home_)}});
-        cmd.env_unset = {"BASH_ENV", "ENV", "BASHOPTS", "SHELLOPTS", "CDPATH", "GLOBIGNORE",
-                         "PROMPT_COMMAND", "LD_PRELOAD", "LD_LIBRARY_PATH", "PYTHONPATH", "PERL5LIB",
-                         "RUBYOPT", "NODE_OPTIONS", "NODE_PATH", "NODE_EXTRA_CA_CERTS",
-                         "http_proxy", "https_proxy", "all_proxy", "ftp_proxy",
-                         "HTTP_PROXY", "HTTPS_PROXY", "ALL_PROXY", "FTP_PROXY"};
-        return detail::make_environment(cmd, options);
-    }
-
     void read_loop(ffi::MxcReadStream* stream, Stream which) {
         std::array<std::uint8_t, 64 << 10> buffer;
         for (;;) {
@@ -322,6 +338,8 @@ std::shared_ptr<const MxcLibrary> MxcLibrary::load(const fs::path& file) {
     resolve(f.sandbox_kill_for_timeout, "mxc_sandbox_kill_for_timeout");
     resolve(f.sandbox_free, "mxc_sandbox_free");
     resolve(f.sandbox_warnings_json, "mxc_sandbox_warnings_json");
+    f.probe_request_json_with_error = std::bit_cast<decltype(f.probe_request_json_with_error)>(
+        shared.symbol("mxc_probe_request_json_with_error"));
     if (const std::string version = f.version(); version != kMxcVersion)
         throw ExecError{ExecError::Kind::sandbox,
                         std::format("load {}: MXC version {} does not match the supported {}", base::path_to_utf8(file), version,
@@ -339,6 +357,18 @@ json MxcLibrary::platform_support() const {
 
 json MxcLibrary::available_backends() const {
     return json::parse(take_string(impl_->functions, impl_->functions.available_backends_json()));
+}
+
+std::optional<json> MxcLibrary::probe_request(const json& request) const {
+    const auto& f = impl_->functions;
+    if (f.probe_request_json_with_error == nullptr) return std::nullopt;
+    const std::string text = request.dump(-1, ' ', false, json::error_handler_t::replace);
+    char* output = nullptr;
+    ffi::MxcErrorDetail error_detail{};
+    const std::int32_t status = f.probe_request_json_with_error(text.c_str(), &output, &error_detail);
+    const std::string message = error_message(f, error_detail, "mxc_probe_request_json", status);
+    if (status != ffi::ok || output == nullptr) throw ExecError{ExecError::Kind::sandbox, message};
+    return json::parse(take_string(f, output));
 }
 
 const ffi::Functions& MxcLibrary::functions() const noexcept { return impl_->functions; }
@@ -386,13 +416,23 @@ json mxc_policy(const MxcRuntime& runtime, const Policy& policy, const fs::path&
                       {{"readonlyPaths", path_array(readonly)},
                        {"readwritePaths", path_array(writable)},
                        {"deniedPaths", path_array(denied)}}}};
-    if (runtime.containment == "processcontainer") document["fallback"] = {{"allowDaclMutation", false}};
+    const bool process_container = runtime.containment == "processcontainer";
+    if (process_container) document["fallback"] = {{"allowDaclMutation", false}};
     if (proxy_url) {
+        // ProcessContainer 只在 privateNetworkClientServer（ingress.default=allow）下连得到回环代理，
+        // 没有包身份的代理还要 hostLoopback=allow；两者都不放宽 WFP 对代理端点以外出站的拦截。
+        const char* ingress = process_container ? "allow" : "deny";
         document["network"] = {{"egress", {{"default", "deny"}}},
-                               {"ingress", {{"default", "deny"}, {"hostLoopback", "deny"}}}};
+                               {"ingress", {{"default", ingress}, {"hostLoopback", ingress}}}};
         document["runtimeConfig"] = {{"networkProxy", *proxy_url}};
     }
     return document;
+}
+
+std::optional<json> probe_mxc(const MxcRequest& request, const Options& options) {
+    return request.runtime.library->probe_request(
+        request_document(request, options, base::default_temporary_directory(),
+                         request.network_gate ? std::optional<std::string>("http://127.0.0.1:9") : std::nullopt));
 }
 
 NetworkGate allowlist_gate(std::vector<std::string> targets, NetworkGate fallback) {
