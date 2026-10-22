@@ -2,15 +2,13 @@
 
 namespace dagent::tools::detail {
 
-exec::SrtRequest sandbox_request(const Grant& grant, const exec::SrtRuntime& runtime,
-    const std::filesystem::path& workspace, const std::filesystem::path& state_root,
-    const exec::SandboxOptions& options) {
-    if (grant.backend != "srt" || grant.sandbox == agent::SandboxProfile::full_access)
-        throw std::runtime_error("restricted execution requires an SRT grant");
-    exec::SrtRequest request;
+exec::MxcRequest sandbox_request(const Grant& grant, const exec::MxcRuntime& runtime,
+    const std::filesystem::path& workspace, const exec::SandboxOptions& options) {
+    if (grant.backend != "mxc" || grant.sandbox == agent::SandboxProfile::full_access)
+        throw std::runtime_error("restricted execution requires a sandbox grant");
+    exec::MxcRequest request;
     request.runtime = runtime;
     request.workspace = workspace;
-    request.state_root = state_root;
     auto& policy = request.policy;
     policy.mode = grant.sandbox == agent::SandboxProfile::read_only
         ? exec::Mode::read_only : exec::Mode::workspace_write;
@@ -24,7 +22,6 @@ exec::SrtRequest sandbox_request(const Grant& grant, const exec::SrtRuntime& run
     policy.read_exceptions = grant.read_exceptions;
     policy.protected_write = grant.protected_write;
     policy.network_targets = grant.network_targets;
-    request.startup_timeout = options.startup_timeout;
     request.approval_timeout = options.network_approval_timeout;
     request.max_network_requests = options.max_network_requests_per_execution;
     request.network_gate = [gate = grant.network_decider](std::string_view host, int port,

@@ -9,7 +9,7 @@
 #include <string_view>
 #include <utility>
 #include <vector>
-#include "exec/srt.hpp"
+#include "exec/mxc.hpp"
 
 namespace dagent::web {
 
@@ -45,14 +45,14 @@ struct SearchResults {
 using BeforeRequest = std::function<void(
     std::string_view normalized_url,
     std::size_t redirect_index,
-    exec::SrtRequest& request,
+    exec::MxcRequest& request,
     std::stop_token)>;
 
-// Every request is performed by curl inside the caller's granted SRT boundary.
+// Every request is performed by curl inside the caller's granted sandbox boundary.
 // The request is sent one hop at a time; `before` runs before each hop.
-Response get(exec::SrtRequest request, std::string_view url, const Options&,
+Response get(exec::MxcRequest request, std::string_view url, const Options&,
              exec::Options process, std::stop_token = {});
-Response get(exec::SrtRequest request, std::string_view url, const Options&,
+Response get(exec::MxcRequest request, std::string_view url, const Options&,
              exec::Options process, const BeforeRequest& before, std::stop_token = {});
 Page decode(Response);
 SearchResults search_results(std::string_view json, std::size_t limit);

@@ -28,7 +28,7 @@
 #include "agent/tool_data.hpp"
 #include "exec/process.hpp"
 #include "exec/sandbox.hpp"
-#include "exec/srt.hpp"
+#include "exec/mxc.hpp"
 #include "exec/shell.hpp"
 #include "lib/nlohmann/json.hpp"
 #include "mcp/client.hpp"
@@ -48,9 +48,8 @@ struct Options {
     web::Options web;
     std::function<std::string(std::stop_token)> search_endpoint;
     std::map<std::string, exec::Environment> environments;
-    std::optional<exec::SrtRuntime> srt;             ///< SRT 后端资源；为空表示受限执行不可用
-    std::filesystem::path sandbox_state_root;        ///< 每执行私有目录的父目录（SRT）
-    exec::SandboxOptions sandbox;                    ///< 启动/审批超时与每执行网络请求预算
+    std::optional<exec::MxcRuntime> mxc;             ///< MXC 后端资源；为空表示受限执行不可用
+    exec::SandboxOptions sandbox;                    ///< 网络审批超时与每执行网络请求预算
     std::size_t max_result_bytes = 0; ///< 每次调用交给模型的文本上限
     std::size_t bash_collect_bytes = 0; ///< 中断时保留的命令输出上限
     int read_default_lines = 0;

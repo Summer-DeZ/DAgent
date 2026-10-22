@@ -18,6 +18,8 @@ public:
     std::map<std::string, exec::Environment> environments() const;
     std::filesystem::path environment_root(std::string_view name) const;
     std::filesystem::path program(std::string_view name) const;
+    /// Native library registered by a package (`libraries` in runtime.json); empty when not installed.
+    std::filesystem::path library(std::string_view name) const;
 
 private:
     HomePaths paths_;
