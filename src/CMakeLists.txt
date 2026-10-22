@@ -250,6 +250,7 @@ add_library(dagent_agent STATIC
     private/agent/policy/execution_authorizer.cpp
     private/agent/policy/parent_review.cpp
     private/agent/policy/permission.cpp
+    private/agent/policy/permission_grants.cpp
     private/agent/policy/execution_registry.cpp
     private/agent/record/committer.cpp
     private/agent/record/record_codec.cpp
