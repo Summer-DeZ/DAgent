@@ -50,6 +50,8 @@ public:
     bool decision_allowed();
     bool gate_open();
     ReviewDeadline review_deadline();
+    /// @brief 把决定改写为"已取消"的带反馈拒绝；两种授权器在权限变化时共用。
+    static void cancel_decision(Decision&, std::string_view feedback);
 
 private:
     friend class ActionAuthorizer;

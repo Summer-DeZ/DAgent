@@ -3,7 +3,7 @@
 DAgent 的核心负责把用户输入变成「请求模型 → 执行动作 → 回填结果」的循环，并维护权限、上下文、会话记录语义与
 控制动作规则。头文件在 `src/public/agent/`，实现在 `src/private/agent/`，命名空间 `dagent::agent`，库为
 `dagent_agent`，**只依赖 base**。根目录是公共词汇（消息、回复、事件、工具数据、授权与决策类型、选项、会话元数据），
-其余按职责分在 `port/`（外层实现的端口）、`policy/`（权限、授权与审阅）、`record/`（记录编解码、提交、恢复、历史、压缩）和 `loop/`（Session、Run、循环、调度、动作目录与控制动作）。模型请求、工具、存储和 MCP 通过核心定义的端口由外层实现；会话控制与交互等待见
+其余按职责分在 `port/`（外层实现的端口）、`policy/`（权限、授权与审阅；`Policy` 的会话授权记忆、撤销与网络记忆在 `permission_grants.cpp`，`ExecutionAuthorizer` 在 `execution_authorizer.cpp`）、`record/`（记录编解码、提交、恢复、历史、压缩）和 `loop/`（Session、Run、循环、调度、动作目录与控制动作）。模型请求、工具、存储和 MCP 通过核心定义的端口由外层实现；会话控制与交互等待见
 [runtime](runtime.md)，前后端进程与协议见 [protocol](protocol.md)，模型协议见 [llm](llm.md)。
 
 ## 1. 分层与对象

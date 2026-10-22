@@ -30,6 +30,7 @@ add_library(dagent_tui STATIC
     private/tui/terminal/terminal.cpp
     private/tui/terminal/terminal_${DAGENT_PLATFORM}.cpp
     private/tui/grid/grapheme.cpp
+    private/tui/grid/grapheme_tables.cpp
     private/tui/grid/surface.cpp
     private/tui/grid/present.cpp
     private/tui/widget/layout.cpp
@@ -38,6 +39,7 @@ add_library(dagent_tui STATIC
     private/tui/document/document.cpp
     private/tui/document/wrap.cpp
     private/tui/document/markdown.cpp
+    private/tui/document/markdown_render.cpp
     private/tui/document/syntax.cpp
     private/tui/runtime/input.cpp
     private/tui/runtime/runtime.cpp
@@ -52,6 +54,9 @@ target_link_libraries(dagent_tui PRIVATE dagent_base)
 # 应用层：在 TUI 框架之上构建的界面（只持 Client、协议 DTO 与页面状态）。
 add_library(dagent_ui STATIC
     private/ui/shell.cpp
+    private/ui/shell_commands.cpp
+    private/ui/shell_panes.cpp
+    private/ui/bridge.cpp
     private/ui/browser_${DAGENT_PLATFORM}.cpp
     private/ui/style/strings.cpp
     private/ui/style/display.cpp
@@ -61,6 +66,7 @@ add_library(dagent_ui STATIC
     private/ui/state/history_pager.cpp
     private/ui/state/turn_meter.cpp
     private/ui/page/transcript.cpp
+    private/ui/page/transcript_render.cpp
     private/ui/page/prompt_input.cpp
     private/ui/page/header_bar.cpp
     private/ui/page/hint_bar.cpp
@@ -68,6 +74,7 @@ add_library(dagent_ui STATIC
     private/ui/page/prompt_box.cpp
     private/ui/page/welcome.cpp
     private/ui/page/side_panel.cpp
+    private/ui/page/workspace.cpp
     private/ui/overlay/settings_dialog.cpp
     private/ui/overlay/approval.cpp
     private/ui/overlay/toast.cpp
@@ -247,8 +254,10 @@ add_library(dagent_agent STATIC
     private/agent/events.cpp
     private/agent/policy/decision_review.cpp
     private/agent/policy/authorization.cpp
+    private/agent/policy/execution_authorizer.cpp
     private/agent/policy/parent_review.cpp
     private/agent/policy/permission.cpp
+    private/agent/policy/permission_grants.cpp
     private/agent/policy/execution_registry.cpp
     private/agent/record/committer.cpp
     private/agent/record/record_codec.cpp

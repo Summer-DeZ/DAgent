@@ -23,6 +23,10 @@ struct RenderOptions {
 };
 
 /// 只在渲染线程使用；实时和恢复历史共用这一个文档投影。
+/// @brief diff 块的宽度约定（渲染器实现在 transcript_render.cpp）：并排显示所需的最小列数，以及给定滚动区宽度下可用的列数。
+int diff_required_width(std::string_view source);
+int diff_available_width(int width);
+
 class Transcript {
 public:
     /// @brief 一次已结束的 task：切进子会话时用 session_id 回放。

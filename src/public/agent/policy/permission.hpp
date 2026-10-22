@@ -143,6 +143,8 @@ private:
     /// 命中会话授权时返回 allow_network（exec 之外恒为 false），未命中返回 nullopt。
     std::optional<bool> matches_session(const Approval&, const PreparedIntent&) const;
     bool matches_parent_session(const Approval& saved, const Approval& requested) const;
+    /// 含敏感读、受保护写或主机访问的审批只能一次性使用，不进入会话授权。
+    static bool single_use_only(const Approval&);
     void remember_locked(const Approval&, const Decision&);
     void remember_network_locked(const NetworkTarget&, const Approval&);
     ExecutionGrant grant_for(const Approval&, const Decision&) const;

@@ -1,7 +1,8 @@
 # ui：应用层交互界面
 
-`dagent` 不带子命令时进入全屏终端界面。公开头文件在 `src/public/ui/`，实现在 `src/private/ui/`，根目录只有入口 `shell` 与 `browser`，
-其余按职责分在 `style/`（文案、外观、主题配置、显示辅助）、`state/`（投影、计量、分页等无控件的值类型）、`page/`（主区与边栏控件）和 `overlay/`（浮层）；
+`dagent` 不带子命令时进入全屏终端界面。公开头文件在 `src/public/ui/`，实现在 `src/private/ui/`，根目录是入口：`shell_detail.hpp` 声明 `Shell`，实现按职责分在 `shell.cpp`（生命周期、后端事件、快照应用、布局与各栏刷新）、
+`shell_commands.cpp`（命令注册、提交、`/` 面板、权限动作与交互回答）、`shell_panes.cpp`（子会话 Pane）和 `bridge.cpp`（`FrontendBridge`），外加 `browser`；
+其余按职责分在 `style/`（文案、外观、主题配置、显示辅助）、`state/`（投影、计量、分页等无控件的值类型）、`page/`（主区与边栏控件，`workspace.hpp` 收纳排队标签、子 Agent 标签、调暗层、三栏工作区与滚动区框架这几个只给 Shell 用的小控件；`transcript_render.cpp` 放各块渲染器与链接识别）和 `overlay/`（浮层）；
 库为 `dagent_ui`，只依赖 client、protocol、tui 与 base。界面运行在前端进程，只持有 `client::Client`、协议 DTO
 与页面状态：业务操作都经 [私有协议](protocol.md) 发给自己的后端，执行状态、队列、模式与模型的真值都在后端 runtime。
 它使用 [TUI 框架](tui-framework.md)；phase 4 解冻框架，新增通用超链接样式和块可见性查询；phase 5a 增加颜色令牌与显式 256 色回退，

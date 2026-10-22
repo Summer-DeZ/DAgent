@@ -63,10 +63,10 @@ L1 终端     Terminal
 | 层 | 子目录 | 头文件 | 实现 |
 | --- | --- | --- | --- |
 | L1 终端 | `terminal/` | `terminal.hpp`、`event_wait.hpp` | `terminal.cpp`、`terminal_posix.cpp`、`terminal_win.cpp` |
-| L2 网格 | `grid/` | `surface.hpp`、`grapheme.hpp` | `surface.cpp`、`present.cpp`、`grapheme.cpp` |
+| L2 网格 | `grid/` | `surface.hpp`、`grapheme.hpp`、`grapheme_tables.hpp` | `surface.cpp`、`present.cpp`、`grapheme.cpp`；脚本生成的 Unicode 区段表在 `grapheme_tables.cpp` |
 | L3 布局 | `widget/` | `layout.hpp` | `layout.cpp` |
 | L4 控件 | `widget/` | `widget.hpp` | `widget.cpp`、`theme.cpp` |
-| L5 文档层 | `document/` | `document.hpp` | `document.cpp`、`wrap.cpp`、`markdown.cpp`、`syntax.cpp` |
+| L5 文档层 | `document/` | `document.hpp`、`markdown_detail.hpp` | `document.cpp`、`wrap.cpp`、`markdown.cpp`（行分类与 MarkdownStream）、`markdown_render.cpp`（行内解析、排版与 Markdown/表格渲染器）、`syntax.cpp` |
 | L6 输入 | `runtime/` | `input.hpp` | `input.cpp` |
 | L7 运行时 | `runtime/` | `runtime.hpp` | `runtime.cpp`、`keymap.cpp`；原生事件等待在 `terminal/terminal_{posix,win}.cpp` |
 
