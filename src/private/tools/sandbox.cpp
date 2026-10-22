@@ -12,9 +12,6 @@ exec::MxcRequest sandbox_request(const Grant& grant, const exec::MxcRuntime& run
     auto& policy = request.policy;
     policy.mode = grant.sandbox == agent::SandboxProfile::read_only
         ? exec::Mode::read_only : exec::Mode::workspace_write;
-    policy.allow_network = grant.allow_network;
-    policy.allow_local_sockets = grant.allow_local_sockets;
-    policy.private_tmp = grant.private_tmp;
     policy.protect_sensitive_names = grant.protect_sensitive_names;
     policy.readable = grant.readable;
     policy.writable = grant.writable;

@@ -27,7 +27,6 @@ struct SandboxOptions {
     std::vector<std::string> network_denied;
     std::string backend = "mxc";          ///< 执行后端；唯一受支持值是 "mxc"
     std::string host_access = "ask_once"; ///< 能力不足时的宿主访问提示策略
-    std::chrono::milliseconds startup_timeout{15000};         ///< 受限进程启动上限
     std::chrono::milliseconds network_approval_timeout{120000}; ///< 一次运行中网络审批的等待上限
     int max_network_requests_per_execution = 32;              ///< 每次执行的运行中网络请求预算
 };
@@ -41,9 +40,6 @@ struct Policy {
     std::vector<std::filesystem::path> protected_read;
     std::vector<std::filesystem::path> read_exceptions;
     std::vector<std::filesystem::path> protected_write;
-    bool allow_network = false;
-    bool allow_local_sockets = false;
-    bool private_tmp = true;
     bool protect_sensitive_names = true;
     /// 已批准的 host:port 网络目标；受限后端只能放行这些目标（空表示全部拒绝）。
     std::vector<std::string> network_targets;

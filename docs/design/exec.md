@@ -213,8 +213,8 @@ MXC 只接受精确字符串）。bash、web、MCP、只读搜索与探测共用
 所有路径先 `weakly_canonical` 再去重，只传已存在的路径，不制造占位挂载点。敏感路径由 `exec::sensitive_paths`
 在每次执行开始时扫描：`.env`、`.env.*`、`*.pem`、`*.key`、`id_rsa*`、`id_ed25519*` 以及 `.ssh`、`.gnupg` 目录
 （不进入这两个目录，不跟随符号链接；根本身是文件时只检查它的名字），因此保护是启动时快照，运行中新建的同名文件不在承诺内。
-`mxc_policy` 不读取 `Policy` 的 `allow_network`、`allow_local_sockets`、`private_tmp`：`/tmp` 总是 MXC 的私有 tmpfs，
-网络只由请求是否带闸门决定；这几个字段仍随 Grant 进入 tool_started 与 BashView。
+`Policy` 不再有 `allow_network`、`allow_local_sockets`、`private_tmp`：`/tmp` 总是 MXC 的私有 tmpfs，
+网络只由请求是否带闸门决定；Grant 仍保留这三个字段，随 tool_started 与 BashView 记录。
 `mxc_policy` 不生成 `process`，由执行函数补上 `commandLine`、`cwd`、`env` 和 `timeout`（固定 0，超时由 DAgent 自己落实）。
 
 ### 沙箱内看到的文件系统

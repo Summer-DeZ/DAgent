@@ -156,7 +156,7 @@ stdio 项支持 `command`、`args`、`env`、`environment`，HTTP 项支持 `url
 相对路径按 workspace cwd 解析，不改变实际沙箱能力，也不覆盖控制数据、敏感读取或 `.git` 保护。
 `allowed_targets/denied_targets` 表达网络目标；`network_approval_timeout_ms`（默认 120000）与
 `max_network_requests_per_execution`（默认 32）是运行中网络审批的等待上限与每次执行的提问预算，必须为正。
-`startup_timeout_ms` 仍被解析并要求为正，但当前没有任何代码读取它（旧 SRT 的 bridge 启动握手已随后端移除）。
+`startup_timeout_ms` 已随 SRT 的 bridge 握手一起移除，配置里出现它会按未知键处理。
 
 主要运行策略由 `home/config/config.json` 显式提供，缺少必填项时报配置错误。
 `run.max_total_tokens` 缺省为 0；`subagents.approval`、`web` 和 `memory` 缺省采用下表值，兼容未添加这些字段的配置。

@@ -193,7 +193,7 @@ server 内清理后重名的工具被跳过。跨 server 的名字冲突由 app 
 
 app 负责解析 `home/config/mcp.json` 的 `mcpServers` 并展开 `${VAR}`，包括每个 server 的
 `permissions` profile。`mcp.connect_timeout_ms` 和 `mcp.probe_timeout_ms` 控制发现和调用启动超时，
-进程与 HTTP 选项沿用对应配置段；stdio server 的冷启动时间计入 `probe_timeout`，`sandbox.startup_timeout_ms` 目前没有使用方。
+进程与 HTTP 选项沿用对应配置段；stdio server 的冷启动时间计入 `probe_timeout`。
 `clientInfo.version` 使用根 CMake 项目的 `DAGENT_VERSION` 编译宏。
 
 HTTP server 的连接目标只来自受信任配置的 `url`，且要求 profile 显式列出网络目标；客户端不跟随重定向
