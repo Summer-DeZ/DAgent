@@ -44,6 +44,7 @@ add_library(dagent_tui STATIC
     private/tui/runtime/input.cpp
     private/tui/runtime/runtime.cpp
     private/tui/runtime/keymap.cpp
+    private/tui/runtime/scrollback_mouse.cpp
 )
 
 target_include_directories(dagent_tui PUBLIC ${CMAKE_SOURCE_DIR}/src/public)

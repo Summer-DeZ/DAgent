@@ -1,6 +1,7 @@
 #include "ui/style/appearance.hpp"
 #include "base/platform.hpp"
 #include "ui/overlay/approval.hpp"
+#include "tui/runtime/scrollback_mouse.hpp"
 #include "ui/style/strings.hpp"
 #include "ui/style/display.hpp"
 #include "ui/style/theme_config.hpp"
