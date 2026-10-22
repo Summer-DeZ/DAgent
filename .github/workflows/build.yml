@@ -52,6 +52,12 @@ jobs:
         shell: pwsh
         run: '& "$env:VCPKG_INSTALLATION_ROOT/vcpkg.exe" install boost-asio boost-process curl openssl libiconv --triplet x64-windows --x-install-root ${{ github.workspace }}/vcpkg_installed'
 
+      # Ninja 生成器需要 MSVC 开发环境（cl.exe 与 Windows SDK 在 PATH/INCLUDE/LIB 中），runner 的 shell 默认没有。
+      - name: Set up MSVC environment
+        uses: ilammy/msvc-dev-cmd@v1
+        with:
+          arch: x64
+
       - name: Configure
         shell: pwsh
         run: cmake --preset win-release "-DCMAKE_TOOLCHAIN_FILE=$env:VCPKG_INSTALLATION_ROOT/scripts/buildsystems/vcpkg.cmake" "-DVCPKG_INSTALLED_DIR=${{ github.workspace }}/vcpkg_installed"
