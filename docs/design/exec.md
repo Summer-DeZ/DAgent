@@ -245,19 +245,25 @@ MXC 的 bubblewrap 后端从拒绝一切开始：以只读方式绑定 `/bin`、
    （POSIX 固定在 `/tmp`，不读取宿主 TMPDIR），并建 `config/`、`cache/`、`run/` 子目录。
 2. 请求带闸门时启动本次执行独占的 `NetworkProxy`（见下文）。
 3. 编译策略并补 `process`：`commandLine` 由 `detail::sandbox_command_line` 生成，POSIX 为
-   `exec '<托管 bash>' --noprofile --norc -c '<脚本>'`（sh 单引号转义，由 MXC 的 `/bin/sh -c` 解释）；
-   `merge_stderr` 为 true 时脚本前置 `exec 2>&1`，stderr 在 shell 内并入 stdout，交错顺序与宿主执行一致，
-   shell 启动前后端自己写到 stderr 的诊断也归入 stdout。`cwd` 是请求的 workspace。
+   `exec setsid -w '<托管 bash>' --noprofile --norc -c '<脚本>'`（sh 单引号转义，由 MXC 的 `/bin/sh -c` 解释）。
+   `setsid -w` 让受限 shell 自成会话与进程组，命令里的 `kill 0` 只打到它自己，不会连带杀掉同组的 bwrap
+   （那样 MXC 只能报告退出码 -1）；`-w` 等待 shell 结束并原样回传退出码（例如 `kill -TERM 0` 得到 143）。
+   脚本按顺序拼接：不保留 stdin 时（`run_mxc`，含 `ReadOnlySandbox`）先写 `exec </dev/null`——MXC 总是给沙箱一个
+   stdin 管道，rg 这类工具会把可读的空管道当成搜索输入；`merge_stderr` 为 true 时再写 `exec 2>&1`，stderr 在 shell 内
+   并入 stdout，交错顺序与宿主执行一致；最后是命令本身。shell 启动前后端自己写到 stderr 的诊断在合并时也归入 stdout。
+   `cwd` 是请求的 workspace。
 4. `env` 由 `detail::make_environment` 以 `inherit_env=false` 生成：非交互默认项 → `Options::environment` →
    删除 `BASH_ENV`、`ENV`、`BASHOPTS`、`SHELLOPTS`、`CDPATH`、`GLOBIGNORE`、`PROMPT_COMMAND`、`LD_PRELOAD`、`LD_LIBRARY_PATH`、
    `PYTHONPATH`、`PERL5LIB`、`RUBYOPT`、`NODE_OPTIONS`、`NODE_PATH`、`NODE_EXTRA_CA_CERTS` 与大小写两种 `*_proxy` →
    请求的环境（PATH、LC_ALL 等）→ HOME、`XDG_CONFIG_HOME`、`XDG_CACHE_HOME`、`UV_CACHE_DIR`、`NPM_CONFIG_CACHE`、
    `XDG_RUNTIME_DIR`、`TMPDIR`/`TMP`/`TEMP` 指向私有 HOME 内。MXC 以 `--clearenv` 启动，沙箱只看到这份列表；
    代理模式下 MXC 另行注入代理变量。
-5. `mxc_spawn_json` 失败时把 MXC 的错误消息与 remediation 拼进 `ExecError{sandbox}`；成功后取出告警写 debug 日志。
-6. 不需要 stdin 时立即释放 stdin 流，子进程读到 EOF（等同 `/dev/null`）；stdout、stderr 各有一个读取线程，
-   以 64 KiB 缓冲阻塞调用 `mxc_stream_read`。调用线程约每 10 ms 轮询一次 `mxc_sandbox_try_wait`，按到达顺序派发输出，
-   并在这里落实超时与取消。
+5. `mxc_spawn_json` 在 stdout 读取线程上调用，调用线程只等待 spawn 结果：bubblewrap 的 `--die-with-parent` 是 PDEATHSIG，
+   跟随创建它的**线程**而不是进程，从短命线程（例如 MCP 的连接线程）启动的沙箱会在该线程退出时被杀；
+   stdout 读取线程活到命令结束，所以由它 spawn，之后继续读 stdout。spawn 失败时把 MXC 的错误消息与 remediation
+   拼进 `ExecError{sandbox}`，在调用线程上抛出；成功后取出告警写 debug 日志。
+6. 不保留 stdin 时立即释放 stdin 流，管道写端关闭；stdout、stderr 各有一个读取线程，以 64 KiB 缓冲阻塞调用
+   `mxc_stream_read`。调用线程约每 10 ms 轮询一次 `mxc_sandbox_try_wait`，按到达顺序派发输出，并在这里落实超时与取消。
 7. 进程退出后最多再读 `drain_after_exit`，然后清理：仍在运行就杀进程树 → 关闭流的 closer 让阻塞中的读以 EOF 返回 →
    join 读取线程并释放流 → 释放 stdin → 必要时 `mxc_sandbox_wait` → `mxc_sandbox_free` → 停止代理 → 删除私有 HOME。
 
@@ -265,8 +271,8 @@ MXC 的 bubblewrap 后端从拒绝一切开始：以只读方式绑定 `/bin`、
 | --- | --- |
 | 超时 | 限值取请求的 timeout，否则 `Options::default_timeout`；到期调用 `mxc_sandbox_kill_for_timeout`，`Result::timed_out=true`，`exit_code` 为空 |
 | 取消 | stop_token 生效后调用 `mxc_sandbox_kill`，抛 `ExecError{cancelled}`（`command cancelled`）；本机实测从请求停止到返回约 11 ms |
-| 终止方式 | MXC 对首进程发 SIGKILL，再杀整个进程组；没有 SIGTERM 宽限，`Options::kill_grace` 对 MXC 路径不生效 |
-| 退出状态 | `Result::signal` 恒为空；沙箱内进程被信号终止时以退出码 128+N 报告 |
+| 终止方式 | MXC 对首进程（bwrap）发 SIGKILL，再杀它的进程组，沙箱内其余进程随 PID 命名空间结束；没有 SIGTERM 宽限，`Options::kill_grace` 对 MXC 路径不生效 |
+| 退出状态 | `Result::signal` 恒为空；受限 shell 被信号终止时以退出码 128+N 报告，经 `setsid -w` 回传 |
 | 输出 | `out`/`err` 按 `max_output_bytes` 保留头尾，规则与 `run` 相同；`merge_stderr` 时 `err` 为空 |
 | 启动开销 | 无网络 10–30 ms；代理模式 170–210 ms（2026-10-22 本机以 `true` 测得） |
 
@@ -296,7 +302,7 @@ MXC 的 bubblewrap 后端从拒绝一切开始：以只读方式绑定 `/bin`、
   不用口令的原因是 MXC 拒绝带凭据的代理 URL：URL 经 `bwrap --setenv` 进入命令行参数，`/proc/<pid>/cmdline` 对所有本地用户可见。
 - `NetworkProxy::stop` 关闭监听与全部隧道并等待服务线程；仍在等待闸门的请求按拒绝结束。
 
-代理模式要求宿主具备 slirp4netns、util-linux 的 `unshare`（支持 `--map-current-user`、`--keep-caps`）与 `nsenter`、iproute2 的 `ip`、
+代理模式另外要求宿主具备 slirp4netns、util-linux 的 `unshare`（支持 `--map-current-user`、`--keep-caps`）与 `nsenter`、iproute2 的 `ip`、
 nf_tables 后端的 iptables/ip6tables 与对应 `-restore`，并已加载 `nf_conntrack` 内核模块（非特权 bubblewrap 无法按需加载）；
 MXC 在启动前校验这些前置，缺失即失败，从不退回共享宿主网络。
 
@@ -312,7 +318,8 @@ MXC 在启动前校验这些前置，缺失即失败，从不退回共享宿主�
 
 ### 长期受限子进程：MxcChild
 
-`MxcChild::spawn(MxcRequest, Options)` 以与 `run_mxc` 相同的步骤启动受限子进程，但保留 stdin 管道；接口与 `exec::Child` 一致：
+`MxcChild::spawn(MxcRequest, Options)` 以与 `run_mxc` 相同的步骤启动受限子进程（同样由 stdout 读取线程 spawn，
+所以 MCP 连接线程结束后 server 仍然存活），但保留 stdin 管道，脚本不加 `exec </dev/null`；接口与 `exec::Child` 一致：
 
 - `write` 线程安全，由写线程调用 `mxc_stream_write` 与 `mxc_stream_flush`；积压超过 8 MiB 或写失败后丢弃数据并记日志。
 - `on_line` 按行回调 stdout（去掉行尾 `\r`）；`on_stderr` 按行接管 stderr，注册前到达的行写入 `base::logger("mcp")` 并最多缓存
@@ -328,7 +335,8 @@ MCP stdio 传输的用法见 [mcp](mcp.md#stdio)。
 
 `ReadOnlySandbox{runtime, protected_read, read_exceptions}` 供 workspace 的 rg 搜索与上下文 Git 使用。`run(Command)` 以
 `read_only` 模式执行：可读范围只有 `command.cwd`（加托管 bash、rg 所在目录），argv 逐个 `shell_quote` 后拼成脚本，
-环境为 `command.env_set` 加 `PATH=default_search_path()` 与 `LC_ALL=C.UTF-8`，不带闸门、不合并 stderr。
+环境为 `command.env_set` 加 `PATH=default_search_path()` 与 `LC_ALL=C.UTF-8`，不带闸门、不合并 stderr；
+经 `run_mxc` 执行，脚本以 `exec </dev/null` 开头，rg 不会把 stdin 管道当成搜索输入。
 `runtime` 为空时抛 `ExecError{sandbox}`（`read-only sandbox execution unavailable; run dagent sandbox status`），没有宿主回退。
 装配层把 Home 的 `config/`、`data/`、`logs/`、`run/` 与 `memory/` 放进它的 `protected_read`。
 
@@ -364,7 +372,8 @@ web 传输不自行建立另一套权限规则。
 ### 宿主前置
 
 Linux 上 MXC 的 bubblewrap 后端要求：bwrap ≥ 0.5（MXC 用到 `--clearenv`）、允许非特权 user namespace、
-上文代理模式所列的网络工具与 `nf_conntrack`；预编译的 `libmxc_ffi.so` 引用 GLIBC_2.34 符号，需要 glibc ≥ 2.34。
+util-linux 的 `setsid`（受限命令行用它启动 shell，按命令环境的 PATH 在沙箱可见的系统目录中查找）、上文代理模式所列的网络工具与 `nf_conntrack`；
+预编译的 `libmxc_ffi.so` 引用 GLIBC_2.34 符号，需要 glibc ≥ 2.34。
 bwrap、unshare、slirp4netns 都由 `dagent-backend` 进程内加载的库直接生成，对开启 AppArmor 非特权 userns 限制的主机，
 CMake 仅在 Linux 构建和安装时为实际后端路径生成专用 `dagent.apparmor`（`flags=(unconfined)` 加 `userns`），子进程继承该 profile；
 由管理员安装和加载，详见 [构建与安装](../guide/build.md)。正常启动按后端可执行路径自动匹配，不依赖 `aa-exec` 包装器。

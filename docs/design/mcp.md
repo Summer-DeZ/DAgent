@@ -94,7 +94,9 @@ Impl 持有共享 `ConnectionState`，传输借用它及不可变的配置/选�
 stdio server 必须携带受信任配置里的显式权限 profile（`permissions.read/write/network`）；缺少 profile
 时不会启动，不允许"先运行、再在 tools/call 时请求批准"。装配层（`app/bootstrap.cpp`）用 profile 和已解析的
 `MxcRuntime` 填写 `StdioSandbox`；没有可用运行时时记录未启动原因，不在宿主直接启动。`StdioTransport` 用
-`exec::MxcChild` 在 MXC 沙箱内启动 server，每个连接一个长期受限子进程：
+`exec::MxcChild` 在 MXC 沙箱内启动 server，每个连接一个长期受限子进程。连接可能由短命线程发起，而 bubblewrap 的
+`--die-with-parent` 跟随创建它的线程，所以 `mxc_spawn_json` 由 `MxcChild` 自己的 stdout 读取线程调用，
+发现完成、连接线程退出后 server 仍然存活（见 [exec](exec.md#长期受限子进程mxcchild)）：
 
 | 方面 | 行为 |
 | --- | --- |

@@ -224,7 +224,8 @@ workspace 的 HEAD diff 仍执行 `git`，通过其传入 PATH 搜索。
 
 MXC 后端的库加载、策略 JSON、流读写线程、等待与终止以及回环代理都在共享的 `mxc.cpp`、`proxy.cpp`；
 平台文件只提供三项：`SharedLibrary`（POSIX 为 `dlopen(RTLD_NOW | RTLD_LOCAL)`/`dlsym`，析构 `dlclose`）、
-`sandbox_command_line`（POSIX 为 `exec '<shell>' --noprofile --norc -c '<script>'`，sh 单引号转义，由 MXC 的 `/bin/sh -c` 解释）
+`sandbox_command_line`（POSIX 为 `exec setsid -w '<shell>' --noprofile --norc -c '<script>'`，sh 单引号转义，由 MXC 的 `/bin/sh -c` 解释；
+`setsid -w` 让受限 shell 自成会话，命令里的 `kill 0` 不会杀到 bwrap，退出码原样回传）
 和 `loopback_peer_is_current_user`（Linux 读 `/proc/net/tcp`，按对端端口找到客户端一侧的条目，比较 uid 与 `getuid()`；
 找不到条目返回 false）。
 
@@ -299,7 +300,7 @@ QueryGatewayImpl 持有 watcher jthread，重新设置监听先停止并等待�
 线程内部持有 inotify/eventfd，取消回调写 eventfd 唤醒 poll；取消回调销毁后才按原顺序关闭两个 fd。
 目录保护判断由共享私有成员 `should_watch_directory` 提供，原生实现保留根目录加入、4096 上限、事件掩码、重扫与通知顺序。
 
-`host_prerequisites` 在 POSIX 检查 bwrap（`bwrap --version` ≥ 0.5）、slirp4netns、unshare、nsenter、ip、iptables-restore：
+`host_prerequisites` 在 POSIX 检查 bwrap（`bwrap --version` ≥ 0.5）、slirp4netns、unshare、nsenter、setsid、ip、iptables-restore：
 先走 exec::which，再检查 `/usr/bin`、`/usr/sbin` 下的固定位置；只返回路径与版本文本，不持有进程或文件资源。
 Windows 返回空列表。AppArmor 诊断保持在真实 sandbox probe 之后追加，缺少 runtime 的提前返回不读取宿主诊断。
 bubblewrap、slirp4netns 等进程由 MXC 原生库在后端进程内生成，不属于自有 C++ 的平台调用。
