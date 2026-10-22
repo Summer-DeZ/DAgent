@@ -139,8 +139,11 @@ DAgent 现有的执行模型与 MXC 的契约高度对应：
 2026-10-22 补充：一台 Windows 11 26H2（build 26300.9711，`System32` 下有 `processmodel.dll`）物理机以普通用户运行
 `wxc-exec.exe --probe`，结果 `tier = base-container`、`warnings` 为空、`baseContainerApiPresent`、
 `baseContainerSupportsDenyPaths`、`baseContainerSupportsIngressHostLoopbackAllow`、`baseContainerSupportsIdentitylessLoopbackProxy`
-均为 true，未出现 E_ACCESSDENIED。因此 BaseContainer 在 26H2 上对普通用户可用，门槛确认为 26H2；沙箱后端切换计划见
-`nexttodo/mxc-sandbox-plan.md`，Windows 隔离在该机器上验收。
+均为 true，未出现 E_ACCESSDENIED。随后开发虚拟机也完成了升级：KB5121794 虽不在 Update Catalog，但微软分发主机
+`catalog.sf.dl.delivery.mp.microsoft.com` 提供带 SHA-1 的 MSU 直链（`Windows11.0-KB5121794-x64_5e20a3cce48d6611b16bdec42b07167f5456586a.msu`，
+174 KB，Authenticode 签名为 Microsoft Corporation），`DISM /Online /Add-Package` 安装、重启后为 26300.9711，`wxc-exec --probe` 同样报告
+`tier = base-container`。因此 BaseContainer 在 26H2 上对普通用户可用，门槛确认为 26H2 启用包；沙箱后端切换计划见
+`nexttodo/mxc-sandbox-plan.md`。
 
 探测材料：`/home/jyt/winvm/shared/mxc/bin/`（SDK 1.0.1 的 x64 二进制）、`/home/jyt/winvm/shared/dagent/jobs/vmupdate/`（安装与探测脚本及输出）。
 升级前的整盘备份在 `/home/jyt/winvm/storage-pre-update-20261022/`。

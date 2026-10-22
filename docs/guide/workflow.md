@@ -56,7 +56,7 @@ $CM --build --preset dev -j 8 --target dagent_tui   # 只编一个库，改动�
 
 ### 3.1 环境
 
-Windows 11 Pro 25H2 虚拟机（dockur/windows，容器名 `dagent-win`），全部文件在 `/home/jyt/winvm/`：
+Windows 11 Pro 26H2（build 26300.9711）虚拟机（dockur/windows，容器名 `dagent-win`），全部文件在 `/home/jyt/winvm/`：
 
 - `compose.yml`、`storage/`（磁盘）、`shared/`（在客户机里是 `\\host.lan\Data`）、`tools/`（宿主侧脚本）。
 - 连接：`ssh dagent-win`（127.0.0.1:2222，登录 shell 是 PowerShell）；网页控制台 http://127.0.0.1:8006/ ，RDP 127.0.0.1:33890。截图 `tools/shot.sh [out.png]`，注入按键 `tools/type.py`。
