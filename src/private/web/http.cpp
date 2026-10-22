@@ -103,15 +103,15 @@ std::optional<std::pair<std::string, int>> url_target(std::string_view url) {
     return std::make_pair(std::move(host), port);
 }
 
-Response get(exec::SrtRequest request, std::string_view url, const Options& options,
+Response get(exec::MxcRequest request, std::string_view url, const Options& options,
              exec::Options process, std::stop_token stop) {
     return get(std::move(request), url, options, std::move(process), BeforeRequest{}, stop);
 }
 
-Response get(exec::SrtRequest request, std::string_view url, const Options& options,
+Response get(exec::MxcRequest request, std::string_view url, const Options& options,
              exec::Options process, const BeforeRequest& before, std::stop_token stop) {
     if (request.policy.mode != exec::Mode::read_only)
-        throw std::runtime_error("web transport requires read-only SRT");
+        throw std::runtime_error("web transport requires the read-only sandbox");
     std::string current = normalize_url(url);
     request.environment.emplace_back("LC_ALL", "C.UTF-8");
     process.max_output_bytes = std::max(options.max_body_bytes + 1, std::size_t{65536});
@@ -153,7 +153,7 @@ Response get(exec::SrtRequest request, std::string_view url, const Options& opti
         request.timeout = remaining;
         exec::Result result;
         try {
-            result = exec::run_srt(request, process, {}, stop);
+            result = exec::run_mxc(request, process, {}, stop);
         } catch (const exec::ExecError&) {
             if (!denial.empty() && !stop.stop_requested()) throw std::runtime_error(denial);
             throw;

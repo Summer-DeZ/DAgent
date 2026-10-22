@@ -61,7 +61,7 @@ public:
              std::string environment_name, exec::Environment environment)
         : root_(ctx.root()), process_options_(ctx.process()), files_(ctx.files()),
           max_result_bytes_(ctx.options().max_result_bytes), collect_bytes_(ctx.options().bash_collect_bytes),
-          srt_(ctx.options().srt), sandbox_state_root_(ctx.options().sandbox_state_root),
+          mxc_(ctx.options().mxc),
           sandbox_options_(ctx.options().sandbox), command_(std::move(command)),
           environment_name_(std::move(environment_name)), environment_(std::move(environment)),
           analysis_(std::move(analysis)), timeout_(timeout) {
@@ -124,7 +124,7 @@ private:
                                 : grant.sandbox == agent::SandboxProfile::full_access ? exec::Mode::full_access
                                                                                       : exec::Mode::workspace_write;
         const bool sandboxed = mode != exec::Mode::full_access;
-        if (sandboxed && (!srt_.has_value() || grant.backend != "srt"))
+        if (sandboxed && (!mxc_.has_value() || grant.backend != "mxc"))
             return error_result("restricted execution is unavailable; run `dagent sandbox status` and fix the sandbox runtime");
 
         std::string collected;
@@ -141,7 +141,7 @@ private:
         std::string failure;
         try {
             if (sandboxed) {
-                auto request = detail::sandbox_request(grant, *srt_, root_, sandbox_state_root_, sandbox_options_);
+                auto request = detail::sandbox_request(grant, *mxc_, root_, sandbox_options_);
                 request.command = command_;
                 request.environment = environment_.variables;
                 request.timeout = timeout_;
@@ -152,7 +152,7 @@ private:
                 // 固定消息语言：报错文本（strerror）不随系统 locale 变化，给模型和沙箱判断都是稳定输入。
                 // 用 C.UTF-8 而不是 C，否则 ls 会把中文文件名转义成 \346… 这样的八进制。
                 request.environment.emplace_back("LC_ALL", "C.UTF-8");
-                outcome = exec::run_srt(request, process_options_, on_chunk, stop);
+                outcome = exec::run_mxc(request, process_options_, on_chunk, stop);
             } else {
                 exec::Command cmd;
                 cmd.argv = {base::path_to_utf8(environment_.shell), "--noprofile", "--norc", "-c", command_};
@@ -337,8 +337,7 @@ private:
     workspace::FileOptions files_;
     std::size_t max_result_bytes_ = 0;
     std::size_t collect_bytes_ = 0;
-    std::optional<exec::SrtRuntime> srt_;
-    std::filesystem::path sandbox_state_root_;
+    std::optional<exec::MxcRuntime> mxc_;
     exec::SandboxOptions sandbox_options_;
     std::string command_;
     std::string environment_name_;

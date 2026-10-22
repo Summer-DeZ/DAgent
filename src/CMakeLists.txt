@@ -106,7 +106,7 @@ dagent_compile_options(dagent_net)
 target_compile_definitions(dagent_net PRIVATE DAGENT_VERSION="${PROJECT_VERSION}")
 target_link_libraries(dagent_net PRIVATE CURL::libcurl)
 
-# 子进程与沙箱：一次性命令、长期子进程、bash 命令分析、SRT 后端与敏感路径扫描。
+# 子进程与沙箱：一次性命令、长期子进程、bash 命令分析、MXC 后端与敏感路径扫描。
 add_library(dagent_exec STATIC
     private/exec/detail.cpp
     private/exec/platform_${DAGENT_PLATFORM}.cpp
@@ -114,7 +114,8 @@ add_library(dagent_exec STATIC
     private/exec/child.cpp
     private/exec/shell.cpp
     private/exec/sandbox.cpp
-    private/exec/srt.cpp
+    private/exec/mxc.cpp
+    private/exec/proxy.cpp
 )
 
 target_include_directories(dagent_exec PUBLIC ${CMAKE_SOURCE_DIR}/src/public)
@@ -126,6 +127,7 @@ target_link_libraries(dagent_exec
     PUBLIC dagent_base
     PRIVATE Boost::headers tree-sitter tree-sitter-bash Threads::Threads
         "$<$<PLATFORM_ID:Windows>:Boost::process;ws2_32;bcrypt>"
+        "$<$<NOT:$<PLATFORM_ID:Windows>>:${CMAKE_DL_LIBS}>"
 )
 
 # Web transport and document decoding; authorization is supplied by tools.
@@ -433,23 +435,12 @@ endif()
 target_link_libraries(dagent PRIVATE dagent_app_cli dagent_ui)
 
 if(CMAKE_SYSTEM_NAME STREQUAL "Linux")
-    # SRT bridge 是程序资源：构建时复制到二进制旁的 libexec/，安装时随二进制覆盖。
-    set(DAGENT_BRIDGE ${CMAKE_CURRENT_SOURCE_DIR}/private/exec/srt_bridge.mjs)
-    set(DAGENT_BWRAP_WRAPPER ${CMAKE_CURRENT_SOURCE_DIR}/private/exec/srt_bwrap.sh)
-    add_custom_command(OUTPUT ${CMAKE_CURRENT_BINARY_DIR}/libexec/srt_bridge.mjs ${CMAKE_CURRENT_BINARY_DIR}/libexec/srt_bwrap.sh
-        COMMAND ${CMAKE_COMMAND} -E make_directory ${CMAKE_CURRENT_BINARY_DIR}/libexec
-        COMMAND ${CMAKE_COMMAND} -E copy_if_different ${DAGENT_BRIDGE} ${CMAKE_CURRENT_BINARY_DIR}/libexec/srt_bridge.mjs
-        COMMAND ${CMAKE_COMMAND} -E copy_if_different ${DAGENT_BWRAP_WRAPPER} ${CMAKE_CURRENT_BINARY_DIR}/libexec/srt_bwrap.sh
-        DEPENDS ${DAGENT_BRIDGE} ${DAGENT_BWRAP_WRAPPER}
-        COMMENT "Copying SRT bridge to libexec")
-    add_custom_target(dagent_bridge ALL DEPENDS ${CMAKE_CURRENT_BINARY_DIR}/libexec/srt_bridge.mjs ${CMAKE_CURRENT_BINARY_DIR}/libexec/srt_bwrap.sh)
-    add_dependencies(dagent dagent_bridge)
-
+    # SearXNG 入口是程序资源：构建时复制到二进制旁的 libexec/，安装时随二进制覆盖。
     set(DAGENT_SEARXNG_ENTRY ${CMAKE_CURRENT_SOURCE_DIR}/private/app/searxng_server.py)
     add_custom_command(OUTPUT ${CMAKE_CURRENT_BINARY_DIR}/libexec/searxng_server.py
         COMMAND ${CMAKE_COMMAND} -E make_directory ${CMAKE_CURRENT_BINARY_DIR}/libexec
         COMMAND ${CMAKE_COMMAND} -E copy_if_different ${DAGENT_SEARXNG_ENTRY} ${CMAKE_CURRENT_BINARY_DIR}/libexec/searxng_server.py
         DEPENDS ${DAGENT_SEARXNG_ENTRY})
     add_custom_target(dagent_searxng_entry ALL DEPENDS ${CMAKE_CURRENT_BINARY_DIR}/libexec/searxng_server.py)
-    add_dependencies(dagent-backend dagent_bridge dagent_searxng_entry)
+    add_dependencies(dagent-backend dagent_searxng_entry)
 endif()

@@ -2,7 +2,7 @@
 
 执行外部命令的模块。头文件在 `src/public/exec/`，实现在 `src/private/exec/`，构建为静态库
 `dagent_exec`，命名空间 `dagent::exec`。依赖 base；内部使用 Boost.Process v2 + Asio（Linux 为 header-only，Windows 链接 Boost::process）、
-tree-sitter + tree-sitter-bash。
+tree-sitter + tree-sitter-bash；受限执行在运行时加载 MXC 原生库，不在链接期依赖它。
 
 ---
 
@@ -12,15 +12,19 @@ tree-sitter + tree-sitter-bash。
 | --- | --- | --- |
 | 一次性命令：超时、取消、流式输出、输出截断，结束时清理整个进程组 | `exec/process.hpp` | `run`、`which`、`shell_quote` |
 | 平台工具路径与搜索路径默认值 | `exec/process.hpp` | `system_git_program`、`default_search_path`、`project_search_path` |
-| 长期存活的子进程：按行读 stdout，线程安全地写 stdin（给 MCP stdio 用） | `exec/child.hpp` | `Child` |
+| 长期存活的宿主子进程：按行读 stdout，线程安全地写 stdin（SearXNG 服务使用） | `exec/child.hpp` | `Child` |
 | bash 命令分析：语法状态、简单命令、影响证据和只读分类 | `exec/shell.hpp` | `analyze`、`is_known_readonly`、`is_dangerous` |
 | 受限执行的中立值：模式、路径/网络边界与能力快照 | `exec/sandbox.hpp` | `Policy`、`Support`、`sensitive_paths` |
-| SRT 后端：bridge 控制通道、运行中网络审批、只读搜索边界 | `exec/srt.hpp` | `run_srt`、`srt_config`、`ReadOnlySandbox` |
+| MXC 后端：原生库加载与版本校验、策略编译、受限执行、长期受限子进程、只读搜索边界 | `exec/mxc.hpp` | `MxcLibrary`、`mxc_policy`、`allowlist_gate`、`run_mxc`、`MxcChild`、`ReadOnlySandbox` |
+| MXC 1.0.1 的 C ABI：结构体布局、状态码与函数指针类型 | `exec/mxc_ffi.hpp` | `ffi::Functions`、`ffi::Status` |
+| 每次受限执行独占的回环 HTTP 代理，按 host:port 调用网络闸门 | `exec/proxy.hpp` | `NetworkProxy` |
 
 `exec/detail.hpp` 与 `exec/platform.hpp` 是模块内部接口，外部不要 include。
 `platform_${DAGENT_PLATFORM}.cpp` 集中实现环境快照、变量名匹配、程序解析、工具和搜索路径默认值、原生管道、
-两套启动钩子、进程组、退出状态与 SRT 控制连接；
-`process.cpp`、`child.cpp` 保留 Asio 调度、计时器、取消、输出处理和回调，`srt.cpp` 保留策略与协议编排。
+两套启动钩子、进程组、退出状态，以及 MXC 后端用到的动态库句柄 `SharedLibrary`、沙箱命令行拼接
+`sandbox_command_line` 和回环连接属主检查 `loopback_peer_is_current_user`；
+`process.cpp`、`child.cpp` 保留 Asio 调度、计时器、取消、输出处理和回调，`mxc.cpp` 保留库加载、策略编译与执行编排，
+`proxy.cpp` 实现代理协议与判定。
 原生 PipeFds 只在平台实现内部定义，公共头不暴露 fd 或 PID。
 
 Windows 的平台实现采用 UTF-16 环境块和 argv、分号 PATH、仅 `.exe`/`.com` 的 PATHEXT 解析，
@@ -33,7 +37,9 @@ Windows 的两个 spawn 入口使用 Boost 1.92 launcher：stdio 的父端是 As
 `ProcessGroup::capture` 可报告失败；加入 Job 或恢复线程失败即终止挂起进程并报告启动失败。
 Job 设置 KILL_ON_JOB_CLOSE；terminate 尝试 Ctrl-Break，宽限到期 force_kill 使用 TerminateJobObject，
 共享计时器、截断和输出回调不变。退出码保留 DWORD 的 32 位到 int（高位为 1 时为负数），signal 留空。
-Windows 没有 SRT 后端：SrtControl 创建/通信和默认可读目录入口直接报 unsupported，无资源的关闭方法为空操作。
+Windows 的 `SharedLibrary` 使用 `LoadLibraryW`/`GetProcAddress`，`sandbox_command_line` 按 MSYS2 运行库的解析规则拼出
+`"<shell>" --noprofile --norc -c "<script>"`，`sandbox_environment` 补上 `SystemRoot`、真实 `LOCALAPPDATA` 与指向私有 HOME 的
+`USERPROFILE`/`APPDATA`，`loopback_peer_is_current_user` 第一版固定返回 true。ProcessContainer 的契约差异见第 5 节末尾。
 完整路径、继承与资源契约见 [platform](platform.md)。下面涉及 POSIX 系统调用的步骤描述 Linux 行为。
 
 ---
@@ -63,7 +69,7 @@ exec::Result r = exec::run(cmd, options,
 | 环境变量 | `Command::inherit_env=true` 时继承 agent 环境并按 `env_deny` 过滤；false 时从空环境开始。两者随后注入非交互默认项、`Options::environment`，再应用 `env_unset` 和 `env_set`。托管命令使用 false 和托管 PATH；受限 bash 还把 HOME/XDG/TMP 及 uv/npm 缓存指向私有目录，宿主凭据及 BASH_ENV/加载器/语言注入变量不会进入命令 |
 | 查找程序 | argv[0] 带 `/` 时直接使用，相对路径**相对 `Command::cwd`**；否则按**子进程将看到的 PATH**（也就是叠加 `env_set` 之后的值）查找 |
 | 信号 | SIGPIPE 在子进程里恢复为默认行为，所以 `yes \| head` 这类管道能正常结束；信号屏蔽清空（父进程为 sigwait 屏蔽的 SIGINT/SIGTERM 不会带进子进程，`timeout` 与 SIGTERM 清理照常生效） |
-| exec 前失败 | fork 之后 chdir、应用沙箱或 `execve` 失败时，错误码经管道交回父进程，子进程直接 `_exit(127)`：不执行 agent 的 atexit 与静态析构，也不会把 fork 时复制来的 stdio 缓冲再写一遍 |
+| exec 前失败 | fork 之后 chdir 或 `execve` 失败时，错误码经管道交回父进程，子进程直接 `_exit(127)`：不执行 agent 的 atexit 与静态析构，也不会把 fork 时复制来的 stdio 缓冲再写一遍 |
 
 `inherited_environment` 在父进程中复制原环境条目，返回有所有权的 `vector<string>`，保留顺序和重复项。
 共享 `make_environment` 直接使用快照容器，稳定删除无名、无等号或匹配 env_deny 的继承项；
@@ -122,7 +128,8 @@ child->terminate();                                // 析构时也会自动调�
 ```
 
 - 内部有一个读取线程，`on_line` 和 `on_exit` 都在这个线程上触发。
-- stderr 未注册处理器时写到 `base::logger("mcp")`；`on_stderr` 可接管逐行处理并接收此前的有限缓存，供 MCP bridge 启动握手使用。
+- stderr 未注册处理器时写到 `base::logger("mcp")`；`on_stderr` 可接管逐行处理并接收此前的有限缓存（SearXNG 用它保留启动错误行）。
+  MCP stdio server 不经 `Child`，而由第 5 节的 `MxcChild` 在沙箱内启动，接口相同。
 - `write` 积压超过 8 MiB，或者进程已经退出时，数据会被丢弃，并记一条日志。
 - `terminate`：先对进程组发 SIGTERM，等 `kill_grace` 后发 SIGKILL，然后等读取线程结束。
 - `on_exit`：正常情况下 code 和 signal 恰好有一个有值；等待子进程失败（极少见，会记日志）时两者都为空。
@@ -157,88 +164,247 @@ child->terminate();                                // 析构时也会自动调�
 sh/bash。它只向 agent Policy 提供判定，不执行命令。
 
 **「只读」不等于「安全」**：仓库自己的 `.git/config`（比如 `core.fsmonitor`、`diff.external`）能让
-`git status`、`git diff` 执行任意程序。所以核心自动放行只读命令时，仍然应该用 `read_only` 沙箱去执行。
+`git status`、`git diff` 执行任意程序。所以核心自动放行只读命令时，仍然用 `read_only` 沙箱去执行。
 
 ---
 
-## 5. 受限执行：SRT 后端
+## 5. 受限执行：MXC 后端
 
-`Policy` 包含读/写允许范围、受保护读/写子路径、网络与本地 socket 开关和私有临时空间要求。
-受限命令由 SRT 后端执行：每次 `run_srt` 调用（包括受限 bash 和 web 请求）启动一个 Node bridge，bridge 初始化
-`@anthropic-ai/sandbox-runtime`、生成 bubblewrap 包装命令并管理代理出口；bridge 不碰命令的
-stdin/stdout/stderr，`SrtRequest::merge_stderr` 为 true 时 bridge 进程本身以 `merge_stderr` 启动，命令的 stderr
-与宿主执行一样并入 stdout 管道（bash 工具开启，只读搜索保持分开）；网络判定经独立控制 FD 交回核心权限层
-（见 [agent 权限契约](agent.md#7-权限与沙箱)）。bwrap 把沙箱内进程的信号终止回报为退出码 128+N，
-`Result::signal` 只反映 bridge 进程本身的终止方式。
-控制 socket 按 UTF-8 流解码，跨数据块保留未完成字符，避免 init 中的命令或路径被分块边界改写。
-bridge 非零退出且未报告结果时，诊断输出先修复 UTF-8，再按字符边界保留最多 500 字节。
+`Policy` 包含模式、读/写允许范围、受保护读/写子路径、读取例外、敏感名称开关和已批准的网络目标。
+受限命令由 Microsoft Execution Containers（MXC）1.0.1 的原生库执行：后端进程在运行时加载
+`libmxc_ffi.so`（Windows 为 `mxc_ffi.dll`），每次 `run_mxc`（受限 bash、web 请求、只读搜索与上下文、启动探测）
+调用一次 `mxc_spawn_json`；MCP stdio server 用同一套资源的长期形式 `MxcChild`。执行路径上没有 Node、bridge 进程或 socat，
+Linux 的隔离由 MXC 自己生成的 bubblewrap 命令落实。运行中的网络判定经闸门交回核心权限层
+（见 [agent 权限契约](agent.md#7-权限与沙箱)）。
 
-`exec::srt_config` 把中立 `Policy` 编译为 SRT 配置：`denyRead` 从 `/` 开始，只显式重开系统路径、
-工作区、实例私有 HOME 与工具链目录；`denyWrite` 在可写树内以启动时快照拒绝工作区里已有的
-`.env*`、`*.pem`、`*.key`、私钥名、`.ssh` 和 `.gnupg`；`/tmp` 只重开实例私有目录。敏感路径扫描由
-`exec::sensitive_paths` 提供，授权范围进入 tool_started，BashView 另保存命令的执行事实。受限命令的 `/proc`、`/dev`
-由 SRT 以新挂载处理，`/sys` 不被根 deny 隐藏——这些都是平台例外，文档如实列出。
+### 原生库与 C ABI
 
-SRT 用 tmpfs 遮蔽 `denyRead` 目录，而 tmpfs 本身可写。bridge 把 SRT 的 `bwrapPath` 指向二进制旁的
-`libexec/srt_bwrap.sh`：它在全部挂载之后把最上层仍是 tmpfs 的挂载点重挂为只读，越界写入直接得到 EROFS，
-不再写进随命令消失的内存目录并返回成功。`/tmp` 是每次执行私有的可写临时目录；叠在 tmpfs 上的工作区、
-私有 HOME 等 bind 是独立挂载，不受影响。托管环境里指向 Home 的 `UV_CACHE_DIR`、`NPM_CONFIG_CACHE`
-在沙箱内不可见，受限命令中与 XDG 缓存一起改到私有 HOME。
+库文件来自 runtime 的 `mxc` 包：`runtime.json` 登记 npm 包 `@microsoft/mxc-sdk@1.0.1` 的 tgz 与 SHA-256，
+包内 `libraries` 给出库的相对路径（Linux-x86_64 为 `bin/x64/libmxc_ffi.so`，Linux-aarch64 为 `bin/arm64/libmxc_ffi.so`，
+Windows-x86_64 为 `bin/x64/mxc_ffi.dll`），装配层经 `Toolchain::library("mxc")` 取得绝对路径，详见 [toolchain](toolchain.md)。
+二进制不进仓库，构建期不链接该库。
 
-`Support` 是启动时真实做一次最小隔离启动后的结果：`backend` 为 `srt` 或 `none`，并提供
-`read_only_ready()` / `workspace_ready()`。权限层只在对应 profile 真实满足时启用；能力不足时受限命令
-不启动。符合策略的 Bash 请求可询问一次性 host access，由人工或符合条件的父模型审批；没有可用审批路由时不执行。
+MXC 不发布 C 头文件，并声明其 C ABI 随库版本变化、不是稳定外部 ABI。`exec/mxc_ffi.hpp` 按上游
+`src/ffi/mxc_ffi/src/{lib,streaming}.rs`（v1.0.1）手写结构体布局、状态码和函数指针类型。
+`MxcLibrary::load` 经 `detail::SharedLibrary` 打开文件（POSIX 为 `dlopen(RTLD_NOW | RTLD_LOCAL)`，Windows 为 `LoadLibraryW`），
+解析全部 27 个导出符号，再比较 `mxc_version()` 与 `kMxcVersion`（`1.0.1`）；打开失败、缺符号或版本不符都抛
+`ExecError{sandbox}`，消息含文件名与原因，后端因此不可用。已加载的库以 `shared_ptr<const MxcLibrary>` 在进程内共享，
+`platform_support()`、`available_backends()` 返回 `mxc_platform_support_json`、`mxc_available_backends_json` 的解析结果，
+供 `dagent sandbox status` 输出。FFI 的并发契约是：同一个沙箱句柄上的调用由调用方串行化，stdin/stdout/stderr
+三个流对象可分别在各自线程上使用，每个流句柄只有一个所有者。
+
+`MxcRuntime` 是启动装配时解析一次的资源：库、containment（Linux `bubblewrap`，Windows `processcontainer`，
+由 `app::detail::sandbox_containment` 按平台填写）、托管 bash 与托管 rg 的路径。
+
+### 策略编译：mxc_policy
+
+`exec::mxc_policy` 把中立 `Policy` 编译为 MXC 1.0.0 策略 JSON（`version` 固定为 `kMxcPolicyVersion` 即 `1.0.0`，
+MXC 只接受精确字符串）。bash、web、MCP、只读搜索与探测共用这一个函数：
+
+| 来源 | MXC 字段 | 规则 |
+| --- | --- | --- |
+| `readable`，加托管 bash 与 rg 所在目录 | `filesystem.readonlyPaths` | 落在任一可写根内的可读根被去掉：同一路径同时出现在只读与读写授权里时 MXC 以只读为准，可写树内的读取由读写挂载提供 |
+| `writable`（`read_only` 模式视为空）与本次执行的私有 HOME | `filesystem.readwritePaths` | — |
+| `protected_read`，以及 `protect_sensitive_names` 时各 `readable` 根下的敏感路径 | `filesystem.deniedPaths` | `read_exceptions` 中的路径从中剔除 |
+| `protected_write`，以及 `protect_sensitive_names` 时各可写根下的敏感路径 | 追加到 `filesystem.readonlyPaths` | 只保留位于可写根内的条目，即嵌套在读写挂载里的只读挂载；可写树外的条目本就不可写，不借此授予读取 |
+| `MxcRuntime::containment` | `containment` | 为 `processcontainer` 时另写 `fallback.allowDaclMutation=false` |
+| 请求带网络闸门时的代理 URL | `network`、`runtimeConfig.networkProxy` | `egress.default=deny`、`ingress.default=deny`、`ingress.hostLoopback=deny`；没有闸门时省略 `network` 与 `runtimeConfig` |
+
+所有路径先 `weakly_canonical` 再去重，只传已存在的路径，不制造占位挂载点。敏感路径由 `exec::sensitive_paths`
+在每次执行开始时扫描：`.env`、`.env.*`、`*.pem`、`*.key`、`id_rsa*`、`id_ed25519*` 以及 `.ssh`、`.gnupg` 目录
+（不进入这两个目录，不跟随符号链接；根本身是文件时只检查它的名字），因此保护是启动时快照，运行中新建的同名文件不在承诺内。
+`mxc_policy` 不读取 `Policy` 的 `allow_network`、`allow_local_sockets`、`private_tmp`：`/tmp` 总是 MXC 的私有 tmpfs，
+网络只由请求是否带闸门决定；这几个字段仍随 Grant 进入 tool_started 与 BashView。
+`mxc_policy` 不生成 `process`，由执行函数补上 `commandLine`、`cwd`、`env` 和 `timeout`（固定 0，超时由 DAgent 自己落实）。
+
+### 沙箱内看到的文件系统
+
+MXC 的 bubblewrap 后端从拒绝一切开始：以只读方式绑定 `/bin`、`/sbin`、`/lib*`、`/usr/bin`、`/usr/sbin`、`/usr/lib*`、
+`/usr/libexec`、`/usr/share`、`/etc` 及 `/run` 下的 DNS 解析目录，另建最小的 `/dev`、`/proc` 和每次执行全新的 tmpfs `/tmp`；
+宿主 `$HOME`、`/root`、`/opt`、`/usr/local`、`/var`、`/sys`、`/run/user/<uid>` 等其余路径一律不可见，
+之后才叠加上表的策略挂载。命令以当前用户身份运行。私有 HOME 作为读写挂载进入私有 `/tmp`，可写且宿主可见，`/tmp` 的其余部分随命令消失。
+
+下列行为是 MXC 1.0.1 在本机真实运行得到的平台例外，与旧 SRT 实现不同：
+
+| 情况 | 实际行为 |
+| --- | --- |
+| `deniedPaths` 中的目录（如 `.ssh`） | 挂一层空的**可写** tmpfs：看不到宿主内容，写入返回成功但随命令结束消失，宿主文件不受影响；不会像旧 SRT wrapper 那样得到 EROFS |
+| `deniedPaths` 中的文件 | 读和写都得到 `Permission denied` |
+| 可读工作区根下的 `.env` 等敏感文件 | 进入 `deniedPaths`，即使工作区同时可写也不可读、不可写；只授予可写、未授予可读的根下才表现为嵌套只读（可读，写入 EROFS） |
+| `protected_write`（如 `.git/config`、Home 的 `runtime/`）位于可写根内 | 可读，写入 `Read-only file system`（EROFS） |
+| `/sys` | 不存在 |
+| 命令 cwd 不在任何可见路径内 | bubblewrap 报 `Can't chdir` 并以 1 退出，MXC 只给出告警 |
+
+### 一次执行：run_mxc
+
+`run_mxc` 的语义与 `run` 一致：在调用线程上阻塞，`on_output` 也在调用线程上触发；超时置 `timed_out`，
+取消抛 `ExecError{cancelled}`，后端或策略失败抛 `ExecError{sandbox}`，回调里抛出的异常原样传回调用方；
+返回前进程树、代理和私有目录都已清理。一次执行依次：
+
+1. 用 `base::create_unique_directory(base::default_temporary_directory() / "dagent-home-XXXXXX")` 建私有 HOME
+   （POSIX 固定在 `/tmp`，不读取宿主 TMPDIR），并建 `config/`、`cache/`、`run/` 子目录。
+2. 请求带闸门时启动本次执行独占的 `NetworkProxy`（见下文）。
+3. 编译策略并补 `process`：`commandLine` 由 `detail::sandbox_command_line` 生成，POSIX 为
+   `exec setsid -w '<托管 bash>' --noprofile --norc -c '<脚本>'`（sh 单引号转义，由 MXC 的 `/bin/sh -c` 解释）。
+   `setsid -w` 让受限 shell 自成会话与进程组，命令里的 `kill 0` 只打到它自己，不会连带杀掉同组的 bwrap
+   （那样 MXC 只能报告退出码 -1）；`-w` 等待 shell 结束并原样回传退出码（例如 `kill -TERM 0` 得到 143）。
+   脚本按顺序拼接：不保留 stdin 时（`run_mxc`，含 `ReadOnlySandbox`）先写 `exec </dev/null`——MXC 总是给沙箱一个
+   stdin 管道，rg 这类工具会把可读的空管道当成搜索输入；`merge_stderr` 为 true 时再写 `exec 2>&1`，stderr 在 shell 内
+   并入 stdout，交错顺序与宿主执行一致；最后是命令本身。shell 启动前后端自己写到 stderr 的诊断在合并时也归入 stdout。
+   `cwd` 是请求的 workspace。
+4. `env` 由 `detail::make_environment` 以 `inherit_env=false` 生成：非交互默认项 → `Options::environment` →
+   删除 `BASH_ENV`、`ENV`、`BASHOPTS`、`SHELLOPTS`、`CDPATH`、`GLOBIGNORE`、`PROMPT_COMMAND`、`LD_PRELOAD`、`LD_LIBRARY_PATH`、
+   `PYTHONPATH`、`PERL5LIB`、`RUBYOPT`、`NODE_OPTIONS`、`NODE_PATH`、`NODE_EXTRA_CA_CERTS` 与大小写两种 `*_proxy` →
+   请求的环境（PATH、LC_ALL 等）→ HOME、`XDG_CONFIG_HOME`、`XDG_CACHE_HOME`、`UV_CACHE_DIR`、`NPM_CONFIG_CACHE`、
+   `XDG_RUNTIME_DIR`、`TMPDIR`/`TMP`/`TEMP` 指向私有 HOME 内。MXC 以 `--clearenv` 启动，沙箱只看到这份列表；
+   代理模式下 MXC 另行注入代理变量。
+5. `mxc_spawn_json` 在 stdout 读取线程上调用，调用线程只等待 spawn 结果：bubblewrap 的 `--die-with-parent` 是 PDEATHSIG，
+   跟随创建它的**线程**而不是进程，从短命线程（例如 MCP 的连接线程）启动的沙箱会在该线程退出时被杀；
+   stdout 读取线程活到命令结束，所以由它 spawn，之后继续读 stdout。spawn 失败时把 MXC 的错误消息与 remediation
+   拼进 `ExecError{sandbox}`，在调用线程上抛出；成功后取出告警写 debug 日志。
+6. 不保留 stdin 时立即释放 stdin 流，管道写端关闭；stdout、stderr 各有一个读取线程，以 64 KiB 缓冲阻塞调用
+   `mxc_stream_read`。调用线程约每 10 ms 轮询一次 `mxc_sandbox_try_wait`，按到达顺序派发输出，并在这里落实超时与取消。
+7. 进程退出后最多再读 `drain_after_exit`，然后清理：仍在运行就杀进程树 → 关闭流的 closer 让阻塞中的读以 EOF 返回 →
+   join 读取线程并释放流 → 释放 stdin → 必要时 `mxc_sandbox_wait` → `mxc_sandbox_free` → 停止代理 → 删除私有 HOME。
+
+| 方面 | 行为 |
+| --- | --- |
+| 超时 | 限值取请求的 timeout，否则 `Options::default_timeout`；到期调用 `mxc_sandbox_kill_for_timeout`，`Result::timed_out=true`，`exit_code` 为空 |
+| 取消 | stop_token 生效后调用 `mxc_sandbox_kill`，抛 `ExecError{cancelled}`（`command cancelled`）；本机实测从请求停止到返回约 11 ms |
+| 终止方式 | MXC 对首进程（bwrap）发 SIGKILL，再杀它的进程组，沙箱内其余进程随 PID 命名空间结束；没有 SIGTERM 宽限，`Options::kill_grace` 对 MXC 路径不生效 |
+| 退出状态 | `Result::signal` 恒为空；受限 shell 被信号终止时以退出码 128+N 报告，经 `setsid -w` 回传 |
+| 输出 | `out`/`err` 按 `max_output_bytes` 保留头尾，规则与 `run` 相同；`merge_stderr` 时 `err` 为空 |
+| 启动开销 | 无网络 10–30 ms；代理模式 170–210 ms（2026-10-22 本机以 `true` 测得） |
+
+### 网络：无网络与代理模式
+
+网络只有两种姿态。请求没有闸门时策略省略 `network`，MXC 按无规则的 egress deny 只加 `--unshare-net`：
+命令只有自己的 loopback，不启动 slirp4netns。请求带闸门时进入代理模式：
+
+- DAgent 为本次执行启动一个 `exec::NetworkProxy`（`exec/proxy.hpp`、`proxy.cpp`，Asio 服务线程），监听 `127.0.0.1` 的内核分配端口，
+  把 `http://127.0.0.1:<port>` 写进 `runtimeConfig.networkProxy`。
+- MXC 用 slirp4netns 给沙箱一个私有网络命名空间，在其中以 iptables（`iptables-restore`）装默认 DROP 的出站链，只放行 loopback
+  和经 slirp 网关 `10.0.2.2:<port>` 到达的代理端点，入站链同样默认 DROP；并用 `bwrap --setenv` 注入大小写两种
+  `HTTP_PROXY`、`HTTPS_PROXY`、`ALL_PROXY`、`FTP_PROXY`，不设 `NO_PROXY`。不经代理的直连没有 DNS 和路由，访问宿主其它端口超时。
+- 代理接受 `CONNECT host:port` 隧道（TLS 端到端，不解密）和绝对形式的明文请求 `GET http://host[:port]/path`
+  （改写为 origin 形式转发，去掉 `Proxy-Connection` 头与 URL 中的用户信息）；其它请求或超过 64 KiB 的请求头回 400。
+- 判定以小写 `host:port`（IPv6 加方括号）为键：允许结果在代理生命周期（即本次执行）内缓存，拒绝不缓存；
+  同一目标的并发请求只提问一次。`policy.network_targets` 经 `allowlist_gate` 直接放行，不向外层闸门提问。
+- 预算：向闸门提问（含 allowlist 判定）的次数超过 `max_network_requests_per_execution` 后一律拒绝（`network request budget exhausted`）。
+- 审批超时：等待超过 `network_approval_timeout_ms` 视为拒绝（`network approval timed out`），本次执行之后不再提问，
+  仍在等待的闸门经 stop_token 释放。
+- 拒绝回 `403 Forbidden`，正文写明目标与原因；闸门返回 cancel（或抛异常）时该请求回 403，代理通知执行函数杀掉命令，
+  `run_mxc` 抛 `ExecError{cancelled}`（`command cancelled by a runtime permission decision`）。
+- 放行后才在宿主解析主机名（闸门拿到的是请求里写的名字），按解析结果依次连接；后面还有地址时每个地址最多等 5 秒，
+  解析或连接失败回 502。请求头之后已读入的字节（请求体或提前发出的 TLS 数据）原样转发。
+- 代理只接受当前用户的连接：Linux 的 `detail::loopback_peer_is_current_user` 在 `/proc/net/tcp` 中按对端端口找到连接条目，
+  比较其 uid 与 `getuid()`（slirp4netns 以当前用户运行），不符回 403 并关闭；Windows 第一版固定返回 true。
+  不用口令的原因是 MXC 拒绝带凭据的代理 URL：URL 经 `bwrap --setenv` 进入命令行参数，`/proc/<pid>/cmdline` 对所有本地用户可见。
+- `NetworkProxy::stop` 关闭监听与全部隧道并等待服务线程；仍在等待闸门的请求按拒绝结束。
+
+代理模式另外要求宿主具备 slirp4netns、util-linux 的 `unshare`（支持 `--map-current-user`、`--keep-caps`）与 `nsenter`、iproute2 的 `ip`、
+nf_tables 后端的 iptables/ip6tables 与对应 `-restore`，并已加载 `nf_conntrack` 内核模块（非特权 bubblewrap 无法按需加载）；
+MXC 在启动前校验这些前置，缺失即失败，从不退回共享宿主网络。
+
+各调用方的网络姿态：
+
+| 调用方 | 闸门 | 结果 |
+| --- | --- | --- |
+| 受限 bash | `tools::detail::sandbox_request` 总是安装，内部转调 Grant 的 `network_decider`；没有 decider 时拒绝并说明 `runtime network approval is unavailable in this run` | 每次受限 bash 都是代理模式 |
+| web_search / web_fetch | 同上，web 再按调用包一层（托管端点预授权、逐跳审阅） | 代理模式；curl 带 `--noproxy ''`，连 SearXNG 的 `127.0.0.1:<port>` 也经代理 |
+| MCP stdio | profile 有网络目标时为 `allowlist_gate(targets)`，没有运行中审批 | 有目标为代理模式，否则无网络 |
+| `ReadOnlySandbox`（rg 搜索、上下文 Git） | 无 | 无网络 |
+| 启动探测 | `filesystem` 阶段无，`network` 阶段为拒绝一切的闸门 | 依次覆盖两种姿态 |
+
+### 长期受限子进程：MxcChild
+
+`MxcChild::spawn(MxcRequest, Options)` 以与 `run_mxc` 相同的步骤启动受限子进程（同样由 stdout 读取线程 spawn，
+所以 MCP 连接线程结束后 server 仍然存活），但保留 stdin 管道，脚本不加 `exec </dev/null`；接口与 `exec::Child` 一致：
+
+- `write` 线程安全，由写线程调用 `mxc_stream_write` 与 `mxc_stream_flush`；积压超过 8 MiB 或写失败后丢弃数据并记日志。
+- `on_line` 按行回调 stdout（去掉行尾 `\r`）；`on_stderr` 按行接管 stderr，注册前到达的行写入 `base::logger("mcp")` 并最多缓存
+  256 行，注册时回放。回调都在读取线程上触发。
+- stdout 结束即视为进程结束（沙箱的 PID 命名空间随首进程退出），随后轮询退出码，最多等 `drain_after_exit` 让 stderr 收尾，
+  再调用一次 `on_exit(code, nullopt)`；signal 恒为空。
+- `terminate` 可重复调用：杀进程树、关闭 stdin、等待写线程，再按 `run_mxc` 的清理顺序释放流、沙箱、代理与私有 HOME；
+  被杀的进程由 MXC 报告退出码 -1。
+
+MCP stdio 传输的用法见 [mcp](mcp.md#stdio)。
+
+### 只读执行边界：ReadOnlySandbox
+
+`ReadOnlySandbox{runtime, protected_read, read_exceptions}` 供 workspace 的 rg 搜索与上下文 Git 使用。`run(Command)` 以
+`read_only` 模式执行：可读范围只有 `command.cwd`（加托管 bash、rg 所在目录），argv 逐个 `shell_quote` 后拼成脚本，
+环境为 `command.env_set` 加 `PATH=default_search_path()` 与 `LC_ALL=C.UTF-8`，不带闸门、不合并 stderr；
+经 `run_mxc` 执行，脚本以 `exec </dev/null` 开头，rg 不会把 stdin 管道当成搜索输入。
+`runtime` 为空时抛 `ExecError{sandbox}`（`read-only sandbox execution unavailable; run dagent sandbox status`），没有宿主回退。
+装配层把 Home 的 `config/`、`data/`、`logs/`、`run/` 与 `memory/` 放进它的 `protected_read`。
+
+### 装配、能力快照与探测
+
+`app::sandbox_runtime` 依次要求：本平台提供后端、runtime 已为当前配置准备好、`mxc` 库已安装、库可加载且版本为 1.0.1、
+托管 bash 与 rg 可执行；任一条件不满足时返回说明原因的字符串。`app::sandbox_probe` 随后真实启动两次，均为 `read_only` 模式、
+工作目录为托管 bash 所在目录、超时 30 秒：
+
+| 阶段 | 命令 | 覆盖 |
+| --- | --- | --- |
+| `filesystem` | `printf ok > "$HOME/probe.txt" && cat "$HOME/probe.txt"`，输出须为 `ok` | 库调用、bubblewrap 命名空间、私有 HOME 读写 |
+| `network` | `true`，闸门拒绝一切 | slirp4netns、命名空间内防火墙与代理端点 |
+
+成功返回 `{ok:true, stage:"completed", mxc:<版本>, elapsed_ms:{filesystem, network}}`，失败返回 `ok:false` 及 `stage`、`error`、
+`exit_code`、`timed_out`（执行层抛异常时只有 `stage` 与 `error`）。
+
+交互与 run 模式每次启动后端（`app/bootstrap.cpp` 的会话装配）都执行一次 `sandbox_runtime` 与 `sandbox_probe`，
+本机两阶段分别约 30 ms 与 200 ms；查询模式（sessions、`--list-models`）不探测。
+成功时 `Support.backend` 为 `mxc`、`child_signals` 为 true，`MxcRuntime` 交给 `tools::Options::mxc` 与只读搜索；
+失败时 `backend` 保持 `none`，`Support.missing` 记录 `sandbox_runtime` 的原因或 `MXC isolation probe failed at <stage> stage: <error>`。
+`read_only_ready()` 与 `workspace_ready()` 都只判断 `backend != "none"`；能力不足时的模式映射与 host access 规则不变：
+受限命令不启动，符合策略的 Bash 请求可询问一次性 host access，由人工或符合条件的父模型审批；没有可用审批路由时不执行。
 沙箱不可用时，普通 Bash 请求改记为 `host_command`（命令直接在宿主以用户账户完整权限运行），
 它与 `host_access` 不同：已知只读命令可会话级精确复用，敏感/控制面路径仍叠加一次性 `sensitive_read`。
 只读/规划上限不能借此突破，glob/grep 和 web_search/web_fetch 不提供宿主回退。
-unrestricted 的 bash 使用 host；web 仍强制进入只读 SRT，由运行中网络闸门自动放行未被拒绝的目标。
-`tools::detail::sandbox_request` 统一把核心 Grant 映射为 SRT 请求，web 传输不自行建立另一套权限规则。
+unrestricted 的 bash 使用 host；web 仍强制进入只读 MXC 沙箱，由运行中网络闸门自动放行未被拒绝的目标。
 
-### 启动与并发
-
-- bridge 的 cwd 是每执行私有、位于所有可写根之外的控制目录，实际命令 cwd 是 workspace；
-  私有 cwd 落在可写根内时该 profile 直接拒绝，不静默继续。
-- bridge 启动握手报告协议版本、SRT 版本与准备环境身份；不匹配或超过 `startup_timeout_ms` 时受限
-  启动失败并给出阶段。
-- init 帧在控制线程中循环发送并处理短写，主线程可同时启动 bridge；大命令不会阻塞进程启动路径。
-  发送期间取消和启动超时会关闭控制 socket，命令超时仍由进程执行器处理；清理时先等待控制线程和 watchdog 退出，再关闭 FD。
-- 控制 socketpair 使用 `SOCK_CLOEXEC`，bridge 端通过 `Command::inherited_resources` 显式保留；
-  不在父进程清除 CLOEXEC，避免并发启动时将通道泄漏给其他进程，也不依赖启动器偶然保留描述符。
-- 工作区保护遵循启动快照语义：运行中新建的同名敏感文件不在保护承诺内。
-- 受限命令的私有 HOME 使用短临时路径，避免深层 Home 导致 SRT Unix socket 路径过长；bridge 初始化异常按结构化错误报告。
-  私有 HOME 的父目录由 `base::default_temporary_directory` 提供，POSIX 固定为 `/tmp`，不读取宿主 TMPDIR；
-  控制目录的 `filesystem::temp_directory_path()` 回退保持独立。两者都向 `base::create_unique_directory`
-  传入完整路径模板，父目录处理、错误文本和清理仍由 SRT 管理。
-
-`SrtControl` 在原 socketpair 位置构造，仍晚于控制目录、私有 HOME 及其子目录创建。
-共享代码保留 JSON、网络审批、reader/watchdog/gates 的启停与 join 顺序；平台边界的 I/O 语义分别为：
-
-| 方法 | 行为 |
-| --- | --- |
-| `send_initial` | MSG_NOSIGNAL，循环处理短写与 EINTR；非正返回生成原 control init write 错误，由共享代码更新握手状态 |
-| `send_decision` | 单次 MSG_NOSIGNAL send；负返回且非 EPIPE 才记原日志，不补短写、不重试 EINTR |
-| `send_start` | 单次 MSG_NOSIGNAL send，忽略返回值 |
-| `read_chunk` | 单次 read；非正返回均结束读取，包括 EINTR，不新增重试 |
-| `shutdown_host` | 对宿主端执行 SHUT_RDWR，供取消、握手错误和 watchdog 使用 |
-| `close_bridge` | 只 close bridge 端，再置 -1；仍先于 reader.join |
-| `close` | 按宿主端、bridge 端顺序，对有效端点 shutdown、close、置 -1；仍在各原清理位置调用 |
-
-SrtControl 析构的 close 在显式清理后为空操作。继承清单不关闭端点，连接所有权始终在 SrtControl。
-`default_srt_readable_paths` 提供原宿主目录初值，策略合并、敏感路径处理和 SRT 配置 JSON 构造仍在共享文件。
+受限 profile 的 Grant 的 backend 为 `mxc`，full_access 为 `host`。`tools::detail::sandbox_request` 统一把 Grant 映射为
+`MxcRequest`（backend 不是 `mxc` 或 profile 为 full_access 时抛错），审批超时与每执行请求预算取自 `sandbox` 配置段；
+web 传输不自行建立另一套权限规则。
 
 ### 宿主前置
 
-bubblewrap 需要宿主允许相应 namespace。对开启 AppArmor 非特权 userns 限制的主机，
-CMake 仅在 Linux 构建和安装时为实际后端路径生成专用 `dagent.apparmor`，
-由管理员安装和加载，详见 [构建与安装](../guide/build.md)。
-正常启动按后端可执行路径自动匹配，不依赖通用 `aa-exec -p linux-sandbox` 包装器。
-`dagent sandbox status` 分开报告静态依赖、AppArmor 标签和真实启动结果；有依赖不等于可隔离执行。
-2026-09-30 开发主机的默认启动结果见 [验收记录](../archive/2026-09-30-srt-permissions.md)，不代替其他主机的探测。
+Linux 上 MXC 的 bubblewrap 后端要求：bwrap ≥ 0.5（MXC 用到 `--clearenv`）、允许非特权 user namespace、
+util-linux 的 `setsid`（受限命令行用它启动 shell，按命令环境的 PATH 在沙箱可见的系统目录中查找）、上文代理模式所列的网络工具与 `nf_conntrack`；
+预编译的 `libmxc_ffi.so` 引用 GLIBC_2.34 符号，需要 glibc ≥ 2.34。
+bwrap、unshare、slirp4netns 都由 `dagent-backend` 进程内加载的库直接生成，对开启 AppArmor 非特权 userns 限制的主机，
+CMake 仅在 Linux 构建和安装时为实际后端路径生成专用 `dagent.apparmor`（`flags=(unconfined)` 加 `userns`），子进程继承该 profile；
+由管理员安装和加载，详见 [构建与安装](../guide/build.md)。正常启动按后端可执行路径自动匹配，不依赖 `aa-exec` 包装器。
+`dagent sandbox status` 分开报告静态检查、MXC 自己的平台诊断和真实启动结果；静态项齐全不等于可隔离执行。
+
+Windows（ProcessContainer，2026-10-22 在 Windows 11 26H2 build 26300.9711 虚拟机上验证）：
+
+- 层级门禁：`exec::probe_mxc` 用与执行相同的请求文档（代理形状）调用 Windows 独有的 `mxc_probe_request_json_with_error`
+  （`ffi::Functions` 的可选成员，Linux 为 nullptr），只接受 `tier = base-container`；其它层级或探测失败时后端为 `none`，
+  原因写明层级与所需 OS 版本。请求总带 `fallback.allowDaclMutation=false`。
+- 代理模式必须 `ingress.default=allow` 且（没有 `allowedProxyPeer` 时）`ingress.hostLoopback=allow`，与 Linux 的全 deny 不同；
+  实测 WFP 仍只放行到代理端点的出站，直连外网与宿主其它回环端口都被拦，不给 `network` 时完全无网。
+- `process.env` 必须含 `SYSTEMROOT` 与 `LOCALAPPDATA`（只检查存在，名字不区分大小写）；OS 把容器内的 `LOCALAPPDATA` 和
+  `TEMP`/`TMP` 改写到 `<LOCALAPPDATA>\Packages\sandbox.{guid}\AC[\Temp]`，只有给真实的 `LOCALAPPDATA` 该目录才存在并随容器删除，
+  所以容器内 `TEMP`/`TMP` 不是私有 HOME，`TMPDIR`、`USERPROFILE`、`APPDATA` 仍指向私有 HOME。
+- base-container 的文件语义：`deniedPaths` 读被拒，嵌套只读路径写被拒，读写路径可写，未授权路径被拒；但带
+  `ALL APPLICATION PACKAGES` ACL 的系统位置（System32、Program Files）不经策略也可读可执行；授权路径没有执行权
+  （容器内进程不能启动位于 readonly/readwrite 路径中的程序，顶层进程除外），运行时 `cd` 进授权目录被拒（microsoft/mxc#1467），
+  以完整路径启动 System32 程序被拒而按名字经 PATH 启动可以。
+- **受限执行当前不可用**：Git for Windows 的 bash（MSYS2 运行库）在任何 ProcessContainer 内都无法初始化，
+  `msys-2.0.dll` 以绝对 NT 路径在全局 `\BaseNamedObjects` 下建目录返回 0xC0000022，进程以 0xC0000142 退出
+  （microsoft/mxc#1061，open）。真实探针因此在 filesystem 阶段失败，`sandbox status` 给出 `host_prerequisite` 说明，
+  装配回落为无沙箱模式；执行通路（spawn、读流、try_wait、退出码、私有 HOME 清理）在探针里真实走过。
+  `run_mxc`、`ReadOnlySandbox`、代理审批与 `MxcChild` 在 Windows 上尚未端到端验证。
 
 ---
 
 ## 6. 依赖与构建
 
 - Boost.Process v2 以 header-only 方式使用，需要定义 `BOOST_PROCESS_USE_STD_FS=1`（已在 `dagent_exec` 上设置）。
-- `cmake/deps.cmake` 里：tree-sitter v0.27.0 通过 FetchContent 构建；tree-sitter-bash v0.25.1 只拉取源码，直接编译发布包里自带的 `parser.c`/`scanner.c`，不需要 tree-sitter CLI。受限执行依赖运行时的 `internal/sandbox` 环境（Node + SRT + bwrap/socat）。
+- `cmake/deps.cmake` 里：tree-sitter v0.27.0 通过 FetchContent 构建；tree-sitter-bash v0.25.1 只拉取源码，直接编译发布包里自带的 `parser.c`/`scanner.c`，不需要 tree-sitter CLI。
+- MXC 原生库不在链接期依赖，也没有头文件：Linux 的 `dagent_exec` 只额外链接 `${CMAKE_DL_LIBS}` 以使用 `dlopen`；
+  库文件由 `dagent runtime sync` 按 `runtime.json` 的 `mxc` 包下载并校验。代理使用 Boost.Asio。
 - 根项目启用了 C 语言，用来编译 tree-sitter。

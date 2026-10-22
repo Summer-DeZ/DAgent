@@ -1,7 +1,7 @@
 # mcp：MCP 客户端
 
 连接外部 MCP server、发现并调用工具。头文件位于 `src/public/mcp/`，实现位于 `src/private/mcp/`，
-构建为静态库 `dagent_mcp`，命名空间为 `dagent::mcp`。依赖 base、exec 的 `Child` 和 net 的
+构建为静态库 `dagent_mcp`，命名空间为 `dagent::mcp`。依赖 base、exec 的 `MxcChild` 和 net 的
 `HttpClient`、`SseParser`。
 
 `mcp/detail.hpp` 仅供模块内部共享 JSON-RPC 组装、协议元数据、工具命名和 HTTP 参数头处理。
@@ -41,8 +41,8 @@ Hub 自动重连一次。子会话使用创建时的工具快照，工具项持�
 `2025-11-25`、`2025-06-18` 或 `2025-03-26`，其他版本以包含版本值的 `handshake` 错误拒绝。
 随后发送不带请求 id 的 `notifications/initialized`，再按原有分页规则获取 `tools/list`。
 旧版请求不注入上面的三个现代 `_meta` 字段，保留既有参数及共享元数据（如 progress token）；
-stdio 超时和取消仍发送 `notifications/cancelled`。协商由共享客户端实现，managed stdio 经 SRT bridge
-同样执行这套握手，无需修改 bridge。
+stdio 超时和取消仍发送 `notifications/cancelled`。协商由共享客户端实现，沙箱内的 stdio server 直接与客户端
+执行这套握手，执行层不另加启动握手。
 
 stdio 的发现和初始化各使用 `probe_timeout`，HTTP 各使用 `connect_timeout`；超时直接失败，不触发回退。
 
@@ -54,10 +54,10 @@ stdio server 冷启动时间包含在发现超时内，调用方需要按真实�
 
 | 传输 | 修订 | 握手 | 请求 `_meta` | HTTP 会话 | `MCP-Protocol-Version` | HTTP 路由头 |
 | --- | --- | --- | --- | --- | --- | --- |
-| stdio（SRT bridge） | `2026-07-28` | `server/discover` | 注入 | — | — | — |
-| stdio（SRT bridge） | `2025-11-25` | `initialize` → `notifications/initialized` | 不注入 | — | — | — |
-| stdio（SRT bridge） | `2025-06-18` | `initialize` → `notifications/initialized` | 不注入 | — | — | — |
-| stdio（SRT bridge） | `2025-03-26` | `initialize` → `notifications/initialized` | 不注入 | — | — | — |
+| stdio（MXC 沙箱） | `2026-07-28` | `server/discover` | 注入 | — | — | — |
+| stdio（MXC 沙箱） | `2025-11-25` | `initialize` → `notifications/initialized` | 不注入 | — | — | — |
+| stdio（MXC 沙箱） | `2025-06-18` | `initialize` → `notifications/initialized` | 不注入 | — | — | — |
+| stdio（MXC 沙箱） | `2025-03-26` | `initialize` → `notifications/initialized` | 不注入 | — | — | — |
 | Streamable HTTP | `2026-07-28` | `server/discover` | 注入 | 无 | 发送 | `Mcp-Method`、`Mcp-Name`、`Mcp-Param-*` |
 | Streamable HTTP | `2025-11-25` | `initialize` → `notifications/initialized` | 不注入 | 可选 session id，关闭时 DELETE | 发送 | 无 |
 | Streamable HTTP | `2025-06-18` | `initialize` → `notifications/initialized` | 不注入 | 可选 session id，关闭时 DELETE | 发送 | 无 |
@@ -73,7 +73,7 @@ stdio server 冷启动时间包含在发现超时内，调用方需要按真实�
 `StatelessDialect` 实现发现握手，`SessionDialect` 实现初始化握手并持有 session id。
 `Impl::negotiate` 按无状态、会话型顺序尝试；只有明确不支持握手的返回值才进入下一 dialect，
 其他失败直接传播。选定修订在 dialect 中保存，成功后记录版本并写日志。
-stdio/SRT 的收发、pending 请求匹配、超时及取消由 `stdio_transport.cpp` 中的 `StdioTransport` 负责；
+stdio 的受限启动、收发、pending 请求匹配、超时及取消由 `stdio_transport.cpp` 中的 `StdioTransport` 负责；
 HTTP 请求构造、SSE 解析、计时/取消、响应匹配与解包及 DELETE 位于 `http_transport.cpp` 中的 `HttpTransport`。
 请求编号、参数装饰、Dialect、协议版本、工具目录、参数头映射及最终错误分类留在 Impl。
 Impl 持有共享 `ConnectionState`，传输借用它及不可变的配置/选项，不持有 Impl、不参与协议协商或重连。
@@ -87,30 +87,39 @@ Impl 持有共享 `ConnectionState`，传输借用它及不可变的配置/选�
 
 ### stdio
 
-连接定义来自 `home/config/mcp.json` 的 `mcpServers`。默认 `environment: managed` 使用
-托管工具和干净环境；`mcp/<name>` 使用 runtime sync 准备的独立依赖，cwd 为 home。
-显式 `project` 使用宿主工具及工作区 cwd。server 的 `env` 最后覆盖环境变量。
+连接定义来自 `home/config/mcp.json` 的 `mcpServers`。默认 `environment: managed` 使用托管工具和干净环境；
+`mcp/<name>` 使用 runtime sync 准备的独立依赖；显式 `project` 使用项目搜索路径上的宿主工具。
 工具准备、锁文件和版本生命周期见 [toolchain](toolchain.md)。
 
 stdio server 必须携带受信任配置里的显式权限 profile（`permissions.read/write/network`）；缺少 profile
-时不会启动，不允许"先运行、再在 tools/call 时请求批准"。启动方式是在 SRT 内运行：每连接一个长生命周期
-bridge，server 只拿到 profile 允许的读取/写入范围与严格网络 allowlist（`strictAllowlist=true`，没有运行中
-审批），私有 HOME/TMPDIR 使用每次连接独占的 `/tmp/dagent-home-XXXXXX`（`base::create_unique_directory` 通过 mkdtemp 创建，0700），
-避免 Home 路径或 server 名过长导致 SRT Unix socket 超过路径上限。`init.json` 仍保存在 state root 下的
-每连接状态目录；连接关闭或启动失败时，在子进程结束后清理状态目录与私有 HOME。
-私有 HOME 的父目录通过 `base::default_temporary_directory` 取得，POSIX 固定为 `/tmp`，不读取宿主 TMPDIR；
-状态目录与私有 HOME 均直接以 `filesystem::path` 传递完整的 XXXXXX 模板，错误与清理顺序保持原样。
-新旧连接与 lease 在权限降级或切换时被显式作废
-（`McpHub::revoke`），旧 `Client` 的后续请求直接返回 `disconnected`。
+时不会启动，不允许"先运行、再在 tools/call 时请求批准"。装配层（`app/bootstrap.cpp`）用 profile 和已解析的
+`MxcRuntime` 填写 `StdioSandbox`；没有可用运行时时记录未启动原因，不在宿主直接启动。`StdioTransport` 用
+`exec::MxcChild` 在 MXC 沙箱内启动 server，每个连接一个长期受限子进程。连接可能由短命线程发起，而 bubblewrap 的
+`--die-with-parent` 跟随创建它的线程，所以 `mxc_spawn_json` 由 `MxcChild` 自己的 stdout 读取线程调用，
+发现完成、连接线程退出后 server 仍然存活（见 [exec](exec.md#长期受限子进程mxcchild)）：
 
-bridge 在 stderr 上以 `{"dagent_bridge":true,...}` 帧报告 ready/error/exited；server 自身的 stderr
-原样转发为日志。调用线程登记请求 id 后发送消息，读取线程按响应 id 唤醒等待者。超时、取消与子进程退出都会
-清除等待项；迟到响应直接丢弃。客户端不处理 server 主动请求或通知。
-stderr 回调在获取握手锁前注册，允许同步回放已缓存的 ready/error 帧。发送和关闭时移走 Child 使用同一把锁，
-关闭在释放锁后终止子进程并等待读取线程退出，避免回调重新加锁时死锁。
+| 方面 | 行为 |
+| --- | --- |
+| 命令 | `command` 与 `args` 逐个 `shell_quote` 后拼成脚本，交给托管 bash（`--noprofile --norc -c`）执行 |
+| cwd | managed 与 `mcp/<name>` 为所选环境的根目录（环境可读列表的最后一项：managed 为 `runtime/homes/managed`，`mcp/<name>` 为该环境的代际目录）；`project` 为工作目录 |
+| 可读 | profile 的 `read`、所选环境的可读目录（各包目录与环境根），`project` 另加工作目录 |
+| 可写 | profile 的 `write`，模式为 `workspace_write` |
+| 受保护 | Home 的 `config/`、`data/`、`logs/`、`run/`、`memory/` 同时作为 `protected_read` 与 `protected_write`；敏感名称保护开启 |
+| 环境 | 不继承宿主环境：exec 默认项、`process.environment`（managed 环境变量；`project` 时清空）、配置层合并好的所选环境变量与 server `env`（server 的值在后），`project` 另设 `PATH=project_search_path()`；最后 HOME、XDG、TMPDIR 及 uv/npm 缓存变量指向每连接私有的 `/tmp/dagent-home-XXXXXX` |
+| 网络 | profile 有 `network` 目标时请求带 `exec::allowlist_gate(targets)`：命中 `host` 或 `host:port` 才经本连接的回环代理放行，其余一律拒绝，没有运行中审批；没有目标时完全无网络 |
+
+私有 HOME 经 `base::create_unique_directory` 在 `base::default_temporary_directory`（POSIX 固定 `/tmp`，不读取宿主 TMPDIR）下创建，
+连接关闭或启动失败时在子进程结束后删除。启动失败（库调用或策略错误）抛 `McpError{spawn}`，消息带 server 名与 MXC 的原因。
+新旧连接与 lease 在权限降级或切换时被显式作废（`McpHub::revoke`），旧 `Client` 的后续请求直接返回 `disconnected`。
+
+stdout 每行一条 JSON-RPC 消息；server 自身的 stderr 逐行写入 `base::logger("mcp")`，执行层没有握手帧。
+调用线程登记请求 id 后发送消息，读取线程按响应 id 唤醒等待者。超时、取消与子进程退出都会
+清除等待项；迟到响应直接丢弃。客户端不处理 server 主动请求或通知。子进程退出时 `on_exit` 记录
+`server exited (code=N)` 作为断连原因；被 `terminate` 杀掉的进程由 MXC 报告退出码 -1。
+发送和关闭时移走 `MxcChild` 使用同一把锁，关闭在释放锁后终止子进程并等待读取线程退出，避免回调重新加锁时死锁。
 这把锁位于 Impl 持有的 `ConnectionState`；stdio 的 pending 登记、发送、退出通知和关闭均使用它。
-Impl 在销毁传输前调用 `StdioTransport::shutdown`：锁内标记关闭、移走 Child、失败未完成的 pending，
-锁外唤醒等待者，再经 `CloseProtocol` 回调执行原 Dialect 关闭，随后 terminate/join 并清理目录。
+Impl 在销毁传输前调用 `StdioTransport::shutdown`：锁内标记关闭、移走 `MxcChild`、失败未完成的 pending，
+锁外唤醒等待者，再经 `CloseProtocol` 回调执行原 Dialect 关闭，随后 terminate/join 并清理私有 HOME。
 启动失败也沿用这条清理路径，传输及其借用的连接状态在所有进程回调结束前保持存活。
 Hub 处理连接失败时，除向前端发送 notice 外，也将具体失败原因写入后端 warning 日志。
 
@@ -184,9 +193,10 @@ server 内清理后重名的工具被跳过。跨 server 的名字冲突由 app 
 
 app 负责解析 `home/config/mcp.json` 的 `mcpServers` 并展开 `${VAR}`，包括每个 server 的
 `permissions` profile。`mcp.connect_timeout_ms` 和 `mcp.probe_timeout_ms` 控制发现和调用启动超时，
-进程与 HTTP 选项沿用对应配置段；stdio 的 SRT 启动握手使用 `sandbox.startup_timeout_ms`。
+进程与 HTTP 选项沿用对应配置段；stdio server 的冷启动时间计入 `probe_timeout`，`sandbox.startup_timeout_ms` 目前没有使用方。
 `clientInfo.version` 使用根 CMake 项目的 `DAGENT_VERSION` 编译宏。
 
 HTTP server 的连接目标只来自受信任配置的 `url`，且要求 profile 显式列出网络目标；客户端不跟随重定向
 （3xx 按协议错误处理），认证头不会转发到任何未批准端点。审计与界面把 HTTP server 标为 `remote`，
-不把本机 SRT 保证扩大到远端服务；本地 stdio server 标为 `srt`。
+不把本机沙箱保证扩大到远端服务；本地 stdio server 标为 `mxc`。这个值写入 `agent::McpState::boundary` 与 MCP 工具意图的
+`external_boundary`（进而成为该次调用 Grant 的 backend），协议转换只输出 `mxc`、`remote` 或 `unknown`。

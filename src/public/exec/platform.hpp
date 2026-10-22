@@ -4,6 +4,9 @@
 
 #include <memory>
 #include <span>
+#include <string>
+#include <utility>
+#include <vector>
 
 #include <boost/asio/io_context.hpp>
 #include <boost/asio/readable_pipe.hpp>
@@ -51,30 +54,37 @@ void spawn_child(const Command& cmd, const std::filesystem::path& program,
                  boost::asio::writable_pipe& input, boost::asio::readable_pipe& output,
                  boost::asio::readable_pipe& error, ProcessGroup& group);
 
-class SrtControl {
+/// 动态库句柄：MXC 原生库在运行时加载，不在链接期依赖。
+class SharedLibrary {
 public:
-    SrtControl();
-    ~SrtControl();
-    SrtControl(const SrtControl&) = delete;
-    SrtControl& operator=(const SrtControl&) = delete;
+    /// 失败抛 ExecError{sandbox}，消息含文件名与平台错误文本。
+    static SharedLibrary open(const std::filesystem::path& file);
+    SharedLibrary(SharedLibrary&&) noexcept;
+    SharedLibrary& operator=(SharedLibrary&&) noexcept;
+    SharedLibrary(const SharedLibrary&) = delete;
+    SharedLibrary& operator=(const SharedLibrary&) = delete;
+    ~SharedLibrary();
 
-    void inherit_bridge_endpoint(Command&) const;
-    std::string bridge_argument() const;
-
-    std::optional<std::string> send_initial(std::string_view);
-    void send_decision(std::string_view);
-    void send_start(std::string_view);
-    std::size_t read_chunk(std::span<char>);
-
-    void shutdown_host() noexcept;
-    void close_bridge() noexcept;
-    void close() noexcept;
+    /// 缺失的符号返回 nullptr。
+    void* symbol(const char* name) const noexcept;
 
 private:
+    SharedLibrary();
     struct Impl;
     std::unique_ptr<Impl> impl_;
 };
 
-std::vector<std::filesystem::path> default_srt_readable_paths();
+/// 受限命令的 MXC `process.commandLine`：POSIX 为 `exec '<shell>' --noprofile --norc -c '<script>'`
+/// （sh 单引号转义，由 /bin/sh -c 解释）；Windows 为 `"<shell>" --noprofile --norc -c "<script>"`，
+/// 脚本按 Git bash（MSYS2 运行库）的命令行规则转义：双引号内 `\\` 与 `\"` 各还原为一个字符。
+std::string sandbox_command_line(const std::filesystem::path& shell, std::string_view script);
+
+/// 受限命令在 HOME/XDG/TMP 之外的平台变量，叠加在调用方变量之上：POSIX 没有；Windows 为 SystemRoot、
+/// 用户真实的 LOCALAPPDATA（ProcessContainer 拒绝缺少 SYSTEMROOT 或 LOCALAPPDATA 的环境，并把它与 TEMP/TMP
+/// 改写到容器自己的 AppContainer 目录），以及指向私有 HOME 的 USERPROFILE 与 APPDATA（home/config）。
+std::vector<std::pair<std::string, std::string>> sandbox_environment(const std::filesystem::path& home);
+
+/// 127.0.0.1 上的入站连接对端是否属于当前用户：Linux 按 /proc/net/tcp 的 uid 判断；Windows 第一版返回 true。
+bool loopback_peer_is_current_user(unsigned short local_port, unsigned short peer_port);
 
 } // namespace dagent::exec::detail

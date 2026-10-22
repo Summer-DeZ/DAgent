@@ -18,7 +18,7 @@
 #include <vector>
 
 #include "exec/process.hpp"
-#include "exec/srt.hpp"
+#include "exec/mxc.hpp"
 #include "lib/nlohmann/json.hpp"
 #include "net/http.hpp"
 
@@ -29,13 +29,11 @@ enum class Transport {
     http,  ///< Streamable HTTP：每个请求一个 POST，响应可能是 JSON，也可能是 SSE
 };
 
-/// @brief 本地 stdio server 在 SRT 内的受限启动参数；装配层用受信任配置 + 已解析运行时填入。
+/// @brief 本地 stdio server 在 MXC 沙箱内的受限启动参数；装配层用受信任配置 + 已解析运行时填入。
 /// 没有它就不能启动 stdio server：不允许"先运行、再在 tools/call 时请求批准"。
 struct StdioSandbox {
-    exec::SrtRuntime runtime;
+    exec::MxcRuntime runtime;
     exec::Policy policy; ///< readable/writable/network_targets 等执行边界
-    std::filesystem::path state_root;
-    std::chrono::milliseconds startup_timeout{15000};
 };
 
 /// @brief 一个 server 的连接参数。对应 config.json 中 mcp.servers 的一项，由 app 映射并展开
@@ -57,7 +55,7 @@ struct ServerConfig {
     std::vector<std::filesystem::path> profile_read;    ///< 额外可读范围（相对路径已由配置层解析）
     std::vector<std::filesystem::path> profile_write;   ///< 可写范围
     std::vector<std::string> profile_network;           ///< 严格允许的目标 `host` 或 `host:port`
-    /// 装配层填写的 SRT 启动参数；stdio server 必须持有它才会启动。
+    /// 装配层填写的沙箱启动参数；stdio server 必须持有它才会启动。
     std::optional<StdioSandbox> sandbox;
 };
 

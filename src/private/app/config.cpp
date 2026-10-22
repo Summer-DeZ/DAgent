@@ -159,14 +159,15 @@ exec::Options map_process(const Node& n) {
 exec::SandboxOptions map_sandbox(const Node& n, const fs::path& workspace) {
     exec::SandboxOptions options;
     if (auto v = n.child("version"); v.has()) options.version = v.integer(options.version);
-    if (options.version != 2) {
+    if (options.version != 3) {
         fail(ConfigError::Kind::invalid,
-             n.child("version").pointer() + " must be 2: sandbox.version 1 was the removed Landlock backend; "
-             "set backend=srt and the timeouts explicitly");
+             n.child("version").pointer() + " must be 3: sandbox.version 2 was the removed SRT backend and "
+             "1 the removed Landlock backend; set version=3 and backend=mxc");
     }
     options.backend = n.child("backend").str(options.backend);
-    if (options.backend != "srt")
-        fail(ConfigError::Kind::invalid, n.child("backend").pointer() + " must be srt");
+    if (options.backend != "mxc")
+        fail(ConfigError::Kind::invalid, n.child("backend").pointer() + " must be mxc: the SRT backend was removed; "
+             "set version=3 and backend=mxc");
     options.host_access = n.child("host_access").str(options.host_access);
     if (options.host_access != "ask_once")
         fail(ConfigError::Kind::invalid, n.child("host_access").pointer() + " must be ask_once");
@@ -473,7 +474,7 @@ Config load_config(const LoadOptions& options) {
     Toolchain toolchain(paths);
     config.tools.environments = toolchain.environments();
     config.searxng_environment = toolchain.environment_root("internal/searxng");
-    // internal/* 是执行后端自用的环境（如 internal/sandbox），不作为模型可选的 Bash/MCP 环境。
+    // internal/* 是后端自用的环境（如 internal/searxng），不作为模型可选的 Bash/MCP 环境。
     std::erase_if(config.tools.environments, [](const auto& item) { return item.first.starts_with("internal/"); });
     config.process.environment = config.tools.environments.at("managed").variables;
     config.mcp.process = config.process;
@@ -489,12 +490,16 @@ Config load_config(const LoadOptions& options) {
     }
     for (auto& server : config.mcp_servers) {
         if (server.transport != mcp::Transport::stdio) continue;
-        server.cwd = server.environment == "project" ? cwd : root;
-        if (server.environment == "project") continue;
+        if (server.environment == "project") {
+            server.cwd = cwd;
+            continue;
+        }
         if (fs::path(server.command.front()).has_parent_path() && fs::path(server.command.front()).is_relative())
             server.command.front() = (root / server.command.front()).lexically_normal().string();
         const auto found = config.tools.environments.find(server.environment);
         if (found == config.tools.environments.end()) fail(ConfigError::Kind::invalid, "unknown MCP environment: " + server.environment);
+        // 受限 server 的工作目录必须在沙箱可读范围内：取所选环境的根目录（环境可读列表的最后一项）。
+        server.cwd = found->second.readable.back();
         auto variables = found->second.variables;
         variables.insert(variables.end(), server.env.begin(), server.env.end());
         server.env = std::move(variables);

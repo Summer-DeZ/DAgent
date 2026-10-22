@@ -28,7 +28,7 @@ public:
     void on_line(std::function<void(std::string_view)> cb);
 
     /// @brief stderr 每收到一行调用一次（行不含换行符）；未注册时按日志输出。
-    /// 注册前到达的少量行会补发，供 bridge 握手帧这类早于回调的少量状态使用。
+    /// 注册前到达的少量行会补发，供启动握手这类早于回调的少量状态使用。
     void on_stderr(std::function<void(std::string_view)> cb);
 
     /// @brief 进程退出时调用一次；已经退出后注册会立即补发。正常情况下 code/signal 恰有一个有值，

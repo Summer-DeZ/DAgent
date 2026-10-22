@@ -318,11 +318,11 @@ Verdict Policy::evaluate(const ToolCall& call, const PreparedIntent& intent) con
 
     if (intent.kind == ToolKind::memory) return answer(Verdict::Kind::allow);
 
-    // Network tools always enter read-only SRT, including unrestricted mode.
+    // Network tools always enter the read-only sandbox, including unrestricted mode.
     // Destination authorization remains in the shared runtime network gate.
     if (intent.kind == ToolKind::network) {
         if (!sandbox_.read_only_ready) {
-            verdict.reason = "required read-only SRT capabilities are unavailable; run dagent sandbox status";
+            verdict.reason = "required read-only sandbox capabilities are unavailable; run dagent sandbox status";
             return verdict;
         }
         verdict.grant = grant_for_exec(SandboxProfile::read_only,

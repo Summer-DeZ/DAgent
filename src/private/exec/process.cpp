@@ -1,7 +1,6 @@
 #include "exec/process.hpp"
 
 #include "base/log.hpp"
-#include "base/text.hpp"
 #include "exec/detail.hpp"
 #include "exec/platform.hpp"
 
@@ -13,7 +12,6 @@
 #include <boost/asio/write.hpp>
 #include <boost/process/v2/process.hpp>
 
-#include <algorithm>
 #include <array>
 #include <chrono>
 #include <exception>
@@ -27,49 +25,6 @@ namespace {
 
 namespace asio = boost::asio;
 namespace bp = boost::process::v2;
-
-
-// 流式收集输出：head 保留前一半预算，tail 环形保留后一半，total 记录原始总量。
-// Result 里按 base::truncate_middle 的语义合成，on_output 回调不受影响。
-class OutputCollector {
-public:
-    explicit OutputCollector(std::size_t max_bytes)
-        : head_cap_(max_bytes / 2), tail_cap_(max_bytes - max_bytes / 2) {}
-
-    void append(std::string_view chunk) {
-        total_ += chunk.size();
-        if (head_.size() < head_cap_) {
-            const std::size_t take = std::min(head_cap_ - head_.size(), chunk.size());
-            head_.append(chunk.substr(0, take));
-            chunk.remove_prefix(take);
-        }
-        if (chunk.empty()) return;
-        tail_.append(chunk);
-        if (tail_.size() > tail_cap_) tail_.erase(0, tail_.size() - tail_cap_);
-    }
-
-    std::string finish() const {
-        if (total_ <= head_cap_ + tail_cap_) return head_ + tail_;
-
-        const std::size_t head_end = base::utf8_floor(head_, head_.size());
-        std::size_t tail_skip = 0;
-        while (tail_skip < tail_.size() && (static_cast<unsigned char>(tail_[tail_skip]) & 0xC0) == 0x80)
-            ++tail_skip;
-        const std::size_t omitted = total_ - head_end - (tail_.size() - tail_skip);
-
-        std::string text = head_.substr(0, head_end);
-        text += "\n... " + std::to_string(omitted) + " bytes omitted ...\n";
-        text += tail_.substr(tail_skip);
-        return text;
-    }
-
-private:
-    std::size_t head_cap_;
-    std::size_t tail_cap_;
-    std::string head_;
-    std::string tail_;
-    std::size_t total_ = 0;
-};
 
 class Runner {
 public:
@@ -278,8 +233,8 @@ private:
     asio::steady_timer grace_timer_;
     asio::steady_timer drain_timer_;
     bp::process proc_;
-    OutputCollector out_;
-    OutputCollector err_;
+    detail::OutputCollector out_;
+    detail::OutputCollector err_;
 
     // 两路读取同时挂起：Asio 先把数据读进缓冲区、稍后才调回调，共用一块会互相覆盖。
     std::array<char, 64 << 10> out_buffer_{};

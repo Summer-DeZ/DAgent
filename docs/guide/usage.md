@@ -85,7 +85,7 @@ dagent runtime list
 dagent sandbox status
 ```
 
-`runtime sync` 准备 Bash、Git、Python、Node、rg、SRT、SearXNG 和配置声明的依赖，不下载或启动 LLM。
+`runtime sync` 准备 Bash、Git、Python、Node、rg、MXC 原生库、SearXNG 和配置声明的依赖，不下载或启动 LLM。
 SearXNG 只在第一次搜索时启动，随当前后端退出；首次使用和升级准备见 [网页指南](web.md)。
 确认所选模型的服务实际可访问；普通启动不会安装缺失工具或启动模型服务。
 `runtime list` 的 `current=true` 仅表示环境与配置匹配，沙箱能力另看 `sandbox status` 的 `probe.ok`。
@@ -188,7 +188,7 @@ Ctrl+O 仍负责展开/折叠。Diff 行右侧有两行双栏预览。
 ## 网页调研
 
 `web_search` 和 `web_fetch` 是模型可调用的内置工具，支持搜索、静态页面阅读与会话内分页缓存。
-在 ask/workspace 下，新网页目标走网络审批；plan/read_only 也可调用，SRT 不可用时拒绝。
+在 ask/workspace 下，新网页目标走网络审批；plan/read_only 也可调用，MXC 沙箱不可用时拒绝。
 使用示例、headless 预授权、引擎配置和错误处理见 [网页搜索与抓取](web.md)。
 
 ## 会话与状态

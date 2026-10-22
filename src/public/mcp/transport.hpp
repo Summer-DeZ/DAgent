@@ -14,7 +14,7 @@
 
 #include "mcp/client.hpp"
 
-namespace dagent::exec { class Child; }
+namespace dagent::exec { class MxcChild; }
 
 namespace dagent::mcp::detail {
 
@@ -27,7 +27,7 @@ struct Response {
     long status = 0; ///< 仅 HTTP
 };
 
-/// Impl 持有、传输借用；stdio 的 pending 与 Child 读写也由这一把锁保护。
+/// Impl 持有、传输借用；stdio 的 pending 与 MxcChild 读写也由这一把锁保护。
 struct ConnectionState {
     std::mutex mutex;
     bool closing = false;
@@ -61,7 +61,6 @@ private:
     };
 
     void start_sandboxed();
-    void on_bridge_line(std::string_view line);
     void send(std::string_view line);
     void send_cancel(std::int64_t id, std::string_view reason);
     void on_line(std::string_view line);
@@ -70,14 +69,7 @@ private:
     const ServerConfig& config_;
     const Options& opt_;
     ConnectionState& connection_;
-    std::unique_ptr<exec::Child> child_;
-    std::filesystem::path state_dir_; ///< 受限 stdio 的每次连接私有目录
-    std::filesystem::path private_home_; ///< SRT Unix sockets 使用的短路径私有 HOME
-    std::mutex bridge_mu_;
-    std::condition_variable_any bridge_cv_;
-    bool bridge_ready_ = false;
-    bool bridge_failed_ = false;
-    std::string bridge_error_;
+    std::unique_ptr<exec::MxcChild> child_;
     std::condition_variable_any cv_;
     std::map<std::int64_t, std::shared_ptr<Pending>> pending_;
 };

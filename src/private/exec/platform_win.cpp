@@ -282,10 +282,6 @@ void launch(const Command& command, const fs::path& program, const std::vector<s
     }
 }
 
-[[noreturn]] void unsupported_sandbox() {
-    throw ExecError(ExecError::Kind::sandbox, "sandbox is unsupported on Windows");
-}
-
 } // namespace
 
 bool environment_name_matches(std::string_view name, const std::string& pattern) {
@@ -370,19 +366,78 @@ void spawn_child(const Command& command, const fs::path& program, const std::vec
     launch(command, program, environment, context, process, input, output, error, group, true, false);
 }
 
-struct SrtControl::Impl {};
-SrtControl::SrtControl() { unsupported_sandbox(); }
-SrtControl::~SrtControl() = default;
-void SrtControl::inherit_bridge_endpoint(Command&) const { unsupported_sandbox(); }
-std::string SrtControl::bridge_argument() const { unsupported_sandbox(); }
-std::optional<std::string> SrtControl::send_initial(std::string_view) { unsupported_sandbox(); }
-void SrtControl::send_decision(std::string_view) { unsupported_sandbox(); }
-void SrtControl::send_start(std::string_view) { unsupported_sandbox(); }
-std::size_t SrtControl::read_chunk(std::span<char>) { unsupported_sandbox(); }
-void SrtControl::shutdown_host() noexcept {}
-void SrtControl::close_bridge() noexcept {}
-void SrtControl::close() noexcept {}
-std::vector<fs::path> default_srt_readable_paths() { unsupported_sandbox(); }
-
 } // namespace detail
 } // namespace dagent::exec
+
+namespace dagent::exec::detail {
+namespace {
+
+std::string system_message(DWORD error) {
+    wchar_t* buffer = nullptr;
+    const DWORD size = ::FormatMessageW(FORMAT_MESSAGE_ALLOCATE_BUFFER | FORMAT_MESSAGE_FROM_SYSTEM |
+                                            FORMAT_MESSAGE_IGNORE_INSERTS,
+                                        nullptr, error, 0, reinterpret_cast<LPWSTR>(&buffer), 0, nullptr);
+    if (size == 0) return "error " + std::to_string(error);
+    std::wstring text(buffer, size);
+    ::LocalFree(buffer);
+    while (!text.empty() && (text.back() == L'\r' || text.back() == L'\n' || text.back() == L' ')) text.pop_back();
+    return utf8(text);
+}
+
+// MSYS2 运行库从 Windows 父进程取命令行时，双引号内的 `\\` 与 `\"` 都还原为一个字符，其余字符原样；
+// 与 CommandLineToArgvW 不同，不在引号前的成对反斜杠也会减半，所以每个反斜杠都要转义。
+std::string msys_quote(std::string_view argument) {
+    std::string quoted = "\"";
+    for (const char c : argument) {
+        if (c == '\\' || c == '"') quoted += '\\';
+        quoted += c;
+    }
+    quoted += '"';
+    return quoted;
+}
+
+} // namespace
+
+struct SharedLibrary::Impl {
+    HMODULE module = nullptr;
+    ~Impl() {
+        if (module) ::FreeLibrary(module);
+    }
+};
+
+SharedLibrary::SharedLibrary() : impl_(std::make_unique<Impl>()) {}
+SharedLibrary::SharedLibrary(SharedLibrary&&) noexcept = default;
+SharedLibrary& SharedLibrary::operator=(SharedLibrary&&) noexcept = default;
+SharedLibrary::~SharedLibrary() = default;
+
+SharedLibrary SharedLibrary::open(const fs::path& file) {
+    SharedLibrary library;
+    library.impl_->module = ::LoadLibraryW(file.c_str());
+    if (!library.impl_->module) {
+        const DWORD error = ::GetLastError();
+        throw ExecError(ExecError::Kind::sandbox, "load " + base::path_to_utf8(file) + ": " + system_message(error));
+    }
+    return library;
+}
+
+void* SharedLibrary::symbol(const char* name) const noexcept {
+    return reinterpret_cast<void*>(::GetProcAddress(impl_->module, name));
+}
+
+std::string sandbox_command_line(const fs::path& shell, std::string_view script) {
+    // argv[0] 只按引号切分、不做转义还原；路径里不会有双引号。
+    return "\"" + base::path_to_utf8(shell) + "\" --noprofile --norc -c " + msys_quote(script);
+}
+
+std::vector<std::pair<std::string, std::string>> sandbox_environment(const fs::path& home) {
+    // ProcessContainer 把 LOCALAPPDATA 与 TEMP/TMP 改写到 <LOCALAPPDATA>\Packages\<容器>\AC 下；只有用户真实的
+    // LOCALAPPDATA 下才会建出这个随容器删除的目录，其它取值会让容器内的临时目录不存在。
+    return {{"SystemRoot", utf8(system_directory(::GetWindowsDirectoryW))},
+            {"USERPROFILE", base::path_to_utf8(home)},
+            {"APPDATA", base::path_to_utf8(home / "config")},
+            {"LOCALAPPDATA", base::environment_variable("LOCALAPPDATA").value_or(base::path_to_utf8(home))}};
+}
+
+bool loopback_peer_is_current_user(unsigned short, unsigned short) { return true; }
+
+} // namespace dagent::exec::detail

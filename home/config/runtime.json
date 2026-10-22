@@ -154,6 +154,44 @@
         }
       }
     },
+    "mxc": {
+      "version": "1.0.1",
+      "libraries": {
+        "mxc": "bin/x64/libmxc_ffi.so"
+      },
+      "assets": {
+        "Linux-x86_64": {
+          "url": "https://registry.npmjs.org/@microsoft/mxc-sdk/-/mxc-sdk-1.0.1.tgz",
+          "sha256": "416d9607c9d4652395d95c3d9c5f5605f1f2f845da1a63228bee41b7392cef49"
+        }
+      },
+      "platforms": {
+        "Linux-aarch64": {
+          "version": "1.0.1",
+          "libraries": {
+            "mxc": "bin/arm64/libmxc_ffi.so"
+          },
+          "assets": {
+            "Linux-aarch64": {
+              "url": "https://registry.npmjs.org/@microsoft/mxc-sdk/-/mxc-sdk-1.0.1.tgz",
+              "sha256": "416d9607c9d4652395d95c3d9c5f5605f1f2f845da1a63228bee41b7392cef49"
+            }
+          }
+        },
+        "Windows-x86_64": {
+          "version": "1.0.1",
+          "libraries": {
+            "mxc": "bin/x64/mxc_ffi.dll"
+          },
+          "assets": {
+            "Windows-x86_64": {
+              "url": "https://registry.npmjs.org/@microsoft/mxc-sdk/-/mxc-sdk-1.0.1.tgz",
+              "sha256": "416d9607c9d4652395d95c3d9c5f5605f1f2f845da1a63228bee41b7392cef49"
+            }
+          }
+        }
+      }
+    },
     "python": {
       "kind": "python",
       "version": "3.13.15",
@@ -165,14 +203,6 @@
     }
   },
   "environments": {
-    "internal/sandbox": {
-      "kind": "node",
-      "lockfile": "config/sandbox/package-lock.json",
-      "package_json": "config/sandbox/package.json",
-      "platforms": {
-        "Windows-x86_64": null
-      }
-    },
     "internal/searxng": {
       "kind": "python",
       "lockfile": "config/searxng/requirements.lock",

@@ -190,11 +190,19 @@ fs::path Toolchain::program(std::string_view name) const {
     return installed_.at("programs").at(std::string(name)).get<std::string>();
 }
 
+fs::path Toolchain::library(std::string_view name) const {
+    if (!installed_.is_object() || !installed_.contains("libraries") ||
+        !installed_.at("libraries").contains(std::string(name)))
+        return {};
+    return base::path_from_utf8(installed_.at("libraries").at(std::string(name)).get<std::string>());
+}
+
 json Toolchain::sync() {
     detail::SyncLock lock(paths_.run / "runtime.lock");
     fs::create_directories(paths_.cache);
     json next{{"platform", detail::runtime_platform()}, {"configuration", configuration_id(paths_, config_)},
-              {"packages", json::object()}, {"programs", json::object()}, {"environments", json::object()}};
+              {"packages", json::object()}, {"programs", json::object()}, {"libraries", json::object()},
+              {"environments", json::object()}};
     const auto& packages = config_.at("packages");
     std::vector<std::string> order;
     for (const auto& [name, package] : packages.items()) if (package.value("kind", "archive") != "python") order.push_back(name);
@@ -243,13 +251,22 @@ json Toolchain::sync() {
             const auto bin = package.value("bin", "bin");
             entry["bin"] = (bin == "." ? directory : within(directory, bin)).string();
             entry["programs"] = json::object();
-            for (const auto& [program, relative] : package.at("programs").items()) {
+            const json programs = package.value("programs", json::object());
+            for (const auto& [program, relative] : programs.items()) {
                 auto file = within(directory, relative.get<std::string>());
                 if (const auto found = python_programs.find(program); found != python_programs.end())
                     file = detail::select_python_runtime_program(file, found->second);
                 if (!base::can_execute(file)) throw std::runtime_error("installed program is not executable: " + file.string());
                 entry["programs"][program] = base::path_to_utf8(file);
                 entry["checksums"][program] = sha256(read(file));
+            }
+            // 原生库只登记路径，不要求可执行位；由使用方在运行时加载。
+            entry["libraries"] = json::object();
+            const json libraries = package.value("libraries", json::object());
+            for (const auto& [library, relative] : libraries.items()) {
+                const auto file = within(directory, relative.get<std::string>());
+                if (!fs::is_regular_file(file)) throw std::runtime_error("installed library is missing: " + file.string());
+                entry["libraries"][library] = base::path_to_utf8(file);
             }
             const json variables = package.value("env", json::object());
             for (const auto& [key, value] : variables.items()) {
@@ -261,6 +278,11 @@ json Toolchain::sync() {
         for (const auto& [program, file] : entry.at("programs").items()) {
             if (next["programs"].contains(program)) throw std::runtime_error("duplicate managed executable: " + program);
             next["programs"][program] = file;
+        }
+        const json libraries = entry.value("libraries", json::object());
+        for (const auto& [library, file] : libraries.items()) {
+            if (next["libraries"].contains(library)) throw std::runtime_error("duplicate managed library: " + library);
+            next["libraries"][library] = file;
         }
     }
     for (const auto* name : {"bash", "git", "rg", "uv", "python", "python3", "node", "npm"})
@@ -286,6 +308,9 @@ json Toolchain::sync() {
             fs::create_directories(directory);
             auto env = detail::runtime_environment(paths_, next, "managed").variables;
             std::erase_if(env, [](const auto& item) { return item.first == "UV_OFFLINE" || item.first == "NPM_CONFIG_OFFLINE"; });
+            // 依赖下载与模型请求、SearXNG 一样跟随宿主的代理配置。
+            for (const auto* name : {"HTTP_PROXY", "HTTPS_PROXY", "ALL_PROXY", "NO_PROXY", "http_proxy", "https_proxy", "all_proxy", "no_proxy"})
+                if (const auto value = base::environment_variable(name)) env.emplace_back(name, *value);
             if (kind == "python") {
                 const auto uv = next["programs"]["uv"].get<std::string>();
                 detail::execute_runtime_command({uv, "venv", "--python", next["programs"]["python"].get<std::string>(), directory.string()}, paths_.root, env);

@@ -13,9 +13,13 @@
 #include <csignal>
 #include <cstdlib>
 #include <cstring>
+#include <format>
+#include <fstream>
 #include <limits>
 #include <mutex>
+#include <sstream>
 
+#include <dlfcn.h>
 #include <fcntl.h>
 #include <fnmatch.h>
 #include <sys/socket.h>
@@ -350,76 +354,60 @@ void spawn_child(const Command& cmd, const fs::path& program_, const std::vector
     err.read = -1;
 }
 
-namespace {
+} // namespace dagent::exec::detail
 
-std::string system_error(const char* what) { return std::string(what) + ": " + std::strerror(errno); }
+namespace dagent::exec::detail {
 
-} // namespace
-
-struct SrtControl::Impl {
-    int control[2] = {-1, -1};
+struct SharedLibrary::Impl {
+    void* handle = nullptr;
+    ~Impl() {
+        if (handle != nullptr) ::dlclose(handle);
+    }
 };
 
-SrtControl::SrtControl() : impl_(std::make_unique<Impl>()) {
-    if (::socketpair(AF_UNIX, SOCK_STREAM | SOCK_CLOEXEC, 0, impl_->control) != 0)
-        throw ExecError{ExecError::Kind::sandbox, system_error("socketpair")};
-}
+SharedLibrary::SharedLibrary() : impl_(std::make_unique<Impl>()) {}
+SharedLibrary::SharedLibrary(SharedLibrary&&) noexcept = default;
+SharedLibrary& SharedLibrary::operator=(SharedLibrary&&) noexcept = default;
+SharedLibrary::~SharedLibrary() = default;
 
-SrtControl::~SrtControl() { close(); }
-
-void SrtControl::inherit_bridge_endpoint(Command& cmd) const {
-    auto inherited = std::make_shared<InheritedResources>();
-    inherited->fds = {impl_->control[1]};
-    cmd.inherited_resources = std::move(inherited);
-}
-
-std::string SrtControl::bridge_argument() const {
-    return "--control-fd=" + std::to_string(impl_->control[1]);
-}
-
-std::optional<std::string> SrtControl::send_initial(std::string_view init_line) {
-    for (std::size_t offset = 0; offset < init_line.size();) {
-        const ssize_t written = ::send(impl_->control[0], init_line.data() + offset,
-                                       init_line.size() - offset, MSG_NOSIGNAL);
-        if (written < 0 && errno == EINTR) continue;
-        if (written <= 0) return system_error("control init write");
-        offset += static_cast<std::size_t>(written);
+SharedLibrary SharedLibrary::open(const std::filesystem::path& file) {
+    SharedLibrary library;
+    library.impl_->handle = ::dlopen(file.c_str(), RTLD_NOW | RTLD_LOCAL);
+    if (library.impl_->handle == nullptr) {
+        const char* error = ::dlerror();
+        throw ExecError{ExecError::Kind::sandbox,
+                        "load " + file.string() + ": " + (error != nullptr ? error : "dlopen failed")};
     }
-    return std::nullopt;
+    return library;
 }
 
-void SrtControl::send_decision(std::string_view line) {
-    const ssize_t written = ::send(impl_->control[0], line.data(), line.size(), MSG_NOSIGNAL);
-    if (written < 0 && errno != EPIPE)
-        base::logger("exec")->warn("srt control write failed: {}", std::strerror(errno));
+void* SharedLibrary::symbol(const char* name) const noexcept { return ::dlsym(impl_->handle, name); }
+
+// setsid -w 让受限 shell 自成会话：命令里的 kill 0 只打到自己的进程组，不会连带杀掉同组的 bwrap
+// （那样 MXC 只能报告 -1），退出码经 setsid 原样回传。
+std::string sandbox_command_line(const std::filesystem::path& shell, std::string_view script) {
+    return "exec setsid -w " + shell_quote(shell.string()) + " --noprofile --norc -c " + shell_quote(script);
 }
 
-void SrtControl::send_start(std::string_view start) {
-    ::send(impl_->control[0], start.data(), start.size(), MSG_NOSIGNAL);
-}
+std::vector<std::pair<std::string, std::string>> sandbox_environment(const std::filesystem::path&) { return {}; }
 
-std::size_t SrtControl::read_chunk(std::span<char> chunk) {
-    const ssize_t bytes = ::read(impl_->control[0], chunk.data(), chunk.size());
-    return bytes > 0 ? static_cast<std::size_t>(bytes) : 0;
-}
-
-void SrtControl::shutdown_host() noexcept { ::shutdown(impl_->control[0], SHUT_RDWR); }
-
-void SrtControl::close_bridge() noexcept {
-    ::close(impl_->control[1]);
-    impl_->control[1] = -1;
-}
-
-void SrtControl::close() noexcept {
-    for (int& fd : impl_->control) {
-        if (fd >= 0) { ::shutdown(fd, SHUT_RDWR); ::close(fd); fd = -1; }
+// /proc/net/tcp 每行：sl local_address rem_address st tx:rx tr:when retrnsmt uid ...；地址为
+// 小端十六进制 IPv4 加大端十六进制端口。客户端一侧的条目是 本端=对端端口、远端=代理端口。
+bool loopback_peer_is_current_user(unsigned short local_port, unsigned short peer_port) {
+    const std::string local = std::format("0100007F:{:04X}", peer_port);
+    const std::string remote = std::format("0100007F:{:04X}", local_port);
+    std::ifstream table("/proc/net/tcp");
+    std::string line;
+    std::getline(table, line); // 表头
+    while (std::getline(table, line)) {
+        std::istringstream fields(line);
+        std::string slot, local_address, remote_address, state, queues, timer, retransmits;
+        unsigned long uid = 0;
+        if (!(fields >> slot >> local_address >> remote_address >> state >> queues >> timer >> retransmits >> uid))
+            continue;
+        if (local_address == local && remote_address == remote) return uid == ::getuid();
     }
-}
-
-std::vector<fs::path> default_srt_readable_paths() {
-    return {
-        "/bin", "/sbin", "/usr", "/lib", "/lib64", "/etc", "/dev", "/proc", "/sys",
-    };
+    return false;
 }
 
 } // namespace dagent::exec::detail

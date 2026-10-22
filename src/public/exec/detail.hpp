@@ -2,6 +2,7 @@
 /// @brief exec 内部跨实现文件共享的细节，不属于对外接口；外部代码不要 include。
 #pragma once
 
+#include <cstddef>
 #include <filesystem>
 #include <string>
 #include <string_view>
@@ -36,5 +37,21 @@ std::vector<std::string> inherited_environment();
 bool environment_names_equal(std::string_view left, std::string_view right);
 bool environment_name_matches(std::string_view name, const std::string& pattern);
 bool regular_executable(const std::filesystem::path& path);
+
+/// @brief 流式收集一路输出：head 保留前一半预算，tail 环形保留后一半，total 记录原始总量。
+/// finish() 按 base::truncate_middle 的语义合成；run() 与 run_mxc() 共用。
+class OutputCollector {
+public:
+    explicit OutputCollector(std::size_t max_bytes);
+    void append(std::string_view chunk);
+    std::string finish() const;
+
+private:
+    std::size_t head_cap_;
+    std::size_t tail_cap_;
+    std::string head_;
+    std::string tail_;
+    std::size_t total_ = 0;
+};
 
 } // namespace dagent::exec::detail

@@ -32,7 +32,7 @@ $CM --build --preset dev -j 8 --target dagent_tui   # 只编一个库，改动�
 
 | 工具 | 用途 | 用法 |
 | --- | --- | --- |
-| `det.sh` | 确定性 CLI 输出（`sandbox status`、`runtime list`、`sessions`、`--list-models`、backend 参数错误等） | `det.sh <绝对输出目录> <程序目录>`，然后 `diff -r` 基线目录；只允许 `elapsed_ms`、`srt_bridge` 路径和会话列表不同 |
+| `det.sh` | 确定性 CLI 输出（`sandbox status`、`runtime list`、`sessions`、`--list-models`、backend 参数错误等） | `det.sh <绝对输出目录> <程序目录>`，然后 `diff -r` 基线目录；只允许 `elapsed_ms` 和会话列表不同（`sandbox status` 已没有程序目录旁的 bridge 路径） |
 | `capture2.py` | 在真实 PTY 里跑 TUI，按步骤发键并保存每步画面帧 | `temp/tui-verify/venv/bin/python temp/platform-check/capture2.py <前缀> <列> <行> '<步骤 JSON>'`；步骤为 `[文本, 等待秒]`，文本可含 `<enter>`、`<esc>`、`<s-tab>`、`<resize:C:R>`、`<signal:TERM>`；环境变量 `DAGENT_BIN`、`DAGENT_HOME`、`CAPTURE_CWD`、`CAPTURE_ARGS` |
 | `runs.py` / `f_runs.py` / `g_runs.py` | 用模型跑 `dagent run` 的工具场景（bash、grep、edit、MCP、web、memory、网络…） | `python3 runs.py <标签> [场景...]` |
 | `h_rpc.py` / `watch_rpc.py` | 直接用 socketpair 驱动 `dagent-backend` 的 RPC | 见脚本头部 |
@@ -56,13 +56,13 @@ $CM --build --preset dev -j 8 --target dagent_tui   # 只编一个库，改动�
 
 ### 3.1 环境
 
-Windows 11 Pro 25H2 虚拟机（dockur/windows，容器名 `dagent-win`），全部文件在 `/home/jyt/winvm/`：
+Windows 11 Pro 26H2（build 26300.9711）虚拟机（dockur/windows，容器名 `dagent-win`），全部文件在 `/home/jyt/winvm/`：
 
 - `compose.yml`、`storage/`（磁盘）、`shared/`（在客户机里是 `\\host.lan\Data`）、`tools/`（宿主侧脚本）。
 - 连接：`ssh dagent-win`（127.0.0.1:2222，登录 shell 是 PowerShell）；网页控制台 http://127.0.0.1:8006/ ，RDP 127.0.0.1:33890。截图 `tools/shot.sh [out.png]`，注入按键 `tools/type.py`。
 - 客户机已装：VS 2022 Build Tools（MSVC、CMake、Ninja、Windows SDK）、Git for Windows、Python 3.12（pywinpty、pyte）、vcpkg 在 `C:\dev\vcpkg`（boost-asio/boost-process、curl、openssl、libiconv，triplet x64-windows）。源码树 `C:\dev\DAgent`，开发用 Home 是源码树的 `home/`，测试项目 `C:\dev\proj 测试`（故意带空格和中文）。
 - 网络：客户机只经宿主转发的代理访问 GitHub、微软 CDN、npm 等；Windows Update 不通，不要指望它自我更新。`pip` 用 TUNA 镜像。代理转发器 `socat TCP-LISTEN:1081,bind=172.25.0.1,fork,reuseaddr TCP:127.0.0.1:1081` 不是服务，宿主重启后要重新起（用 `ss -tln | grep 172.25.0.1:1081` 检查）。
-- 磁盘备份：`storage-base-20261021/`（干净系统）和 `storage-pre-update-20261022/`（装好开发环境，更新前）。恢复方法：停容器，把备份目录复制回 `storage/`。
+- 不保留磁盘备份（2026-10-22 项目负责人决定）；需要回退时按 `compose.yml` 重装并重跑 `oem/` 与 `shared/` 里的安装脚本。
 
 ### 3.2 同步与构建
 
@@ -80,7 +80,10 @@ WIN_BUILD_MAX=3000 /home/jyt/winvm/tools/win-build.sh $sha 1 Release  # 2. 在�
 ssh dagent-win 'cmd /c "C:\dev\DAgent-stage\dagent.exe --version & C:\dev\DAgent-stage\dagent.exe sandbox status & echo rc=%ERRORLEVEL%"'
 ```
 
-Windows 没有沙箱后端，`sandbox status` 应输出 `probe.stage="unsupported"` 且 `rc=0`；启动时 TUI 欢迎页和 `dagent run` 的 stderr 都会提示 workspace 模式不可用并以 ask 模式启动。
+虚拟机是 26H2，`sandbox status` 应报告 `mxc-tier = base-container`、`tier_probe.warnings` 为空、`rc=0`；在 Git bash 的 MSYS2 问题
+（microsoft/mxc#1061）修复前，`probe` 为 `ok=false, stage=filesystem`，错误含 `NtCreateDirectoryObject(\BaseNamedObjects\msys-2.0…)`，
+启动时 TUI 欢迎页和 `dagent run` 的 stderr 都会提示 workspace 模式不可用并以 ask 模式启动。把 `mxc_ffi.dll` 移走时 `mxc-library`
+应为 false 且提示 `run dagent runtime sync`。
 
 什么时候需要虚拟机：改了 `*_win.cpp`、CMake 源列表或平台边界（`docs/design/platform.md` 里列的文件）时做一次 Release 构建加冒烟；平台中立的改动靠 Linux 验证即可。虚拟机构建和 Linux 检查并行跑，不要串行等。
 

@@ -117,37 +117,27 @@ SessionAssembly::Options session_options(const Config& config, const backend::Bo
     out.search = config.search;
     out.process = config.process;
     out.sandbox_options = config.sandbox;
-    // 唯一受限后端是 SRT：真实做一次隔离启动探测；失败时受限命令不启动，只保留显式 host 执行。
+    // 唯一受限后端是 MXC：真实做一次隔离启动探测；失败时受限命令不启动，只保留显式 host 执行。
+    exec::Support support;
     if (auto runtime = sandbox_runtime(paths)) {
-        const nlohmann::json probe = sandbox_probe(*runtime, paths.runtime / "sandbox");
+        const nlohmann::json probe = sandbox_probe(*runtime);
         if (probe.value("ok", false)) {
-            exec::Support support;
-            support.backend = "srt";
+            support.backend = "mxc";
             support.child_signals = true;
-            out.sandbox = std::move(support);
-            out.srt = std::move(runtime);
+            out.mxc = std::move(*runtime);
         } else {
-            exec::Support support;
-            support.missing.push_back("SRT isolation probe failed: " +
-                                      probe.value("error", std::string{"unknown"}));
-            out.sandbox = std::move(support);
-            base::logger("app")->warn("SRT sandbox is not ready: {}",
-                                      probe.value("error", std::string{"unknown"}));
+            const std::string error = probe.value("stage", std::string{"probe"}) + " stage: " +
+                                      probe.value("error", std::string{"unknown"});
+            support.missing.push_back("MXC isolation probe failed at " + error);
+            base::logger("app")->warn("MXC sandbox is not ready: {}", error);
         }
     } else {
-        exec::Support support;
-        support.missing.push_back(detail::platform_sandbox_supported()
-                                      ? "internal/sandbox runtime is not prepared; run `dagent runtime sync`"
-                                      : "this platform has no sandbox backend");
-        out.sandbox = std::move(support);
+        support.missing.push_back(runtime.error());
     }
+    out.sandbox = std::move(support);
     out.tools.sandbox = out.sandbox_options;
-    if (out.srt) {
-        out.tools.srt = out.srt;
-        out.tools.sandbox_state_root = paths.runtime / "sandbox";
-    }
-    out.search.sandbox.runtime = out.srt;
-    out.search.sandbox.state_root = paths.runtime / "sandbox";
+    out.tools.mxc = out.mxc;
+    out.search.sandbox.runtime = out.mxc;
     out.search.sandbox.protected_read = {paths.root / "config", paths.root / "data",
                                          paths.root / "logs", paths.root / "run", paths.memory};
     out.storage = config.session;
@@ -228,11 +218,11 @@ backend::Assembled assemble_backend(const backend::BootstrapOptions& options) {
     context.sandbox = session.search.sandbox;
     out.queries = std::make_shared<QueryGatewayImpl>(config.session, options.cwd, config.project_root,
                                                    session.search, skills, config.process, config.ui.completion_max_files, memory, config.subagents);
-    // stdio MCP：用受信任 profile + 已解析 SRT 运行时构造受限启动参数；缺 profile 的 server 不启动。
+    // stdio MCP：用受信任 profile + 已解析 MXC 运行时构造受限启动参数；缺 profile 的 server 不启动。
     // 没有运行时（包括无沙箱后端平台）时记录未启动原因，不在宿主直接启动。
     for (auto& server : config.mcp_servers) {
         if (server.transport != mcp::Transport::stdio || !server.profile_present) continue;
-        if (!session.srt) {
+        if (!session.mxc) {
             server.sandbox_unavailable =
                 detail::platform_sandbox_supported()
                     ? "the sandbox runtime is not ready; run dagent sandbox status"
@@ -240,9 +230,7 @@ backend::Assembled assemble_backend(const backend::BootstrapOptions& options) {
             continue;
         }
         mcp::StdioSandbox sandbox;
-        sandbox.runtime = *session.srt;
-        sandbox.state_root = paths.runtime / "sandbox";
-        sandbox.startup_timeout = config.sandbox.startup_timeout;
+        sandbox.runtime = *session.mxc;
         exec::Policy policy;
         policy.mode = exec::Mode::workspace_write;
         policy.readable = server.profile_read;

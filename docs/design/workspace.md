@@ -167,13 +167,14 @@ read 的权限过滤发生在类型查询前；memory 不触发目录类型查�
   （`text` 或 `bytes` 二选一，后者用 `base::base64_decode` + `to_valid_utf8` 解码），`context` 行不计入
   `max_matches`、不产生 `spans`。
 - **提前停止**：命中数达到 `max_matches` 时，通过内部 `stop_source`（外部 `stop_token` 通过
-  `stop_callback` 转发到同一个 `stop_source`）取消只读 SRT 执行，不等 rg 自然结束；`ExecError::cancelled`
+  `stop_callback` 转发到同一个 `stop_source`）取消只读 MXC 执行，不等 rg 自然结束；`ExecError::cancelled`
   在「自己主动停」时按正常结果处理，只有外部 `stop_token` 触发的取消才继续抛成
   `WorkspaceError::cancelled`。
 - `files` 用 `--no-config --files --null`；不按 mtime 排序时可以在凑够 `max_files` 后立即停 rg；要按 mtime 排序时
   必须拿到全量结果再自己 `stat` 排序——`rg --sort` 会让 rg 退化成单线程，所以不用它。
 
-搜索通过 `SearchOptions::sandbox` 的 `ReadOnlySandbox::run` 启动，缺少 SRT 时失败，不提供宿主回退。
+搜索通过 `SearchOptions::sandbox` 的 `ReadOnlySandbox::run` 在 MXC 沙箱内启动（无网络，stdin 为 `/dev/null`），
+缺少 MXC 运行时时失败，不提供宿主回退。
 app 默认注入托管 rg 的绝对路径；工具层按 grant 设置可读范围并过滤结果，补全查询也过滤控制面与敏感路径。
 
 ### fuzzy_rank：移植的 fzy
@@ -220,8 +221,8 @@ OS 描述由 `context_posix.cpp` 用 uname 拼出 `sysname release`，失败仍�
 异常并返回「未成功」，只在 debug 日志里记一行；`root` 或 `status` 没成功时整个 `GitInfo` 为空
 （`log` 单独失败不影响，只是拿不到最近提交列表）。
 
-当前上下文采集调用 `/usr/bin/git`，通过 `ContextOptions::sandbox` 进入只读 SRT；禁用 fsmonitor、hooks、
-pager 和全局/系统 Git 配置。这里尚未切换到托管 Git，宿主无该路径或 SRT 不可用时 Git 信息为空。
+当前上下文采集调用 `/usr/bin/git`，通过 `ContextOptions::sandbox` 进入只读 MXC 沙箱；禁用 fsmonitor、hooks、
+pager 和全局/系统 Git 配置。这里尚未切换到托管 Git，宿主无该路径或沙箱不可用时 Git 信息为空。
 程序路径由 `exec::system_git_program` 提供，POSIX 仍返回上述固定值，不预先探测或搜索 PATH。
 上下文的 shell 展示由 `detail::shell_description` 提供：POSIX 使用非空 SHELL，否则为 `sh`，不决定执行 Bash。
 
@@ -259,7 +260,7 @@ inja 抛 `InjaError` 时，转成 `bad_template`，如果错误带了行号就�
   引入，`FIND_PACKAGE_ARGS 3.5`（系统有就用系统的）。它本身依赖 nlohmann/json，`deps.cmake` 里把已经
   vendor 在 `src/public/lib/nlohmann/` 的那份包成 `nlohmann_json::nlohmann_json` interface target 给
   inja 用，避免同一个翻译单元里出现两份 nlohmann（会撞 include guard 和 ODR）。
-- **ripgrep ≥ 13**、**git**：运行时依赖，调用方提供 argv，`ReadOnlySandbox` 逐参数引用后交给 SRT 执行，不拼接未经引用的用户参数；不是编译期依赖。
+- **ripgrep ≥ 13**、**git**：运行时依赖，调用方提供 argv，`ReadOnlySandbox` 逐参数引用后交给 MXC 执行，不拼接未经引用的用户参数；不是编译期依赖。
   找不到 `rg` 时 `search.rg_path`（`home/config/config.json`）可以覆盖自动探测的路径。
 - `dagent_workspace` 对外公开链接 `dagent_base`，`dagent_exec` 和 `inja` 在 target 中声明为私有链接依赖；
-  `search.hpp`、`context.hpp` 的公开类型仍引用 exec 的只读 SRT 配置。
+  `search.hpp`、`context.hpp` 的公开类型仍引用 exec 的 `ReadOnlySandbox`（`exec/mxc.hpp`）。
