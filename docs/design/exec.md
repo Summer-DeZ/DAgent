@@ -37,9 +37,9 @@ Windows 的两个 spawn 入口使用 Boost 1.92 launcher：stdio 的父端是 As
 `ProcessGroup::capture` 可报告失败；加入 Job 或恢复线程失败即终止挂起进程并报告启动失败。
 Job 设置 KILL_ON_JOB_CLOSE；terminate 尝试 Ctrl-Break，宽限到期 force_kill 使用 TerminateJobObject，
 共享计时器、截断和输出回调不变。退出码保留 DWORD 的 32 位到 int（高位为 1 时为负数），signal 留空。
-Windows 的 `SharedLibrary` 使用 `LoadLibraryW`/`GetProcAddress`，`sandbox_command_line` 按 CreateProcess 引用规则拼出
-`"<shell>" --noprofile --norc -c "<script>"`，`loopback_peer_is_current_user` 第一版固定返回 true；
-ProcessContainer 后端接入（S3）进行中，当前 Windows 装配不启用沙箱后端。
+Windows 的 `SharedLibrary` 使用 `LoadLibraryW`/`GetProcAddress`，`sandbox_command_line` 按 MSYS2 运行库的解析规则拼出
+`"<shell>" --noprofile --norc -c "<script>"`，`sandbox_environment` 补上 `SystemRoot`、真实 `LOCALAPPDATA` 与指向私有 HOME 的
+`USERPROFILE`/`APPDATA`，`loopback_peer_is_current_user` 第一版固定返回 true。ProcessContainer 的契约差异见第 5 节末尾。
 完整路径、继承与资源契约见 [platform](platform.md)。下面涉及 POSIX 系统调用的步骤描述 Linux 行为。
 
 ---
@@ -379,10 +379,25 @@ CMake 仅在 Linux 构建和安装时为实际后端路径生成专用 `dagent.a
 由管理员安装和加载，详见 [构建与安装](../guide/build.md)。正常启动按后端可执行路径自动匹配，不依赖 `aa-exec` 包装器。
 `dagent sandbox status` 分开报告静态检查、MXC 自己的平台诊断和真实启动结果；静态项齐全不等于可隔离执行。
 
-Windows 的 `sandbox_status_win.cpp` 目前令 `platform_sandbox_supported()` 返回 false，装配不加载库也不探测，
-状态报告 `probe.stage="unsupported"`；containment `processcontainer`、`LoadLibraryW` 加载、Windows 命令行拼接和
-`fallback.allowDaclMutation=false` 已在共享代码中。ProcessContainer 接入（S3）进行中：按已批准的计划只接受 `base-container` 层，
-在 Windows 11 26H2 虚拟机上验收。
+Windows（ProcessContainer，2026-10-22 在 Windows 11 26H2 build 26300.9711 虚拟机上验证）：
+
+- 层级门禁：`exec::probe_mxc` 用与执行相同的请求文档（代理形状）调用 Windows 独有的 `mxc_probe_request_json_with_error`
+  （`ffi::Functions` 的可选成员，Linux 为 nullptr），只接受 `tier = base-container`；其它层级或探测失败时后端为 `none`，
+  原因写明层级与所需 OS 版本。请求总带 `fallback.allowDaclMutation=false`。
+- 代理模式必须 `ingress.default=allow` 且（没有 `allowedProxyPeer` 时）`ingress.hostLoopback=allow`，与 Linux 的全 deny 不同；
+  实测 WFP 仍只放行到代理端点的出站，直连外网与宿主其它回环端口都被拦，不给 `network` 时完全无网。
+- `process.env` 必须含 `SYSTEMROOT` 与 `LOCALAPPDATA`（只检查存在，名字不区分大小写）；OS 把容器内的 `LOCALAPPDATA` 和
+  `TEMP`/`TMP` 改写到 `<LOCALAPPDATA>\Packages\sandbox.{guid}\AC[\Temp]`，只有给真实的 `LOCALAPPDATA` 该目录才存在并随容器删除，
+  所以容器内 `TEMP`/`TMP` 不是私有 HOME，`TMPDIR`、`USERPROFILE`、`APPDATA` 仍指向私有 HOME。
+- base-container 的文件语义：`deniedPaths` 读被拒，嵌套只读路径写被拒，读写路径可写，未授权路径被拒；但带
+  `ALL APPLICATION PACKAGES` ACL 的系统位置（System32、Program Files）不经策略也可读可执行；授权路径没有执行权
+  （容器内进程不能启动位于 readonly/readwrite 路径中的程序，顶层进程除外），运行时 `cd` 进授权目录被拒（microsoft/mxc#1467），
+  以完整路径启动 System32 程序被拒而按名字经 PATH 启动可以。
+- **受限执行当前不可用**：Git for Windows 的 bash（MSYS2 运行库）在任何 ProcessContainer 内都无法初始化，
+  `msys-2.0.dll` 以绝对 NT 路径在全局 `\BaseNamedObjects` 下建目录返回 0xC0000022，进程以 0xC0000142 退出
+  （microsoft/mxc#1061，open）。真实探针因此在 filesystem 阶段失败，`sandbox status` 给出 `host_prerequisite` 说明，
+  装配回落为无沙箱模式；执行通路（spawn、读流、try_wait、退出码、私有 HOME 清理）在探针里真实走过。
+  `run_mxc`、`ReadOnlySandbox`、代理审批与 `MxcChild` 在 Windows 上尚未端到端验证。
 
 ---
 

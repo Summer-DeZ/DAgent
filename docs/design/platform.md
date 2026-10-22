@@ -119,10 +119,14 @@ Windows 的 exec 与进程边界：
   退出状态的 signal 为空，DWORD 退出码保留 32 位到既有 int 接口（最高位为 1 时显示为负数），不作 POSIX 状态解码。
 - InheritedResources 保存不拥有资源的句柄清单；launch 临时设置并恢复额外句柄的继承位，仅白名单进入子进程。
   SIGPIPE 操作为空。`SharedLibrary` 用 `LoadLibraryW` 打开、`GetProcAddress` 取符号，失败时 `ExecError{sandbox}` 带系统错误文本；
-  `sandbox_command_line` 按 CreateProcess 的引用规则拼出 `"<shell>" --noprofile --norc -c "<script>"`；
+  `sandbox_command_line` 按 MSYS2 运行库的解析规则拼出 `"<shell>" --noprofile --norc -c "<script>"`（双引号内每个 `\` 和 `"`
+  前加 `\`，与 CommandLineToArgvW 不同：MSYS2 会把不在引号前的成对反斜杠也减半）；`sandbox_environment(home)` 返回
+  `SystemRoot`、用户真实的 `LOCALAPPDATA` 以及指向私有 HOME 的 `USERPROFILE`、`APPDATA`（POSIX 返回空）；
   `loopback_peer_is_current_user` 第一版固定返回 true。
-  Windows 后端为 ProcessContainer，接入（S3）进行中；当前装配不启用沙箱后端，权限模式与 bash 授权的差异见
-  [agent 的启动自检未找到可用沙箱时](agent.md#启动自检未找到可用沙箱时)。
+  Windows 后端为 ProcessContainer：装配加载 `mxc_ffi.dll` 后用代理形状的请求做层级探测，只接受 `base-container`。
+  受限执行目前被上游阻塞：Git for Windows 的 bash（MSYS2 运行库）在任何 ProcessContainer 内都无法初始化
+  （`msys-2.0.dll` 在全局 `\BaseNamedObjects` 下建目录被拒，microsoft/mxc#1061），真实探针在 filesystem 阶段失败，
+  装配按失败关闭回落到无沙箱模式，差异见 [agent 的启动自检未找到可用沙箱时](agent.md#启动自检未找到可用沙箱时)。
 
 Windows 的 IPC 与中断边界：
 
@@ -314,11 +318,11 @@ watcher 线程中消费；目录筛选、4096 上限、不跟随 reparse point �
 其余事件触发 changed 回调；停止时投递完成键 0 唤醒，`CancelIoEx` 取消在途请求并收齐完成通知后才释放缓冲区和句柄。
 Windows 没有 `IN_CLOSE_WRITE` 的精确对应物，通知可能在写入结束前或多次到达，契约只要求最终刷新正确。
 
-`detail::platform_sandbox_supported()` 在 POSIX 返回 true，Windows 目前返回 false（ProcessContainer 接入进行中）；
-`detail::sandbox_containment()` 在 POSIX 返回 `bubblewrap`，Windows 返回 `processcontainer`。为 false 时 `sandbox_runtime`
-直接返回 `this platform has no sandbox backend`，`dagent sandbox status` 只报告 runtime 是否准备好，`probe` 为
-`{ok:false, stage:"unsupported"}`，不加载 MXC 库、不列宿主前置、不启动探测、不读宿主诊断；启动装配把该原因记入
-`Support.missing`，stdio MCP server 报 `stdio servers require a sandbox backend; this platform has none`。Linux 路径不受影响。
+`detail::platform_sandbox_supported()` 在两个平台都返回 true；`detail::sandbox_containment()` 在 POSIX 返回 `bubblewrap`，
+Windows 返回 `processcontainer`。Windows 的 `sandbox_runtime` 在加载库后调用 `probe_request`（代理形状的请求），层级不是
+`base-container` 或探测本身失败时返回原因（含层级名与 "Windows 11 26H2 (build 26300) or newer"），启动装配把它记入
+`Support.missing`；`dagent sandbox status` 增加 `mxc-tier` 检查项与 `tier_probe` JSON。`append_host_diagnostics` 在 Windows
+识别 MSYS2 初始化失败并给出 `host_prerequisite`，POSIX 保留 AppArmor 提示。
 
 ## Windows：终端
 

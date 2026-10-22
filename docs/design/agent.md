@@ -344,7 +344,7 @@ workspace（auto-edit）下可配置决策模型（第一版为 System One 协�
 目标逐个交给运行中网络闸门判定。能力缺失也不会自动降级 full_access；只有明确获批的 host-access 单次调用使用 host。
 具体限制见 [exec](exec.md#5-受限执行mxc-后端)。
 
-**启动自检未找到可用沙箱时**（任何平台：Windows 当前未启用后端，ProcessContainer 接入进行中；Linux 上 runtime 未准备、
+**启动自检未找到可用沙箱时**（任何平台：Windows 上层级不是 `base-container` 或探针失败，目前 Git bash 无法在 ProcessContainer 内初始化；Linux 上 runtime 未准备、
 MXC 库缺失或版本不符、缺 bwrap/slirp4netns 等宿主前置或探测失败）：模式只有 `ask` 与
 `unrestricted`；`workspace` 由启动自检映射为 `ask`，Shift+Tab 与 exit_plan 不提供该档。`ask` 下每条 bash 都请求
 `host_command`，已知只读命令可做会话级精确命令复用；敏感或控制面路径额外叠加一次性的 `sensitive_read`。

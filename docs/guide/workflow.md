@@ -80,7 +80,10 @@ WIN_BUILD_MAX=3000 /home/jyt/winvm/tools/win-build.sh $sha 1 Release  # 2. 在�
 ssh dagent-win 'cmd /c "C:\dev\DAgent-stage\dagent.exe --version & C:\dev\DAgent-stage\dagent.exe sandbox status & echo rc=%ERRORLEVEL%"'
 ```
 
-当前版本的 Windows 尚未启用沙箱后端（ProcessContainer 接入进行中），`sandbox status` 应输出 `probe.stage="unsupported"` 且 `rc=0`；启动时 TUI 欢迎页和 `dagent run` 的 stderr 都会提示 workspace 模式不可用并以 ask 模式启动。
+虚拟机是 26H2，`sandbox status` 应报告 `mxc-tier = base-container`、`tier_probe.warnings` 为空、`rc=0`；在 Git bash 的 MSYS2 问题
+（microsoft/mxc#1061）修复前，`probe` 为 `ok=false, stage=filesystem`，错误含 `NtCreateDirectoryObject(\BaseNamedObjects\msys-2.0…)`，
+启动时 TUI 欢迎页和 `dagent run` 的 stderr 都会提示 workspace 模式不可用并以 ask 模式启动。把 `mxc_ffi.dll` 移走时 `mxc-library`
+应为 false 且提示 `run dagent runtime sync`。
 
 什么时候需要虚拟机：改了 `*_win.cpp`、CMake 源列表或平台边界（`docs/design/platform.md` 里列的文件）时做一次 Release 构建加冒烟；平台中立的改动靠 Linux 验证即可。虚拟机构建和 Linux 检查并行跑，不要串行等。
 
