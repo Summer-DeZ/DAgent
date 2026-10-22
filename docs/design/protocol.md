@@ -235,7 +235,7 @@ context 显式携带 used/limit/window/trigger_percent；删除空的 phase、ch
 同一事件报告。审批交互载荷使用相同字段，身份对象名称为 `identity`。这些字段供关联审计，不构成可恢复的授权。
 会话授权复用时 `approval` 保留原始批准来源，当前工具由顶层 `id/execution_id` 标识；旧记录缺少 execution_id 时读为空。
 `audit.explicit_denial` 区分明确拒绝与审阅失败；仅明确网络拒绝可保存为会话拒绝规则。
-SRT 运行中放行的目标会补入最终 bash / web 结果的 `view.network_targets`；需要审批的批准来源见对应 permission 的 actual_grant。
+MXC 执行期间经回环代理放行的目标会补入最终 bash / web 结果的 `view.network_targets`；需要审批的批准来源见对应 permission 的 actual_grant。
 配置、当前模式或托管端点直接放行时没有额外审批记录。
 
 web 工具沿用 `tool_started/tool_finished` 事件，`tool_finished.data.view.kind` 为 `web`。`operation` 区分 search/fetch，
