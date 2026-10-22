@@ -17,8 +17,9 @@ std::string runtime_platform() {
 }
 
 void extract_runtime_archive(const fs::path& archive, const fs::path& destination,
-                             const fs::path& cwd) {
-    execute_runtime_command({"/usr/bin/tar", "-xf", archive.string(), "--strip-components=1", "-C", destination.string()}, cwd);
+                             const fs::path& cwd, int strip) {
+    execute_runtime_command({"/usr/bin/tar", "-xf", archive.string(),
+                             "--strip-components=" + std::to_string(strip), "-C", destination.string()}, cwd);
 }
 
 exec::Environment runtime_environment(const HomePaths& paths, const json& installed, std::string_view name) {
@@ -54,7 +55,7 @@ exec::Environment runtime_environment(const HomePaths& paths, const json& instal
     return out;
 }
 
-void install_python_runtime(const fs::path& uv, std::string_view version,
+RuntimePrograms install_python_runtime(const fs::path& uv, std::string_view version,
                             const fs::path& directory, const fs::path& cache) {
     std::vector<std::pair<std::string, std::string>> env = {
         {"PATH", "/usr/bin:/bin"}, {"HOME", directory.string()}, {"UV_NO_CONFIG", "1"},
@@ -65,7 +66,10 @@ void install_python_runtime(const fs::path& uv, std::string_view version,
     fs::create_directories(directory / "bin");
     fs::create_symlink(fs::relative(python, directory / "bin"), directory / "bin/python");
     fs::create_symlink("python", directory / "bin/python3");
+    return {{"python", directory / "bin/python"}, {"python3", directory / "bin/python3"}};
 }
+
+fs::path select_python_runtime_program(const fs::path& configured, const fs::path&) { return configured; }
 
 fs::path python_environment_program(const fs::path& environment_root) {
     return environment_root / "bin/python";

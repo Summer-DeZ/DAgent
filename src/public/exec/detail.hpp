@@ -32,7 +32,8 @@ void ignore_sigpipe();
 /// @brief 当前环境条目的独立快照，保留顺序与重复项；过滤与覆盖由 make_environment 完成。
 std::vector<std::string> inherited_environment();
 /// @brief 平台的环境变量名相等规则；POSIX 区分大小写，与 deny 通配符匹配独立。
-bool environment_names_equal(std::string_view left, std::string_view right) noexcept;
+/// Windows 转为 UTF-16 后按 ordinal 忽略大小写比较，转码失败可抛异常。
+bool environment_names_equal(std::string_view left, std::string_view right);
 bool environment_name_matches(std::string_view name, const std::string& pattern);
 bool regular_executable(const std::filesystem::path& path);
 

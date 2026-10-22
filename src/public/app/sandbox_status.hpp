@@ -24,6 +24,8 @@ nlohmann::json sandbox_probe(const exec::SrtRuntime& runtime, const std::filesys
 nlohmann::json sandbox_status(const HomePaths& paths);
 
 namespace detail {
+/// @brief 本平台是否提供沙箱后端；为 false 时不解析 SRT 资源、不做启动探测，状态报告 `unsupported`。
+bool platform_sandbox_supported();
 std::optional<std::filesystem::path> host_bwrap();
 std::optional<std::filesystem::path> host_socat();
 void append_host_diagnostics(nlohmann::json& out);

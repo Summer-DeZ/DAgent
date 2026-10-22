@@ -34,17 +34,36 @@ runtime/
 | 接口 | 实现与职责 |
 | --- | --- |
 | `execute_runtime_command` | `app/toolchain.cpp`：不继承宿主环境，沿用 exec 默认项与传入环境；超时 20 分钟，输出上限 65536，失败文本仍拼接程序名、stderr、stdout，成功时去掉尾部 CR/LF |
-| `extract_runtime_archive` | `app/toolchain_posix.cpp`：在传入 cwd 执行 `/usr/bin/tar -xf <archive> --strip-components=1 -C <destination>` |
+| `extract_runtime_archive` | `app/toolchain_posix.cpp`：在传入 cwd 执行 `/usr/bin/tar -xf <archive> --strip-components=<strip> -C <destination>`；`strip` 来自资产，默认 1 |
 | `runtime_environment` | `app/toolchain_posix.cpp`：按原顺序构造 shell、PATH、HOME/XDG、包环境变量和可读目录 |
-| `install_python_runtime` | `app/toolchain_posix.cpp`：设置准备环境，执行 uv python install/find，并创建 `bin/python` 和 `bin/python3` 符号链接 |
+| `install_python_runtime` | `app/toolchain_posix.cpp`：设置准备环境，执行 uv python install/find，并创建 `bin/python` 和 `bin/python3` 符号链接，返回程序映射；Windows 返回实际解释器路径 |
+| `select_python_runtime_program` | POSIX 保留配置相对路径的解析结果；Windows 采用安装器返回的解释器路径 |
 | `python_environment_program` | `app/toolchain_posix.cpp`：返回环境根下的 `bin/python`，供 uv pip sync 和 SearXNG 启动使用 |
 | `runtime_platform`、`SyncLock` | `app/toolchain_posix.cpp`：平台标识和原生安装锁 |
 
 共享 `toolchain.cpp` 保留配置读取、下载和 SHA-256 校验、包顺序、代际与摘要计算、就绪检查和 manifest 发布；
 归档验证完成后才调用解包接口。Python 包安装仍在非 Python 包之后，平台操作完成后再计算程序摘要、
 写入 `.ready.json`；依赖环境就绪后才写最终 `installed.json`，不改变未完成代际的清理位置。
+JSON 临时文件在原关闭位置调用 base::make_file_private；POSIX 仍执行原 filesystem::permissions，之后才 rename。
 `runtime_platform` 保留 uname 的 `sysname-machine` 格式与失败异常；`SyncLock` 以不透明状态持有
 `run/runtime.lock`，仍使用 0600/CLOEXEC、非阻塞独占锁，析构关闭文件，持有范围仍覆盖整个 sync 流程。
+
+Windows 的 `toolchain_win.cpp` 提供 Windows-x86_64 平台标识和非阻塞 LockFileEx 同步锁，
+锁文件创建时私有、句柄不继承、不共享删除，持有范围覆盖整个 sync，析构关闭释放。
+解包明确调用 Windows 系统目录的 tar.exe（x64 上为 SystemRoot/System32），保持 -xf、`--strip-components=<strip>` 和 -C；
+`strip` 来自资产且默认 1，Windows 自带的 bsdtar 因此也能解压 .zip。
+运行环境不继承宿主 PATH；按包顺序拼接分号 PATH，每个包的 bin 目录之后追加 manifest `programs` 中各程序的父目录（去重），
+最后追加系统目录和 Windows 目录。
+Python venv 前置 Scripts，Node 环境前置 node_modules/.bin；HOME/USERPROFILE 指向所选 runtime/homes/<name>。
+XDG、离线选项、uv/npm 缓存与配置变量保留原含义，增加 SystemRoot、系统 COMSPEC 及系统临时目录 TEMP/TMP。
+环境构造不隐式创建目录，也不改变发布顺序。
+
+Python 安装接口返回 RuntimePrograms 映射。Windows 保留 uv install/find 参数，--no-bin 不创建入口链接，
+python/python3 均指向 uv find 返回的实际解释器；venv 使用 Scripts/python.exe。
+共享层仍先验证配置的相对路径，再通过 select_python_runtime_program 选择实际程序；POSIX 保留原配置路径，
+因此自定义 Python 程序路径、原符号链接目标和程序摘要不变。Windows 程序路径写入 JSON 时使用 UTF-8。
+Windows 的系统 Bash/Git 与 uv/rg/node 归档由 `runtime.json` 的 `platforms` 覆盖登记；
+这些平台接口不表示所有平台共用同一份包定义。
 
 `dagent runtime list` 返回期望配置、安装记录和 `current`（平台、配置及依赖文件是否匹配）。
 它不是磁盘完整性扫描；正常启动还检查程序是否可执行、依赖环境是否就绪。
@@ -62,9 +81,20 @@ bridge 位于后端二进制旁的 `libexec/`，跟随程序版本而不是 Home
 
 | kind | 来源与准备方式 |
 | --- | --- |
-| `archive`（默认） | `assets[平台]` 中的 `url`、`sha256`；tar 解压并移除一层顶目录 |
+| `archive`（默认） | `assets[平台]` 中的 `url`、`sha256`；tar 解压并移除 `strip` 层顶目录，`strip` 默认 1 |
 | `files` | `files` 把本机路径复制到包内路径；`command:<name>` 只在显式准备时查询宿主 PATH |
 | `python` | 先准备 uv，再由其安装指定 Python 版本到该包目录；不使用系统 Python |
+| `system` | 不下载、不复制；`root` 指向宿主已有目录，不创建代际目录或 `.ready.json`，`entry.directory` 写 `root` |
+
+`packages` 与 `environments` 的条目可带 `platforms`：键为 `runtime_platform()` 的结果（如 `Linux-x86_64`、
+`Windows-x86_64`），值为对象或 `null`。当前平台有键且值为对象时，用该对象整体替换条目（不合并）；
+值为 `null` 时删除该条目；没有当前平台键时只移除 `platforms` 键。解析在 Toolchain 读取配置后立即完成，
+`configuration_id`、`status()`、`sync()` 和 `environments()` 都使用解析后的配置。不含 `platforms` 的配置
+在解析后 dump 不变，因此摘要不变。
+
+`assets.<platform>` 可带 `strip`（默认 1），作为 tar 的 `--strip-components` 值；没有顶层目录的 zip 用 0。
+`system` 包要求 `root` 存在，否则报 `system package root is missing`；`bin`、`programs` 仍相对 `root` 校验，
+程序摘要照常计算，两个 system 包可以共用同一个 root。
 
 `env` 可为包增加执行变量，值开头的 `{root}` 替换为该包目录，例如 Git helper 与模板路径。
 安装记录包含实际程序路径和准备时的程序摘要；下载包另记录归档摘要。
@@ -75,7 +105,9 @@ POSIX 准备 Python 时，环境按 PATH、HOME、UV_NO_CONFIG、UV_PYTHON_INSTA
 创建 bin 目录后，`bin/python` 指向查得程序相对 bin 的路径，`bin/python3` 的链接目标固定为 `python`。
 
 仓库配置固定 Node、uv、ripgrep 和 Python 版本，并为 Linux aarch64、x86_64 提供归档。
-Bash、Git 默认从准备机器导入快照，Git helper 路径采用 Ubuntu 布局；其它发行版应调整 `files`。
+Bash、Git 在 Linux 默认从准备机器导入快照，Git helper 路径采用 Ubuntu 布局；其它发行版应调整 `files`。
+Windows 覆盖把 Bash、Git 登记为 `C:/Program Files/Git` 的 system 包，uv、rg、node 使用 Windows 归档；
+`internal/sandbox` 与 `internal/searxng` 在 Windows 解析为 null，不准备。
 需要重新导入时修改该包 `version`，不能靠反复 sync 更新同名已发布快照。
 
 ## 独立依赖环境
@@ -100,7 +132,8 @@ Bash、Git 默认从准备机器导入快照，Git helper 路径采用 Ubuntu �
 这些路径相对于 home，依赖声明文件由用户维护。Python 锁文件采用带精确版本及哈希的 requirements 格式，
 使用托管 Python 创建 venv，然后执行 `uv pip sync --require-hashes --only-binary=:all:`。
 不隐式调用系统编译器构建源码包。Node 复制 manifest/lock 后执行 `npm ci`，默认禁用安装脚本；
-确有需要时可在该环境声明 `install_scripts: true`。每个消费者拥有独立依赖目录。
+确有需要时可在该环境声明 `install_scripts: true`。注册的 npm 程序以 `.js` 结尾时，命令改为用托管 node
+执行该脚本（Windows 的 `npm-cli.js`），否则直接执行 npm（Linux 的 `bin/npm`）。每个消费者拥有独立依赖目录。
 
 匹配 `skills/<name>` 时，Skill 的本轮指令会附加对应 bash 环境提示。调用方式：
 

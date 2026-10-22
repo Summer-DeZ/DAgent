@@ -361,7 +361,12 @@ ToolResult ControlActionExecutor::run_ask(const AskRequest& request, std::stop_t
     return result;
 }
 
-ControlActionExecutor::PlanDecision ControlActionExecutor::plan_decision(const Answer& answer) const {
+ControlActionExecutor::PlanDecision ControlActionExecutor::plan_decision(const Answer& answer,
+                                                                        bool workspace_available) const {
+    if (!workspace_available) {
+        if (answer.selected.empty() || answer.selected.front() == 1) return PlanDecision::continue_planning;
+        return answer.selected.front() == 0 ? PlanDecision::accept_ask : PlanDecision::continue_planning;
+    }
     if (answer.selected.empty() || answer.selected.front() == 2) return PlanDecision::continue_planning;
     return answer.selected.front() == 0 ? PlanDecision::accept_workspace : PlanDecision::accept_ask;
 }
@@ -382,9 +387,13 @@ ToolResult ControlActionExecutor::run_plan_confirmation(const PlanConfirmation& 
         return result;
     }
 
+    const bool workspace_available = services_.policy->workspace_mode_available();
+    AskView question_view = request.view;
+    if (!workspace_available && !question_view.options.empty())
+        question_view.options.erase(question_view.options.begin());
     const Answer answer =
-        (*services_.asker)(to_question(request.call_id, request.view, false), stop);
-    AskView view = request.view;
+        (*services_.asker)(to_question(request.call_id, question_view, false), stop);
+    AskView view = std::move(question_view);
     view.selected = answer.selected;
     view.cancelled = answer.cancelled;
     if (answer.cancelled || stop.stop_requested()) {
@@ -394,10 +403,10 @@ ToolResult ControlActionExecutor::run_plan_confirmation(const PlanConfirmation& 
         return result;
     }
 
-    switch (plan_decision(answer)) {
+    switch (plan_decision(answer, workspace_available)) {
     case PlanDecision::accept_workspace:
     case PlanDecision::accept_ask: {
-        const PermissionMode next = plan_decision(answer) == PlanDecision::accept_workspace
+        const PermissionMode next = plan_decision(answer, workspace_available) == PlanDecision::accept_workspace
                                         ? PermissionMode::workspace
                                         : PermissionMode::ask;
         services_.policy->set_mode(next);

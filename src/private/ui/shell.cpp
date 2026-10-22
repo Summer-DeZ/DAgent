@@ -61,6 +61,15 @@ std::string local_time() {
     char value[6]; std::strftime(value, sizeof(value), "%H:%M", &local);
     return value;
 }
+
+std::string join_text(const std::vector<std::string>& values) {
+    std::string out;
+    for (const auto& value : values) {
+        if (!out.empty()) out += "; ";
+        out += value;
+    }
+    return out;
+}
 class QueueLabel final : public tui::Widget {
 public:
     void set_queue(const std::vector<protocol::QueueItem>& queue) { queue_ = queue; invalidate_layout(); }
@@ -511,6 +520,10 @@ private:
         if (snapshot.session_generation < generation_ || snapshot.state_seq < state_seq_) return;
         state_seq_ = snapshot.state_seq;
         snapshot_ = snapshot;
+        if (!snapshot.sandbox_available && !sandbox_toast_shown_) {
+            sandbox_toast_shown_ = true;
+            toast(std::string(ui::text().sandbox_unavailable_toast), tui::Notice::Severity::warn);
+        }
         id_ = snapshot.session_id;
         generation_ = snapshot.session_generation;
         model_name_ = snapshot.model.name;
@@ -884,7 +897,15 @@ private:
     void update_welcome() {
         auto& view = frame_->welcome;
         view.path = project_path_; view.branch = branch_; view.model = model_label_;
-        view.mode = mode_label(); view.mcp = mcp_states_; view.invalidate();
+        view.mode = mode_label(); view.mcp = mcp_states_;
+        if (mode_ == "unrestricted")
+            view.notice = std::string(ui::text().permission_unrestricted_body);
+        else if (!snapshot_.sandbox_available)
+            view.notice = format_text(ui::text().sandbox_unavailable_notice,
+                                      join_text(snapshot_.sandbox_missing));
+        else
+            view.notice.clear();
+        view.invalidate();
     }
     void hide_welcome() {
         if (!frame_->welcome.visible) return;
@@ -1742,6 +1763,7 @@ private:
     std::string active_interaction_, model_name_, model_label_;
     bool permission_prompt_ = false; ///< 本会话已就当前 pending 弹出过确认框
     bool permission_dialog_open_ = false; ///< 当前对话框仍是本地 unrestricted 确认框
+    bool sandbox_toast_shown_ = false; ///< 已提示过沙箱不可用
     std::string mode_ = "ask";
     std::uint64_t generation_ = 0, state_seq_ = 0;
     bool planning_ = false, read_only_ = false;

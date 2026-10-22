@@ -17,6 +17,15 @@ foreach(resource IN LISTS resources)
         if("@CMAKE_SYSTEM_NAME@" STREQUAL "Linux" AND
            (target STREQUAL "config/models.json" OR target STREQUAL "config/mcp.json"))
             file(CHMOD "${destination}/${target}" PERMISSIONS OWNER_READ OWNER_WRITE)
+        elseif("@CMAKE_SYSTEM_NAME@" STREQUAL "Windows" AND
+               (target STREQUAL "config/models.json" OR target STREQUAL "config/mcp.json"))
+            file(TO_NATIVE_PATH "${destination}/${target}" native_target)
+            execute_process(COMMAND icacls "${native_target}" /inheritance:r /grant:r
+                "*S-1-5-32-544:F" "*S-1-5-18:F" "$ENV{USERNAME}:F"
+                RESULT_VARIABLE code OUTPUT_QUIET ERROR_VARIABLE icacls_error)
+            if(NOT code EQUAL 0)
+                message(FATAL_ERROR "cannot set a private ACL on ${destination}/${target}: ${icacls_error}")
+            endif()
         endif()
     endif()
 endforeach()

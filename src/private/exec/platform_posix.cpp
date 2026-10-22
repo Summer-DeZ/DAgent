@@ -4,7 +4,9 @@
 #include "base/log.hpp"
 #include "base/platform.hpp"
 
-#include <boost/process/v2.hpp>
+#include <boost/process/v2/posix/default_launcher.hpp>
+#include <boost/process/v2/process.hpp>
+#include <boost/process/v2/stdio.hpp>
 
 #include <algorithm>
 #include <cerrno>
@@ -25,6 +27,10 @@
 namespace dagent::exec {
 
 std::filesystem::path system_git_program() { return "/usr/bin/git"; }
+
+std::filesystem::path shell_path_to_native(std::string_view shell_path) {
+    return std::filesystem::path(shell_path);
+}
 
 std::string default_search_path() { return "/usr/bin:/bin"; }
 
@@ -52,7 +58,7 @@ std::vector<std::string> inherited_environment() {
     return environment;
 }
 
-bool environment_names_equal(std::string_view left, std::string_view right) noexcept {
+bool environment_names_equal(std::string_view left, std::string_view right) {
     return left == right;
 }
 
@@ -225,7 +231,7 @@ struct ProcessGroup::Impl {
 
 ProcessGroup::ProcessGroup() : impl_(std::make_unique<Impl>()) {}
 ProcessGroup::~ProcessGroup() = default;
-void ProcessGroup::capture(const bp::process& process) noexcept { impl_->pid = process.id(); }
+void ProcessGroup::capture(const bp::process& process) { impl_->pid = process.id(); }
 bool ProcessGroup::valid() const noexcept { return impl_->pid > 0; }
 void ProcessGroup::terminate() noexcept { ::kill(-impl_->pid, SIGTERM); }
 void ProcessGroup::force_kill() noexcept { ::kill(-impl_->pid, SIGKILL); }

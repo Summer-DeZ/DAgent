@@ -369,10 +369,15 @@ std::expected<void, RuntimeError> Runtime::cycle_permission() {
         return {};
     }
     agent::PermissionMode target = agent::PermissionMode::ask;
-    switch (current) {
-    case agent::PermissionMode::ask: target = agent::PermissionMode::workspace; break;
-    case agent::PermissionMode::workspace: target = agent::PermissionMode::unrestricted; break;
-    case agent::PermissionMode::unrestricted: target = agent::PermissionMode::ask; break;
+    if (!instance->session().policy().workspace_mode_available()) {
+        if (current != agent::PermissionMode::ask) target = agent::PermissionMode::ask;
+        else target = agent::PermissionMode::unrestricted;
+    } else {
+        switch (current) {
+        case agent::PermissionMode::ask: target = agent::PermissionMode::workspace; break;
+        case agent::PermissionMode::workspace: target = agent::PermissionMode::unrestricted; break;
+        case agent::PermissionMode::unrestricted: target = agent::PermissionMode::ask; break;
+        }
     }
     const auto result = request_permission(target, false);
     if (!result) return std::unexpected(result.error());
@@ -427,6 +432,7 @@ std::expected<PermissionChangeResult, RuntimeError> Runtime::request_permission_
     }
     agent::Session& session = instance->session();
     agent::Policy& policy = session.policy();
+    target = agent::supported_mode(target, policy.workspace_mode_available());
 
     // 目标为 unrestricted 且尚未确认、本会话也未确认过：只记录 pending，当前权限不变。
     if (target == agent::PermissionMode::unrestricted && !confirmed && !acked) {

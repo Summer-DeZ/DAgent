@@ -40,6 +40,9 @@ ResourceClass classify_resource(const std::filesystem::path& path, bool inside_w
 
 std::string_view to_string(PermissionMode); ///< "ask" / "workspace" / "unrestricted"
 
+/// @brief 平台没有沙箱后端时不存在 workspace 档：映射为 ask；其余原样返回。
+PermissionMode supported_mode(PermissionMode mode, bool workspace_available);
+
 /// @brief 生效权限：本会话设置与父级上限合成后的实际结果。
 struct EffectivePermission {
     PermissionMode mode = PermissionMode::workspace;
@@ -69,6 +72,8 @@ public:
            std::filesystem::path control_root);
 
     Verdict evaluate(const ToolCall&, const PreparedIntent&) const;
+
+    bool workspace_mode_available() const { return sandbox_.workspace_ready; }
 
     struct AuthorityView {
         EffectivePermission permission;

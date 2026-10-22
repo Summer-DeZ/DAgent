@@ -154,6 +154,7 @@ constexpr Strings kEnglish{
     .approve_deny = "  [n] deny  [e] explain",
     .approve_via_task = " · via task · {0}",
     .approve_host_boundary = "Host access: this runs outside the sandbox and can reach the network, credentials and files of your user account.",
+    .approve_host_only_boundary = "No sandbox is available: the command runs directly in your user account and can reach the network, credentials and all your files.",
     .approve_remote_boundary = "Remote service: it runs beyond this machine and is not covered by the local sandbox.",
     .approve_once_only = "This request is one-time only; it cannot be allowed for the session.",
     .approve_partial = "Warning: part of this call has already executed.",
@@ -237,6 +238,10 @@ constexpr Strings kEnglish{
         "Model mistakes or instructions embedded in web content can delete data, disclose information "
         "or change remote repositories, with consequences that may be irreversible.\n"
         "Use this mode only when you trust the task and can monitor the session.",
+    .sandbox_unavailable_notice =
+        "No sandbox is available: workspace mode is hidden, and bash commands run on the host after approval. {0}",
+    .sandbox_unavailable_toast =
+        "no sandbox available: workspace mode is hidden; run dagent sandbox status",
     .permission_enable = "Enable",
     .permission_cancel = "Cancel",
     .panel_count = "{0} of {1} {2}",
@@ -271,6 +276,7 @@ constexpr Strings kEnglish{
     .approve_category_sensitive = "SENSITIVE READ",
     .approve_category_protected = "PROTECTED WRITE",
     .approve_category_host = "HOST ACCESS",
+    .approve_category_host_command = "HOST",
     .approve_cwd = "cwd",
     .approve_needs = "needs",
     .approve_reason = "reason",
@@ -291,6 +297,7 @@ constexpr Strings kEnglish{
     .approve_need_sensitive = "sensitive read of",
     .approve_need_protected = "protected write to",
     .approve_need_host = "host access to",
+    .approve_need_host_command = "run on the host",
     .welcome_date = "{0} {1}",
     .welcome_months = "JanFebMarAprMayJunJulAugSepOctNovDec",
     .welcome_logo =

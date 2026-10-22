@@ -50,6 +50,7 @@ struct ServerConfig {
     std::string environment = "managed"; ///< managed, project, or mcp/<name>
     std::string url;      ///< http：MCP endpoint
     net::Headers headers; ///< http：附加请求头（如 Authorization）
+    std::string sandbox_unavailable; ///< stdio：无法启动的沙箱原因（没有运行时/本平台无后端）
 
     // ---- 受信任 Home 配置里的显式权限 profile ----
     bool profile_present = false; ///< false：缺少 profile，该 server 不启动

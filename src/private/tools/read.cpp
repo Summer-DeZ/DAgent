@@ -4,6 +4,7 @@
 #include <system_error>
 
 #include "base/text.hpp"
+#include "base/path.hpp"
 #include "tools/detail.hpp"
 
 namespace dagent::tools {
@@ -77,12 +78,12 @@ private:
         std::vector<std::string> names;
         bool too_many = false, cut = false;
         std::error_code ec;
-        fs::directory_iterator it(reference_.directory_path(), fs::directory_options::skip_permission_denied, ec), end;
+        auto it = reference_.directory_entries(fs::directory_options::skip_permission_denied, ec);
         if (ec) return error_result(std::format("cannot read directory {}: {}", display_, ec.message()));
-        for (; it != end && !ec; it.increment(ec)) {
-            if (!ctx_.can_read(grant, target_.path / it->path().filename())) continue;
-            const bool is_dir = it->is_directory(ec);
-            names.emplace_back(it->path().filename().string() + (!ec && is_dir ? "/" : ""));
+        for (; !it.at_end() && !ec; it.increment(ec)) {
+            if (!ctx_.can_read(grant, target_.path / it.name())) continue;
+            const bool is_dir = it.is_directory(ec);
+            names.emplace_back(base::path_to_utf8(it.name()) + (!ec && is_dir ? "/" : ""));
             if (names.size() > max_files()) {
                 names.pop_back();
                 too_many = true;

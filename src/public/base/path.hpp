@@ -9,6 +9,7 @@
 namespace dagent::base {
 
 /// @brief 路径与 UTF-8 文本的边界；POSIX 保留原始字节，不校验或修复非法 UTF-8。
+/// Windows 在 UTF-8 与原生 UTF-16 之间严格转换，非法编码抛 system_error。
 /// 不进行路径规范化、绝对化或符号链接解析。
 std::filesystem::path path_from_utf8(std::string_view text);
 std::string path_to_utf8(const std::filesystem::path& path);

@@ -196,8 +196,8 @@ public:
         if (!args) return std::unexpected(detail::error_result(args.error()));
         std::string error;
         auto input = detail::require_string(*args, search_ ? "query" : "url", error);
-        const int offset = detail::get_int(*args, "offset", error).value_or(0);
-        const int limit = detail::get_int(*args, "limit", error).value_or(search_ ? 8 : 16000);
+        const int offset = static_cast<int>(detail::get_int(*args, "offset", error).value_or(0));
+        const int limit = static_cast<int>(detail::get_int(*args, "limit", error).value_or(search_ ? 8 : 16000));
         if (!error.empty()) return std::unexpected(detail::error_result(error));
         if (input.empty() || input.size() > 8192 || offset < 0 || limit < (search_ ? 1 : 4) || limit > (search_ ? 20 : 1000000))
             return std::unexpected(detail::error_result("invalid web query/URL, offset or limit"));

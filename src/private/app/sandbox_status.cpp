@@ -39,10 +39,12 @@ nlohmann::json parse_probe_output(std::string_view output) {
 } // namespace
 
 std::optional<exec::SrtRuntime> sandbox_runtime(const HomePaths& paths) {
+    if (!detail::platform_sandbox_supported()) return std::nullopt;
     Toolchain toolchain(paths);
     const nlohmann::json status = toolchain.status();
     if (!status.value("current", false)) return std::nullopt;
-    const nlohmann::json installed = status.value("installed", nlohmann::json::object());
+    nlohmann::json installed = status.value("installed", nlohmann::json::object());
+    if (!installed.is_object()) installed = nlohmann::json::object();
     const nlohmann::json programs = installed.value("programs", nlohmann::json::object());
     const nlohmann::json environments = installed.value("environments", nlohmann::json::object());
     if (!environments.contains("internal/sandbox")) return std::nullopt;
@@ -103,7 +105,8 @@ nlohmann::json sandbox_probe(const exec::SrtRuntime& runtime, const fs::path& st
 nlohmann::json sandbox_status(const HomePaths& paths) {
     Toolchain toolchain(paths);
     const nlohmann::json status = toolchain.status();
-    const nlohmann::json installed = status.value("installed", nlohmann::json::object());
+    nlohmann::json installed = status.value("installed", nlohmann::json::object());
+    if (!installed.is_object()) installed = nlohmann::json::object();
     const nlohmann::json programs = installed.value("programs", nlohmann::json::object());
     const nlohmann::json environments = installed.value("environments", nlohmann::json::object());
     const std::optional<exec::SrtRuntime> runtime = sandbox_runtime(paths);
@@ -111,13 +114,22 @@ nlohmann::json sandbox_status(const HomePaths& paths) {
     nlohmann::json checks = nlohmann::json::array();
     std::vector<std::string> missing;
     const auto check = [&](std::string name, bool ok, std::string detail) {
-        checks.push_back({{"name", std::move(name)}, {"ok", ok}, {"detail", std::move(detail)}});
         if (!ok) missing.push_back(name);
+        checks.push_back({{"name", std::move(name)}, {"ok", ok}, {"detail", std::move(detail)}});
     };
 
     const bool prepared = status.value("current", false) && installed.is_object();
     check("runtime", prepared, prepared ? "runtime is prepared for the current configuration"
                                         : "run dagent runtime sync");
+    if (!detail::platform_sandbox_supported()) {
+        // 没有后端的平台只报告 runtime 状态；不列 Linux 依赖、不启动探测、不读宿主诊断。
+        nlohmann::json out;
+        out["toolchain_current"] = prepared;
+        out["static"] = checks;
+        out["probe"] = nlohmann::json{{"ok", false}, {"stage", "unsupported"},
+                                      {"error", "this platform has no sandbox backend"}};
+        return out;
+    }
 
     const fs::path env = environments.contains("internal/sandbox")
                              ? fs::path(environments.at("internal/sandbox").value("directory", ""))

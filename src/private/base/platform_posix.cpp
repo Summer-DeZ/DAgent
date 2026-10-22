@@ -54,6 +54,14 @@ bool can_execute(const std::filesystem::path& path) noexcept {
 
 std::filesystem::path default_temporary_directory() { return "/tmp"; }
 
+void make_file_private(const std::filesystem::path& path) {
+    std::filesystem::permissions(path, std::filesystem::perms::owner_read | std::filesystem::perms::owner_write);
+}
+
+void make_file_private(const std::filesystem::path& path, std::error_code& error) {
+    std::filesystem::permissions(path, std::filesystem::perms::owner_read | std::filesystem::perms::owner_write, error);
+}
+
 std::expected<std::filesystem::path, std::string> create_unique_directory(const std::filesystem::path& pattern) {
     auto native = pattern.native();
     if (::mkdtemp(native.data()) == nullptr) return std::unexpected(std::string(std::strerror(errno)));

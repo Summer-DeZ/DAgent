@@ -45,9 +45,9 @@ public:
             const auto& group = owner->rows_[owner->shown_[pos]].group;
             if (!group.empty() && group != previous) {
                 if (!out.empty()) out.push_back({-1, {}});
-                auto title = group;
-                std::ranges::transform(title, title.begin(), [](unsigned char c) { return std::toupper(c); });
-                out.push_back({-1, std::move(title)});
+                auto heading = group;
+                std::ranges::transform(heading, heading.begin(), [](unsigned char c) { return static_cast<char>(std::toupper(c)); });
+                out.push_back({-1, std::move(heading)});
             }
             out.push_back({pos, {}}); previous = group;
         }
@@ -142,7 +142,7 @@ public:
                 row.middle.empty() ? room : std::min(room, std::max(room / 2, std::min(display_width(row.label), room * 2 / 3)));
             const auto label = fit_columns(row.label, label_room);
             std::string folded = row.label, needle = owner->query_;
-            const auto lower = [](unsigned char c) { return std::tolower(c); };
+            const auto lower = [](unsigned char c) { return static_cast<char>(std::tolower(c)); };
             std::ranges::transform(folded, folded.begin(), lower);
             std::ranges::transform(needle, needle.begin(), lower);
             const auto hit = needle.empty() ? std::string::npos : folded.find(needle);
@@ -207,11 +207,11 @@ void Panel::update_rows(std::vector<Row> rows, bool reset_filter) {
 void Panel::refilter() {
     shown_.clear();
     std::string needle = query_;
-    std::ranges::transform(needle, needle.begin(), [](unsigned char c) { return std::tolower(c); });
+    std::ranges::transform(needle, needle.begin(), [](unsigned char c) { return static_cast<char>(std::tolower(c)); });
     for (int i = 0; i < static_cast<int>(rows_.size()); ++i) {
         const auto& row = rows_[static_cast<std::size_t>(i)];
         std::string label = row.label + "\n" + row.search_text;
-        std::ranges::transform(label, label.begin(), [](unsigned char c) { return std::tolower(c); });
+        std::ranges::transform(label, label.begin(), [](unsigned char c) { return static_cast<char>(std::tolower(c)); });
         if (needle.empty() || label.find(needle) != std::string::npos) shown_.push_back(i);
     }
     std::vector<std::string> groups;

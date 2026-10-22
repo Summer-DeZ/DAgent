@@ -1,6 +1,7 @@
 #include "app/toolchain.hpp"
 #include "app/toolchain_detail.hpp"
 #include "base/platform.hpp"
+#include "base/path.hpp"
 
 #include "app/hash.hpp"
 
@@ -33,7 +34,7 @@ void write_json(const fs::path& file, const json& value) {
     out.exceptions(std::ios::failbit | std::ios::badbit);
     out << value.dump(2) << '\n';
     out.close();
-    fs::permissions(temporary, fs::perms::owner_read | fs::perms::owner_write);
+    base::make_file_private(temporary);
     fs::rename(temporary, file);
 }
 
@@ -61,6 +62,7 @@ void download(const std::string& url, const fs::path& target) {
     curl_easy_setopt(curl, CURLOPT_FOLLOWLOCATION, 1L);
     curl_easy_setopt(curl, CURLOPT_PROTOCOLS, static_cast<long>(CURLPROTO_HTTPS));
     curl_easy_setopt(curl, CURLOPT_REDIR_PROTOCOLS, static_cast<long>(CURLPROTO_HTTPS));
+    curl_easy_setopt(curl, CURLOPT_SSL_OPTIONS, static_cast<long>(CURLSSLOPT_REVOKE_BEST_EFFORT)); // 同 net/http.cpp
     curl_easy_setopt(curl, CURLOPT_CONNECTTIMEOUT, 30L);
     curl_easy_setopt(curl, CURLOPT_TIMEOUT, 1200L);
     curl_easy_setopt(curl, CURLOPT_FAILONERROR, 1L);
@@ -86,7 +88,30 @@ void unpack_archive(const json& asset, const HomePaths& paths, const fs::path& d
                     fs::rename(partial, archive);
                 }
                 if (sha256(read(archive)) != hash) throw std::runtime_error("cached runtime archive checksum mismatch");
-                detail::extract_runtime_archive(archive, directory, paths.root);
+                detail::extract_runtime_archive(archive, directory, paths.root, asset.value("strip", 1));
+}
+
+void apply_platform_overrides(json& entries) {
+    const std::string platform = detail::runtime_platform();
+    for (auto item = entries.begin(); item != entries.end();) {
+        if (!item->contains("platforms")) {
+            ++item;
+            continue;
+        }
+        json platforms = std::move(item->at("platforms"));
+        if (!platforms.contains(platform)) {
+            item->erase("platforms");
+            ++item;
+            continue;
+        }
+        json value = std::move(platforms.at(platform));
+        if (value.is_null()) {
+            item = entries.erase(item);
+            continue;
+        }
+        *item = std::move(value);
+        ++item;
+    }
 }
 
 void replace_root(std::string& value, const fs::path& root) {
@@ -117,6 +142,8 @@ std::string detail::execute_runtime_command(
 Toolchain::Toolchain(HomePaths paths) : paths_(std::move(paths)) {
     config_ = read_json(paths_.runtime_config);
     if (config_.value("version", 0) != 1) throw std::runtime_error("unsupported runtime configuration version");
+    apply_platform_overrides(config_.at("packages"));
+    if (config_.contains("environments")) apply_platform_overrides(config_.at("environments"));
     if (fs::exists(paths_.runtime / "installed.json")) installed_ = read_json(paths_.runtime / "installed.json");
 }
 
@@ -178,12 +205,20 @@ json Toolchain::sync() {
         const auto version = package.at("version").get<std::string>();
         if (!identifier(name) || !identifier(version)) throw std::runtime_error("invalid runtime package name/version");
         const auto kind = package.value("kind", "archive");
-        const fs::path directory = paths_.runtime / name / (version + "-" + sha256(package.dump() + detail::runtime_platform()).substr(0, 16));
+        const fs::path directory = kind == "system"
+            ? base::path_from_utf8(package.at("root").get<std::string>())
+            : paths_.runtime / name / (version + "-" + sha256(package.dump() + detail::runtime_platform()).substr(0, 16));
         json entry;
-        if (fs::exists(directory / ".ready.json")) entry = read_json(directory / ".ready.json");
+        if (kind != "system" && fs::exists(directory / ".ready.json")) entry = read_json(directory / ".ready.json");
         else {
-            if (fs::exists(directory)) fs::remove_all(directory); // only an unpublished, incomplete generation
-            fs::create_directories(directory);
+            if (kind == "system") {
+                if (!fs::exists(directory))
+                    throw std::runtime_error("system package root is missing: " + package.at("root").get<std::string>());
+            } else {
+                if (fs::exists(directory)) fs::remove_all(directory); // only an unpublished, incomplete generation
+                fs::create_directories(directory);
+            }
+            detail::RuntimePrograms python_programs;
             entry = {{"version", version}, {"directory", directory.string()}, {"env", json::object()}};
             if (kind == "archive") {
                 const auto& asset = package.at("assets").at(detail::runtime_platform());
@@ -203,22 +238,24 @@ json Toolchain::sync() {
                 }
             } else if (kind == "python") {
                 const auto uv = next.at("programs").at("uv").get<std::string>();
-                detail::install_python_runtime(uv, version, directory, paths_.cache);
-            } else throw std::runtime_error("unknown runtime package kind: " + kind);
+                python_programs = detail::install_python_runtime(base::path_from_utf8(uv), version, directory, paths_.cache);
+            } else if (kind != "system") throw std::runtime_error("unknown runtime package kind: " + kind);
             const auto bin = package.value("bin", "bin");
             entry["bin"] = (bin == "." ? directory : within(directory, bin)).string();
             entry["programs"] = json::object();
             for (const auto& [program, relative] : package.at("programs").items()) {
-                const auto file = within(directory, relative.get<std::string>());
+                auto file = within(directory, relative.get<std::string>());
+                if (const auto found = python_programs.find(program); found != python_programs.end())
+                    file = detail::select_python_runtime_program(file, found->second);
                 if (!base::can_execute(file)) throw std::runtime_error("installed program is not executable: " + file.string());
-                entry["programs"][program] = file.string();
+                entry["programs"][program] = base::path_to_utf8(file);
                 entry["checksums"][program] = sha256(read(file));
             }
             const json variables = package.value("env", json::object());
             for (const auto& [key, value] : variables.items()) {
                 auto expanded = value.get<std::string>(); replace_root(expanded, directory); entry["env"][key] = expanded;
             }
-            write_json(directory / ".ready.json", entry);
+            if (kind != "system") write_json(directory / ".ready.json", entry);
         }
         next["packages"][name] = entry;
         for (const auto& [program, file] : entry.at("programs").items()) {
@@ -256,8 +293,13 @@ json Toolchain::sync() {
             } else if (kind == "node") {
                 fs::copy_file(package_json, directory / "package.json");
                 fs::copy_file(lockfile, directory / "package-lock.json");
-                detail::execute_runtime_command({next["programs"]["npm"].get<std::string>(), "ci", "--no-audit", "--no-fund",
-                         spec.value("install_scripts", false) ? "--ignore-scripts=false" : "--ignore-scripts"}, directory, env);
+                const auto npm = next["programs"]["npm"].get<std::string>();
+                std::vector<std::string> command = npm.ends_with(".js")
+                    ? std::vector<std::string>{next["programs"]["node"].get<std::string>(), npm}
+                    : std::vector<std::string>{npm};
+                command.insert(command.end(), {"ci", "--no-audit", "--no-fund",
+                         spec.value("install_scripts", false) ? "--ignore-scripts=false" : "--ignore-scripts"});
+                detail::execute_runtime_command(std::move(command), directory, env);
             } else throw std::runtime_error("environment kind must be python or node");
             if (spec.contains("source")) {
                 fs::create_directories(directory / "source");

@@ -12,6 +12,7 @@
 #include <string>
 #include <thread>
 #include <utility>
+#include <vector>
 
 #include "app/output.hpp"
 #include "client/client.hpp"
@@ -63,6 +64,15 @@ std::jthread start_ticker(RunOutput& codec, std::chrono::milliseconds interval) 
             codec.heartbeat();
         }
     });
+}
+
+std::string join_text(const std::vector<std::string>& values) {
+    std::string out;
+    for (const auto& value : values) {
+        if (!out.empty()) out += "; ";
+        out += value;
+    }
+    return out;
 }
 
 int exit_code(const RunOutput::Summary& summary) {
@@ -117,6 +127,11 @@ int run_backend(const BackendLaunch& launch, std::string prompt, OutputFormat ou
     }
     codec.set_session(session_id);
 
+    if (!session_json.value("sandbox_available", true)) {
+        std::cerr << "Warning: no sandbox is available ("
+                  << join_text(session_json.value("sandbox_missing", std::vector<std::string>{}))
+                  << "); workspace mode is hidden and bash commands run on the host after approval.\n";
+    }
     // headless 不弹框：在真正启用 unrestricted 前把同样的警告写到 stderr（不污染 stdout/jsonl），
     // 随后立即确认启用；runtime 因非交互不写 ack，之后首次 TUI 进入仍需确认。
     const nlohmann::json confirmation =

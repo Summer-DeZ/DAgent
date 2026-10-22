@@ -156,6 +156,7 @@ struct Strings {
     std::string_view approve_deny;
     std::string_view approve_via_task;
     std::string_view approve_host_boundary;
+    std::string_view approve_host_only_boundary;
     std::string_view approve_remote_boundary;
     std::string_view approve_once_only;
     std::string_view approve_partial;
@@ -224,6 +225,8 @@ struct Strings {
     // unrestricted 首次开启确认
     std::string_view permission_unrestricted_title;
     std::string_view permission_unrestricted_body;
+    std::string_view sandbox_unavailable_notice;
+    std::string_view sandbox_unavailable_toast;
     std::string_view permission_enable;
     std::string_view permission_cancel;
     std::string_view panel_count;
@@ -252,6 +255,7 @@ struct Strings {
     std::string_view approve_category_sensitive;
     std::string_view approve_category_protected;
     std::string_view approve_category_host;
+    std::string_view approve_category_host_command;
     std::string_view approve_cwd;
     std::string_view approve_needs;
     std::string_view approve_reason;
@@ -272,6 +276,7 @@ struct Strings {
     std::string_view approve_need_sensitive;
     std::string_view approve_need_protected;
     std::string_view approve_need_host;
+    std::string_view approve_need_host_command;
     std::string_view welcome_date, welcome_months;
     std::string_view welcome_logo;
     std::string_view model_configured;

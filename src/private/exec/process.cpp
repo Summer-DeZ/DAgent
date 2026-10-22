@@ -11,7 +11,7 @@
 #include <boost/asio/steady_timer.hpp>
 #include <boost/asio/writable_pipe.hpp>
 #include <boost/asio/write.hpp>
-#include <boost/process/v2.hpp>
+#include <boost/process/v2/process.hpp>
 
 #include <algorithm>
 #include <array>

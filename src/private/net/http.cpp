@@ -54,7 +54,7 @@ std::size_t on_header(char* p, std::size_t size, std::size_t n, void* ud) {
     const std::size_t colon = ln.find(':');
     if (colon == std::string_view::npos) return size * n;
     std::string name(trim(ln.substr(0, colon)));
-    std::ranges::transform(name, name.begin(), [](unsigned char c) { return std::tolower(c); });
+    std::ranges::transform(name, name.begin(), [](unsigned char c) { return static_cast<char>(std::tolower(c)); });
     t.resp.headers.emplace_back(std::move(name), std::string(trim(ln.substr(colon + 1))));
     return size * n;
 }
@@ -184,6 +184,9 @@ HttpResponse HttpClient::Impl::run(const HttpOptions& opt, const HttpRequest& re
     }
     curl_easy_setopt(easy, CURLOPT_SSL_VERIFYPEER, opt.verify_peer ? 1L : 0L);
     curl_easy_setopt(easy, CURLOPT_SSL_VERIFYHOST, opt.verify_host ? 2L : 0L);
+    // schannel 的在线吊销检查在无直连互联网的 Windows 上会以 CRYPT_E_REVOCATION_OFFLINE 失败；
+    // 吊销服务器离线时按 best effort 继续（OpenSSL 后端忽略此位）。
+    curl_easy_setopt(easy, CURLOPT_SSL_OPTIONS, static_cast<long>(CURLSSLOPT_REVOKE_BEST_EFFORT));
     curl_easy_setopt(easy, CURLOPT_HEADERFUNCTION, on_header);
     curl_easy_setopt(easy, CURLOPT_HEADERDATA, &t);
     curl_easy_setopt(easy, CURLOPT_WRITEFUNCTION, on_write);

@@ -18,6 +18,7 @@ struct PromptVars {
     std::string model;
     std::filesystem::path project_root;
     bool sandbox = false;             ///< 受限执行探测结果：沙箱可用
+    bool sandbox_available = true;    ///< 启动自检找到可用沙箱
     bool workspace_sandbox = false;
     std::string sandbox_backend;
     std::vector<std::string> sandbox_missing;

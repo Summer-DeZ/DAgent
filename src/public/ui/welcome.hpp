@@ -17,7 +17,7 @@ public:
     bool reveal_selection = false;
     void scroll(int rows) { top = std::max(0, top + rows); reveal_selection = false; invalidate(); }
     bool on_event(const tui::Event&) override;
-    std::string path, branch, model, mode;
+    std::string path, branch, model, mode, notice;
     std::vector<McpStatus> mcp;
     std::vector<Session> sessions;
     std::size_t memories = 0;

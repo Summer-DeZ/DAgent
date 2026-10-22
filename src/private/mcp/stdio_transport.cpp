@@ -25,7 +25,10 @@ void StdioTransport::start() {
         throw McpError{McpError::Kind::spawn, config_.name + ": stdio server is missing command"};
     if (!config_.sandbox)
         throw McpError{McpError::Kind::spawn,
-                       config_.name + ": no permission profile is configured; the server was not started"};
+                       config_.name + ": " +
+                           (config_.sandbox_unavailable.empty()
+                                ? "no permission profile is configured; the server was not started"
+                                : config_.sandbox_unavailable)};
     start_sandboxed();
 }
 

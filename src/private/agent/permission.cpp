@@ -108,6 +108,10 @@ std::string_view to_string(PermissionMode mode) {
     return "workspace";
 }
 
+PermissionMode supported_mode(PermissionMode mode, bool workspace_available) {
+    return mode == PermissionMode::workspace && !workspace_available ? PermissionMode::ask : mode;
+}
+
 std::string_view to_string(ApprovalAuthority authority) {
     switch (authority) {
     case ApprovalAuthority::parent_model: return "parent_model";
@@ -139,7 +143,8 @@ std::string_view to_string(GrantSource source) {
 Policy::Policy(PermissionMode mode, bool read_only, bool planning, SandboxSupport sandbox,
                SandboxConfig sandbox_options, int analysis_version,
                fs::path workspace_root, fs::path project_root, fs::path control_root)
-    : mode_(mode), read_only_(read_only || planning), planning_(planning), sandbox_(std::move(sandbox)),
+    : mode_(supported_mode(mode, sandbox.workspace_ready)), read_only_(read_only || planning),
+      planning_(planning), sandbox_(std::move(sandbox)),
       sandbox_options_(std::move(sandbox_options)), analysis_version_(analysis_version),
       workspace_root_(std::move(workspace_root)), project_root_(std::move(project_root)),
       control_root_(std::move(control_root)) {}
@@ -367,7 +372,7 @@ Verdict Policy::evaluate(const ToolCall& call, const PreparedIntent& intent) con
         if (intent.kind == ToolKind::exec && intent.command && intent.command->known_readonly) {
             if (!sandbox_.read_only_ready) {
                 verdict.kind = Verdict::Kind::deny;
-                verdict.reason = "required read-only sandbox capabilities are unavailable";
+                verdict.reason = "planning and read-only modes run commands only inside a read-only sandbox; none is available";
                 return verdict;
             }
         } else if (intent.kind != ToolKind::read) {
@@ -459,6 +464,29 @@ Verdict Policy::evaluate(const ToolCall& call, const PreparedIntent& intent) con
     case ToolKind::exec: {
         if (!intent.command) break;
         const CommandIntent& cmd = *intent.command;
+        if (!sandbox_.workspace_ready) {
+            verdict.approval.requests.push_back({
+                Approval::Request::Kind::host_command, cmd.command,
+                "runs directly on the host with your account's full access; no OS isolation",
+            });
+            bool protected_path = false;
+            for (const auto& path : intent.paths) {
+                const PathClass cls = classify(path);
+                if (cls == PathClass::sensitive || cls == PathClass::guarded) {
+                    protected_path = true;
+                    verdict.approval.requests.push_back({Approval::Request::Kind::sensitive_read,
+                                                         path.path.string(),
+                                                         "protected data requires one-time approval"});
+                }
+            }
+            verdict.approval.reason = cmd.known_readonly ? "Run a read-only command on the host"
+                                    : cmd.dynamic       ? "Run a dynamic command on the host"
+                                                        : "Run a state-changing command on the host";
+            if (cmd.known_readonly && !protected_path)
+                verdict.approval.session_rule = "Allow this exact command in this workspace for this session";
+            verdict.kind = Verdict::Kind::ask;
+            break;
+        }
         if (cmd.known_readonly) {
             // 简单只读命令的工作区外普通文件读取：先按读取审批，不直接放行（计划 §2.3/§8.1）。
             std::vector<ResourceIntent> outside;
@@ -550,12 +578,16 @@ Verdict Policy::evaluate(const ToolCall& call, const PreparedIntent& intent) con
     if (!single_use_only(verdict.approval) && matches_session(verdict.approval, intent)) {
         verdict.kind = Verdict::Kind::allow;
         if (intent.kind == ToolKind::exec) {
-            const bool readonly = intent.command && intent.command->known_readonly;
-            verdict.grant = grant_for_exec(readonly ? SandboxProfile::read_only : SandboxProfile::workspace_write,
-                                           GrantSource::session);
-            if (readonly && intent.command)
-                for (const auto& path : intent.command->read_paths)
-                    if (!is_relative_to(path, workspace_root_)) verdict.grant.readable.push_back(path);
+            if (!sandbox_.workspace_ready) {
+                verdict.grant = grant_for_exec(SandboxProfile::full_access, GrantSource::session);
+            } else {
+                const bool readonly = intent.command && intent.command->known_readonly;
+                verdict.grant = grant_for_exec(readonly ? SandboxProfile::read_only : SandboxProfile::workspace_write,
+                                               GrantSource::session);
+                if (readonly && intent.command)
+                    for (const auto& path : intent.command->read_paths)
+                        if (!is_relative_to(path, workspace_root_)) verdict.grant.readable.push_back(path);
+            }
         }
         else if (intent.kind == ToolKind::external)
             verdict.grant = grant_for_external(intent, GrantSource::session);
@@ -644,13 +676,17 @@ ExecutionGrant Policy::grant_for(const Approval& approval, const Decision& decis
     else if (approval.intent.kind == ToolKind::external)
         grant = grant_for_external(approval.intent, source);
     else if (approval.intent.kind == ToolKind::exec) {
-        const bool host = std::ranges::any_of(approval.requests, [](const Approval::Request& request) {
+        const bool host_access = std::ranges::any_of(approval.requests, [](const Approval::Request& request) {
             return request.kind == Approval::Request::Kind::host_access;
         });
+        const bool host_command = std::ranges::any_of(approval.requests, [](const Approval::Request& request) {
+            return request.kind == Approval::Request::Kind::host_command;
+        });
+        const bool host = host_access || host_command;
         const bool readonly = approval.intent.command && approval.intent.command->known_readonly;
         grant = grant_for_exec(host ? SandboxProfile::full_access
                                    : readonly ? SandboxProfile::read_only : SandboxProfile::workspace_write,
-                               host ? GrantSource::once : source);
+                               host_access ? GrantSource::once : source);
         if (!host && readonly) {
             for (const auto& path : approval.intent.paths) {
                 grant.readable.push_back(path.path);
@@ -878,7 +914,9 @@ void Policy::change_permission(const std::function<void()>& change) {
     previous.request_stop();
 }
 
-void Policy::set_mode(PermissionMode mode) { change_permission([&] { mode_.store(mode); }); }
+void Policy::set_mode(PermissionMode mode) {
+    change_permission([&] { mode_.store(supported_mode(mode, sandbox_.workspace_ready)); });
+}
 PermissionMode Policy::mode() const { return mode_.load(); }
 void Policy::set_read_only(bool value) { change_permission([&] { read_only_.store(value); }); }
 bool Policy::read_only() const { return read_only_.load(); }
@@ -905,7 +943,7 @@ EffectivePermission Policy::effective() const {
 
 EffectivePermission Policy::set_parent_cap(PermissionMode mode, bool read_only, bool planning) {
     change_permission([&] {
-        cap_mode_.store(mode);
+        cap_mode_.store(supported_mode(mode, sandbox_.workspace_ready));
         cap_read_only_.store(read_only);
         cap_planning_.store(planning);
         cap_active_.store(true);

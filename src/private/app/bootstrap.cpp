@@ -5,7 +5,9 @@
 #include <chrono>
 #include <functional>
 #include <memory>
+#include <string>
 #include <system_error>
+#include <vector>
 
 #include "app/config.hpp"
 #include "app/decision_profile.hpp"
@@ -28,6 +30,15 @@ namespace dagent::app {
 namespace {
 
 using ModelFactory = std::function<std::shared_ptr<agent::ModelSession>(const llm::ProviderConfig&)>;
+
+std::string join_reasons(const std::vector<std::string>& reasons) {
+    std::string out;
+    for (const auto& reason : reasons) {
+        if (!out.empty()) out += "; ";
+        out += reason;
+    }
+    return out;
+}
 
 /// @brief 后端共享的模型客户端工厂：HTTP 调整与重试参数来自配置。
 ModelFactory make_model_factory(const Config& config) {
@@ -125,7 +136,9 @@ SessionAssembly::Options session_options(const Config& config, const backend::Bo
         }
     } else {
         exec::Support support;
-        support.missing.push_back("internal/sandbox runtime is not prepared; run `dagent runtime sync`");
+        support.missing.push_back(detail::platform_sandbox_supported()
+                                      ? "internal/sandbox runtime is not prepared; run `dagent runtime sync`"
+                                      : "this platform has no sandbox backend");
         out.sandbox = std::move(support);
     }
     out.tools.sandbox = out.sandbox_options;
@@ -141,6 +154,12 @@ SessionAssembly::Options session_options(const Config& config, const backend::Bo
     out.system_prompt = workspace::read_text(config.system_prompt_file, config.files).content;
     out.compact_prompt = workspace::read_text(config.compact_prompt_file, config.files).content;
     out.initial.mode = permission_mode(config, options);
+    const agent::PermissionMode mapped = agent::supported_mode(out.initial.mode, out.sandbox.workspace_ready());
+    if (mapped != out.initial.mode)
+        base::logger("app")->warn(
+            "no sandbox is available ({}); workspace mode is hidden, starting in ask",
+            join_reasons(out.sandbox.missing));
+    out.initial.mode = mapped;
     out.initial.read_only = options.read_only;
     out.initial.planning = options.plan;
     const llm::ProviderConfig& selected = config.models.at(config.model);
@@ -210,31 +229,37 @@ backend::Assembled assemble_backend(const backend::BootstrapOptions& options) {
     out.queries = std::make_shared<QueryGatewayImpl>(config.session, options.cwd, config.project_root,
                                                    session.search, skills, config.process, config.ui.completion_max_files, memory, config.subagents);
     // stdio MCP：用受信任 profile + 已解析 SRT 运行时构造受限启动参数；缺 profile 的 server 不启动。
-    if (session.srt) {
-        for (auto& server : config.mcp_servers) {
-            if (server.transport != mcp::Transport::stdio || !server.profile_present) continue;
-            mcp::StdioSandbox sandbox;
-            sandbox.runtime = *session.srt;
-            sandbox.state_root = paths.runtime / "sandbox";
-            sandbox.startup_timeout = config.sandbox.startup_timeout;
-            exec::Policy policy;
-            policy.mode = exec::Mode::workspace_write;
-            policy.readable = server.profile_read;
-            policy.writable = server.profile_write;
-            policy.network_targets = server.profile_network;
-            policy.protected_read = {paths.root / "config", paths.root / "data", paths.root / "logs",
-                                     paths.root / "run", paths.memory};
-            policy.protected_write = policy.protected_read;
-            policy.protect_sensitive_names = true;
-            policy.private_tmp = true;
-            const auto environment = config.tools.environments.find(server.environment);
-            if (environment != config.tools.environments.end())
-                policy.readable.insert(policy.readable.end(), environment->second.readable.begin(),
-                                       environment->second.readable.end());
-            if (server.environment == "project") policy.readable.push_back(options.cwd);
-            sandbox.policy = std::move(policy);
-            server.sandbox = std::move(sandbox);
+    // 没有运行时（包括无沙箱后端平台）时记录未启动原因，不在宿主直接启动。
+    for (auto& server : config.mcp_servers) {
+        if (server.transport != mcp::Transport::stdio || !server.profile_present) continue;
+        if (!session.srt) {
+            server.sandbox_unavailable =
+                detail::platform_sandbox_supported()
+                    ? "the sandbox runtime is not ready; run dagent sandbox status"
+                    : "stdio servers require a sandbox backend; this platform has none";
+            continue;
         }
+        mcp::StdioSandbox sandbox;
+        sandbox.runtime = *session.srt;
+        sandbox.state_root = paths.runtime / "sandbox";
+        sandbox.startup_timeout = config.sandbox.startup_timeout;
+        exec::Policy policy;
+        policy.mode = exec::Mode::workspace_write;
+        policy.readable = server.profile_read;
+        policy.writable = server.profile_write;
+        policy.network_targets = server.profile_network;
+        policy.protected_read = {paths.root / "config", paths.root / "data", paths.root / "logs",
+                                 paths.root / "run", paths.memory};
+        policy.protected_write = policy.protected_read;
+        policy.protect_sensitive_names = true;
+        policy.private_tmp = true;
+        const auto environment = config.tools.environments.find(server.environment);
+        if (environment != config.tools.environments.end())
+            policy.readable.insert(policy.readable.end(), environment->second.readable.begin(),
+                                   environment->second.readable.end());
+        if (server.environment == "project") policy.readable.push_back(options.cwd);
+        sandbox.policy = std::move(policy);
+        server.sandbox = std::move(sandbox);
     }
     session.hub = std::make_shared<tools::McpHub>(config.mcp_servers, config.mcp);
     session.environment = workspace::collect_environment(options.cwd, context);

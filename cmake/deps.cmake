@@ -91,7 +91,10 @@ FetchContent_Declare(yaml-cpp
     GIT_TAG 0.8.0
     GIT_SHALLOW TRUE
 )
+# yaml-cpp 0.8.0 声明的最低 CMake 版本是 3.4，CMake 4 已拒绝该值；只在引入它时放宽到 3.5。
+set(CMAKE_POLICY_VERSION_MINIMUM 3.5)
 FetchContent_MakeAvailable(yaml-cpp)
+unset(CMAKE_POLICY_VERSION_MINIMUM)
 
 # Runtime archive integrity.
 find_package(OpenSSL REQUIRED COMPONENTS Crypto)

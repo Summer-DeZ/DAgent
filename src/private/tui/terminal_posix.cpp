@@ -26,6 +26,11 @@ namespace {
 
 // atexit 兜底与信号处理器（无 this 可用）所需的全局锚点。
 std::atomic<Terminal*> g_instance{nullptr};
+
+bool env_has(std::string_view value, std::string_view key) noexcept {
+    return value.find(key) != std::string_view::npos;
+}
+
 std::atomic<int> g_signal_write_fd{-1};
 std::once_flag g_atexit_once;
 
@@ -64,6 +69,30 @@ struct Terminal::Native {
     bool handlers_installed_ = false;
     int signal_pipe_[2] = {-1, -1};
 };
+
+// 能力探测：环境变量启发式，不查 terminfo。
+void Terminal::probe_caps() noexcept {
+    const char* term_env      = ::getenv("TERM");
+    const char* colorterm_env = ::getenv("COLORTERM");
+    std::string_view term      = term_env ? term_env : "";
+    std::string_view colorterm = colorterm_env ? colorterm_env : "";
+
+    const bool modern = !term.empty() && term != "dumb" && term != "linux";
+
+    caps_.truecolor = env_has(colorterm, "truecolor") || env_has(colorterm, "24bit") ||
+                      env_has(term, "truecolor") || env_has(term, "-direct");
+
+    // DEC 2026：设置 COLORTERM 的终端 + 已知支持的终端名。
+    caps_.synchronized =
+        modern && (!colorterm.empty() || env_has(term, "kitty") ||
+                   env_has(term, "alacritty") || env_has(term, "foot") ||
+                   env_has(term, "wezterm") || env_has(term, "contour") ||
+                   env_has(term, "ghostty") || env_has(term, "iterm") ||
+                   env_has(term, "tmux"));
+
+    caps_.sgr_mouse       = modern;
+    caps_.bracketed_paste = modern;
+}
 
 Terminal::Terminal() {
     probe_caps();

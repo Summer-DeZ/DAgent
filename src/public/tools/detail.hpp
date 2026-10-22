@@ -72,7 +72,7 @@ exec::SrtRequest sandbox_request(const Grant&, const exec::SrtRuntime&,
 std::unique_ptr<Tool> make_read_tool();
 std::unique_ptr<Tool> make_write_tool();
 std::unique_ptr<Tool> make_edit_tool();
-std::unique_ptr<Tool> make_bash_tool();
+std::unique_ptr<Tool> make_bash_tool(bool sandbox_available);
 std::unique_ptr<Tool> make_web_search_tool();
 std::unique_ptr<Tool> make_web_fetch_tool();
 std::unique_ptr<Tool> make_grep_tool();

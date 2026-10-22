@@ -52,7 +52,7 @@ struct Policy {
 /// 执行后端用它把保护落实到显式拒绝规则；不存在的名字不返回，避免制造占位点。
 std::vector<std::filesystem::path> sensitive_paths(const std::filesystem::path& root);
 
-/// @brief 启动时真实探测一次：不支持的机器上核心要降级为「必须询问用户」。
+/// @brief 启动时真实探测一次：没有可用沙箱时核心要降级为「必须询问用户」。
 struct Support {
     std::string backend = "none"; ///< "srt" 或 "none"
     /// SRT 内命令能向自己的子孙发信号。

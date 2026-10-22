@@ -106,7 +106,7 @@ private:
         const int flags = (read_only ? SQLITE_OPEN_READONLY
                                      : SQLITE_OPEN_READWRITE | SQLITE_OPEN_CREATE) |
                           SQLITE_OPEN_FULLMUTEX;
-        const int rc = sqlite3_open_v2(file_.c_str(), &db_, flags, nullptr);
+        const int rc = sqlite3_open_v2(base::path_to_utf8(file_).c_str(), &db_, flags, nullptr);
         if (rc != SQLITE_OK) {
             const std::string text = db_ == nullptr ? "cannot open SQLite database" : sqlite3_errmsg(db_);
             if (db_ != nullptr) sqlite3_close(db_);

@@ -16,8 +16,9 @@ bool is_denied(std::string_view name, const std::vector<std::string>& patterns) 
 
 // 环境条目形如 "名字=值"；名字为空或没有 '=' 的条目直接忽略。
 bool entry_has_name(const std::string& entry, std::string_view name) {
-    return entry.size() > name.size() && entry[name.size()] == '=' &&
-           environment_names_equal(std::string_view(entry).substr(0, name.size()), name);
+    const auto equals = entry.find('=');
+    return equals != std::string::npos &&
+           environment_names_equal(std::string_view(entry).substr(0, equals), name);
 }
 
 void set_entry(std::vector<std::string>& env, std::string_view name, std::string_view value) {
@@ -65,7 +66,7 @@ std::vector<std::string> make_environment(const Command& cmd, const Options& opt
 
 std::string_view find_env(const std::vector<std::string>& env, std::string_view name) {
     for (const auto& entry : env) {
-        if (entry_has_name(entry, name)) return std::string_view(entry).substr(name.size() + 1);
+        if (entry_has_name(entry, name)) return std::string_view(entry).substr(entry.find('=') + 1);
     }
     return {};
 }

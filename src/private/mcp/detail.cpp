@@ -19,7 +19,7 @@ bool is_tchar(unsigned char c) {
 
 std::string lower(std::string_view s) {
     std::string out(s);
-    std::ranges::transform(out, out.begin(), [](unsigned char c) { return std::tolower(c); });
+    std::ranges::transform(out, out.begin(), [](unsigned char c) { return static_cast<char>(std::tolower(c)); });
     return out;
 }
 

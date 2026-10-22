@@ -1,16 +1,11 @@
 #include "tui/terminal.hpp"
 #include "base/platform.hpp"
 
-#include <cstdlib>
 #include <string>
 
 namespace dagent::tui {
 
 namespace {
-
-bool env_has(std::string_view value, std::string_view key) noexcept {
-    return value.find(key) != std::string_view::npos;
-}
 
 // 离开界面模式的序列；传入"当前确实开着"的模式。
 std::string leave_screen_seq(bool mouse, bool paste, bool kitty,
@@ -45,30 +40,6 @@ void Terminal::enter() {
     }
     write(seq);
     screen_active_.store(true, std::memory_order_release);
-}
-
-// 能力探测：环境变量启发式，不查 terminfo。
-void Terminal::probe_caps() noexcept {
-    const char* term_env      = ::getenv("TERM");
-    const char* colorterm_env = ::getenv("COLORTERM");
-    std::string_view term      = term_env ? term_env : "";
-    std::string_view colorterm = colorterm_env ? colorterm_env : "";
-
-    const bool modern = !term.empty() && term != "dumb" && term != "linux";
-
-    caps_.truecolor = env_has(colorterm, "truecolor") || env_has(colorterm, "24bit") ||
-                      env_has(term, "truecolor") || env_has(term, "-direct");
-
-    // DEC 2026：设置 COLORTERM 的终端 + 已知支持的终端名。
-    caps_.synchronized =
-        modern && (!colorterm.empty() || env_has(term, "kitty") ||
-                   env_has(term, "alacritty") || env_has(term, "foot") ||
-                   env_has(term, "wezterm") || env_has(term, "contour") ||
-                   env_has(term, "ghostty") || env_has(term, "iterm") ||
-                   env_has(term, "tmux"));
-
-    caps_.sgr_mouse       = modern;
-    caps_.bracketed_paste = modern;
 }
 
 // 开关鼠标上报；exchange 去重。

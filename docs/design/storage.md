@@ -9,9 +9,10 @@
 `Statement`、`exec` 和错误抛出辅助。`storage.cpp`、`decision_store.cpp` 各自保留数据库打开方式、
 schema 初始化、版本与业务校验。
 `storage/platform.hpp` 声明模块内部的 `SessionFileLock` 与 `make_decision_file_private`。
-会话锁原生实现位于 `storage_posix.cpp`，决策库权限操作位于 `decision_store_posix.cpp`，
+会话锁原生实现位于 `storage_{posix,win}.cpp`，决策库权限操作位于 `decision_store_{posix,win}.cpp`，
 CMake 分别通过 `storage_${DAGENT_PLATFORM}.cpp` 和 `decision_store_${DAGENT_PLATFORM}.cpp` 选择。
-决策库仍在 SQLite 打开成功后、设置 busy timeout 前调用权限辅助；chmod(0600) 的返回值仍忽略。
+决策库仍在 SQLite 打开成功后、设置 busy timeout 前调用权限辅助；POSIX 忽略 chmod(0600) 返回值，
+Windows best-effort 设置当前用户/SYSTEM/Administrators 的受保护私有 DACL。
 `Statement::text` 保留原始指针绑定语义（空指针绑定 NULL）；决策库显式使用 `text_or_empty`，
 将空视图绑定为 `''`。BLOB 仍直接传递原始指针与字节数。
 通用 `real` 读取只做 SQLite 数值转换；决策库的 `threshold_real` 先检查列类型，
@@ -121,6 +122,13 @@ web 结果使用现有 tool 记录保存 `WebView` 和该次返回的正文，�
 - 同一进程内按路径复用同一个句柄，同会话切模型不会再次加锁；FD 为 CLOEXEC，工具子进程不继承。
 - 锁随所有者析构或进程退出释放；锁文件不 unlink，也不根据 PID 猜测或杀死其他进程。
 - 只读查询不取锁。不同会话可以由不同后端同时写入。
+
+Windows SessionFileLock 使用不继承的同步文件句柄，在 [0,1) 字节范围执行
+LockFileEx(EXCLUSIVE|FAIL_IMMEDIATELY)，不等待、不重试；锁文件创建时带私有 DACL，打开期间禁止共享删除。
+句柄由最后一个共享 State 持有，析构 UnlockFileEx 再 CloseHandle；同进程复用、目录创建与注册时机仍在共享层。
+文件打开失败与锁争用仍报告 StorageError(io)，不借助命名 mutex 或 PID 文件回收。
+
+下面的 open/flock 步骤描述 POSIX 实现。
 
 `storage.cpp` 保留注册表与互斥锁：键仍是未经额外规范化的 `path.string()`，值仍为 `weak_ptr<void>`。
 查到活跃 State 时只创建租约包装并共享 State，不创建目录、打开文件或重新加锁；过期条目先删除。

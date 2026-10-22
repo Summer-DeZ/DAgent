@@ -1,7 +1,7 @@
 # protocol：前后端进程与私有协议
 
 `dagent` 是前端进程，负责命令行、终端界面和输出格式；每个前端启动一个只属于自己的 `dagent-backend`，后端读取配置、
-执行模型与工具、写会话记录。两者经私有 socketpair 上的 JSON-RPC 2.0 通信。本文描述相关的四个模块：
+执行模型与工具、写会话记录。两者经私有连接（Linux socketpair、Windows 预连接命名管道）上的 JSON-RPC 2.0 通信。本文描述相关的四个模块：
 
 | 模块 / 库 | 头文件 | 职责 |
 | --- | --- | --- |
@@ -45,8 +45,8 @@ sequenceDiagram
 - 前端拥有后端 PID：正常退出等待 10 秒宽限，超时 SIGTERM/SIGKILL 自己创建的后端。后端意外退出时前端报告
   `the backend connection was closed`，不自动拉起新后端、不重发输入。
 
-`ipc/channel.cpp` 保留分帧、长度限制、缓冲、错误状态和后端路径查找；`ipc/channel_posix.cpp`
-实现连接 I/O、描述符继承、进程启动与回收。公共头不暴露 fd 或 pid_t，平台文件由 `DAGENT_PLATFORM` 选择。
+`ipc/channel.cpp` 保留分帧、长度限制、缓冲和错误状态；`ipc/channel_posix.cpp`
+实现连接 I/O、描述符继承、后端路径查找、进程启动与回收。公共头不暴露 fd 或 pid_t，平台文件由 `DAGENT_PLATFORM` 选择。
 每次底层 send/recv 返回字节数、中断、关闭或失败的中立结果，共享循环仍按原位置重试 EINTR；
 send 保留 MSG_NOSIGNAL，recv 保留原 flags，长度检查与 EOF 时的缓冲处理不变。
 
@@ -60,6 +60,18 @@ usage、退出码和 `--ipc-fd <fd>` 参数格式不变。
 共享不透明的只读进程标识，各对象独立记录是否已回收，移动后的源对象仍保留原进程标识；
 回收一个对象不会更改另一个对象的记录。移动赋值不回收目标原来的进程。
 `wait_or_terminate` 仍以 20ms 间隔等待，宽限到期后发 SIGTERM，等待 200ms 后按原条件 SIGKILL/waitpid。
+
+上述 fork、fd 及信号步骤为 Linux 实现。Windows 的 `channel_win.cpp` 使用当前用户专属 DACL、
+128 位随机名称和 PIPE_REJECT_REMOTE_CLIENTS 的双向字节管道，父进程预先完成两端连接。
+读写分别持有 OVERLAPPED/事件，底层同步方法等待完成。shutdown 阻止新 I/O，取消并等待在途操作，
+随后关闭管道句柄使对端收到 EOF；不会在取消尚未完成时释放调用方缓冲区，close 保持幂等。
+
+Windows 找同目录的 `dagent-backend.exe`；CreateProcessW 的显式继承清单只包含 stdio 副本和子端管道。
+`--ipc-fd` 值为十进制 uintptr_t，严格拒绝无效文本和溢出；解析不接管端点，adopt 后清除继承位。
+后端挂起创建并加入生命周期 Job 后恢复；Job 加入失败即启动失败。父进程关闭其子端副本，不保留多余的写端。
+共享后端状态拥有进程句柄及 KILL_ON_JOB_CLOSE Job，最后一个状态销毁或前端被终止都会清理后端及后代。
+宽限回收先断开管道并等待，超时 TerminateJobObject 并等待后端退出；强制终止返回 false。
+后端屏蔽 Ctrl-C/Ctrl-Break 的控制台处理，取消只由前端通过 IPC 发出。没有全局监听端点或重连通道。
 
 只有后端读取 models.json、凭据、提示词和业务配置；前端只读取初始化返回的主题文件路径指向的 UI 主题。
 
@@ -213,6 +225,7 @@ Publisher 在捕获快照前后比较已发布 seq，并在同一短锁边界分
 前端拒绝旧 generation 或低于已应用状态水位的快照；已被快照覆盖的状态事件不再覆盖快照。
 快照不包含正文，正文/工具展示仍按顺序投影到所属会话文档，与当前选中的页面无关。
 context 显式携带 used/limit/window/trigger_percent；删除空的 phase、children、context.usage 与未使用事件身份字段。
+快照还携带 `sandbox_available`（默认 true）与 `sandbox_missing`（默认空数组），前端据此隐藏 workspace 并提示原因。
 
 `tool_output` 的原始字节可能截断 UTF-8 字符：backend 按调用 id 暂存不完整的尾部字节，在 JSON 编码前与下一块拼接，
 `tool_finished` 前补发剩余部分。

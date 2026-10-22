@@ -21,7 +21,8 @@ public:
     ProcessGroup(const ProcessGroup&) = delete;
     ProcessGroup& operator=(const ProcessGroup&) = delete;
 
-    void capture(const boost::process::v2::process& process) noexcept;
+    /// Windows 加入生命周期 Job 失败时抛 ExecError；调用时子进程仍挂起。
+    void capture(const boost::process::v2::process& process);
     bool valid() const noexcept;
     void terminate() noexcept;
     void force_kill() noexcept;

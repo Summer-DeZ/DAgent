@@ -12,8 +12,37 @@ cmake --build --preset dev --target dagent dagent-backend -j 4
 
 dev 构建的安装根是源码树 `home/`，`DAGENT_HOME` 可覆盖。
 
-Windows 的 MSVC 开发环境可调用 `cmake --preset win-dev -DCMAKE_TOOLCHAIN_FILE=C:/dev/vcpkg/scripts/buildsystems/vcpkg.cmake`
-（toolchain 路径按实际安装位置传入）；当前修订缺少 `*_win.cpp` 实现，会在项目依赖查找前明确拒绝配置，尚不支持 Windows 构建。
+## Windows
+
+先决条件：Visual Studio 2022 Build Tools（MSVC C++ 工作负载与 Windows SDK）、
+vcpkg（`boost-asio`、`boost-process`、`curl[schannel]`、`openssl`、`libiconv`，triplet `x64-windows`）
+和 Git for Windows（`runtime sync` 使用系统安装的 `git.exe` 与 `bash.exe`）。
+
+```powershell
+cmake --preset win-dev -DCMAKE_TOOLCHAIN_FILE=C:/dev/vcpkg/scripts/buildsystems/vcpkg.cmake
+cmake --build --preset win-dev
+```
+
+`win-dev` 与 `win-release` preset 仅在 Windows 宿主可用，均使用 Ninja 和 `x64-windows` triplet；
+toolchain 路径按 vcpkg 实际安装位置传入。`win-dev` 的 Home 是源码树 `home/`，
+`win-release` 不设置 `DAGENT_DEV_HOME`，Home 默认为可执行文件所在目录：
+
+```powershell
+cmake --preset win-release -DCMAKE_TOOLCHAIN_FILE=C:/dev/vcpkg/scripts/buildsystems/vcpkg.cmake
+cmake --build --preset win-release
+cmake --install build/win-release --prefix C:/DAgent
+```
+
+安装目录包含 `dagent.exe`、`dagent-backend.exe` 及它们的运行时 DLL，即 vcpkg 的 Boost.Process、
+Boost.Filesystem、libcurl、libcrypto、iconv、zlib 对应配置。系统 DLL 与 VC 运行库不会被收集；
+目标机需安装与构建工具链匹配的 Microsoft Visual C++ Redistributable。Windows 不安装 `libexec`
+（SRT bridge、SearXNG 启动入口与 AppArmor profile 仅 Linux 提供）。
+
+正式安装的 Home 首次仍需执行 `dagent runtime sync`，它使用系统 Git for Windows 的 git/bash，
+并下载 node、uv、rg 的 Windows 归档。网络受限时可先把归档按 SHA-256 放到
+`home/cache/<sha256>.archive`，`runtime sync` 校验后直接使用，不再下载。
+Windows 没有沙箱后端，`dagent sandbox status` 输出 `probe.stage="unsupported"` 并正常退出，
+不探测 bwrap/socat，也不读取宿主 AppArmor 诊断。
 
 ## 首次准备
 
@@ -61,6 +90,8 @@ build/dev/src/dagent
 ```
 
 ## 正式安装
+
+以下步骤描述 Linux 布局；Windows 的 preset、DLL 与运行库要求见上一节。
 
 ```bash
 cmake -S . -B build/release -G Ninja -DCMAKE_BUILD_TYPE=Release

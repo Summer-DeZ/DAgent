@@ -149,9 +149,9 @@ private:
     std::optional<GroupKind> parallel_kind(const std::expected<PreparedAction, ToolResult>& prepared,
                                           const std::optional<Verdict>& verdict) {
         if (!prepared) return std::nullopt;
-        if (const auto* control = std::get_if<ControlRequest>(&prepared.value())) {
-            if (std::holds_alternative<PlanReplacement>(*control)) return GroupKind::readonly;
-            if (std::holds_alternative<DelegationRequest>(*control)) return GroupKind::task;
+        if (const auto* control_request = std::get_if<ControlRequest>(&prepared.value())) {
+            if (std::holds_alternative<PlanReplacement>(*control_request)) return GroupKind::readonly;
+            if (std::holds_alternative<DelegationRequest>(*control_request)) return GroupKind::task;
             return std::nullopt;
         }
         if (!verdict) return std::nullopt;

@@ -1,6 +1,8 @@
 #include "app/session_assembly.hpp"
 
 #include <algorithm>
+#include <charconv>
+#include <cctype>
 #include <format>
 #include <stdexcept>
 #include <utility>
@@ -43,8 +45,23 @@ struct SessionSpec {
 std::chrono::system_clock::time_point parse_created(std::string_view text) {
     std::tm utc{};
     int year = 0, month = 0, day = 0, hour = 0, minute = 0, second = 0, millis = 0;
-    if (std::sscanf(std::string(text).c_str(), "%d-%d-%dT%d:%d:%d.%dZ", &year, &month, &day, &hour,
-                    &minute, &second, &millis) == 7) {
+    std::size_t pos = 0;
+    const auto integer = [&](int& value) {
+        while (pos < text.size() && std::isspace(static_cast<unsigned char>(text[pos]))) ++pos;
+        if (pos < text.size() && text[pos] == '+') ++pos;
+        const auto [end, error] = std::from_chars(text.data() + pos, text.data() + text.size(), value);
+        if (error != std::errc{}) return false;
+        pos = static_cast<std::size_t>(end - text.data());
+        return true;
+    };
+    const auto literal = [&](char expected) {
+        if (pos >= text.size() || text[pos] != expected) return false;
+        ++pos;
+        return true;
+    };
+    if (integer(year) && literal('-') && integer(month) && literal('-') && integer(day) && literal('T') &&
+        integer(hour) && literal(':') && integer(minute) && literal(':') && integer(second) && literal('.') &&
+        integer(millis) && literal('Z')) {
         utc.tm_year = year - 1900;
         utc.tm_mon = month - 1;
         utc.tm_mday = day;
@@ -58,13 +75,15 @@ std::chrono::system_clock::time_point parse_created(std::string_view text) {
     return std::chrono::system_clock::now();
 }
 
-std::string render_prompt(const SessionAssembly::Options& base, const SessionSpec& spec,
+std::string render_prompt(const SessionAssembly::Options& base, SessionSpec& spec,
                           const workspace::Environment& env) {
+    spec.state.mode = agent::supported_mode(spec.state.mode, base.sandbox.workspace_ready());
     const bool sandboxed = spec.state.mode != agent::PermissionMode::unrestricted;
     PromptVars vars;
     vars.model = spec.model.provider.model;
     vars.project_root = base.project_root;
     vars.sandbox = base.sandbox.read_only_ready() && sandboxed;
+    vars.sandbox_available = base.sandbox.read_only_ready();
     vars.workspace_sandbox = base.sandbox.workspace_ready() && sandboxed;
     vars.sandbox_backend = base.sandbox.backend;
     vars.sandbox_missing = base.sandbox.missing;
@@ -243,7 +262,8 @@ struct SessionAssembly::Impl {
         spec.unrestricted_acked = unrestricted_acked;
         if (spec.state.mode == agent::PermissionMode::unrestricted && !unrestricted_acked) {
             spec.pending_permission = agent::PermissionMode::unrestricted;
-            spec.state.mode = agent::PermissionMode::workspace;
+            spec.state.mode = agent::supported_mode(agent::PermissionMode::workspace,
+                                                    options.sandbox.workspace_ready());
         }
         spec.model = pick(!model_name.empty() ? std::string(model_name) : spec.state.model);
         spec.agent = options.agent;
@@ -268,7 +288,8 @@ struct SessionAssembly::Impl {
         auto context = std::make_unique<tools::Context>(options.cwd, options.control_root, options.tools,
                                                         options.files, options.search, options.process);
         auto registry = std::make_unique<tools::Registry>();
-        tools::add_builtin(*registry, spec.child ? nullptr : options.memory);
+        tools::add_builtin(*registry, spec.child ? nullptr : options.memory,
+                           options.sandbox.workspace_ready());
         // 每个新目录先继承现有连接，再按该会话的工具限制收窄。
         // 只读/规划上限的会话不接触外部工具 lease：server 进程的权限高于该上限。
         if (!spec.state.read_only && !spec.state.planning) options.hub->snapshot(*registry);

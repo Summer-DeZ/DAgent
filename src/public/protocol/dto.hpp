@@ -79,6 +79,8 @@ struct SessionSnapshot {
     ContextInfo context;
     nlohmann::json work_plan = nlohmann::json::array();
     nlohmann::json mcp = nlohmann::json::array();
+    bool sandbox_available = true;
+    std::vector<std::string> sandbox_missing;
     RecordingInfo recording;
     std::optional<PermissionConfirmation> permission_confirmation;
 };

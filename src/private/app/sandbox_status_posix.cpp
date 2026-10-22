@@ -26,6 +26,8 @@ std::string read_text_file(const fs::path& file) {
 
 } // namespace
 
+bool platform_sandbox_supported() { return true; }
+
 std::optional<fs::path> host_bwrap() { return host_program("bwrap", "/usr/bin/bwrap"); }
 std::optional<fs::path> host_socat() { return host_program("socat", "/usr/bin/socat"); }
 

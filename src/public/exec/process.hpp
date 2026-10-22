@@ -85,6 +85,8 @@ Result run(const Command& cmd, const Options& opt = {},
 
 /// @brief 系统 Git 的平台路径；POSIX 固定返回 /usr/bin/git，不预先验证或搜索 PATH。
 std::filesystem::path system_git_program();
+/// @brief 把 shell 语法路径转换为本机路径；Windows 把 MSYS 的 /c/dir 转成 C:/dir，POSIX 原样返回。
+std::filesystem::path shell_path_to_native(std::string_view shell_path);
 /// @brief 平台的基础搜索路径；POSIX 为 /usr/bin:/bin。
 std::string default_search_path();
 /// @brief project 受限执行的搜索路径；POSIX 使用非空宿主 PATH，否则使用六目录回退。

@@ -70,7 +70,7 @@ struct Searxng::Impl {
         std::ofstream output(config);
         output.exceptions(std::ios::failbit | std::ios::badbit);
         output << settings.dump(2); output.close();
-        fs::permissions(config, fs::perms::owner_read | fs::perms::owner_write);
+        base::make_file_private(config);
         const auto executable = base::executable_path().parent_path();
         exec::Command command;
         command.argv = {detail::python_environment_program(environment).string(), "-u", (executable / "libexec/searxng_server.py").string()};

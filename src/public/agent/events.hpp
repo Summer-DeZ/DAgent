@@ -137,6 +137,7 @@ struct Approval {
             sensitive_read,
             protected_write,
             host_access,
+            host_command,
         };
         Kind kind = Kind::dynamic_command;
         std::string target, reason;

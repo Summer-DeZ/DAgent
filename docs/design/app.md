@@ -73,7 +73,7 @@ app 同时实现 `backend/configuration.hpp`、`backend/queries.hpp`、`backend/
 | `appearance_config.cpp` | 外观与布局解析、外观配置保存 |
 | `config_document.cpp` | `detail::ConfigDocument`：保留原文格式的 JSON 文档编辑，供模型添加和外观保存共用 |
 | `config_detail.cpp` | 跨文件共用的配置读取、错误、路径、数值及环境变量辅助 |
-| `config_detail_posix.cpp` | require_private_file 的 stat、普通文件与 0600 权限检查 |
+| `config_detail_{posix,win}.cpp` | require_private_file 的普通文件与平台私有权限检查（POSIX 0600，Windows 私有 DACL） |
 
 内部共享声明位于 `src/public/app/config_detail.hpp` 的 `dagent::app::detail` 命名空间。
 配置环境展开的 `env_value` 通过 `base::environment_variable` 读取独立副本，缺失或空字符串仍抛
@@ -82,7 +82,11 @@ app 同时实现 `backend/configuration.hpp`、`backend/queries.hpp`、`backend/
 ModelWriteLock 通过 pimpl 隐藏原生状态，构造/析构签名不变；Impl 在计算锁路径和创建目录前分配。
 仍以 `O_RDWR | O_CREAT | O_CLOEXEC`、0600 打开锁文件，阻塞 `LOCK_EX` 仅重试 EINTR；
 其他加锁错误先保存错误文本、close、置 -1，再抛原 ConfigError。析构显式 `LOCK_UN` 后 close。
-require_private_file 仍使用 stat，保留原检查顺序和错误文本，不增加 symlink 或 uid 检查。
+POSIX require_private_file 仍使用 stat，保留原检查顺序和错误文本，不增加 symlink 或 uid 检查。
+Windows require_private_file 拒绝目录与 reparse point，并验证当前用户/SYSTEM/Administrators 的受保护私有 DACL；
+不安全时给出 Security > Advanced 的所有者、继承和授权修复说明，不提示 chmod。
+Windows ModelWriteLock 使用同步 LockFileEx 阻塞独占固定字节范围，析构解锁并关闭；模型保存继续使用 workspace 的权限保留。
+
 这两个平台源文件均由 `DAGENT_PLATFORM` 在 CMake 中选择。
 
 `config/config.json` 由用户维护，包含权限、UI、HTTP、网页搜索/抓取、记忆、上下文、工具、进程和日志策略；`config/models.json` 保存模型
@@ -365,7 +369,7 @@ stdout 被关闭时 jsonl 请求取消本轮并返回 1，text / json 最终写�
 
 ### 信号与退出码
 
-前端忽略 SIGPIPE，并在其他线程启动前屏蔽 SIGINT / SIGTERM，由 sigwait 线程处理。可优雅结束期间第一个信号经
+Linux 前端忽略 SIGPIPE，并在其他线程启动前屏蔽 SIGINT / SIGTERM，由 sigwait 线程处理。可优雅结束期间第一个信号经
 `session.snapshot` + `run.cancel` 只取消本前端的当前 Run，第二个信号直接 `_Exit(130)`；加载配置、读取 stdin 等轮外阶段直接退出。
 后端在独立进程组中运行，不接收终端信号。交互模式 raw 下的 Ctrl+C 是按键，行为由 ui 决定；全屏期间的进程信号走退出流程。
 
@@ -373,6 +377,11 @@ stdout 被关闭时 jsonl 请求取消本轮并返回 1，text / json 最终写�
 后端的 `initialize_backend_signals` 位于 `app/backend_main_posix.cpp`，仍在参数校验后、Channel 接管前调用；
 参数遍历与 `--ipc-fd` 保持在共享入口中，值经 `InheritedEndpoint::parse_argument` 按 atoi 语义解析，
 重复参数最后一次生效；校验后先初始化信号，再 `Channel::adopt`，最后 `prevent_inheritance`。
+
+Windows 的对应实现位于 `interrupts_win.cpp`、`backend_main_win.cpp`。前端控制台回调处理 Ctrl-C/Ctrl-Break，
+首次优雅停止只计数并通知事件，由工作线程调用 request_stop；轮外或第二次中断直接 TerminateProcess(130)，
+不等待第一次 stop 回调完成。后端忽略这两类控制台事件，按 IPC 取消和生命周期 Job 收尾。
+Windows 的 `--ipc-fd` 严格解析为十进制 uintptr_t 句柄，拒绝溢出、尾随文本和无效值；采用及禁继承顺序不变。
 
 | 情况 | 退出码 |
 | --- | --- |
