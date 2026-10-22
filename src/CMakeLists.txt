@@ -51,32 +51,32 @@ target_link_libraries(dagent_tui PRIVATE dagent_base)
 
 # 应用层：在 TUI 框架之上构建的界面（只持 Client、协议 DTO 与页面状态）。
 add_library(dagent_ui STATIC
-    private/ui/strings.cpp
-    private/ui/display.cpp
-    private/ui/theme_config.cpp
-    private/ui/projection.cpp
     private/ui/shell.cpp
-    private/ui/history_pager.cpp
-    private/ui/turn_meter.cpp
-    private/ui/transcript.cpp
-    private/ui/prompt_input.cpp
-    private/ui/header_bar.cpp
-    private/ui/hint_bar.cpp
-    private/ui/appearance.cpp
-    private/ui/settings_dialog.cpp
-    private/ui/approval.cpp
-    private/ui/center.cpp
-    private/ui/toast.cpp
-    private/ui/prompt_box.cpp
-    private/ui/completion.cpp
-    private/ui/completion_controller.cpp
-    private/ui/welcome.cpp
-    private/ui/panel.cpp
-    private/ui/model_picker.cpp
-    private/ui/memory_browser.cpp
     private/ui/browser_${DAGENT_PLATFORM}.cpp
-    private/ui/model_dialog.cpp
-    private/ui/side_panel.cpp
+    private/ui/style/strings.cpp
+    private/ui/style/display.cpp
+    private/ui/style/theme_config.cpp
+    private/ui/style/appearance.cpp
+    private/ui/state/projection.cpp
+    private/ui/state/history_pager.cpp
+    private/ui/state/turn_meter.cpp
+    private/ui/page/transcript.cpp
+    private/ui/page/prompt_input.cpp
+    private/ui/page/header_bar.cpp
+    private/ui/page/hint_bar.cpp
+    private/ui/page/center.cpp
+    private/ui/page/prompt_box.cpp
+    private/ui/page/welcome.cpp
+    private/ui/page/side_panel.cpp
+    private/ui/overlay/settings_dialog.cpp
+    private/ui/overlay/approval.cpp
+    private/ui/overlay/toast.cpp
+    private/ui/overlay/completion.cpp
+    private/ui/overlay/completion_controller.cpp
+    private/ui/overlay/panel.cpp
+    private/ui/overlay/model_picker.cpp
+    private/ui/overlay/memory_browser.cpp
+    private/ui/overlay/model_dialog.cpp
 )
 
 target_link_libraries(dagent_ui PUBLIC dagent_tui dagent_client dagent_protocol dagent_base)

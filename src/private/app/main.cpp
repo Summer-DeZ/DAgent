@@ -21,7 +21,7 @@
 #include "tui/grid/grapheme.hpp"
 #include "ui/shell.hpp"
 #include "ui/browser.hpp"
-#include "ui/display.hpp"
+#include "ui/style/display.hpp"
 
 namespace {
 
