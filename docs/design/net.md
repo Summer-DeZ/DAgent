@@ -1,131 +1,34 @@
 # net：HTTP 客户端与 SSE 解析
 
-与远端服务通信的模块。头文件在 `src/public/net/`，实现在 `src/private/net/`，构建为静态库 `dagent_net`，
-命名空间 `dagent::net`。唯一的外部依赖是系统的 libcurl（私有链接）。
+`net` 模块（`dagent_net`）封装基于 libcurl 的 HTTP 传输与 WHATWG 规范的 Server-Sent Events（SSE）增量解析。
 
-本模块用于模型 API、远端 MCP 和 SearXNG 的宿主健康检查。网页工具的请求通过 [web](web.md) 在 MXC 沙箱内调用 curl，
-使用独立的传输预算和网络审批；它们不走本模块的进程内 HttpClient。
+**职责边界**：
+- 服务于**宿主侧受信任通信**：模型 API 请求、远程 HTTP MCP 调用、以及本地托管 SearXNG 的健康检查。
+- **不包含模型协议语义**：报文格式与事件 JSON 由上层（`llm`、`mcp`）解释。
+- **不用于模型发起的网页抓取**：`web_search` 与 `web_fetch` 必须在只读沙箱内通过外部 curl 与回环代理执行（见 [web](web.md)），不走本模块的进程内客户端。
 
-本模块只负责 HTTP 和 SSE，**不包含任何模型协议**：请求体怎么组织、SSE 事件里的 JSON 怎么解释，都由调用方决定。
+## 1. HTTP 传输设计（`HttpClient`）
 
----
+### 1.1 两种接收模式
+- **整包接收（`send`）**：读取完整响应体（支持传入绝对截止时间 `deadline` 动态收窄超时），超出最大字节限制时抛出 `too_large` 错误。用于普通 JSON API、决策模型限时审阅、OAuth 认证等。
+- **流式接收（`stream`）**：收到完整响应头时首先触发可选的 `on_headers` 回调（供上层如 Streamable HTTP MCP 提前捕获 `Mcp-Session-Id`）；当响应状态码为 `2xx` 时，每收到网络数据块立即在调用线程触发数据回调；非 `2xx` 时不触发流式回调，而是收集上限为 `max_error_body_bytes` 的错误响应体返回（超限时截断并标记 `body_truncated = true`，不抛 `too_large`），确保上层始终能根据状态码与错误体分类处理（如识别 429 限流或上下文超长）。
 
-## 1. 概述
+### 1.2 核心传输策略
+1. **状态码与传输错误分离**：收到完整 HTTP 响应（哪怕是 404/429/500）均正常返回 `HttpResponse`，由业务层处理；仅在网络断开、DNS/TLS 失败、超时或取消时抛出分类的 `HttpError`（`cancelled` / `timeout` / `connect` / `tls` / `too_large` / `transport`）。Windows 平台显式开启 `CURLSSLOPT_REVOKE_BEST_EFFORT`，避免内网/离线环境下因无法连接外部证书吊销服务器（CRL/OCSP）而阻断全部 HTTPS 请求。
+2. **流式超时控制**：模型推理的流式请求将总超时设为 `0`（不限总时长），仅依赖 `idle_timeout`（默认 300 秒无任何字节到达才判定超时）。这样既能容忍长思考或本地大模型冷启动（期间服务端发送 `: keep-alive` 注释重置空闲计时），又能及时发现连接假死。
+3. **即时取消**：跨线程触发 `stop_token` 时，内部通过 `curl_multi_wakeup` 立即唤醒阻塞等待并中止传输。
+4. **连接复用与线程模型**：单个 `HttpClient` 实例在调用线程同步执行，跨请求复用 TCP 连接、DNS 缓存与 TLS 会话；多线程并发请求时每个线程持有独立实例。
+5. **不自动跟随重定向**：`3xx` 原样返回给上层，防止认证请求头被自动转发到不可信端点。
 
-| 能力 | 头文件 | 主要接口 |
-| --- | --- | --- |
-| HTTP 请求：整包接收或流式接收，可以即时取消，超时分三种，传输错误有分类 | `net/http.hpp` | `HttpClient`、`HttpRequest`、`HttpResponse`、`HttpError` |
-| Server-Sent Events 增量解析 | `net/sse.hpp` | `SseParser`、`SseEvent` |
+## 2. SSE 增量解析（`SseParser`）
 
-典型用法：流式调用模型接口。
+流式响应的数据块可能在任意字节边界（包括多字节 UTF-8 字符中间或 `\r\n` 之间）被网络层切分。`SseParser` 维护轻量状态机完成增量重组：
 
-```cpp
-net::HttpClient http({.timeout = 0s, .idle_timeout = 60s});
-net::SseParser sse;
-net::HttpResponse resp = http.stream(
-    {"POST", base_url + "/chat/completions", {{"Content-Type", "application/json"}}, body},
-    [&](std::string_view chunk) {
-        sse.feed(chunk, [&](const net::SseEvent& e) { /* 调用方解析 e.data 并交付业务事件 */ });
-    },
-    stop_token);                          // UI 线程按 Esc 时调用 stop_source.request_stop()
-if (resp.status != 200) { /* resp.body 是错误体 */ }
+```text
+网络字节块 (chunk) ──► 缓冲与行切分 (支持 LF/CRLF/CR) ──► 忽略 ':' 注释行与 BOM
+                                                        ──► 累加多行 data: 与 event:/id:
+                                                        ──► 遇空行派发完整 SseEvent
 ```
 
----
-
-## 2. HttpClient
-
-### 两种接收方式
-
-| 方法 | 行为 |
-| --- | --- |
-| `send(req, stop)` | 读取完整的响应体，放进 `HttpResponse::body`。超过 `max_body_bytes` 时抛 `HttpError{too_large}` |
-| `stream(req, on_data, stop)` | 状态码为 2xx 时，每收到一段数据就调用一次 `on_data`，数据的切分位置是任意的；状态码不是 2xx 时不调用回调，错误体放进返回值的 `body`，超过 `max_error_body_bytes` 的部分截掉 |
-
-两者都会返回状态码和响应头。**HTTP 状态码不是错误**：404、429、500 都正常返回，由调用方看 `status` 自行处理。
-`send` 另有接收绝对截止时间的重载，`stream` 另有在最终响应头收齐时触发的 `on_headers` 回调；`HttpResponse::body_truncated`
-表示 `stream` 的错误体被截断。
-
-### 请求
-
-- `method` 是任意方法名，默认 `POST`；`GET` 不发送请求体；`POST` 会发送 `body`（空的也发送）。其他方法有 `body` 就发送。
-- `headers` 原样发送，不需要自己写 `Content-Length`。客户端会禁用 `Expect: 100-continue`，大请求体不再等服务器的 100 响应。
-- User-Agent 是 `DAgent/<构建版本>`；开启 TCP keepalive。
-- 不跟随重定向：3xx 原样返回，由调用方决定是否继续请求。
-- 代理：遵循 libcurl 的默认行为，读取 `http_proxy`、`https_proxy`、`no_proxy` 这几个环境变量。
-
-### 响应
-
-- `headers` 里的名字已经转成小写，重复的头都保留，顺序和收到的一致。经过 1xx 中间响应时，只保留最终响应的头。
-- `header("retry-after")` 返回第一个同名头的值，参数必须是小写。
-
-### 选项：HttpOptions
-
-对应 `home/config/config.json` 的 `"http"` 段；下表是随附配置的默认值。`HttpOptions` 结构体本身把未设置的时长和大小字段初始化为 0，
-除 `connect_timeout` 外，时长为 0 表示不限制。
-
-| 字段 | 随附默认值 | 说明 |
-| --- | --- | --- |
-| `timeout` | 0（不限） | 整个请求的总时长上限 |
-| `connect_timeout` | 30s | 建连（含 TLS 握手）上限；为 0 时用 libcurl 自己的默认值 300 秒 |
-| `idle_timeout` | 300s | 连续这么久收不到任何字节就判为超时 |
-| `max_body_bytes` | 2 MiB | `send()` 响应体的上限 |
-| `max_error_body_bytes` | 4 KiB | `stream()` 保留错误体的最大长度 |
-| `verify_peer` / `verify_host` | true | TLS 证书校验 |
-
-**长时间的流式请求**要设 `timeout = 0`，只用 `idle_timeout` 来判断卡死。比如本地懒加载的模型冷启动要 3 分钟，
-期间服务器只会发送 `: keep-alive` 注释，这些字节会不断重置空闲计时，所以不会被误判成超时。
-
-### 错误：HttpError
-
-只有没拿到完整的 HTTP 响应时才抛异常，`kind()` 表示失败的类型：
-
-| Kind | 含义 | 调用方一般怎么处理 |
-| --- | --- | --- |
-| `cancelled` | stop_token 请求了停止 | 不重试 |
-| `timeout` | 总时长或空闲超时 | 可以重试 |
-| `connect` | 域名解析失败或连接不上 | 可以重试，也可能是配置写错了 |
-| `tls` | 证书或握手失败 | 不重试 |
-| `too_large` | 响应体超过 `max_body_bytes` | 不重试 |
-| `transport` | 连接中途断开等其他错误 | 通常可以重试 |
-
-错误信息的格式是 `方法 URL 失败：libcurl 的描述`，**不包含请求头和请求体**。但完整的 URL 会出现在信息里，
-所以密钥不要放在 URL 的查询参数里，要用请求头传递。
-
-### 取消
-
-`stop_token` 被触发时，客户端通过 `curl_multi_wakeup` 唤醒内部等待，随后抛出 `cancelled`；
-不承诺固定毫秒数。取消请求从其他线程对对应的 `stop_source` 调用 `request_stop()`。
-
-### 线程与连接复用
-
-- 请求在调用线程上阻塞执行，`on_data` 也在调用线程上触发。
-- **同一个实例不能在多个线程上并发使用**；需要并发请求时，每个线程各自持有一个 `HttpClient`。
-- 同一个实例上的请求串行执行，连接、DNS 缓存和 TLS 会话在请求之间保留，连续调用模型时不用每次重新握手。
-- `on_data` 抛出的异常会中止本次传输，并在 `stream()` 返回前原样重新抛出。
-- libcurl 的全局初始化由第一个构造的 `HttpClient` 完成，只执行一次，并且是线程安全的。
-
----
-
-## 3. SseParser
-
-按 WHATWG 的 Server-Sent Events 规范做增量解析：
-
-```cpp
-net::SseParser parser;                                 // 一次响应用一个实例
-parser.feed(chunk, [](const net::SseEvent& e) { … });  // 每解析出一个完整事件调用一次
-```
-
-- 数据可以跨网络块切分，包括在多字节字符中间、在 `\r\n` 两个字节之间切开的情况。
-- 行尾可以是 LF、CRLF 或单独的 CR；流开头的 BOM 会被去掉。
-- 以 `:` 开头的注释行（比如 `: keep-alive`）直接跳过。
-- 遇到空行时派发一个事件；多行 `data:` 用 `\n` 连起来。只有 `event:`、没有 `data:` 的事件不会派发。
-- `SseEvent::event` 在没有 `event:` 字段时为空，按规范等同于 `"message"`；`id` 跨事件保留最近一次的值。`retry:` 字段会被忽略。
-- 流结束时，没有以空行结尾的最后一个事件按规范丢弃。
-- `data: [DONE]` 这类结束标记属于模型协议，解析器不做特殊处理，由调用方识别。
-
----
-
-## 4. 依赖与构建
-
-- libcurl：`find_package(CURL)`，私有链接 `CURL::libcurl`。使用的 `curl_multi_wakeup` 要求 libcurl ≥ 7.68；实际版本取决于构建和运行主机。
+- 仅当遇到空行且包含 `data:` 字段时才向上层派发事件；流结束时未以空行闭合的残缺事件按规范丢弃。
+- `data: [DONE]` 等协议特定结束标记不做特殊拦截，原样交由上层模型编解码器识别。

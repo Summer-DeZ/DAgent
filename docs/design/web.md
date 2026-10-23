@@ -1,101 +1,50 @@
-# Web：受管搜索与网页读取
+# Web：受管网页抓取与搜索
 
-`dagent_web` 负责只读 MXC 沙箱内的 HTTP GET、字符集解码、HTML→Markdown 和 SearXNG JSON 协议。
-它依赖 exec、base、lexbor v3.0.1 和 iconv（Linux 为 glibc，Windows 为 libiconv），不依赖 agent。工具参数、分页、缓存及给模型的措辞在 tools；
-权限决策在 agent；SearXNG 运行时准备和进程生命周期在 app。
+`web` 模块（`dagent_web`）负责在只读沙箱内执行 HTTP 抓取、字符集解码、静态 HTML 转 Markdown 以及 SearXNG 搜索结果解析。
 
-`web/document.cpp` 保留 charset/BOM 检测与文档解析，`web/detail.hpp` 的 `detail::convert_charset`
-由 `web/document_${DAGENT_PLATFORM}.cpp` 转调共享 `web/charset.cpp` 中的 `convert_charset_iconv`，
-两个平台使用同一转换循环、缓冲区策略及截断和错误处理。Windows 通过 CMake `FindIconv` 的 `Iconv::Iconv` 链接 libiconv。
+**职责分层**：
+- `web`：沙箱内 curl 传输、编码转换、HTML→Markdown 提取、SearXNG 协议解析。
+- `tools`：面向模型的 `web_search` / `web_fetch` 参数校验、会话级 LRU 页面缓存与字节分页。
+- `agent`：沙箱前置检查、运行中逐跳网络审批与网页注入扫描（d3）。
+- `app`：托管 SearXNG 服务的懒启动与进程生命周期管理。
 
-## 模块接口
+## 1. 核心执行流程与安全边界
 
-公开值与函数位于 [web/web.hpp](../../src/public/web/web.hpp)：
+所有模型发起的网页访问（含搜索与抓取）均视为不可信外部交互，强制在**只读 MXC 沙箱**内通过外部 `curl` 与单次执行独占的**回环代理**完成，绝不退化为宿主直连：
 
-| 接口 | 责任 |
-| --- | --- |
-| `get` | 接收工具层映射好的 `exec::MxcRequest`（必须是 `read_only` 模式），经 `exec::run_mxc` 在沙箱内执行 curl，返回 Response 的 URL、类型、状态、正文和截断标记 |
-| `normalize_url` | WHATWG URL 解析与相对地址合成，拒绝非 HTTP(S) 和带凭据的 URL |
-| `decode` | Response → Page，完成字符集与静态 HTML 转换 |
-| `search_url` / `search_results` | 搜索词编码与 SearXNG JSON 结果解析，不依赖模型或权限类型 |
-
-`tools::Context` 缓存 Page，`tools::WebCall` 负责模型参数、结果预算和 WebView。
-`app::Searxng` 通过端点回调接入 tools，agent 不持有搜索服务、curl 或 HTML 解析对象。
-
-## 执行与权限
-
-```text
-模型 → web_search / web_fetch（ToolKind::network）
-     → Policy：必须具备 read_only MXC 沙箱
-     → tools::detail::sandbox_request（与 bash 共用）
-     → dagent_web → 沙箱内 curl → 本次执行的回环代理（exec::NetworkProxy）→ Dispatcher 网络闸门
-     → 解码、Markdown / 搜索结果 → Context 缓存 / 分页 → WebView
+```mermaid
+flowchart TD
+    CALL[模型调用 web_search / web_fetch] --> POL[Policy 检查：必须具备只读 MXC 沙箱]
+    POL --> HOP[逐跳执行沙箱内 curl]
+    HOP --> PROXY[回环代理拦截连接请求]
+    PROXY --> GATE[Dispatcher 网络闸门 & d3 URL 审阅]
+    GATE -->|放行| NET[连接目标服务器 / 本地 SearXNG]
+    NET -->|3xx 重定向 (最多 10 跳)| HOP
+    NET -->|2xx 响应| DEC[字符集解码 & HTML 转 Markdown]
+    DEC --> CACHE[整页写入会话 LRU 缓存 & 按 offset/limit 切出本次分页切片]
+    CACHE --> SCAN[d3 扫描本次准备交付的分页切片]
+    SCAN -->|安全| RET[向模型返回当前页切片]
 ```
 
-两个工具都串行执行，在 plan/read_only 中可用。unrestricted 仍走只读 MXC 沙箱，仅改变网络闸门对新目标的默认决定。
-配置拒绝、会话拒绝优先；其它情况下，父/会话规则、配置允许和审批复用 bash 的逻辑。
-会话允许按 host:port 共享，撤销和降权会停止失去授权的活跃调用。
-完整规则见 [agent §7](agent.md#7-权限与沙箱) 和 [权限指南](../guide/permissions.md)。
+### 关键安全机制
+1. **逐跳重定向审阅**：禁用 curl 自动跳转，每次只发一跳并捕获 `Location`（最多允许 10 次重定向）；下一跳 URL 必须重新经过网络闸门与决策模型审阅，防止通过重定向绕过域名限制。
+2. **强制代理路由**：沙箱内设置 `--noproxy ''`，所有流量（包括访问 `127.0.0.1:<port>` 的本地 SearXNG）均经过回环代理审计，沙箱内无任何其他网络出口。
+3. **静态正文提取与 MIME 白名单**：仅接受 `text/*`、`text/html`、`application/xhtml+xml`、`application/json`（及 `*+json`）、`application/xml`（及 `*+xml`）响应，拒绝 PDF/图片等二进制类型；使用 lexbor 解析 HTML5 DOM 并转换为 Markdown，剥离 `script`/`style`/`template` 等非正文标签，将相对链接还原为绝对地址，不执行任何 JavaScript。
 
-curl 禁用 curlrc、URL glob、非 HTTP(S) 协议和非 HTTP(S) 重定向；保留 TLS 校验，最多 10 跳重定向。每次只发送一跳并读取 Location，交给调用方的 `BeforeRequest` 回调后继续，不再使用 curl 的自动跳转。
-每一跳都是一次独立的 `run_mxc`，因而各有一个代理，启动开销约 0.2 秒。MXC 在沙箱内注入指向该代理的 `HTTP(S)_PROXY`，
-`--noproxy ''` 让 loopback/私网目标（包括托管 SearXNG 的 `127.0.0.1:<port>`）也经代理，不受 `NO_PROXY` 影响；
-沙箱内没有其它出口。`--output -` 明确通过管道输出字节，避免 curl 对某些响应的二进制检测提前停止输出。
-正文经 `head -c (max_body_bytes+1)` 限制，curl JSON 元数据走独立 stderr；超限保留正文前缀，退出码 23 只有在确实达到截断上限时才被接受。
-网络回调另外保存拒绝目标与原因，避免把代理的 HTTP 403 当成成功。超时包含等待审批；沙箱不可用时绝不转宿主抓取。
+## 2. 页面缓存、分页与切片扫描
 
-## 页面与缓存
+- **会话内整页 LRU 缓存**：`tools::Context` 按规范化 URL（去片段）在内存中缓存转换后的完整 Markdown 正文与元数据。缓存仅在当前会话有效，不落盘、不跨会话共享。
+- **UTF-8 字节分页与按页扫描**：`web_fetch` 支持通过 `offset` 与 `limit` 分页读取长网页，翻页直接命中内存缓存而无需重复联网；每次交付（含首次抓取与后续缓存翻页）均对**当次实际准备返回的分页文本切片**执行 d3 网页注入扫描。
 
-HTML 通过 lexbor HTML5 DOM 转换为 Markdown，去掉 script/style/template 等非正文节点，解析标题，
-保留标题层级、段落、列表、代码、强调和链接，链接按最终 URL 与 `<base>` 转为绝对地址并保留片段。
-这是静态文档转换，不执行 JS，也不保证复刻网页排版。
+<a id="托管搜索"></a>
+## 3. 托管搜索（SearXNG）
 
-编码按 BOM、HTTP charset、HTML 中的 charset 声明处理；GB2312/GBK 用 GB18030 兼容解码。
-未声明编码时按 UTF-8 处理，非法字节替换；不进行语言模型摘要。文本、JSON/XML 保留正文内容，仅转换字符集并去除终端控制序列。
-PDF、图片、其它二进制 MIME 类型和非成功 HTTP 状态返回错误。
+`web_search` 不依赖外部商业搜索 API Key，而是使用由 `dagent runtime sync` 预置在 `runtime/envs/internal/searxng/` 下的托管 SearXNG 实例（入口脚本位于可执行文件同级的 `libexec/searxng_server.py`）：
 
-`web_fetch` 使用 `url`、`offset`、`limit`；后两者是 UTF-8 字节计数。下一页使用返回的 `next_offset`，
-`has_more` 表示缓存的正文仍有内容，`truncated` 表示下载只保留了前缀。
-工具结果的总长度仍受 `tools.max_result_bytes` 约束。
+1. **按需懒启动与动态端口握手**：后端进程首次收到搜索请求时，生成随机密钥与临时配置（`0600`），拉起 `searxng_server.py` 绑定 `127.0.0.1:0`（系统分配空闲端口）；子进程在 stdout 打印 `DAGENT_SEARXNG_PORT=<port>`，后端捕获端口后请求 `/healthz` 确认就绪，同一后端内的主子会话共享该实例。
+2. **生命周期绑定**：后端正常退出时清理进程组并删除临时运行目录；后端若异常崩溃，SearXNG 监听进程通过 stdin 管道 EOF 自动感知并终止自身进程组。
+3. **权限隔离**：SearXNG 自身访问上游搜索引擎属于宿主基础设施；而模型沙箱访问 SearXNG 的 `127.0.0.1:<动态端口>` 仅对当前 `web_search` 调用临时预授权，`web_fetch` 与 `bash` 无法借用该端口权限。
 
-每个 Context 维护独立 LRU 页面缓存，按原请求的规范化 URL（移除片段）索引，缓存内容包括最终 URL、标题、类型、状态和正文。
-缓存命中不触发网络访问。缓存不落盘、不跨会话；超预算会淘汰页面，非零 offset 找不到缓存时要求从 0 重新抓取。
-已获取内容不因网络授权撤销而从会话中抹除，后续新连接仍按当前权限判定。
+## 4. 配置与资源限制
 
-## 托管搜索
-
-`dagent runtime sync` 准备 `internal/searxng`，使用固定 commit 归档和 SHA-256，依赖从带哈希的锁文件安装预编译 wheel。
-源码与 venv 位于该环境的代际目录；不依赖 Docker、系统 Python 或系统 SearXNG 服务。
-实现和配置格式见 [toolchain](toolchain.md#托管搜索基础设施)。
-
-后端第一次搜索时，用随机密钥生成 `run/searxng-*/settings.yml`，开启 JSON、关闭限流；入口用内核分配的动态端口绑定 127.0.0.1，
-通过启动通道报告实际端口，并经 `/healthz` 确认就绪。每个后端一个实例，多会话/子会话共享其所在后端的服务。
-启动错误行先修复 UTF-8，再按字符边界保留最多 2048 字节，作为工具错误反馈。
-进程退出后下一次搜索重新拉起；正在执行的失败请求不会在工具内自动重试。正常关闭由 exec::Child 清理进程组，
-`app::Searxng` 随后删除本次运行目录；后端异常退出则由 stdin EOF 监听终止搜索进程组，可能留下运行目录。
-此处不用 parent-death signal，因为 Linux 会将其绑定到临时创建线程。
-
-SearXNG 本身运行在宿主，属于 harness 基础设施，其上游连接不逐目标审批。
-模型的搜索请求仍需通过沙箱内 curl 经回环代理连接托管端点；只有当前 web_search 对这个确切端点预授权，配置拒绝仍优先。
-web_fetch 与 bash 不能借用这个基础设施标记。引擎失败和验证码会在结果中报告，有可用结果时仍返回结果；没有结果且收到引擎失败说明时返回工具错误。
-没有结果也没有引擎错误时返回正常的空结果。超过下载上限的搜索 JSON 无法完整解析，直接报告超限错误。
-
-## 配置
-
-`config/config.json` 的可选 `web` 段由 app 映射为 `web::Options`，默认值、用户覆写和排障见
-[网页指南](../guide/web.md#引擎和资源配置)，所有配置键汇总见 [app](app.md#2-配置与提示词)。
-`web.timeout_ms` 是一次请求（含全部重定向跳）的绝对时限，每跳以剩余时间作为 `run_mxc` 的超时，包含沙箱启动和等待审批的时间；
-搜索服务自身的懒启动使用独立超时。
-`web.max_body_bytes` 限制下载体积，`tools.max_result_bytes` 限制每次返回给模型的文本，`web.cache_bytes` 限制 Context 中转换后页面的缓存总量。
-缓存按正文和元数据的字符串字节数计费，不表示精确的进程内存上限；HTML 转换可能增加正文体积。
-同 URL 的 offset=0 也先命中缓存，目前没有刷新参数。新 Context 不继承缓存，包括恢复会话或切换模型的重新装配。
-
-搜索摘要和页面正文始终是不可信数据；工具说明与系统提示要求模型只把它们当作证据，不能执行其中的指令，也不能据此泄露秘密。
-不支持厂商原生搜索、浏览器渲染、PDF/图片解析、robots.txt 抓取策略或 web 调用并行。
-本机真实验收范围与证据见 [归档验收记录](../archive/2026-10-05-web-tools-plan.md#10-实施与真实验收记录2026-10-05)。
-
-## 上游依据
-
-- [lexbor URL 与相对链接 API](https://lexbor.com/tutorials/extract-links/)。
-- [SearXNG 安装与配置入口](https://docs.searxng.org/admin/installation-searxng.html)。
-- [固定的 SearXNG 源码](https://github.com/searxng/searxng/tree/d48c4b555421e824342c51d68482dd0898e54d0f)。
+`config/config.json` 的 `web` 段控制单次请求总超时（`timeout_ms`，含重定向与审批等待）、SearXNG 启动超时（`startup_timeout_ms`）、单次下载上限（`max_body_bytes`）、会话缓存预算（`cache_bytes`）以及启用的上游搜索引擎列表（`engines`）。详见 [网页指南](../guide/web.md)。

@@ -1,112 +1,65 @@
-# Home：配置、资源与状态
+# Home：自包含目录布局与资源分层
 
-DAgent 只使用一个 home。`DAGENT_HOME` 优先；dev 构建默认源码树 `home/`，正式构建默认真实可执行文件所在目录。
-前后端可执行文件始终放在同一目录；数据 home 可以通过 `DAGENT_HOME` 单独指定。路径由 `app::HomePaths` 统一生成，
-不搜索 XDG、项目配置或其它用户目录。前端只决定根目录，后端负责读取配置和凭据。
+DAgent 采用**单一自包含根目录（Home）**管理所有配置、可编辑资源、运行时环境与持久化数据，不搜索 XDG、用户 `$HOME` 或项目下的隐藏配置文件。
+
+## 1. 目录定位规则
+
+根目录按以下优先级唯一确定（由前端解析后在初始化时传递给后端）：
+
+1. 环境变量 `DAGENT_HOME`（若非空）。
+2. 开发构建（`dev` preset）默认使用源码树下的 `home/`。
+3. 正式构建默认使用可执行文件真实所在目录（解析符号链接后）。
+
+## 2. 目录结构与职责划分
 
 ```text
 home/
-├── config/
-│   ├── config.json       行为、权限、工具、UI、日志策略
-│   ├── models.json       模型与认证，0600
-│   ├── mcp.json          MCP 连接与显式环境变量，0600
-│   ├── runtime.json      工具版本、MXC 原生库、下载校验、独立依赖环境
-│   ├── decision/         决策阈值模板
-│   └── searxng/          SearXNG requirements.lock
-├── AGENTS.md             可选的全局用户指令
-├── prompts/
-│   ├── system.md         主提示词模板
-│   └── compact.md        压缩提示词模板
-├── skills/<name>/        SKILL.md、scripts、references、assets
-├── agents/               子 Agent 定义
-├── themes/               UI 主题
-├── memory/              Agent 记忆：global/ 与 projects/<project-key>/
-├── data/
-│   ├── dagent.db         会话；SQLite WAL/SHM 与它同目录
-│   ├── decision.sqlite   决策审阅与阈值
-│   └── credentials/      登录凭据（0700；各 JSON 0600）
-├── logs/                 按进程记录日志
-├── run/                  模型、runtime、会话与凭据写锁；searxng-*/settings.yml
-│   └── credentials/      固定登录锁
-├── runtime/              已准备的工具和依赖环境
-└── cache/
-    ├── opencode-go.json  公共模型清单
-    └── packages/         可重新下载的归档与包缓存
+├── config/               用户配置（只读输入，除模型添加与外观设置外不自动改写）
+│   ├── config.json       运行限制、权限、工具、UI、网络与日志策略
+│   ├── models.json       生成模型与决策模型配置（含密钥，强制私有权限 0600）
+│   ├── mcp.json          MCP 服务连接与显式沙箱权限配置（强制私有权限 0600）
+│   ├── runtime.json      托管工具版本、MXC 原生库与独立依赖环境声明
+│   ├── decision/         决策模型风险阈值配置模板
+│   └── searxng/          托管 SearXNG 的 Python 依赖锁文件
+├── AGENTS.md             可选的全局个人偏好指令
+├── prompts/              主系统提示词（system.md）与上下文压缩提示词（compact.md）
+├── skills/<name>/        全局技能包（SKILL.md 及脚本/参考资料）
+├── agents/               子 Agent 角色定义（*.md）
+├── themes/               UI 主题配色文件
+├── memory/               Agent 跨会话记忆（global/ 与 projects/<dir-name>-<hash8>/）
+├── data/                 不可丢弃的持久化数据
+│   ├── dagent.db         SQLite 会话历史数据库
+│   ├── decision.sqlite   决策模型审阅记录与动态阈值库
+│   └── credentials/      OAuth 设备登录凭据（0700 目录，0600 文件）
+├── runtime/              由 `dagent runtime sync` 准备好的工具二进制与依赖环境
+├── cache/                公共模型清单缓存（opencode-go.json，24h 有效）与归档包缓存（packages/）
+├── run/                  跨进程写锁（models/runtime/session-locks/credentials）与临时运行目录（searxng-*）
+└── logs/                 按进程 PID 分离的滚动日志（dagent-<pid>.log）
 ```
 
-`config` 表达用户配置，`prompts/skills/agents/themes` 保存可编辑资源，`data` 保存不可丢弃的会话，
-`memory` 保存用户可编辑的跨会话笔记（详见 [memory](memory.md)），`run` 保存协调状态，`runtime` 保存实际执行环境。缓存不是会话或配置的来源。
-提示词、主题等配置路径相对于 home，命令行 `--set` 中的对应路径相对于工作目录（`ui.appearance.theme` 例外，始终相对 home）；
-`sandbox.extra_readable/extra_writable` 始终相对于工作目录，详见 [配置契约](app.md#2-配置与提示词)。
+**安全保护边界**：`config/`、`data/`、`logs/`、`run/`、`memory/` 属于受保护的控制面路径。即便工作区恰好位于 `home/`（如开发仓库），内置文件工具和命令沙箱也会拦截对这些目录的未授权读写。
 
-## 用户指令
+## 3. 指令与上下文优先级
 
-`home/AGENTS.md` 可放语言、协作方式等个人偏好，由后端追加到 system prompt。
-项目 `AGENTS.md` 继续由工作区上下文收集；当前用户要求、项目具体指令优先于全局一般偏好。
-提示词是系统模板，Skill 是按轮激活的操作指导，记忆是模型维护的背景笔记，分别加载。
-当前用户要求 > 项目 AGENTS.md > 全局 AGENTS.md > 记忆。配置与普通资源修改后重启后端生效；
-记忆文件在新建或恢复会话时重新扫描，目录首次保存时创建，dev 的 `/home/memory/` 不纳入版本控制。
-`projects/<project-key>/` 的 key 为规范化项目根目录名，加 `-` 和完整规范化绝对路径的 SHA-256 前 8 位小写十六进制字符，
-例如 `DAgent-3f9a1c2e`；旧格式目录不再使用，不做迁移。记忆操作不跟随记忆根及其下的符号链接，扫描跳过 FIFO 等非普通文件。
-`memory/` 属于控制根受保护目录，普通文件与命令工具仍按控制路径权限处理。
+后端在构建会话上下文时，从多个来源收集指令，遵循以下严格优先级：
 
-## 首次安装与升级
-
-安装仅补充缺失的用户资源，不覆盖已有配置、提示词、主题、Skill 或子 Agent 定义。
-Linux 构建和安装中，二进制旁的 `libexec/searxng_server.py` 随程序更新，
-`libexec/dagent.apparmor` 按最终安装路径重新生成；这些是程序资源。更换后端路径后需重新部署对应 profile。
-MXC 原生库不是程序资源，由 `runtime sync` 按 `config/runtime.json` 的 `mxc` 包下载到 `runtime/mxc/`。
-源码的 `models.example.json`、`mcp.example.json` 安装为对应配置文件；本机真实认证文件不参与打包。
-Linux 安装时将新生成的模型、MCP 配置权限设置为 0600。数据库在第一次写入会话时创建，包括其父目录。
-Windows 安装同样只补充缺失文件，不覆盖已有配置、提示词、主题、Skill 或子 Agent 定义。
-可执行文件旁的运行时 DLL 随安装收集；不安装 `libexec`，也不生成 AppArmor profile。
-首次生成的 `config/models.json`、`config/mcp.json` 通过 `icacls` 设置受保护 DACL，
-仅授予当前用户、SYSTEM 与 Administrators 完全控制，与运行时 `require_private_file` 的检查一致；
-已有文件不覆盖，也不改权限。
-
-新安装先编辑 `config/models.json` 和需要的 `config/mcp.json`，再执行：
-
-```sh
-dagent runtime sync
-dagent runtime list
-dagent sandbox status
-dagent
+```text
+当前用户请求 > 项目 AGENTS.md（由远及近） > 全局 home/AGENTS.md > Agent 记忆（memory）
 ```
 
-首次准备需要下载。普通启动不安装工具、不执行包安装脚本；缺少已准备环境时给出 `runtime sync` 提示。
-工具与依赖配置详见 [toolchain](toolchain.md)。
-升级旧 Home 时需合并新增 runtime 声明与对应锁文件，保留用户配置；web 升级步骤见 [构建指南](../guide/build.md#升级已有-home-的-web-资源)。
-网页请求使用宿主 curl 7.75+；受限执行还需要宿主 bubblewrap ≥ 0.5、slirp4netns、util-linux、iproute2、nf_tables 后端的 iptables、
-已加载的 nf_conntrack 与 namespace 能力，完整清单与 AppArmor 部署见 [构建与安装](../guide/build.md)。
+- **系统提示词（`prompts/`）**：定义工具契约与核心行为准则，会话期间固定不变。
+- **技能（`skills/`）**：启动时仅将名称与描述注入系统提示词，正文字段在某轮对话被显式或自动激活时按需注入。
+- **记忆（`memory/`）**：模型自主维护的跨会话笔记，会话启动时扫描生成索引注入系统提示词，正文通过 `memory` 工具按需读取。
 
-## 唯一配置布局
+## 4. 安装、初始化与并发锁
 
-启动和安装统一使用上述布局，不加载根目录旧 config.json/models.json，不提供旧布局迁移命令。
-MCP 连接只使用 `config/mcp.json` 中的 `mcpServers`，不转换旧 `servers` 字段。
-每个 server 必须携带显式 `permissions` profile，否则不启动：
+### 4.1 首次安装与升级策略
+- **非破坏性安装**：安装过程仅补充缺失的模板与默认资源，绝不覆盖用户已有的配置文件、提示词、主题、技能或历史数据库。
+- **显式环境准备**：普通启动绝不后台静默下载工具或执行安装脚本。首次使用或更新 `runtime.json` 后，通过 `dagent runtime sync` 显式下载并校验托管工具链与沙箱原生库。
 
-```json
-{
-  "mcpServers": {
-    "note": {
-      "type": "stdio",
-      "command": "/abs/path/node",
-      "args": ["/abs/path/server.mjs"],
-      "environment": "managed",
-      "permissions": {
-        "read": ["/abs/dir"],
-        "write": ["/abs/dir"],
-        "network": ["api.example.com:443"]
-      }
-    }
-  }
-}
-```
-
-stdio server 在 MXC 沙箱内按该范围启动（网络是严格 allowlist，经每连接的回环代理判定）；HTTP server 的 `network` 必须显式列出
-endpoint 目标。
-个人模型配置与 `api_key` 保存在 `config/models.json`；OpenCode 登录凭据单独保存在 `data/credentials/`。新安装没有数据库时由首次写入自动创建；
-之后的新会话追加到已有数据库，升级和重启不清空历史。
-
-runtime sync 使用 `run/runtime.lock`，模型写入和会话写入分别使用
-`run/models.lock` 和 `run/session-locks/<id>.lock`。锁只协调各自负责的数据。
+### 4.2 跨进程写锁协调
+多个前端/后端实例共享同一个 Home 时，通过 `run/` 下的文件锁互不干扰地协调并发写入：
+- `run/runtime.lock`：保护托管工具链同步（`runtime sync`）。
+- `run/models.lock`：保护 `models.json` 与 `config.json` 外观设置的原子读改写。
+- `run/session-locks/<id>.lock`：保护单个会话的独占可写执行权（不同会话可并发执行，只读查询不加锁）。
+- `run/credentials/<provider>.lock`：保护登录凭据的并发刷新与写入。

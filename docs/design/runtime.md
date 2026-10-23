@@ -1,182 +1,70 @@
-# runtime：会话控制、交互与子执行
+# runtime：会话控制、交互代理与子执行调度
 
-runtime 位于后端进程内，负责「哪个会话在执行、下一条输入何时开始、审批/问答怎样等待、子 Agent 怎样创建与回收」。
-头文件在 `src/public/runtime/`，实现在 `src/private/runtime/`，命名空间 `dagent::runtime`，库为 `dagent_runtime`，
-只依赖 `dagent_agent`。具体的配置、存储、模型与工具由 app 装配经端口注入；协议编解码由 [protocol](protocol.md)
-的 backend 适配负责。核心业务对象（Session、Run、TurnRunner）见 [agent](agent.md)。
+`runtime` 模块（`dagent_runtime`）位于后端进程内、核心 `agent` 层之上，负责管理**会话生命周期状态机、用户输入排队、权限/问答交互等待队列、以及并发子 Agent 的创建与回收**。
 
-## 1. 对象与所有权
+## 1. 核心架构与职责边界
 
 ```mermaid
 classDiagram
-    Runtime *-- InteractionBroker
-    Runtime *-- SubagentExecutor
-    Runtime --> SessionFactory
-    Runtime --> ConfigurationGateway
-    Runtime *-- SessionInstance : current_
-    SessionInstance *-- Session
-    SessionInstance *-- SessionLease
-    SubagentExecutor ..|> DelegationChannel
-    SubagentExecutor --> SessionFactory
+    class Runtime {
+        +唯一会话控制入口
+        +输入队列与命令屏障
+        +状态快照发布
+    }
+    class SessionInstance {
+        +Session 核心实例
+        +SessionWriteLease
+        +MCP 资源与工具上下文
+    }
+    class InteractionBroker {
+        +待决审批与问答表
+        +单模态串行激活队列
+    }
+    class SubagentExecutor {
+        +实现 DelegationChannel
+        +子会话生命周期与取消级联
+    }
+    Runtime *-- SessionInstance : 持有当前活跃会话
+    Runtime *-- InteractionBroker : 托管人工交互
+    Runtime *-- SubagentExecutor : 驱动 task 子执行
 ```
 
-| 对象 | 拥有 | 职责 |
-| --- | --- | --- |
-| `Runtime` | 当前会话、输入/命令队列、当前操作、generation、快照、交互代理、子执行器与工厂 | 唯一控制入口；可写操作由一个串行执行线程排序，取消/回答走即时路径 |
-| `InteractionBroker` | pending 表、单模态激活队列 | 审批/问答一次性终结；回答与取消走即时路径 |
-| `SubagentExecutor` | 本次委派组的子实例（调用栈内） | 实现核心 `DelegationChannel`：创建子会话、跑一轮、收集 `TaskView`、销毁 |
+- **单一串行执行线程**：每个后端实例只有一个主会话执行线程负责出队输入、运行 `TurnRunner` 循环或执行手动压缩（`/compact`）。
+- **即时控制通道**：输入入队（`submit`）、取回排队输入（`recall_last`）、取消当前运行（`cancel`）、回答审批/提问（`answer`）、切换权限模式（`cycle_permission`）与撤销授权（`revoke_grant`）均在调用线程通过短锁即时完成，不被正在运行的模型或工具阻塞。
 
-`SessionInstance` 是一个已装配会话：核心 `Session` 与其工具目录、MCP 资源、记录写入器和写租约同寿。
-runtime 只看到核心类型；`tools::Context`、`Registry` 等具体对象留在 app 装配内部，
-`SqliteJournal` 由 storage 实现并只通过 `agent::JournalWriter` 端口暴露。
-网页缓存跟随 Context 生命周期；新建/恢复/切换模型产生的新实例不继承缓存。SearXNG 由 app 中的后端级管理器持有，
-同后端的会话通过回调共享服务，单次工具或子会话结束不会关闭它。详细生命周期见 [web](web.md#托管搜索)。
-
-公开状态与事件位于 `runtime/state.hpp`；`runtime.cpp` 负责组装与交互出口，`session_control.cpp` 实现 Runtime 的会话调度，两个文件共同实现一个控制类。
-主运行 ID 与取消源由 Runtime 的当前操作持有；主 `RunServices.stop` 直接传至核心。
-子执行持独立取消源，并用 stop_callback 接收父取消，核心 Run 不转发取消或复制运行身份。
-
-### 装配端口（`runtime/factory.hpp`）
-
-| 端口 | 操作 | 实现 |
-| --- | --- | --- |
-| `SessionFactory` | `create_new`（L01）、`resume`（L20）、`prepare_switch_model`（L21，复用 lease）、`create_child`（L02）、`resolve_session`、`find_subagent` | `app::SessionAssembly` |
-| `ConfigurationGateway` | 公开模型列表、provider 种类元数据、添加模型 | `app::Configuration`，经 backend 配置端口上转型 |
-
-凭据只在 `ConfigurationGateway` 与 app 内部的 `llm::ProviderConfig` 之间转换，公开返回值只有 `PublicModel`。
-主题路径与外观能力属于 `backend/configuration.hpp` 的派生端口。
-`BootstrapOptions`、`Assembled`、`Assembler` 和 `ConfigurationError` 位于 `backend/assembly.hpp`；
-`Assembled` 静态持有 backend 配置端口，注入 `Runtime::Deps` 时上转型为 runtime 模型配置端口。
-`QueryGateway`、`HistoryReader`、查询 DTO 与 `QueryError` 位于 `backend/queries.hpp`，
-`LoginGateway` 位于 `backend/login.hpp`，均由 app 实现；runtime 不包含这些后端契约。
-查询失败以 `backend::QueryError{not_found, invalid_state, query_failed}` 抛出，由 backend 映射协议错误。
-
-## 2. 会话控制状态机
+## 2. 会话控制状态机与输入队列
 
 ```mermaid
 stateDiagram-v2
     [*] --> empty
-    empty --> ready: start 成功
-    ready --> executing: 输入出队 / 手动 compact
-    executing --> ready: Run 收尾
-    ready --> replacing: new / resume / select_model / add_model
-    replacing --> ready: 候选安装或失败保留旧会话
+    empty --> ready: 初始化安装会话
+    ready --> executing: 取出队首输入 / 启动手动 compact
+    executing --> ready: 回合结束，继续自动排空队列 (drain)
+    ready --> replacing: new / resume / 切换模型
+    replacing --> ready: 候选会话就绪替换（失败则保留原会话）
     ready --> closing: shutdown
-    executing --> closing: shutdown（先取消当前 Run）
+    executing --> closing: shutdown（先取消当前运行）
     closing --> closed
 ```
 
-- **普通输入**：`submit` 只加入内存 FIFO 并返回 `input_id`，不代表开始执行。`accepted` 回调在入队后、执行线程可取出前调用，
-  backend 借此保证 `input.submit` 的响应先于该输入的 `turn_started` 进入发送队列。执行线程只取队首 `ready` 的输入，
-  取出时才创建 Run（`run-N`）。
-- **回合收尾**：作用域退出时解除 Session 的 Run/Sink 绑定，包括执行异常和手动压缩异常。
-  普通回合逃出的异常经 `TurnRunner::finish` 补齐未闭合工具调用、记录并同步失败结束；先解除绑定、
-  清除当前 Run 并刷新快照，再发布 `TurnEnded`，前端重读快照时不再显示 busy。
-- **取回**：`recall_last` 原子移除最后一条仍排队的输入，空输入框按 ↑ 时使用（B04）。
-- **命令**：new/resume/select_model/add_model/compact 只在空闲时接受；命令从接受到结束占用空闲入口，普通输入不能越过它。`revoke_grant` 走即时路径，运行中也可用。
-  compact 使用与输入相同的接受屏障：入队时标记为未就绪，在锁外执行接受回调，然后才允许 worker 取走命令。
-  backend 在回调中登记 operation_id 并将接受响应入发送队列，保证压缩事件不会抢在接受响应之前发布。
-  busy 时返回 `RuntimeError::busy`（B07）。
-- **即时操作**：`cycle_permission`（运行中也可，重新核对活跃执行并影响之后的决策）、`toggle_planning`（要求空闲）、`cancel`
-  不进命令队列（B08）。`cancel(run_id)` 只取消身份仍匹配的当前 Run，旧 id 返回 false。取消句柄只由 `CurrentRun` 保存；cancel/shutdown 在锁内取得局部共享引用，在锁外触发停止。
-- **drain**：Run 收尾时先把状态置回 ready 再发布 `TurnEnded`；无论 status 为何都继续出队下一条。手动压缩完成发
-  `operation_finished` 后同样继续（B06）。
+### 关键调度规则
+1. **输入排队与取回（FIFO）**：用户在模型忙碌时提交的普通消息直接进入内存队列并立即返回 `input_id`；当前回合或手动压缩结束后，执行线程自动按序取出下一条输入开启新回合（`drain`）。在某条排队输入尚未被执行线程取走前，用户可在空输入框按 `↑` 原子取回最后一条排队输入进行编辑。
+2. **`unrestricted` 升权待确认门禁（`pending_permission_`）**：当用户请求切换到 `unrestricted` 且本会话尚未确认过风险警告时，系统进入待确认状态并弹窗提示；**在用户明确确认或取消前，执行线程暂停从输入队列取走任何排队消息**，防止排队任务在未经确认的高危权限下自动执行。
+3. **接受屏障（Acceptance Barrier）**：输入提交、手动压缩与状态变更命令均设有接受屏障（`command_pending_`），确保 RPC 响应必然先于该操作触发的事件进入发送队列，且不会在命令切换瞬间被排队输入抢占。
+4. **两阶段无损会话替换（`replacing`）**：执行 `/new`、`/resume` 或切换模型时，要求当前处于空闲状态。系统先在后台装配好新候选会话（若装配或恢复失败，原会话完好保留），成功后再于单次锁边界内原子替换当前会话、递增 `session_generation` 并通知前端。
+   - **同会话切换模型**：复用当前会话的写租约（`SessionWriteLease`），严格继承当前会话的权限档（`mode`）、规划开关（`planning`）与启动只读限制（`read_only`），从持久记录重建内存上下文并写入新的 `system` 记录，同时清空临时文件追踪（`FileTracker`）、MCP 连接与临时会话授权。
 
-`drain` 与 worker 的输入分支共用 `take_input_locked`：先将队首输入赋给调用方的 optional，
-再移除队首，最后通过 `begin_execution_locked("turn")` 切换 executing 并创建 Run 身份；
-compact 共用 `begin_execution_locked("compact")`。两个方法均要求调用方持有 `mutex_`，
-自身不加锁、不发布、不执行任务。资格判断、命令优先选择以及锁外的快照同步和执行仍留在调用方；
-worker 的出队与 Run 创建仍在外层 try 之前，两个 catch 的收尾保持各自语义。
+## 3. 交互代理（`InteractionBroker`）
 
-### 替换会话
+当主会话或并发子 Agent 需要人工审批（`Approver`）或向用户提问（`Asker`）时，统一交由 `InteractionBroker` 协调：
 
-new/resume/切模型先在旧会话空闲时准备候选（`PendingReplace`），失败时旧会话保持并发 `failed` 控制事件；成功后在一个锁边界内
-替换 `current_`、递增 generation、刷新快照并发 `session_replaced`。
+1. **多源并发请求、单模态串行展示**：多个并发工具或子 Agent 同时发起审批请求时，全部进入等待队列，但**同一时刻仅激活队首唯一一个请求**向前端发送 `interaction.requested`，避免前端弹出重叠模态框。
+2. **一次性终结与取消联动**：用户提交回答后立即唤醒对应等待线程，并激活队列中的下一个请求。若当前回合或对应子任务被取消（`stop_token` 触发），等待中的交互立即以取消状态终结，并通知前端关闭弹窗。
+3. **非交互模式降级**：在 `dagent run` 非交互模式下不装配人工代理；主会话遇到需人工审批的操作直接返回不可用错误，而符合条件的子 Agent 请求仍可路由给父模型自动审阅。
 
-| 操作 | 保留 | 重置 |
-| --- | --- | --- |
-| `/new` | 当前权限档 | planning、对话、计划 |
-| resume | 当前权限档与 planning | 按记录重建对话与计划 |
-| 切模型（同 session_id） | 模式、planning、Transcript、WorkPlan 显示 | 临时授权、FileTracker、token 校准；从持久记录重建对话并写新 system（B13/B14） |
+## 4. 子 Agent 委派执行（`SubagentExecutor`）
 
-切模型把当前 lease 交给候选，不再次 flock 同一会话。添加模型先原子保存 models.json，再按切模型路径切换；保存成功但切换失败时
-回调返回已保存的公开模型与 `selection_error`，不回滚文件（B27）。
-
-## 3. 快照与事件发布
-
-`RuntimeSnapshot` 是面向前端的只读状态：session_id、generation、公开模型、权限档/planning/read_only、busy 与当前操作
-（turn/compact/replacing + run_id）、排队输入、上下文用量与窗口、项目路径、WorkPlan、MCP 状态、沙箱可用性与缺失项、
-记录 broken、会话授权，以及待确认的 unrestricted 升权目标与入口。
-
-会话与事件投影位于 `src/public/runtime/snapshot_projection.hpp` 和
-`src/private/runtime/snapshot_projection.cpp`，命名空间为 `dagent::runtime::detail`。
-`snapshot_from_session` 读取完整会话状态；`apply_snapshot_event` 只更新事件涉及的字段。
-两者共用用量及 mode/planning 的填写函数，但完整刷新覆盖 read_only，ModeChanged 仅在进入规划模式时将其置为 true；
-ModelChanged 仍只更新模型标识，ToolFinished 仅在结果包含 TodoView 时更新计划。
-投影函数不获取 Runtime 锁、不发布事件、不读取调度状态。
-
-`refresh_snapshot` 在 Runtime 锁外完成会话投影，再持 `mutex_` 调用
-`write_control_snapshot_locked` 并填写 pending permission，释放后持 `publish_mutex_` 替换快照。
-`sync_control_snapshot` 保持同时持有 `mutex_ → publish_mutex_`，直接调用同一控制字段函数，
-不更新 pending permission。控制字段函数先清空 queue/operation/run_id，再填写 generation、busy、队列及当前操作；
-它自身不加锁，由调用方保证锁边界。
-
-控制器用一把发布锁完成「应用事件到快照、交给 `Frontend`」。线上 seq/state_seq 仅由 backend Publisher 分配；
-runtime 不维护重复计数。事件载荷是核心 `agent::Event` 或 runtime 自己的 `ControlEvent`：
-
-| ControlEvent | 含义 |
-| --- | --- |
-| `session_replaced` | new/resume/切模型安装完成；`replace_transcript` 指出前端是否清空对话（切模型为 false），`resumed` 表示显式恢复 |
-| `operation_finished` | 手动压缩结束，带 status/error |
-| `failed` | 控制命令失败，`operation` 指出动作 |
-
-`Frontend` 必须在锁内快速入队，不得阻塞；背压与发送在 backend 的 Publisher 里处理。
-
-## 4. 交互代理
-
-核心的 `Approver` / `Asker` 由 runtime 接到 `InteractionBroker`：
-
-1. 执行线程调用 `request_approval` / `request_answer`，生成 `i-N`，进入等待队列；同一时刻只有队首激活，
-   经 `InteractionOutlet::interaction_requested` 通知前端（并发子 Agent 的审批因此串行显示）。
-2. 任意线程的 `answer_*` 把 pending 一次性终结，唤醒等待方，再激活下一个。已结束的交互返回 false（协议 `interaction_closed`）。
-3. stop 触发时 pending 立即以取消结束（审批返回 deny、问答返回 cancelled），核心按取消处理而不是普通拒绝，并通知前端关闭对话框。
-4. 等待期间不持有控制器锁、Policy 锁或队列锁。
-
-非交互装配（`run`）不提供人工 Approver/Asker：主会话需要人工审批的调用得到「no interactive approver」，ask/exit_plan 返回原有非交互文本，
-不生成永远等不到的对话框（B09）。子执行仍装配审批路由，符合条件时经父 Dispatcher 审阅，不依赖人工 Broker。
-
-## 5. 子执行
-
-`SubagentExecutor::delegate` 在 task 组线程上执行一次委派：
-
-1. 从 `DelegationContext`（父 session/call、权限快照、父工具名单、模型名、父 Sink/Approver、只读父 Policy、parent_reviewer、stop）和子定义派生权限，
-   `SessionFactory::create_child` 创建子实例；子会话自己取得写租约，Meta 带 `parent_id` / `agent_name`。
-2. 登记子 Policy 和独立 stop_source；父取消通过 stop_callback 级联到子 Run，父权限收窄可以只终止子执行。
-   `may_ask` 时装配带来源身份的审批路由：父无只读/规划上限、模式为 workspace 或 unrestricted 且启用父审阅时，经 `parent_reviewer`
-   把请求投递到父 Dispatcher 邮箱；否则使用父人工 Approver。两条路由都不可用时返回 approval unavailable；子 Asker 恒空。
-3. 子事件包成 `SubEvent` 交给父 Sink，只实时展示，不写进父历史。
-4. 使用 `RunOutcome` 的真实结束状态构造结果。非 done 状态设置 `is_error=true`，文字包含状态与调用计数，
-   已有正文标为 Partial output；`TaskView.result` 与模型收到的文本一致。没有结论同样返回错误。
-5. 子实例在函数返回前解除登记并销毁；不留可再运行的句柄或 detached 线程。
-
-`apply_parent_permission` 在登记锁内更新子 Policy 上限，与 detach 互斥；锁外对需要取消的共享 stop_source 请求停止，
-不在解锁后继续使用可能已经销毁的子 Policy 指针。父会话授权不复制到子会话。
-
-父 Dispatcher 等待 task 时串行处理审阅，子线程只等待自己的决定；超时包括排队时间。
-父审阅失败、超时或输出无效时，同一请求转人工审批；取消或降权直接结束，不转人工。父授权取消句柄在首次审阅后持续关联子执行，
-因此创建时父为 workspace、运行中升级后获批的子任务，也会在父再次降权时中断。
-父审阅共享父 turn 的调用与 token 预算；一次/子会话授权和审计见 [agent](agent.md#子-agent-的权限派生)。
-
-子工具默认不含 task/ask/exit_plan/memory 和未显式允许的 `mcp__*`；子只用创建时的 MCP 快照（B18–B20）。
-
-## 6. 线程与关闭
-
-| 线程 | 工作 |
-| --- | --- |
-| 控制器执行线程 | 命令、输入出队、`TurnRunner` 的整轮与手动压缩；唯一推进当前 Session 的线程 |
-| 核心工具/task 组线程 | 由 ActionDispatcher 在一轮内创建并 join（见 [agent](agent.md#6-工具调度)） |
-| 调用方线程（backend 读线程/命令线程） | submit/recall/取消/回答/权限切换等即时操作；只持短锁 |
-
-`shutdown` 的顺序：停止接受输入并清空队列 → 取消当前 Run（级联到子取消源）→ `InteractionBroker::cancel_all` 唤醒等待 →
-join 执行线程 → 释放当前实例。实例析构顺序为同步记录 → 销毁会话与工具/MCP 引用 → 释放 SessionWriteLease。
-runtime 不根据 PID 杀进程，也不在关闭后继续后台执行。
+当主会话调用 `task` 控制动作时，`SubagentExecutor` 在并发任务线程上完成子会话的完整闭环：
+1. **权限收窄与活上限绑定**：根据父会话当前实时权限与子 Agent 定义派生更严格的权限策略，并将父 `Policy` 绑定为子会话的动态上限（父会话运行中降权或撤销授权时，实时级联取消越权的子执行）。
+2. **审批路由分发**：子会话需要审批时，若父会话处于无只读限制的 `workspace` / `unrestricted` 模式且开启了父审阅，优先投递至父 Dispatcher 邮箱由父模型审阅；否则（或父审阅失败/超时后）交由 `InteractionBroker` 转人工审批。
+3. **事件透明转发与上下文隔离**：子会话运行期间产生的实时事件包装为 `SubEvent` 转发给前端展示，但**绝不写入父会话的消息历史**；子会话在函数返回前彻底销毁，仅向父模型回传最终结论文本与工具步骤摘要（`TaskView`）。

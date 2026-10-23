@@ -1,150 +1,54 @@
-# memory：Agent 记忆
+# memory：Agent 跨会话记忆
 
-主 Agent 用 Markdown 笔记跨会话保留用户偏好、协作反馈和项目决策。记忆由模型通过 `memory` 工具维护，
-用户也可以直接编辑文件，或通过 `/memory` 查看与删除。它与人维护的 `AGENTS.md` 分开加载。
+`memory` 机制（由 `tools::MemoryStore` 与 `app` 查询网关实现）支持主 Agent 将用户偏好、协作反馈与项目关键决策以结构化 Markdown 笔记的形式跨会话持久化。它与人工维护的 `AGENTS.md` 分离，由模型通过内置 `memory` 工具自主维护，用户也可通过 `/memory` 面板或直接编辑文件管理。
 
-优先级为：当前用户要求 > 项目 `AGENTS.md` > 全局 `AGENTS.md` > 记忆。
-用户希望遵守的规范与做法不论记为 `user`、`feedback` 还是 `project`，都是长期指令：默认应用于其覆盖的全部代码和工作，
-包括独立的短代码片段，规范看起来不常见也照做；只有用户明确要求与之相反的做法或 `AGENTS.md` 另有规定时才让步，
-请求中提到某个名字或只要求简短回答不算冲突。文件路径、函数、配置、过往决策等召回事实是背景，使用前先核实。
-记忆不覆盖当前请求和 `AGENTS.md`。
+**指令优先级**：`当前用户要求 > 项目 AGENTS.md > 全局 AGENTS.md > Agent 记忆`。
 
-## 1. 存储与配置
+## 1. 存储结构与条目模型
+
+记忆按「全局（跨项目）」与「当前项目」两个作用域存储在 `<home>/memory/` 下：
 
 ```text
 home/memory/
-├── global/<name>.md
-└── projects/<project-key>/<name>.md
+├── global/<name>.md                         跨项目的个人偏好与通用约定
+└── projects/<dir-name>-<hash8>/<name>.md    当前项目专属决策（目录名 + 规范化路径 SHA-256 前 8 位）
 ```
 
-`HomePaths::memory` 给出记忆根，`project_memory(project_root)` 给出项目目录。项目根由装配层从 cwd 向上查找 `.git`
-文件或目录得到，非仓库退回 cwd；工作区指令另由 `git rev-parse --show-toplevel` 收集，常规仓库中两者一致。
-project-key 为规范化项目根的目录名，加 `-` 和完整规范化绝对路径的 SHA-256 前 8 位小写十六进制字符，
-例如 `DAgent-3f9a1c2e`。项目移动到另一个路径会使用另一个目录；旧格式目录不再使用，不做迁移。
-目录在第一次保存时创建。
-dev Home 的 `/home/memory/` 已被 git 忽略，安装也不打包本机记忆。
+每条记忆为一个独立的 `.md` 普通文件（单条上限 `max_entry_bytes` 默认 4 KiB），采用 YAML Frontmatter（`name` 为 kebab-case、`description` 单行非空、`updated` 为后端自动生成的 `YYYY-MM-DD` 日期、`type`）+ Markdown 正文格式：
 
-`config/config.json` 的独立配置段：
-
-```json
-"memory": {"enabled": true, "max_index_bytes": 8192, "max_entry_bytes": 4096}
-```
-
-省略配置段或字段时使用上述默认值；两个字节预算必须为正整数。
-`enabled=false` 时不向模型注册工具，也不注入索引，已有文件与用户管理面板仍可使用。
-配置在后端启动时读取，不按模型种类开关写入功能。
-
-## 2. 条目
-
-一条记忆一个文件，文件名与 frontmatter 中的 `name` 一致，使用小写字母、数字与单个连字符组成的 kebab-case。
-
-```markdown
----
-name: no-commit-attribution
-description: 提交和 PR 不添加 Co-Authored-By 署名行
-type: feedback
-updated: 2026-10-18
----
-## Why
-用户要求提交说明只保留实际改动的信息。
-
-## How to apply
-编写提交信息或 PR 描述时，不追加 AI 署名行。
-```
-
-| type | 内容 |
+| 类型（`type`） | 记录内容 |
 | --- | --- |
-| `user` | 用户身份、技术背景、沟通偏好 |
-| `feedback` | 用户的纠正或认可的做法及原因 |
-| `project` | 不能从代码和 git 推出的决策、约束、目标、截止时间 |
-| `reference` | 外部文档、看板、工单、数据等资源位置 |
+| `user` | 用户身份、技术背景、沟通风格偏好 |
+| `feedback` | 用户纠正或认可的做法及原因（正文包含 Why 与 How to apply） |
+| `project` | 无法从代码或 Git 历史直接推出的架构决策、约束与目标 |
+| `reference` | 外部文档、看板、工单或数据源位置 |
 
-`description` 是非空单行文字，应直接表达要点。`updated` 是合法的 `YYYY-MM-DD` 日期，保存时由程序取当前本地日期，与 system 中的环境日期一致。
-`feedback` 与 `project` 的正文应写明 Why 和 How to apply，截止时间用绝对日期；这些是模型写作准则，不做正文语义校验。
-`max_entry_bytes` 限制含 frontmatter 的整个文件，而不只限制正文。
+**存储安全边界**：所有读写与扫描操作均固定目录句柄并拒绝跟随任何符号链接或 FIFO 等非普通文件；写入采用同目录临时文件 + `fsync` + 原子重命名。不维护单独的索引文件，手工增删改文件会在下次会话启动时自动生效。
 
-`tools::MemoryStore` 位于 `src/public/tools/memory.hpp` 与 `src/private/tools/memory.cpp`，tools 私有链接 yaml-cpp。
-读取复用 `workspace::FileReference::read` 的普通文件校验、固定文件 FD 与 UTF-8 文本读取，frontmatter 以 yaml-cpp 解析；
-扫描经固定目录 FD 遍历当前两个目录，仅读取 `.md` 普通文件。符号链接、FIFO 等非普通文件，
-以及非法 frontmatter、文件名不符、非法类型或日期、超限和非法 UTF-8 条目跳过并记 warning。
-不存在的目录视为空目录，不因扫描创建目录。
+## 2. 关键流程：两阶段加载（索引注入 + 按需读取）
 
-保存由程序生成 frontmatter，再调用 `workspace::FileReference::write` 经固定目录 FD 创建父目录，执行同目录临时文件、fsync 和 rename 的原子替换。
-同 scope 同 name 覆盖更新；删除经 `FileReference::erase` 使用目录 FD 与 `unlinkat` 移除对应普通文件。
-工具参数没有路径，存储层校验 scope 和 name；保存、查看、删除与列表均不跟随记忆根及其下任意路径分量的符号链接，包括悬空链接。
-查看拒绝 FIFO 等非普通文件，不以阻塞方式打开它们。
-查看、保存、删除遇到已有符号链接或非普通文件时，明确提示记忆条目必须是普通文件、这些类型不被允许；
-后续实际操作仍由 `FileReference` 执行无符号链接解析和固定对象校验。
-不维护独立索引文件，因此手工增删改条目会反映到下一次扫描。
+为控制上下文开销，记忆采用「启动注入轻量索引 + 运行时按需读取正文」的两阶段设计：
 
-## 3. 索引与 system
-
-创建主会话（包括 `/new`）和恢复主会话时扫描 global 与当前项目目录。
-`SessionAssembly::render_prompt` 在渲染后的 system 中追加固定英文 `# Memory` 段，与全局用户指令、Skill 段采用同一装配方式。
-段落含优先级、写入准则和按 Global / Project 分组的 `name / type / updated / description` 索引，不放正文。
-
-预算只计算索引文本（含两组标题和条目行），不包含固定写入准则。超出 `max_index_bytes` 时先淘汰全局条目，
-再淘汰项目条目；同组内按 `updated` 从旧到新淘汰，同日按名字确定顺序。
-保留条目在各组内按日期从新到旧显示。如果预算连两组标题也放不下，省略索引文本，仍保留固定准则。
-
-本次会话打开期间 system 固定；本会话新写入或删除的条目不会立刻重写 system，下一次创建或恢复时重建索引。
-索引在 system 中，不受历史上下文压缩影响。正文由模型按需调用 `memory(op="view", ...)` 读取。
-
-固定英文准则要求模型：
-
-- 保存用户画像和沟通偏好、用户纠正及认可的做法与原因、代码和 git 中推不出的项目事实、外部资源位置。
-- 不保存代码结构与函数位置、git 历史、AGENTS.md 或文档已有内容、本次任务进度和临时状态、调试过程与一次性修复、密钥和凭据、个人敏感信息、未经用户确认的推测。
-- description 用一句话直接写出要点，不使用「提交规范」一类空泛标题。
-- 保存前检查索引两个作用域中的同类条目；修改时按索引所列的作用域和名字保存以覆盖原条目，不在旁边另存一条；删除过时或错误的条目。
-- 条目按主题命名而不按当前取值命名（如 `test-command` 而非 `test-command-make-check`），以便后续变更覆盖同一条目。
-- 项目作用域用于本项目，包括用户针对本项目或仓库给出的规范；全局作用域只用于跨项目的偏好和事实。
-- 用户陈述的规范按原样记录，不因无法核实而省略或改写。
-
-子 Agent 不注册 memory，也不注入该段；即便子定义显式列出 memory，也会从白名单移除。
-父 Agent 应将需要的事实写入委派 prompt。
-
-## 4. 工具、权限与记录
-
-```text
-memory(op, scope, name, type?, description?, content?)
-  op: view | save | delete
-  scope: global | project
+```mermaid
+flowchart LR
+    SCAN[会话新建/恢复时扫描目录] --> IDX[按预算裁剪生成索引]
+    IDX --> SYS[注入 System Prompt 的 # Memory 段]
+    SYS --> LLM[模型根据索引判断相关性]
+    LLM -->|需要详情或更新| TOOL["调用 memory(view / save / delete)"]
 ```
 
-`save` 必须提供 type、description、content；`view` 返回正文，`save` 和 `delete` 返回操作摘要。
-参数错误与文件错误沿用普通工具的 `is_error` 结果，不创建另一套异常协议。
+1. **会话启动扫描与预算裁剪**：创建或恢复主会话时，扫描 `global` 与当前 `project` 目录，生成仅含 `name / type / updated / description` 的索引列表并追加到系统提示词末尾。若超出 `max_index_bytes`（默认 8 KiB），按 `(scope, updated, name)` 升序排列（利用 `"global" < "project"` 字典序），优先从头淘汰最旧的全局条目，其次淘汰最旧的项目条目。
+2. **会话期间前缀固定**：本会话运行期间新增或修改记忆不会动态改写当前会话的 `system` 提示词（保持前缀缓存稳定），新索引将在下次新建或恢复会话时生效。
+3. **子 Agent 隔离**：子 Agent 不注入记忆索引，也不提供 `memory` 工具；父 Agent 需将子任务相关的背景事实直接写入委派提示词。
 
-memory 是普通内置工具，使用独立的 `ToolKind::memory`。Policy 在所有权限模式以及 read_only、planning 下直接放行，
-无需人工或模型审批，也不依赖 MXC 沙箱。`parallel()` 不将 memory 加入只读并行组，三种操作都串行执行。
-`home/memory/` 同时列入控制根受保护分类与沙箱 protected_read/protected_write；read、write、edit、bash
-访问它仍遵守现有控制路径权限策略，memory 的放行不扩展这些工具的权限。
+## 3. 工具语义与权限设计
 
-执行结果携带 `MemoryView`：`op, scope, name, type, updated, description, content`，JSON 的 kind 为 `memory`。
-删除结果中仅 op、scope、name 有值。统一 View 编解码供 tool 记录、恢复、历史投影和 `tool_finished` 协议事件使用。
-TUI 卡片显示操作、作用域、名字、元数据和正文；run 的 text/json 沿用工具进度摘要，jsonl 原样保留事件中的 MemoryView。
+- **内置工具接口**：`memory(op="view" | "save" | "delete", scope="global" | "project", name, ...)`。
+- **权限与调度**：`memory` 属于受控的专用工具类型（`ToolKind::memory`），在所有权限模式（含 `read_only` 与 `plan`）下均直接放行、无需审批，且始终串行执行。
+- **控制面路径保护**：`home/memory/` 目录本身属于受保护的控制面路径；模型若试图用通用文件工具（`read`/`write`/`edit`/`bash`）直接操作该目录，仍会触发受保护路径拦截。
 
-## 5. 用户管理
+## 4. 用户管理
 
-界面流程位于 `ui/overlay/memory_browser.hpp` / `private/ui/overlay/memory_browser.cpp` 的 `MemoryBrowser`。
-Shell 注入共享 `Panel&`、带成功/错误回调的 RPC、toast 与终端列数读取；RPC 继续经 Shell 的
-CallbackGate 在 UI 线程交付，不增加独立寿命机制。命令注册调用 `MemoryBrowser::open()`。
-
-`/memory` 先按 Global / Project 两组列出 name、description、type、updated；Enter 查看完整元数据与正文，
-详情面板支持上下滚动，选择 Delete this memory 删除，成功后重新扫描列表；Back to memories 返回列表。
-这些操作不调用模型，当前 system 不随面板操作变化。
-
-| RPC | 参数 | 结果 |
-| --- | --- | --- |
-| `memory.list` | `{}` | `entries: [{scope, name, type, updated, description}]` |
-| `memory.view` | `{scope, name}` | `view: MemoryView`，op 为 view，含正文 |
-| `memory.delete` | `{scope, name}` | `view: MemoryView`，op 为 delete |
-
-后端经 QueryGateway 在查询线程执行，app 将存储结果映射为中立展示值，backend 不依赖 tools 实现。
-这些方法作用于本后端 Home 和项目，不切换或恢复会话。字段缺失或类型错误走 invalid_params，存储失败走 query_failed。
-
-## 6. 验证与范围
-
-已通过构建与真实运行验收：手工条目解析与非法条目日志、save/view/delete、planning 无审批、普通工具访问记忆目录的受保护审批、
-恢复后索引重建、索引预算截断、禁用配置、子 Agent 隔离，以及 `/memory` 面板的查看与删除。
-效果评估见 [记忆效果评估报告](../report/memory-evaluation.md)：记忆效果高度依赖模型对写入与使用时机的判断。
-本实现不包括后台抽取整合、历史会话检索、每轮检索、向量库或团队共享。
+用户可通过交互界面的 `/memory` 面板直接浏览和删除记忆（不消耗模型调用，也不改变当前已打开会话的系统提示词）：
+- 前端通过 `memory.list`、`memory.view`、`memory.delete` 三个只读/管理 RPC 与后端查询线程交互。
+- 即便在配置中将 `memory.enabled` 设为 `false`（关闭模型侧的索引注入与工具注册），用户管理面板依然可用。

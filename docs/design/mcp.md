@@ -1,202 +1,45 @@
-# mcp：MCP 客户端
+# mcp：MCP 客户端与传输层
 
-连接外部 MCP server、发现并调用工具。头文件位于 `src/public/mcp/`，实现位于 `src/private/mcp/`，
-构建为静态库 `dagent_mcp`，命名空间为 `dagent::mcp`。依赖 base、exec 的 `MxcChild` 和 net 的
-`HttpClient`、`SseParser`。
+`mcp` 模块（`dagent_mcp`）实现 Model Context Protocol 客户端，负责连接外部 MCP Server、协商协议版本、发现工具列表并执行工具调用。
 
-`mcp/detail.hpp` 仅供模块内部共享 JSON-RPC 组装、协议元数据、工具命名和 HTTP 参数头处理。
-`mcp/transport.hpp` 定义内部 `Response`、`ConnectionState`、`StdioTransport` 和 `HttpTransport`，
-同样不属于 Client 对外接口。
+**职责边界**：
+- 一个 `mcp::Client` 实例对应一个 MCP Server 连接。
+- 后台并发连接管理、主会话步骤边界的等待/重连、以及将 MCP 工具包装进核心工具注册表由上层 `tools::McpHub` 负责（见 [agent §8](agent.md#8-mcp-生命周期) 与 [tools](tools.md)）。
+- 当前仅实现 `tools` 能力（`tools/list` 与 `tools/call`），不实现 resources、prompts、sampling 或服务端推送通知。
 
-## 1. 接口与生命周期
+## 1. 协议版本协商与握手
 
-| 接口 | 行为 |
-| --- | --- |
-| `Client::connect` | 启动传输、确认协议版本、拉取一次 `tools/list`；失败时清理连接并抛 `McpError` |
-| `tools()` | 返回连接时发现的工具，连接存续期间保持不变 |
-| `protocol_version()` | 返回本连接协商确定的协议版本；连接时也写入 info 日志与 MCP 状态输出的 `protocol_version` |
-| `call` | 用 `qualified_name` 调用工具；`isError` 属于正常工具结果 |
+连接建立时采用「现代无状态发现优先，旧版初始化握手回退」的策略：
 
-一个 Client 对应一个 server。`call` 在调用线程阻塞；stdio 请求共享子进程并按 id
-分发响应，HTTP 请求各自创建连接。
+```mermaid
+flowchart TD
+    START[Client::connect] --> DISC["发送 server/discover (优先 2026-07-28)"]
+    DISC -->|成功且支持 2026-07-28| LIST[分页拉取 tools/list]
+    DISC -->|返回 -32601 或 HTTP 404/405| INIT["回退发送 initialize (协商 2025-11-25 / 06-18 / 03-26)"]
+    INIT -->|成功| NOTIFY[发送 notifications/initialized]
+    NOTIFY --> LIST
+    DISC -->|鉴权/5xx/超时等其他错误| FAIL[连接失败 McpError]
+    INIT -->|版本不支持或失败| FAIL
+```
 
-`tools::McpHub` 在后台连接 server，主会话在模型请求之间等待连接并合并工具。工具结果表明连接断开时，
-Hub 自动重连一次。子会话使用创建时的工具快照，工具项持有 Client 的共享所有权。
-合并时在 Hub 锁内接收连接并保留局部强引用，锁外注册工具只使用该引用；并发撤权可使连接失效，
-但不会使注册过程访问已被清空的指针。
+- **现代协议（`2026-07-28`）**：无会话状态，每个请求在 `params._meta` 中携带协议版本与客户端信息；HTTP 传输额外附带 `Mcp-Method`、`Mcp-Name` 及按工具 Schema `x-mcp-header` 注解提取的 `Mcp-Param-*` 路由头（若单个工具的 `x-mcp-header` 注解不合规，仅跳过该工具并记录告警，不影响同服务其他工具注册；`tools/list` 分页拉取最多保护 100 页并检测游标死循环）。
+- **旧版协议（`2025-11-25` / `2025-06-18` / `2025-03-26`）**：通过 `initialize` 握手协商版本；HTTP 传输保存服务端返回的可选 `Mcp-Session-Id`，后续请求携带该会话头，连接关闭时发送 `HTTP DELETE` 释放远端会话。
 
-## 2. 协议发现
+## 2. 两种传输方式
 
-优先使用 `2026-07-28`。现代协议每个请求的 `params._meta` 包含：
+### stdio（本地沙箱子进程）
+1. **强制显式权限 Profile**：`config/mcp.json` 中的每个 stdio server 必须显式配置 `permissions.{read, write, network}`。缺少权限配置或当前平台无可用沙箱时直接拒绝启动，绝不在宿主环境裸跑 MCP 进程。
+2. **长期受限子进程（`MxcChild`）**：在 MXC 沙箱内启动长生命周期子进程，使用受管环境（`managed` 或独立的 `mcp/<name>` 依赖环境）与每连接私有的临时 `HOME`/`TMPDIR`。
+3. **严格网络白名单**：stdio 沙箱的网络仅放行其 `permissions.network` 显式列出的 `host:port`（经回环代理静态匹配），不支持运行中弹窗审批未知域名。
+4. **全双工消息分发**：stdin/stdout 按行传输 JSON-RPC；调用线程登记请求 ID 后写入 stdin，独立读取线程按响应 ID 唤醒对应等待方。超时或取消时向服务端发送 `notifications/cancelled`。
 
-- `io.modelcontextprotocol/protocolVersion`
-- `io.modelcontextprotocol/clientInfo`
-- `io.modelcontextprotocol/clientCapabilities`
+### Streamable HTTP（远程服务）
+1. **每请求独立连接**：每次 RPC 调用使用独立的 `HttpClient` 发送 POST 请求，支持整包 JSON 或 SSE 流式响应（收到匹配请求 ID 的响应后立即关闭流）。
+2. **安全约束**：连接目标必须同时在 server 的 `permissions.network` 中显式列出；严禁跟随 HTTP 重定向（`3xx` 直接报错），防止鉴权头泄露到未知主机。
+3. **边界标识**：审计与 UI 将本地沙箱运行的 stdio 标记为 `mxc`，将远程 HTTP 服务标记为 `remote`。
 
-`connect` 先请求 `server/discover`，要求成功结果中的 `supportedVersions` 包含当前版本。
-仅当发现请求返回 JSON-RPC `-32601`（Method not found），或 HTTP 404/405 时，回退到旧版
-`initialize`。鉴权失败、HTTP 5xx、超时、传输错误、成功结果缺少当前版本及其他协议错误保持原有失败行为。
+## 3. 工具命名、错误分类与 McpHub 生命周期
 
-旧版握手发送 `protocolVersion: "2025-11-25"`、空 `capabilities` 和现有 `clientInfo`；接受服务端协商的
-`2025-11-25`、`2025-06-18` 或 `2025-03-26`，其他版本以包含版本值的 `handshake` 错误拒绝。
-随后发送不带请求 id 的 `notifications/initialized`，再按原有分页规则获取 `tools/list`。
-旧版请求不注入上面的三个现代 `_meta` 字段，保留既有参数及共享元数据（如 progress token）；
-stdio 超时和取消仍发送 `notifications/cancelled`。协商由共享客户端实现，沙箱内的 stdio server 直接与客户端
-执行这套握手，执行层不另加启动握手。
-
-stdio 的发现和初始化各使用 `probe_timeout`，HTTP 各使用 `connect_timeout`；超时直接失败，不触发回退。
-
-stdio server 冷启动时间包含在发现超时内，调用方需要按真实启动耗时配置 `probe_timeout`。
-没有沙箱运行时时 stdio server 不在宿主直接启动；无沙箱后端的平台报
-`stdio servers require a sandbox backend; this platform has none`，其余情况报运行时未就绪。
-
-### 兼容矩阵与内部结构
-
-| 传输 | 修订 | 握手 | 请求 `_meta` | HTTP 会话 | `MCP-Protocol-Version` | HTTP 路由头 |
-| --- | --- | --- | --- | --- | --- | --- |
-| stdio（MXC 沙箱） | `2026-07-28` | `server/discover` | 注入 | — | — | — |
-| stdio（MXC 沙箱） | `2025-11-25` | `initialize` → `notifications/initialized` | 不注入 | — | — | — |
-| stdio（MXC 沙箱） | `2025-06-18` | `initialize` → `notifications/initialized` | 不注入 | — | — | — |
-| stdio（MXC 沙箱） | `2025-03-26` | `initialize` → `notifications/initialized` | 不注入 | — | — | — |
-| Streamable HTTP | `2026-07-28` | `server/discover` | 注入 | 无 | 发送 | `Mcp-Method`、`Mcp-Name`、`Mcp-Param-*` |
-| Streamable HTTP | `2025-11-25` | `initialize` → `notifications/initialized` | 不注入 | 可选 session id，关闭时 DELETE | 发送 | 无 |
-| Streamable HTTP | `2025-06-18` | `initialize` → `notifications/initialized` | 不注入 | 可选 session id，关闭时 DELETE | 发送 | 无 |
-| Streamable HTTP | `2025-03-26` | `initialize` → `notifications/initialized` | 不注入 | 可选 session id，关闭时 DELETE | 不发送 | 无 |
-
-矩阵描述协商完成后的行为；旧版初始化请求仍提议首选 `2025-11-25` 并按该修订组装请求，
-收到协商结果后，初始化完成通知、工具请求和 DELETE 均使用选定修订。
-`Mcp-Name` 和 `Mcp-Param-*` 仅用于工具调用，后者还取决于 schema 注解。
-
-协议类型均留在 `client.cpp` 内部：`Revision` / `kRevisions` 集中声明版本、dialect、握手方法、
-请求元数据、HTTP 会话、版本头和路由头能力，同一 dialect 内按表中顺序选择首选修订。
-`Dialect` 负责请求参数和请求头装饰，并提供握手、响应头捕获、会话过期和关闭接口；
-`StatelessDialect` 实现发现握手，`SessionDialect` 实现初始化握手并持有 session id。
-`Impl::negotiate` 按无状态、会话型顺序尝试；只有明确不支持握手的返回值才进入下一 dialect，
-其他失败直接传播。选定修订在 dialect 中保存，成功后记录版本并写日志。
-stdio 的受限启动、收发、pending 请求匹配、超时及取消由 `stdio_transport.cpp` 中的 `StdioTransport` 负责；
-HTTP 请求构造、SSE 解析、计时/取消、响应匹配与解包及 DELETE 位于 `http_transport.cpp` 中的 `HttpTransport`。
-请求编号、参数装饰、Dialect、协议版本、工具目录、参数头映射及最终错误分类留在 Impl。
-Impl 持有共享 `ConnectionState`，传输借用它及不可变的配置/选项，不持有 Impl、不参与协议协商或重连。
-普通请求的参数由 Dialect 装饰后交给传输，通知仍不作参数装饰。
-客户端及两种传输统一直接使用 `base::logger("mcp")`。
-
-新增采用既有握手模型的修订时，在 `kRevisions` 中按偏好增加一条能力记录即可；版本匹配、
-元数据和 HTTP 头均读取该记录。只有握手模型改变时才增加 dialect 实现，并加入协商偏好顺序。
-
-## 3. 传输
-
-### stdio
-
-连接定义来自 `home/config/mcp.json` 的 `mcpServers`。默认 `environment: managed` 使用托管工具和干净环境；
-`mcp/<name>` 使用 runtime sync 准备的独立依赖；显式 `project` 使用项目搜索路径上的宿主工具。
-工具准备、锁文件和版本生命周期见 [toolchain](toolchain.md)。
-
-stdio server 必须携带受信任配置里的显式权限 profile（`permissions.read/write/network`）；缺少 profile
-时不会启动，不允许"先运行、再在 tools/call 时请求批准"。装配层（`app/bootstrap.cpp`）用 profile 和已解析的
-`MxcRuntime` 填写 `StdioSandbox`；没有可用运行时时记录未启动原因，不在宿主直接启动。`StdioTransport` 用
-`exec::MxcChild` 在 MXC 沙箱内启动 server，每个连接一个长期受限子进程。连接可能由短命线程发起，而 bubblewrap 的
-`--die-with-parent` 跟随创建它的线程，所以 `mxc_spawn_json` 由 `MxcChild` 自己的 stdout 读取线程调用，
-发现完成、连接线程退出后 server 仍然存活（见 [exec](exec.md#长期受限子进程mxcchild)）：
-
-| 方面 | 行为 |
-| --- | --- |
-| 命令 | `command` 与 `args` 逐个 `shell_quote` 后拼成脚本，交给托管 bash（`--noprofile --norc -c`）执行 |
-| cwd | managed 与 `mcp/<name>` 为所选环境的根目录（环境可读列表的最后一项：managed 为 `runtime/homes/managed`，`mcp/<name>` 为该环境的代际目录）；`project` 为工作目录 |
-| 可读 | profile 的 `read`、所选环境的可读目录（各包目录与环境根），`project` 另加工作目录 |
-| 可写 | profile 的 `write`，模式为 `workspace_write` |
-| 受保护 | Home 的 `config/`、`data/`、`logs/`、`run/`、`memory/` 同时作为 `protected_read` 与 `protected_write`；敏感名称保护开启 |
-| 环境 | 不继承宿主环境：exec 默认项、`process.environment`（managed 环境变量；`project` 时清空）、配置层合并好的所选环境变量与 server `env`（server 的值在后），`project` 另设 `PATH=project_search_path()`；最后 HOME、XDG、TMPDIR 及 uv/npm 缓存变量指向每连接私有的 `/tmp/dagent-home-XXXXXX` |
-| 网络 | profile 有 `network` 目标时请求带 `exec::allowlist_gate(targets)`：命中 `host` 或 `host:port` 才经本连接的回环代理放行，其余一律拒绝，没有运行中审批；没有目标时完全无网络 |
-
-私有 HOME 经 `base::create_unique_directory` 在 `base::default_temporary_directory`（POSIX 固定 `/tmp`，不读取宿主 TMPDIR）下创建，
-连接关闭或启动失败时在子进程结束后删除。启动失败（库调用或策略错误）抛 `McpError{spawn}`，消息带 server 名与 MXC 的原因。
-新旧连接与 lease 在权限降级或切换时被显式作废（`McpHub::revoke`），旧 `Client` 的后续请求直接返回 `disconnected`。
-
-stdout 每行一条 JSON-RPC 消息；server 自身的 stderr 逐行写入 `base::logger("mcp")`，执行层没有握手帧。
-调用线程登记请求 id 后发送消息，读取线程按响应 id 唤醒等待者。超时、取消与子进程退出都会
-清除等待项；迟到响应直接丢弃。客户端不处理 server 主动请求或通知。子进程退出时 `on_exit` 记录
-`server exited (code=N)` 作为断连原因；被 `terminate` 杀掉的进程由 MXC 报告退出码 -1。
-发送和关闭时移走 `MxcChild` 使用同一把锁，关闭在释放锁后终止子进程并等待读取线程退出，避免回调重新加锁时死锁。
-这把锁位于 Impl 持有的 `ConnectionState`；stdio 的 pending 登记、发送、退出通知和关闭均使用它。
-Impl 在销毁传输前调用 `StdioTransport::shutdown`：锁内标记关闭、移走 `MxcChild`、失败未完成的 pending，
-锁外唤醒等待者，再经 `CloseProtocol` 回调执行原 Dialect 关闭，随后 terminate/join 并清理私有 HOME。
-启动失败也沿用这条清理路径，传输及其借用的连接状态在所有进程回调结束前保持存活。
-Hub 处理连接失败时，除向前端发送 notice 外，也将具体失败原因写入后端 warning 日志。
-
-### Streamable HTTP
-
-每次调用独占 `HttpClient`，并发调用互不排队。连接超时、响应体上限和 TLS 校验来自 `Options::http`；
-总时长由调用的 `timeout` 参数控制，`http.timeout` 不生效。HTTP 连接不跨调用复用。
-
-Impl 先构造 JSON-RPC 消息，再同步调用 `HttpTransport::exchange`。传输在创建 HttpClient 与请求对象后
-调用 `HeaderFactory` 获取协议请求头，在响应头回调中记录 HTTP 状态后调用 `HeaderObserver`，
-由 Dialect 当场采集 session id；两个回调仅在本次 exchange 内使用，不保存为成员。
-HttpClient、计时器、stop relay、SSE parser、body 和响应匹配状态仍是每次请求的局部对象。
-正常返回分支仍按非 2xx、通知、正文解析与匹配结果处理；HttpError 分支依次检查已匹配响应、
-调用方取消、总时限、body 上限和底层错误种类。HTTP 取消不发送 `notifications/cancelled`。
-
-请求头包含 `Accept: application/json, text/event-stream`；除 `2025-03-26` 外，
-还包含 `MCP-Protocol-Version: <协商版本>`（该头自 `2025-06-18` 引入）。
-现代协议额外发送 `Mcp-Method`。整包 JSON 与 SSE 响应均可处理；收到对应 id 的 SSE 响应后立即关闭流。
-
-旧版 HTTP 保存 `initialize` 响应中的可选 `Mcp-Session-Id`，后续请求（包括初始化完成通知）携带该会话头
-及该修订支持的版本头。响应头在读取正文前保存，SSE 提前关闭也不会丢失 session id；没有会话头的服务端仍可使用。
-持有会话时收到 HTTP 404 会使 Client 断开，后续调用拒绝，由 Hub 沿用现有重连流程。
-关闭持有会话的连接时向原 endpoint 发送带会话头及该修订支持的版本头的 HTTP DELETE，最长等待 5 秒；
-服务端已清理会话（404）或不支持删除（405）不影响本地关闭。现代协议不创建或删除 HTTP 会话。
-关闭时先在连接状态锁内标记 closing/disconnected，再在锁外经 `CloseProtocol` 调用 Dialect 关闭；
-`SessionDialect::close` 经 Impl 直接调用 `HttpTransport::close_session`，DELETE 不经过普通 exchange 的关闭检查。
-
-现代协议的 `tools/call` 额外发送 `Mcp-Name`，并按照工具 schema 的 `x-mcp-header` 注解生成 `Mcp-Param-*`。
-非可见 ASCII、首尾空白或哨兵形式的头值使用 `=?base64?…?=` 编码。integer 参数必须在 ±(2^53−1)
-范围内且可精确表示，`42.0` 也可转换。
-
-`x-mcp-header` 只能位于从根开始的 `properties` 链上，参数类型限于 string、integer、boolean。
-头名必须合法且不区分大小写地唯一。不合规工具被剔除并记录警告，不影响同一 server 的其他工具。
-旧版协议不校验此注解，也不生成 `Mcp-Method`、`Mcp-Name` 或 `Mcp-Param-*` 头。
-
-## 4. 超时、取消与错误
-
-| 情况 | stdio | HTTP |
-| --- | --- | --- |
-| 超时 | 抛 `timeout`，发送 `notifications/cancelled` | 抛 `timeout`，关闭响应流 |
-| `stop_token` 取消 | 抛 `cancelled`，发送取消通知 | 抛 `cancelled`，关闭响应流 |
-| 断连 | 子进程退出后等待中的调用及后续调用抛 `disconnected` | 连接失败或中断抛 `disconnected` |
-
-超时、取消后 Client 可继续使用；stdio 子进程退出后需要重新连接。
-
-| `McpError::Kind` | 含义 |
-| --- | --- |
-| `spawn` | stdio 子进程启动失败 |
-| `handshake` | 协议发现失败、版本不受支持，或 HTTP 401/403 |
-| `timeout` | 等待响应超时 |
-| `cancelled` | 调用方停止 |
-| `rpc` | 工具发现或调用返回 JSON-RPC error |
-| `protocol` | 消息不符合协议、未知工具、不支持的结果或非 JSON-RPC 的其他 4xx |
-| `disconnected` | 子进程退出、HTTP 连接失败或中断、HTTP 5xx、旧版 HTTP 会话过期（404） |
-
-## 5. 工具与结果
-
-工具名使用 `mcp__<server>__<tool>`，其中非 `[A-Za-z0-9_-]` 字符替换为 `_`。超过 64 字符或同一
-server 内清理后重名的工具被跳过。跨 server 的名字冲突由 app 在加载配置时检查。
-
-`tools/list` 按 `nextCursor` 分页，游标不变或达到分页上限时停止并记录警告。
-`CallResult::content` 保留内容块；`structured` 保存 `structuredContent`；`is_error` 对应 `isError`。
-`resultType: "input_required"` 需要 MRTR，本模块不支持并抛 `protocol`。
-
-## 6. 范围与配置
-
-仅实现 tools，不实现 resources、prompts、sampling、elicitation、MRTR、HTTP OAuth 或
-`subscriptions/listen`。工具列表在连接时发现，重新连接时重新获取；没有服务端通知刷新
-和周期刷新。鉴权头通过 `ServerConfig::headers` 提供。
-不支持 `2024-11-05` 的旧 HTTP+SSE 传输。
-
-app 负责解析 `home/config/mcp.json` 的 `mcpServers` 并展开 `${VAR}`，包括每个 server 的
-`permissions` profile。`mcp.connect_timeout_ms` 和 `mcp.probe_timeout_ms` 控制发现和调用启动超时，
-进程与 HTTP 选项沿用对应配置段；stdio server 的冷启动时间计入 `probe_timeout`。
-`clientInfo.version` 使用根 CMake 项目的 `DAGENT_VERSION` 编译宏。
-
-HTTP server 的连接目标只来自受信任配置的 `url`，且要求 profile 显式列出网络目标；客户端不跟随重定向
-（3xx 按协议错误处理），认证头不会转发到任何未批准端点。审计与界面把 HTTP server 标为 `remote`，
-不把本机沙箱保证扩大到远端服务；本地 stdio server 标为 `mxc`。这个值写入 `agent::McpState::boundary` 与 MCP 工具意图的
-`external_boundary`（进而成为该次调用 Grant 的 backend），协议转换只输出 `mxc`、`remote` 或 `unknown`。
+- **限定工具名**：发现的工具统一命名为 `mcp__<server>__<tool>`（非法字符替换为 `_`，超过 64 字符或重名项自动跳过）。
+- **错误与业务结果区分**：工具返回 `isError: true` 属于正常的业务执行结果，原样交给模型；底层故障则抛出分类的 `McpError`（`spawn` / `handshake` / `timeout` / `cancelled` / `rpc` / `protocol` / `disconnected`）。
+- **`McpHub` 编排闭环**：后端启动时由独立线程并发发起所有 Server 连接；主会话在每步推理前（`wait_connecting`）等待正在连接或重连的实例就绪（受 `connect_timeout` 限制），避免步骤间工具列表抖动；运行中遇到 `disconnected` 时在下一步边界自动执行且仅执行一次重连；当会话权限被撤销时立即调用 `shutdown()` 终止连接并阻断在途调用。

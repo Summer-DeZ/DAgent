@@ -1,326 +1,61 @@
-# tools：工具层
+# tools：工具层与视图投影
 
-把外围模块包装成模型能调用的工具：定义名字、说明和参数 Schema，解析并校验模型给的参数，调用外围模块，
-把结果整理成两份——**给模型的文本**和**给界面与会话的结构化数据（View）**。头文件在 `src/public/tools/`，
-实现在 `src/private/tools/`，构建为静态库 `tools`（不带 `dagent_` 前缀），命名空间 `dagent::tools`。
-依赖 agent（只用中立契约：`ToolSpec`、`PreparedTool`、`PreparedIntent`、`ExecutionGrant`、`ToolResult`、`ToolSession`）、
-base、exec、workspace、mcp、web，私有链接 yaml-cpp 解析记忆 frontmatter。核心不依赖 tools：后端装配把 `tools::ToolSession` 作为核心端口的实现交给 Session。
+`tools` 模块将底层能力（`workspace`、`exec`、`web`、`mcp`、`memory`）封装为面向大模型的标准工具：定义工具 Schema、校验参数、提取资源操作意图，并将执行结果拆分为**给模型的精简文本**与**给界面/历史记录的结构化视图（`View`）**。
 
-分工的判断标准和外围相反：这里放「面向模型的语义」。read 要不要带行号、edit 怎样匹配、bash 的输出怎样
-呈现给模型，都在这一层；「执行一条命令、截断输出」仍然在 exec。
+**职责边界**：
+- **只声明意图，不做权限决策**：工具在准备阶段生成 `PreparedIntent`（要读/写哪个路径、执行什么命令），允许、询问还是拒绝由核心 `Policy` 决定。
+- **不负责并发调度与历史管理**：工具串并行分组、调用次数上限与消息回填由 `agent` 核心负责。
+- **不抛异常出边界**：参数错误、文件变更冲突、命令超时或环境缺失均捕获并转化为带 `is_error = true` 的 `ToolResult` 文本，让模型自行感知并修正，不中断整轮对话。
 
-**不做**：
+## 1. 关键流程：两阶段准备与预览授权
 
-- 权限决策。工具只**陈述**自己打算做什么（`PreparedIntent`），允许、询问还是拒绝由核心决定。
-- 调度。哪些调用并行、调用上限、失败后是否继续，由核心决定。
-- 消息历史。结果怎样放进 `agent::Message`、要不要压缩，由核心决定。
-- 控制动作。todo / ask / exit_plan / task / skill 的解析与执行在核心（见 [agent §7](agent.md#控制动作askexit_plantodotask) 和 [skills](skills.md)）。
+为兼顾安全性（未获读授权前绝不读取敏感文件内容）与可审阅性（写审批弹窗需要展示准确的 Unified Diff），文件修改类工具采用**两阶段准备**流程：
 
-这些职责的实际接入见 [agent：运行时](agent.md)，展示数据的显示见 [ui](ui.md#5-对话投影)。
-
-`tools/detail.hpp` 放的是各工具实现文件共用的代码（参数解析、路径解析、文本拼装、各工具的工厂函数），
-外部不要 include。
-
----
-
-## 1. 和核心的边界
-
-```
-模型给出 ToolCall{id, name, arguments}
-  │
-  ▼ ActionCatalog：控制动作由核心解析；普通工具交给 ToolSession
-  ▼ registry.find(name)            找不到 → 核心自己构造未知工具结果
-  ▼ tool.prepare(arguments, ctx)  解析参数、路径元数据与命令；失败 → is_error 的 ToolResult
-  │                                成功 → PreparedTool（固定参数与资源意图）
-  ▼ preview_request()             需要原文件内容时声明读意图
-  ▼ 核心批准读取 → prepare_preview(read_grant) → diff 与写入意图
-  ▼ 核心：按完整 PreparedIntent 做权限决策     拒绝 → 核心构造拒绝结果
-  ▼ prepared->execute(grant, on_output, stop)
-  ▼ ToolResult{model_text → 模型, display → 界面/记录, signals → 执行信号}
+```mermaid
+sequenceDiagram
+    participant D as ActionDispatcher (核心)
+    participant T as PreparedTool (tools)
+    participant P as Policy / Approver (核心)
+    D->>T: 1. prepare(arguments)
+    Note over T: 校验参数，固定文件句柄与初始 Stamp，声明读/写意图
+    alt 需要读取原文件生成预览 (如 edit 或覆盖已有文件的 write)
+        T-->>D: preview_request() 声明读取意图
+        D->>P: 检查读权限（必要时先弹窗审批读取）
+        P-->>D: 签发 Read Grant
+        D->>T: 2. prepare_preview(read_grant)
+        Note over T: 读取原文件，校验 FileTracker 与 Stamp，计算替换结果与 Unified Diff
+    end
+    D->>P: 3. 携带完整 Diff 与写意图请求写权限审批
+    P-->>D: 签发 Write Grant
+    D->>T: 4. execute(write_grant)
+    Note over T: 原子写入临时文件并替换目标，更新 FileTracker
+    T-->>D: 返回 ToolResult (模型文本 + 结构化 View)
 ```
 
-**准备、授权后预览、执行**：`prepare` 只解析参数、检查路径元数据并固定文件引用，不读取待审批内容。
-edit 和覆盖已有文件的 write 通过 `preview_request()` 声明读取需求；Dispatcher 先取得读授权，再调用
-`prepare_preview(read_grant)` 读取原文、匹配替换并生成 diff，最后判定写授权并执行。
-因此敏感/外部文件可能先审批读取、再审批写入；不能为了提前生成预览跳过读授权。
-新建文件的预览不读取旧内容。调用身份由 Dispatcher 槽位持有，工具执行时仍检查 grant 和文件引用。
+### 防覆盖保护（`FileTracker`）
+会话级 `Context` 维护模型在本会话内已读取或修改过的文件指纹表（`FileTracker`）：
+- **先读后改与指纹自更新**：对已存在的文件调用 `edit` 或 `write` 前，若 `FileTracker` 中无该文件记录，直接报错要求模型先调用 `read`；写入成功后原子将新文件的 `Stamp` 写回 `FileTracker`，支持对同一文件连续 `edit` 而无需重复读取。
+- **外部修改检测（Stale）**：若文件自上次读取/修改后被外部进程改动（`Stamp` 不一致），拒绝写入并提示模型重新读取。会话恢复后清空 `FileTracker`，强制模型重新确认文件当前状态。
 
-后端为每个会话装配 `Context(root, control_root, tools, files, search, process)`、`Registry` 和
-`ToolSession`。普通工具用 `add_builtin` 注册，MCP 用 `add_mcp` 注册；真实调度入口见
-[Dispatcher](../../src/private/agent/loop/dispatch.cpp)，不应直接绕过预览授权调用 execute。
+## 2. 内置工具与 MCP 工具设计
 
-| 类型 | 作用 |
+| 工具 | 核心设计与安全机制 |
 | --- | --- |
-| `Options` | `config.json` 的 `tools` / `web` 段及装配注入的运行时：给模型的文本上限、read 默认行数与单行上限、grep/glob 数量上限、bash 最长超时、MCP 调用超时 |
-| `Spec` = `agent::ToolSpec` | 名字、说明、参数 JSON Schema；工具层与核心共用同一个类型，不再往返复制 |
-| `agent::PreparedIntent` | 工具打算做什么：`ToolKind`（read / write / exec / external / network / memory）、`ResourceIntent`（规范化路径、读写方向、工作区内外）、bash 的 `CommandIntent`（原命令、分析版本、语法状态、dynamic、known_readonly、dangerous、路径/网络影响）、diff 预览和摘要 |
-| `Grant` = `agent::ExecutionGrant` | 核心的决定：沙箱 profile、backend、来源、读写/保护范围、通信开关与私有临时空间 |
-| `Result` = `agent::ToolResult` | `model_text` 给模型、`is_error`、`interrupted`、`display`（View）、`signals`（如 `McpDisconnected`） |
-| `Context` | 会话级状态，每个会话一个，所有调用共用，线程安全；持有工作区根、各模块的 Options、FileTracker 和按字节预算淘汰的网页缓存 |
-| `Registry` | 名字 → 工具；`specs()` 按注册顺序返回，`retain(names)` 收窄（子 Agent 工具集），`remove_prefix` 移除失效的 MCP 工具 |
-| `ToolSession` | 核心 `agent::ToolSession` 端口的实现：Registry + Context |
+| `read` | 按行分页读取文本（自动剥离 CRLF/BOM，超长单行按 UTF-8 边界截断并预留底栏范围提示余量），目录路径直接列出子项；文件不存在时通过模糊匹配推荐最多 3 个相近路径 |
+| `edit` | 要求 `old_string` 在文件内**精确且唯一匹配**（除非开启 `replace_all`）；失败时自动诊断「是否误带了行号前缀」或「缩进不一致」并给出行号提示 |
+| `write` | 新建文件或覆盖已读文件；新建采用独占重命名防止覆盖并发创建的文件，覆盖已有文件时保留原换行符、BOM 与权限 |
+| `bash` | 每次调用均为独立新进程（支持 `environment` 选择 `managed`、`project` 或 `skills/<name>` 环境）；准备阶段调用 `exec::analyze` 静态分析语法、只读性、危险命令与脚本目标（若目标脚本在本会话内修改过，自动提取最多 300 行相对 Git HEAD 的 Diff 证据 `script_evidence` 供 d3/人工复审）；受限模式下映射为 MXC 沙箱与回环网络代理；结果返回前清洗 ANSI 控制序列并预留状态行空间后按 UTF-8 边界居中截断（`BashView` 保留未居中截断输出） |
+| `grep` / `glob` | 强制在只读 MXC 沙箱内调用托管 `rg`；采用双重过滤防线：先向沙箱传递 `read_exceptions`，再对 `rg` 产出的每条匹配结果逐一调用 `can_read` 剔除受保护/敏感路径；`glob` 按修改时间倒序排列 |
+| `web_search` / `web_fetch` | 强制在只读 MXC 沙箱内经回环代理执行（见 [web](web.md)），支持会话内 LRU 页面缓存与 UTF-8 字节分页 |
+| `memory` | 读写 `global` 或 `project` 作用域的 Markdown 记忆条目（见 [memory](memory.md)），所有模式下免审批串行执行 |
+| `mcp__*` | 由 `McpHub` 将外部 MCP 工具包装为标准 `Tool`，持有 `mcp::Client` 共享引用；检测到连接断开时在结果中附带 `McpDisconnected` 信号交由核心在下一步边界自动重连 |
 
-完整的 shell 分析树（`exec::Analysis`）、MCP Client 与 workspace 解析结果留在具体 PreparedTool 内部；核心只看到上面的中立摘要。
-dangerous / known_readonly 仍由 exec 的原分析函数计算，核心不重写白名单。
+*(注：`todo`、`ask`、`exit_plan`、`task`、`skill` 在模型视角同样表现为工具，但由 `agent` 核心作为控制动作直接解析执行。)*
 
-- **准备失败返回工具错误**：`ToolSession::prepare` 统一捕获 `tool->prepare` 抛出的标准及非标准异常，
-  包括路径解析和 PreparedTool 构造失败，通过 `detail::error_result` 修复 UTF-8 并返回 `is_error` 结果，
-  交给模型处理，不中断整个回合。Dispatcher 经 ActionCatalog 重新准备普通工具时也经过此边界。
-- **`execute` 不抛异常**：核心对每个调用只需要处理一种返回值。取消返回 `interrupted = true`，`text` 里是已有的
-  部分输出；环境问题（rg 没装、沙箱准备失败、MCP 断连）模型修不了，但也应该知道，同样作为 `is_error` 的
-  结果返回，同时记 warn 日志。`PreparedTool::execute` 统一包了一层 catch，各工具实现的是 `do_execute`。
-- **所有给模型的文本都是合法 UTF-8**：nlohmann 在 `dump()` 遇到非法 UTF-8 会抛 `type_error.316`，整条消息
-  就发不出去。rg 输出、bash 输出、MCP 文本和公共工具错误出口都经过 `base::to_valid_utf8`。
-- **Spec 的顺序稳定**：DeepSeek 等网关按前缀缓存 prompt，工具列表顺序一变缓存就失效。`Registry::add` 遇到
-  同名工具时原位替换；`remove_prefix("mcp__<server>__")` 用于移除断开或失败的 MCP server 工具。
-- 工具说明直接写在各 `.cpp` 的原始字符串里，和 Schema 放在一起。
+## 3. 界面数据：View
 
----
+每个工具执行完成后，`ToolResult` 同时产出面向模型的精简文本（受 `max_result_bytes` 限制）和面向 UI 与持久化记录的强类型 `View`（序列化为带 `"kind"` 标签的 JSON）：
 
-## 2. 参数与路径
-
-- `arguments` 是坏 JSON 时返回 `is_error`，带 nlohmann 的报错位置；空串按 `{}` 处理；不是对象也报错。
-- 必填字段缺失、类型错 → `is_error`，指出字段名。**宽容一种常见错误**：整数和布尔字段收到字符串 `"10"`、
-  `"true"` 时照常接受；未知字段忽略。
-- 所有路径参数：相对路径基于 `ctx.root()`，开头的 `~/` 展开成 `$HOME`，统一经 `workspace::resolve`。给模型
-  和界面看的路径，在工作区内显示相对路径，在工作区外显示绝对路径。
-  `~` 展开使用 `base::home_directory` 返回的独立副本；HOME 未设置或为空时保留原始输入，不改用其他 Home。
-
-### FileTracker
-
-`Context` 记录模型读过/写过的文件 → 当时的 `workspace::Stamp`，edit/write 用它做 stale 检测：
-
-- 按 `resolve` 之后的路径做键：`./a`、`a`、指向同一文件的符号链接都算同一个文件。
-- read（部分读取也算）、edit、write 成功后更新；连续编辑不需要重新 read。
-- 内部加锁：只读调用可能被核心并行执行。
-
----
-
-## 3. 各工具
-
-### memory
-
-参数为 `op(view/save/delete)`、`scope(global/project)`、`name`；save 额外要求 `type`、`description`、`content`。
-`MemoryStore` 根据 Home 与项目根组装路径，按条目解析 Markdown frontmatter，复用 workspace 原子写入；不接受路径参数。
-`add_builtin` 接收可选的记忆存储，禁用配置与子会话不注册工具。Policy 对 `ToolKind::memory` 在所有模式直接放行，
-包括 planning/read_only，三种操作均串行。普通工具访问 `home/memory/` 仍走控制路径保护。
-结果带 `MemoryView`，view 给模型正文，save/delete 给模型操作摘要。配置、索引与写入准则见 [memory](memory.md)。
-
-### read
-
-参数：`path`，`offset`（从 1 开始的行号，默认 1），`limit`（行数，默认 `read_default_lines`）。
-
-- 输出每行 `行号\t内容`，行号不补空格；单行超过 `read_max_line_bytes` 时在字符边界截断并补 `…`。
-- 正文按 `max_result_bytes` 截断，结尾补一行说明：`[文件共 N 行，已显示 a–b 行，用 offset 继续读]`、
-  `[文件共 N 行，已全部显示]`，或 offset 超出末尾的提示；空文件输出 `（空文件）`。含非法 UTF-8（`lossy`）、
-  文件超过 `files.max_read_bytes` 被截断时，各追加一行说明。
-- 二进制：`is_error`，说明大小，不输出内容。不存在：`is_error`，用 `workspace::files` + `fuzzy_rank` 给出
-  至多 3 个相近路径。
-- **目录**：列出直接子项（目录名带 `/`，至多 `glob_max_files` 项，同样按 `max_result_bytes` 截断），省掉单独的
-  ls 工具。
-- CRLF 和 BOM 由 `workspace::read_text` 处理，输出里没有 `\r` 和 BOM。
-- display：`ReadView`——界面只显示「读取 a.cpp 1–200 行」，不显示内容。
-
-### edit
-
-参数：`path`，`old_string`，`new_string`，`replace_all`（默认 false）。
-
-- **必须先 read**：FileTracker 里没有这个文件 → `is_error`「请先用 read 读这个文件再编辑」。
-- **stale**：准备时的 Stamp 与 FileTracker 不一致即失败；授权后的预览和 `FileReference::write(expect=…)`
-  再核对指纹与固定对象，审批期间父目录或目标被替换时要求重新准备。
-- 匹配在 LF 内容上做，`old_string`/`new_string` 先统一成 LF；写回时保留原文件的 eol 和 BOM。
-- **只做精确匹配，并且必须唯一**：0 处 → `is_error`；多处且没开 `replace_all` → `is_error`，列出各处的行号
-  （至多 20 个）。`old_string` 为空、`old_string == new_string`、替换后内容不变 → `is_error`。
-- 失败提示要让模型能自己修好：`old_string` 每行都以「数字 + Tab」开头时，提示不要带 read 输出的行号前缀；
-  忽略行首缩进后能唯一匹配时，指出行号并提示缩进不一致——只提示，不自动应用。
-- **拒绝编辑**：二进制文件；`lossy` 的文件（替换过 U+FFFD 的内容写回去会破坏原字节）；超过 `max_read_bytes`
-  被截断读取的文件（写回会丢掉后面的内容）；编辑后超过 `files.max_write_bytes` 的文件。这些在授权后的
-  `prepare_preview` 中拦下，不会进入写入审批或执行。
-- `prepare_preview` 算好新内容和 `unified_diff`，放进意图的 diff 预览；`execute` 消费写授权并完成原子替换。
-- 成功后给模型：`已编辑 path（+a −b）`，加上每处改动前后各 4 行（带行号），多处时总量按预算截断并说明
-  另有几处未展示。
-- display：`FileChangeView`（`created = false`）。
-
-### write
-
-参数：`path`，`content`。
-
-- 文件已存在：同 edit，必须先 read、做 stale 检查，授权读取预览后保留原文件的 eol 和 BOM；二进制、截断或损坏文本拒绝覆盖。
-  文件不存在：直接创建（父目录自动建），LF、无 BOM。`content` 先统一成 LF。
-- 新建文件以 `RENAME_NOREPLACE` 提交，拒绝覆盖准备后抢先创建的同名文件。
-- 超过 `files.max_write_bytes` → `is_error`（在 prepare 里判断）。
-- 给模型：`Created path.` / `Overwrote path.`，不回显内容；增删统计保存在 View。
-- display：`FileChangeView`。
-
-### bash
-
-参数：`command`，`timeout_ms`（可选，上限 `bash_max_timeout`，不给时用 `process.default_timeout`），
-`environment`（默认 `managed`，可选已准备的依赖环境或 `project`，不暴露 `internal/*`）。
-
-- 执行 `bash -c <command>`，cwd 是 `ctx.root()`，stderr 合并进 stdout，stdin 接 `/dev/null`，
-  `LC_ALL=C.UTF-8`（报错文本不随系统 locale 变化，同时 `ls` 不会把中文文件名转义成八进制）。
-  执行程序继续使用 runtime 的 `exec::Environment::shell`，宿主启动参数经 `base::path_to_utf8` 编码，
-  不由 SHELL 或默认 Bash 发现逻辑替代。project 受限执行通过 `exec::project_search_path` 取得非空宿主 PATH，
-  缺失或空值时使用 `/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin`；
-  project 宿主执行仍清空 `Options::environment`，通过 `base::environment_variable` 读取 PATH，
-  仅缺失时不追加，空值仍显式追加，不使用上述回退。
-- **每次调用都是新进程**：`cd`、`export` 不保留。说明里告诉模型需要换目录就写 `cd dir && …`；后台常驻进程
-  （`server &`）会在主进程退出后被清理，说明里写明不支持。
-- **沙箱**：受限 grant 经 `tools::detail::sandbox_request` 映射为 `exec::MxcRequest`（读写范围、受保护路径、已批准网络目标），
-  由 `exec::run_mxc` 执行；full_access 明确使用宿主 `exec::run`。没有 MXC 运行时或 grant backend 不是 `mxc` 时返回
-  `` restricted execution is unavailable; run `dagent sandbox status` and fix the sandbox runtime ``；受限启动失败返回 `is_error`，没有隐式宿主回退。
-  受限 bash 总在代理模式下运行：运行中的网络请求经本次执行的回环代理和 grant 的权限通道回到 Dispatcher，
-  获批后原命令继续；最终 `BashView.network_targets` 保存实际获准目标。
-- **意图**：prepare 只调用一次 `exec::analyze`，完整 `Analysis` 留在 PreparedTool 内供执行复用，向核心公开
-  `CommandIntent` 摘要（含 known_readonly / dangerous）；策略与审批只看摘要。语法错误在 prepare 返回带字节位置的未执行错误。
-- **给模型的文本**：`strip_ansi` → `to_valid_utf8` → `truncate_middle`，正文预算是 `max_result_bytes` 减去
-  512 字节的余量，**截断之后**再追加状态行，保证状态行不会被切掉、整体仍在预算内：
-  - 退出码非 0 时 `[退出码 N]`，超时 `[超时，已在 Ns 后终止]`，取消 `[已被用户中断]`，
-    启动失败或执行层失败 `[无法执行命令：…]` / `[执行失败：…]`；没有输出时写 `（无输出）`；退出码 0 不写状态行。
-  - 退出码按 shell 的 `$?` 约定：顶层进程被信号终止记为 128+N。MXC 沙箱对受限 shell 的信号终止只能这样回报，
-    宿主执行照同一约定换算，两种后端的报告一致。超时只写超时行，不附带被终止时的退出码；`BashView.exit_code` 同样为空。
-  - 普通非零退出只按退出码/超时报告；不会仅凭 stderr 关键词声称是沙箱拒绝或自动请求扩权。
-- `is_error`：退出码非 0、超时、无法执行。
-- `on_output` 把原始输出块交给核心，核心 `post` 给界面。
-- display：`BashView` 额外保存实际 backend、grant source 与 analysis version；`output` 是 exec 按 `process.max_output_bytes` 截断后的输出，不是给模型的那份，
-  存进会话时直接进入 SQLite payload BLOB。
-
-### grep
-
-参数：`pattern`，`path`（目录或单个文件，默认工作区根），`glob`，`type`，`ignore_case`，`context`（至多 10），
-`files_only`。
-
-- 调 `workspace::grep`，`max_matches = grep_max_matches`；`path` 不存在时在 prepare 里报错。
-- 执行前消费读授权并将其范围交给只读 MXC 沙箱（`ReadOnlySandbox`）；返回内容按可读范围过滤。批准目录不等于批准其中的敏感文件。
-- 输出沿用 rg 默认格式，模型最熟悉：匹配行 `path:line:text`，上下文行 `path-line-text`，不连续的组之间用
-  `--` 分隔；`files_only` 时每行一个路径。路径都**相对工作区根**，模型可以直接拿去 read。没有匹配时输出
-  `（无匹配）`；截断时补一行 `[结果已截断，请缩小范围]`。
-- 正则错误 → `is_error`，带 rg 的报错原文；这是模型的输入错误，不记 warn。
-- display：`GrepView`（`files_only` 时 `lines` 里只有 `path`）。
-
-### glob
-
-参数：`pattern`，`path`（目录，默认工作区根）。
-
-- 调 `workspace::files`，`sort_by_mtime = true`，`max_files = glob_max_files`；每行一个路径，相对工作区根。
-- 使用获准的只读 MXC 沙箱范围，并过滤受保护路径；沙箱不可用时返回错误，不回退宿主搜索。
-- rg 的 `--glob` 是 **gitignore 语义**，不是 shell glob：`*.cpp` 匹配任意深度。说明里写清楚了，并给出
-  `src/**/*.hpp` 这样的例子。被 `.gitignore` 忽略的文件和隐藏文件不列出。
-- `path` 不存在或不是目录时在 prepare 里报错（文件请用 read）。
-- display：`GlobView`；权限过滤保留原始路径字节，过滤后的模型正文和 `files` 展示副本统一修复为合法 UTF-8。
-
-### web_search / web_fetch
-
-用户操作与排障见 [网页指南](../guide/web.md)。
-
-两个工具使用 `ToolKind::network`，只允许串行执行。Policy 先确认只读 MXC 沙箱可用，实际连接（包括每一跳重定向）
-经回环代理交给 Dispatcher 的运行中网络闸门授权。bash 和 web 共同调用 `tools::detail::sandbox_request`，只有这一处 Grant→MXC 请求映射。
-即使 unrestricted 也不把网页请求改成宿主 curl；沙箱不可用时策略拒绝两个工具。
-
-| 工具 | 参数 | 结果 |
-| --- | --- | --- |
-| `web_search` | 必填 `query`（≤300 个 Unicode 码点，原始字节 ≤8192）；`limit` 默认 8，范围 1–20 | 标题、URL、摘要；单独报告失败的搜索引擎 |
-| `web_fetch` | 必填 http/https `url`（原始字节 ≤8192）；`offset` 默认 0；`limit` 默认 16000，范围 4–1000000 | HTML 转 Markdown、文本/JSON 解码到 UTF-8；最终 URL、HTTP 状态、分页与截断信息 |
-
-分页使用 UTF-8 **字节**偏移，下一页传结果中的 `next_offset`。`Context` 按规范化原 URL 缓存转换后的页面，
-命中不联网；缺失缓存的非零 offset 要求重新获取第一页。输出仍受 `tools.max_result_bytes` 限制。
-缓存仅在当前会话内有效，按 `web.cache_bytes` 的预算淘汰最久未使用的页面。
-搜索协议、字符集与 HTML 处理在 [dagent_web](web.md)，模型文案、不可信内容约定和分页在 tools。
-
-结果使用 `WebView`，保存搜索词/URL、标题、状态、偏移、缓存命中、截断、实际网络目标和耗时。
-视图经过记录编码、历史回放和 UI 投影，搜索/抓取卡片可展开查看内容。
-
-### todo / ask / exit_plan / task
-
-这四个名字仍出现在模型的工具列表里（顺序 read、write、edit、bash、grep、glob、web_search、web_fetch、todo、ask、exit_plan，主会话再按配置加 task；有技能时再加 skill；memory 作为普通工具排在这些固定项之后），
-但它们是核心控制动作，不在工具层注册。Schema、说明、给模型的文本与 View（TodoView / AskView / TaskView）保持原样；
-解析与执行规则见 [agent §7](agent.md#控制动作askexit_plantodotask) 与 [agent §12](agent.md#12-子-agent-与-task)。
-
-### MCP 工具
-
-`add_mcp` 把 `mcp::Client::tools()` 里的每一项包成一个 Tool：名字用 `qualified_name`，Schema 用
-`input_schema`，说明为空时补一句「MCP server「x」提供的工具 y」；意图为 `external`。工具项持有 Client 的 `shared_ptr`。
-
-- 调用超时是 `Options::mcp_call_timeout`（默认 120 秒）。
-- 结果转文本：`text` 块直接拼接；`image`/`audio` 块写成 `[图片 image/png，N 字节，未展示]`；`resource` 块
-  写 uri，带文本就附上；`resource_link` 写名字和 uri；没有 `content` 只有 `structured` 时输出紧凑 JSON。
-  整体按 `max_result_bytes` 截断。`is_error` 沿用 `isError`。
-- `McpError::cancelled` 返回 `interrupted`；其他 `McpError` 都转成 `is_error` 的结果并记 warn，
-  `disconnected` 时置 `McpView::disconnected` 并附执行信号 `McpDisconnected{server}`，核心据此交给 Hub 标记断开。
-- 工具项持有 Client 的 `shared_ptr`：Hub 重连某个 server 前移除旧工具，连接成功后通过 `add_mcp` 合并新工具，
-  仍被子会话快照引用的旧连接不会悬空。
-- display：`McpView`，内容块原样保留，界面自己决定怎样显示。
-
-### McpHub
-
-`tools::McpHub`（`tools/mcp_hub.hpp`）管理配置的全部 MCP server：构造时为通过启动前置检查的 server 启动后台连接，
-其余 server 直接标为 failed 并记录 notice；`apply_pending` 在主会话的模型步骤之间处理重连、等待与工具合并；
-`snapshot` 把已就绪工具合并进子会话的注册表；`mark_disconnected` 返回追加给模型的 T12 / T13；`states` 线程安全地给出状态快照。
-生命周期规则见 [agent §11](agent.md#11-mcp-生命周期)。
-
-连接优先使用 MCP `2026-07-28`，通过 `server/discover` 确认版本；发现方法返回 `-32601` 或 HTTP 404/405 时回退到旧版
-`initialize`。Hub 在连接或重连后合并工具，不接收服务端工具变更通知，也不周期刷新工具列表。
-
----
-
-## 4. 界面数据：View
-
-`ToolResult::display` 给界面用，也存进会话记录，供历史显示。结构体在核心 `agent/tool_data.hpp`，工具层与控制动作共用：
-
-| View | 字段 |
-| --- | --- |
-| `WebView` | 搜索/抓取类型、query/url/title、content_type、正文、状态、offset/next_offset/total_bytes、缓存/截断、实际网络目标和耗时 |
-| `ReadView` | `path`、`start_line`、`end_line`、`total_lines`、`truncated`、`directory` |
-| `FileChangeView` | `path`、`diff`（unified diff 文本）、`added`、`removed`、`created`；edit 和 write 共用 |
-| `BashView` | `command`、`output`、退出状态、实际 backend/profile、grant source、analysis version、读写/保护范围、敏感名称规则、network/local sockets/private tmp、`elapsed_ms` |
-| `GrepView` | `pattern`、`lines`（`GrepLine`：`path`、`text`、`line`、`spans`、`is_context`）、`truncated` |
-| `GlobView` | `pattern`、`files`、`truncated` |
-| `McpView` | `server`、`tool`、`content`、`structured`、`disconnected` |
-| `TodoView` | `items` 整份列表；`TodoItem` 含 `text` 与四态 `state` |
-| `TaskView` | `agent`、`task`、`session_id`（父到子的跳转锚点）、`result`、`steps`（`TaskStep`：`summary`、`is_error`）、`model_calls`、`tool_calls`、`seconds`、`interrupted` |
-| `AskView` | `header`、问题、选项、选择、自由文本，以及 `multi_select`、`allow_other`、`cancelled`，供人工问答回放 |
-| `MemoryView` | `op`、`scope`、`name`、`type`、`updated`、`description`、`content`，记忆操作结果 |
-| `SkillView` | `name`、`path`，记录本轮技能激活，不保存技能正文 |
-
-- `View = std::variant<std::monostate, ReadView, FileChangeView, BashView, GrepView, GlobView, McpView, WebView, TodoView, AskView, TaskView, SkillView, MemoryView>`；
-  `monostate` 表示 prepare 阶段就失败的调用（参数错误等），界面只显示文本。前端不链接核心，
-  由 `ui/projection` 把协议里的 View JSON 解码成自己的投影类型，未知 kind 按文本回退。
-- `agent::to_json(view)` 输出 `{"kind": ..., 各字段}`，写进 tool 记录的 `view`，协议也原样传给前端；`kind` 为 `read`、`change`、
-  `bash`、`grep`、`glob`、`mcp`、`web`、`todo`、`ask`、`task`、`skill`、`memory`，`monostate` 使用显式 `kind: null`。
-- `view_from_json` 严格读取当前完整字段；未知 `kind`、缺失字段、非法字段类型或损坏条目均报错。
-  不为旧会话补默认字段，也不把损坏展示数据转换成 `monostate`。
-
----
-
-## 5. 对核心的要求
-
-这几条在工具层做不了，只能由核心保证：
-
-- **每个 tool_call 都要有一条 tool 消息**，包括未知工具、参数错误、用户拒绝、被取消的调用；否则 OpenAI
-  协议下一次请求直接 400。顺序与 `tool_calls` 一致。
-- 可以并行的只有 read 意图和获准 `read_only` 沙箱的 bash；write、edit、memory、web_search/web_fetch、MCP 串行，`task` 单独成组并发。
-- FileTracker 跟着会话走；恢复会话时不重建，模型需要重新 read 才能编辑——宁可多读一次，也不能拿旧 Stamp
-  覆盖别人的改动。
-- read 可以读到 `.env` 这类文件，内容会发给模型。是否拦截由核心的权限策略决定（意图里有路径）。
-
----
-
-## 6. 已知限制
-
-- 没有多处编辑（`edits` 数组）、后台 shell、浏览器渲染、PDF/图片读取（编解码器还只支持文本）。
-- edit 只做精确匹配，失败时给提示，不做模糊回退。
-- bash 每次都是新进程，不保留 cwd。以后如果要保留，要先考虑和并行执行的冲突。
-
----
-
-## 7. 配置与构建
-
-- 选项对应 `home/config/config.json` 的 `tools` 段：`max_result_bytes`（32 KiB，约 8k token）、
-  `read_default_lines`（2000）、`read_max_line_bytes`（2000）、`grep_max_matches`（200）、`glob_max_files`（200）、
-  `bash_collect_bytes`（4194304）、`bash_max_timeout_ms`（600000）、`mcp_call_timeout_ms`（120000），由 app 映射。文件读写上限沿用 `files` 段：
-  `max_read_bytes` 是 read 能翻页的最大文件（8 MiB），`max_write_bytes` 是写入上限（1 MiB）。
-- memory 使用独立的 `memory` 配置段；默认索引 8192 字节、完整条目 4096 字节，详见 [memory](memory.md)。
-- web 请求和缓存使用独立的 `web` 段，默认值及约束见 [web](web.md#配置)；启动需要宿主 curl 7.75+，
-  搜索依赖 `internal/searxng`。bash 与 web 共用授权映射，协议处理通过 `dagent_web` 完成。
-- 需要模型的真实功能检测应确认所选服务可访问且支持工具调用；历史使用过的模型不代表当前服务已启动。
-  接入方式见 [使用指南](../guide/usage.md)，已有验收见 [历史记录](../archive/README.md)。临时检测材料只放在 `temp/`。
+- **文件与搜索视图**：`ReadView`（读取行范围）、`FileChangeView`（Unified Diff 与增删行数）、`GrepView`（带匹配高亮区间的行列表）、`GlobView`（文件列表）。
+- **执行与外部视图**：`BashView`（截断输出、退出码、实际沙箱后端/权限来源与获批网络目标）、`WebView`（URL/搜索词、状态码、分页偏移与正文）、`McpView`（原始内容块与结构化输出）。
+- **控制与上下文视图**：`TodoView`（计划列表快照）、`AskView`（问题与用户回答）、`TaskView`（子 Agent 工具步骤摘要与最终结论）、`SkillView`（激活的技能路径）、`MemoryView`（记忆变更详情）。

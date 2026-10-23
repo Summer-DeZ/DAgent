@@ -1,86 +1,40 @@
-# Skills
+# skills：全局技能包
 
-DAgent supports local Agent Skills packages: YAML frontmatter and Markdown instructions in
-`<installation-root>/skills/<name>/SKILL.md`, with optional `references/`, `scripts/`, and `assets/`.
-The installation root follows `DAGENT_HOME`; dev builds default to the repository's `home/`.
-Only global, direct child directories are discovered. There is no installer, project scanning,
-live refresh, or plugin registration. Restart to discover changes.
+Skills 机制（由 `app` 负责目录发现与校验、`agent` 负责按轮激活与上下文组装）用于将特定领域的复杂操作流程、脚本与参考资料封装为按需加载的指导包，避免将大量长篇指令常驻在系统提示词中消耗上下文预算。
 
-## Discovery and ownership
+## 1. 目录结构与发现机制
 
-`app::load_skills` uses yaml-cpp 0.8.0 to parse files into an immutable `agent::SkillCatalog`.
-It validates required names/descriptions and standard optional fields, preserves license,
-compatibility, metadata and allowed-tools, and ignores unknown extensions. `allowed-tools` does
-not change permissions or available tools. Skill instructions are literal Markdown, not templates.
-Invalid files are skipped and reported through the log and skill list. An absent directory is empty.
-Files must be valid UTF-8 and fit the configured file read limit; instructions are never truncated.
-Canonical skill files must remain within the registered installation skills tree.
+技能包存放在 `<home>/skills/<name>/SKILL.md`，可附带同目录下的 `references/`、`scripts/` 和 `assets/` 资源：
 
-The backend builds the snapshot once and shares it with the query gateway and all session
-instances. Only metadata enters the initial system prompt; bodies are kept in the snapshot and
-enter model context on activation. Referenced resources are read using normal tools on demand.
-The frontend sees metadata and diagnostics via `skills.list`, never the parser or the snapshot bodies.
+- **启动时单次扫描与严格校验**：后端启动时解析所有直接子目录下的 `SKILL.md`（YAML frontmatter + Markdown 正文），构建不可变的技能目录快照（`SkillCatalog`）。校验要求：
+  - `name`（必填，1–64 字符小写字母/数字/单连字符）**必须与所属目录名完全一致**；
+  - `description`（必填，1–1024 字符）与可选的 `compatibility`、`allowed-tools`、`metadata`；
+  - 解析符号链接后的真实路径必须位于该技能注册目录内部，防止软链接目录逃逸。
+- **元数据与正文分离**：会话初始化时，**仅将技能的名称与简短描述写入系统提示词**（子 Agent 仅在其 `allowed_tools` 显式包含 `skill` 时才注入技能目录）；完整的技能正文保留在内存快照中，仅在被激活时才进入当前轮次的模型上下文。
 
-## Selection and execution
+## 2. 激活方式与执行流程
 
-- `/skills` opens the existing application panel. Selecting a row inserts `$name` without submitting.
-- `$` completion inserts a skill reference. CLI `dagent run '$name task'` uses the same backend path;
-  quote the prompt so the shell does not expand `$name`.
-- The backend recognizes standalone `$name` references, excluding escapes, inline code and fenced
-  code blocks. Unknown valid names fail the turn explicitly. Multiple references retain first-use order.
-- The model can call the `skill` control action with `{"name":"name"}`. The name enum comes from the
-  catalog. The action and prompt section are omitted when no skills are available.
+技能在同一轮对话（Turn）中可通过两种途径激活，均由核心控制动作执行器在会话执行线程上串行处理：
 
-Activation changes context, so it belongs to the core control action executor, not the filesystem
-tool registry. It runs serially on the session execution thread. Explicit references use the same
-activation implementation before the first model call. Repeated activation within a turn does not
-add the skill again; it returns a short "already active" note to the model.
+```mermaid
+flowchart LR
+    U[用户输入含 $name] -->|首步模型请求前| ACT[核心激活技能]
+    M[模型调用 skill 控制动作] -->|工具调度阶段| ACT
+    ACT --> CTX[注入本轮 RunSkills 上下文]
+    CTX --> REQ[随本轮请求副本发往模型]
+```
 
-## Context lifetime and history
+1. **用户显式引用（`$name`）**：用户在输入中通过 `/skills` 面板、`$` 补全或直接书写独立的 `$name`（排除代码块与转义），后端在发起第一次模型请求前自动激活对应技能；若引用了不存在的技能名则直接报错结束本轮。
+2. **模型主动调用（`skill` 控制动作）**：模型根据系统提示词中的技能摘要，主动调用 `skill(name)` 激活所需技能。同一轮内重复激活同一技能不会重复注入正文。
 
-`RunSkills` belongs to one `Run`. Model request construction appends its full instruction block to
-the last user message in a request copy; stored conversation messages and the fixed system prompt
-are unchanged. Actual requests and compaction estimates use the same projection. The summarizer
-receives history, not the transient instructions, so it cannot retain old skill bodies in summaries.
-Activation checks the irreducible request budget and reports an error rather than truncating a skill.
-Automatic history compression does not discard active instructions.
+## 3. 上下文生命周期与历史记录
 
-Completion, failure and cancellation release the run and its skills. Session recovery and model
-switching do not reactivate old skills. To continue using a skill in a later turn, select it again or
-let the model activate it again. Explicit selections are stored as optional `skills` metadata on the
-user record; automatic activation stores a `SkillView` and a short tool receipt. Neither stores a
-copy of the instruction body. Older records without skill metadata remain readable; no SQL migration
-is required. Historical `$name` text and skill receipts are records of past use, not active guidance.
+- **单轮生命周期（`RunSkills`）**：激活的技能正文仅附加在**当前轮次请求副本**的最后一条用户消息上，不修改持久化的对话历史或固定系统提示词。本轮结束、失败或取消后即释放；下一轮若需继续使用需重新激活。
+- **压缩感知与不截断保证**：激活前检查上下文不可缩减预算，空间不足时报错而非截断技能指令。自动压缩估算会将当前激活技能计入预算，但摘要器只接收常规历史，不会把临时技能正文固化进历史摘要。
+- **轻量化持久记录**：会话记录只保存激活凭证（用户记录中的 `skills` 元数据或工具记录中的 `SkillView{name, path}`），不重复存储技能正文。
 
-## Permissions and subagents
+## 4. 权限边界与独立依赖
 
-Skill-relative references resolve against the skill directory; tools still receive absolute paths.
-Registered canonical directories are readable without outside-workspace approval and enter the
-Bash sandbox's read scopes. Sensitive files keep their existing protections. Resolved symlinks
-outside registered directories receive ordinary path policy; directory registration does not grant
-write access or execution approval. Bash scripts, network operations and mutations follow existing
-permission and sandbox behavior. User requests and project instructions take precedence over skills.
-
-Subagents share the immutable directory, not the parent's active skill set. Their tool whitelist
-must include `skill`; the bundled explore and implement definitions do. Explicit skill references
-in a delegated prompt activate only in that child's run. A skill never creates a child agent itself.
-
-## Dependencies
-
-Skill files remain under `home/skills`; installed dependencies live separately under
-`home/runtime/envs/skills/<name>/<generation>`. Declare `skills/<name>` in
-`config/runtime.json` and run `dagent runtime sync` explicitly. A matching environment adds
-a bash environment selection instruction to the activated skill. It does not execute scripts
-or install packages during discovery/activation. See [toolchain](toolchain.md) for locked
-Python and Node environments, and [home](home.md) for global user instructions and prompt paths.
-
-## Protocol
-
-`skills.list` is a read-only query with empty parameters, returning:
-
-- `skills`: entries with `name`, `description`, and absolute `path` to `SKILL.md`.
-- `diagnostics`: entries with `path` and `message` for skipped skills or discovery failures.
-
-`input.submit` remains unchanged. Tool view JSON adds `kind: "skill"`, `name`, and `path`;
-frontend projection renders it with the standard tool card. User records optionally add
-`skills: [{name, path}]` for explicit requests, without restoring active state.
+- **只读豁免与执行受控**：已注册技能目录内的普通文件默认允许读取（无需工作区外读取审批），并自动加入受限 Bash 沙箱的可读范围；但执行脚本、修改文件或发起网络请求仍严格遵循当前会话的权限与沙箱策略。
+- **子 Agent 共享**：白名单包含 `skill` 的子 Agent 共享同一份技能目录，但与父会话的已激活技能集相互独立。
+- **独立运行环境**：若技能脚本需要特定 Python/Node 依赖，可在 `config/runtime.json` 中声明 `skills/<name>` 锁文件并执行 `dagent runtime sync`。激活该技能时会自动向模型附加使用对应受管环境的执行提示（见 [toolchain](toolchain.md)）。
